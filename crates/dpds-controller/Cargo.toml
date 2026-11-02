@@ -1,0 +1,31 @@
+[package]
+name = "dpds-controller"
+version = "0.1.0"
+edition = "2021"
+publish = false
+authors = ["Etienne Zink <etienne.zink@uni-tuebingen.de>"]
+description = "REST controller for DPDS: stores links, supervises the dpds child process, serves stats."
+license = "Apache-2.0"
+
+[[bin]]
+name = "dpds-controller"
+path = "src/main.rs"
+
+[dependencies]
+dpds-core = { path = "../dpds-core" }
+axum = "0.8"
+clap = { version = "4", features = ["derive", "env"] }
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+socket2 = { version = "0.6", features = ["all"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
+tower-http = { version = "0.6", features = ["cors"] }
+utoipa = "6"
+# `vendored`: the Swagger UI assets come from a crate instead of a download at build time.
+utoipa-swagger-ui = { version = "10", features = ["axum", "vendored"] }
+
+[dev-dependencies]
+http-body-util = "0.1"
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }

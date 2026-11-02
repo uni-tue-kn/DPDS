@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/dpds-core", "crates/dpdk-sys", "crates/dpdk", "crates/dpds"]
+members = ["crates/dpds-core", "crates/dpdk-sys", "crates/dpdk", "crates/dpds", "crates/dpds-controller"]
 resolver = "2"
 
 # Fast-path tuning (from preof's dpdk-peof): LTO is done by the linker
