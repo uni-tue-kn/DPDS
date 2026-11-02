@@ -1,11 +1,11 @@
 //! Command line: `dpds <EAL args...> -- [--config <path>] [--config0 <path>]
-//! [--config1 <path>]`
+//! [--config1 <path>] | --links <path>`
 
 use std::fmt;
 use std::path::PathBuf;
 
 const USAGE: &str = "Usage: dpds <EAL args...> -- [--config <path>] [--config0 <path>] \
-                     [--config1 <path>]";
+                     [--config1 <path>] | --links <path>";
 
 /// Parsed command line.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,6 +18,8 @@ pub struct Cli {
     pub config0: Option<PathBuf>,
     /// `--config1`: DPDS config of direction 1 (needs two ports).
     pub config1: Option<PathBuf>,
+    /// `--links`: the multi-link file (excludes the config flags).
+    pub links: Option<PathBuf>,
 }
 
 /// A bad application argument; the message includes the usage text.
@@ -57,6 +59,7 @@ pub fn parse_args(args: &[String]) -> Result<Cli, CliError> {
         config: None,
         config0: None,
         config1: None,
+        links: None,
     };
 
     let mut it = app_args.iter();
@@ -69,7 +72,21 @@ pub fn parse_args(args: &[String]) -> Result<Cli, CliError> {
             "--config" => set(&mut cli.config, arg, PathBuf::from(value()?))?,
             "--config0" => set(&mut cli.config0, arg, PathBuf::from(value()?))?,
             "--config1" => set(&mut cli.config1, arg, PathBuf::from(value()?))?,
+            "--links" => set(&mut cli.links, arg, PathBuf::from(value()?))?,
             other => return Err(error(format_args!("unknown argument '{other}'"))),
+        }
+    }
+    if cli.links.is_some() {
+        for (flag, slot) in [
+            ("--config", &cli.config),
+            ("--config0", &cli.config0),
+            ("--config1", &cli.config1),
+        ] {
+            if slot.is_some() {
+                return Err(error(format_args!(
+                    "--links cannot be combined with {flag}"
+                )));
+            }
         }
     }
     Ok(cli)

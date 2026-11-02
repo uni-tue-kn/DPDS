@@ -3,7 +3,7 @@
 Everything DPDS exposes over DPDK's telemetry socket. It follows preof's
 telemetry design (same counters, epochs, first-loss reasons, wire shapes), kept
 per traffic direction: every direction has its own worker lcore and its own
-counter set. The source of truth for the exact wire format
+counter set (and, with `--links`, belongs to a named link). The source of truth for the exact wire format
 is `crates/dpds/src/counters.rs`, `first_loss.rs` and `stats.rs`; this file
 explains what each field means.
 
@@ -53,16 +53,21 @@ echo '/dpds/stats,0' | dpdk-telemetry.py -f <file-prefix>
 
 | command | what |
 | --- | --- |
-| `/dpds/stats,<dir>` | Counters of direction `<dir>` (0 or 1), cumulative since start, plus that direction's whole-run first-loss result. |
+| `/dpds/stats,<dir>` | Counters of direction `<dir>`, cumulative since start, the delay statistics, plus that direction's whole-run first-loss result. |
 | `/dpds/epochs,<dir>` | The same counters per epoch (deltas) and gauges per epoch (maxima), plus per-epoch first loss, for direction `<dir>`. |
-| `/dpds/ports` | Static: device name and descriptor ring sizes of each port, and the layout of each direction. |
+| `/dpds/delay_hist,<dir>` | The cumulative histogram of the intended delay of direction `<dir>`. |
+| `/dpds/ports` | Static: device name and descriptor ring sizes of each port, the number of links, and the layout of each direction. |
 | `/nic/hw_first_loss,<port>` | First NIC hardware drop seen by the main lcore on port `<port>` (`0` or `1`). |
 | `/nic/epochs,<port>` | Per-epoch NIC `rx_packets` / `imissed` / `rx_port_discards` of port `<port>`. |
 
-Direction `d` is the traffic received on port `d`; its egress port is `d ^ 1`
-with two ports and port 0 with one port (see `/dpds/ports`). `<dir>` must be the
-index of an existing direction (`0`, or `0` and `1`). A missing, non-numeric or
-out-of-range `<dir>` or `<port>` returns an empty reply.
+Directions are numbered globally. With `--links` in file order: link 0 direction 0
+(`ports[0]` -> `ports[1]`), link 0 direction 1, link 1 direction 0, and so on (a
+one-port link has one direction); `/dpds/ports` gives each direction's link, ports
+and lcore. With `--config*` there is one link named `default` and direction `d` is
+the traffic received on port `d`; its egress port is `d ^ 1` with two ports and
+port 0 with one port. `<dir>` must be the index of an existing direction. A
+missing, non-numeric or out-of-range `<dir>` or `<port>` returns an empty reply.
+`<port>` is a DPDK port id (as in `/dpds/ports`), not a direction.
 
 ## `/dpds/stats,<dir>` and epochs
 
@@ -76,7 +81,10 @@ atomics, cache-line aligned).
 | `polls` | Loop iterations of this direction's worker. Compare with `rx_pkts`: many polls and few packets means the lcore is spinning idle. |
 | `rx_pkts` | Packets received via `rx_burst` on this direction's RX port. |
 | `rx_full_bursts` | `rx_burst` calls that returned a full `BURST_SIZE` (32) batch: the NIC had at least that much waiting, so intake was the binding constraint. |
-| `dpds_rejects` | Packets the `dpds-core` buffer refused: the configured loss model, the rate limiter's `limit_bit`, or the buffer being full (`buffer_capacity`). Undifferentiated by design. They are freed, never sent. |
+| `dpds_rejects` | Packets the `dpds-core` buffer refused; always `loss_drops + limiter_drops + buffer_full_drops`. They are freed, never sent. |
+| `loss_drops` | Rejected packets dropped by the configured loss model. |
+| `limiter_drops` | Rejected packets the rate limiter refused (the Spacer's backlog would exceed `limit_bit`, or the Token Bucket Filter's budget is used up). |
+| `buffer_full_drops` | Rejected packets that loss model and limiter accepted but that found the buffer holding `buffer_capacity` packets. |
 | `pops` | Packets that left the DPDS buffer (their send time had arrived) and went on to TX. |
 | `tx_calls` | `tx_burst` calls with at least one packet. A worker transmits what it popped in the same loop iteration (at most `BURST_SIZE` = 32 packets), so there is at most one call per iteration; `tx_pkts / tx_calls` is the mean batch size. |
 | `tx_pkts` | Packets handed to `tx_burst`. |
@@ -87,6 +95,12 @@ atomics, cache-line aligned).
 | `tx_pkts_per_call` | `tx_pkts / tx_calls` with two decimals, as a string (telemetry dicts have no float type); `"0.00"` with no calls. |
 | `buffer_len_max` (gauge) | The DPDS buffer's depth, sampled once per loop iteration after the pop (as in preof), so a zero-delay pass-through reads about 0. At steady state roughly `arrival_rate x delay`. Pinned at `buffer_capacity` means the buffer is the bottleneck. |
 | `first_loss_reason` / `first_loss_detail` / `first_loss_relative_ns` | The first loss of the whole run (see below); `"Clean"` / `""` / `0` if none yet. |
+| `delay_mean_ns`, `delay_std_ns` | Mean and (population) standard deviation of the intended delay of every accepted packet, 2-decimal strings. See [Delay statistics](#delay-statistics). |
+| `delay_min_ns`, `delay_max_ns` | Smallest and largest intended delay, uints (truncated ns). |
+| `lateness_mean_ns`, `lateness_max_ns` | Mean (string) and maximum (uint) of how late popped packets left. |
+
+The six delay and lateness keys are absent for a direction whose link has
+`"delay_stats": false` ([Delay statistics off](#delay-statistics-off)).
 
 A packet that is neither delayed nor lost satisfies
 `rx_pkts = dpds_rejects + pops + (in buffer)` and `pops = tx_pkts` (a popped
@@ -95,6 +109,23 @@ exactness check for a run of `N` packets through one direction.
 
 Gauges in `/dpds/stats,<dir>` are the maximum over all epochs of the run, including
 the open one.
+
+### Drop causes
+
+The buffer evaluates a pushed packet in a fixed order: the limiter accounts for it
+first (also when the packet is rejected afterwards), then the loss model decides,
+then the capacity is checked. The cause that is reported is the first of these that
+rejects the packet, in the order **loss model, limiter, buffer full**:
+
+- if the loss model drops the packet it counts as `loss_drops`, whatever the
+  limiter and the buffer would have done. A packet that both the loss model and
+  the limiter reject is therefore a loss, and with a loss model active
+  `limiter_drops` can under-count what the limiter alone would have rejected;
+- else, if the limiter rejects it, `limiter_drops`;
+- else, if the buffer is full, `buffer_full_drops`.
+
+The limiter's state advances for lost and buffer-full packets too (existing
+behaviour, unchanged).
 
 ### Epochs
 
@@ -117,7 +148,7 @@ epoch, oldest first.
 | `epochs_dropped` | Closes beyond the 32nd. The log keeps the **oldest** 32 and drops later ones (it never overwrites). Treat counters past epoch 32 as missing, not zero. |
 | `epoch_start_uptime_ns` / `epoch_end_uptime_ns` | Array. Epoch window in nanoseconds since start, the same clock as `uptime_ns` and `first_loss_relative_ns`. |
 | `first_loss_reason` / `first_loss_detail` / `first_loss_relative_ns` | Arrays. The first loss **within that epoch** (`"Clean"` / `""` / `0` if none). |
-| `polls`, `rx_pkts`, `rx_full_bursts`, `dpds_rejects`, `pops`, `tx_calls`, `tx_pkts`, `tx_sent`, `tx_short_calls` | Arrays of per-epoch counter deltas. |
+| `polls`, `rx_pkts`, `rx_full_bursts`, `dpds_rejects`, `pops`, `tx_calls`, `tx_pkts`, `tx_sent`, `tx_short_calls`, `loss_drops`, `limiter_drops`, `buffer_full_drops` | Arrays of per-epoch counter deltas. |
 | `tx_batch_max`, `buffer_len_max` | Arrays of per-epoch gauge maxima. |
 
 A gauge peak of an epoch dropped past capacity is not lost: it is folded into
@@ -130,6 +161,119 @@ for example, briefly show `tx_drops` > 0 (`tx_pkts` already raised, `tx_sent`
 not yet) or a gauge just reset at an epoch close. Treat single values as
 approximate while traffic flows; they are exact once the worker is idle.
 
+## Delay statistics
+
+Per direction, behind the `telemetry` feature, written by the direction's worker
+only. Two quantities are tracked:
+
+- the **intended delay** of every *accepted* packet: `send_time - now` at the push,
+  with `now` the iteration's single clock read and `send_time` the whole-ns time
+  the buffer reports for the packet. It includes the delay distribution's sample,
+  the Spacer's queueing offset and, in reordering mode, the 1/64 ns tie offset
+  (truncated to whole ns). Rejected packets are not counted;
+- the **lateness** of every *popped* packet: `now - send_time` at the pop, never
+  below 0. It is the poll granularity, head-of-line blocking (FIFO mode: a packet
+  waits for the one in front of it) and loop latency. The realized delay of a
+  packet is its intended delay plus its lateness, so the mean realized delay is
+  `delay_mean_ns + lateness_mean_ns`.
+
+`delay_std_ns` is the population standard deviation (divide by `n`). It doubles
+as a check that DPDS reproduces the configured distribution. Everything is
+cumulative since start (take differences between two polls for a window).
+
+Numerics: the mean and the variance are kept as count, mean and sum of squared
+deviations (Welford, merged burst by burst with Chan's update). Each burst is first
+summed shifted by its own first delay, so the result stays exact when the delay
+is large and its spread tiny (for `1e10 ns +- 1 us` a plain sum of squares in
+`f64` would lose the whole variance). The only divisions are two per loop
+iteration, none per packet. The worker stores `count`, `mean`, `M2` separately, so
+a poll can see them from two different iterations; it is not a consistent
+snapshot (like every other field here).
+
+Cost: without the `telemetry` feature the code is absent and the loop is
+unchanged; with `"delay_stats": false` it is the loop of the counters only (see
+[Delay statistics off](#delay-statistics-off)). With it, the delay statistics and the histogram add about 1.6 to
+2.2 ns per packet on top of the other telemetry counters, measured with
+`cargo bench -p dpds --bench forward --features telemetry` (it drives
+`forward::run` with mocks; aarch64 dev container, so relative numbers only, not
+valid for an x86 host): 4.2 -> 6.4 ns/packet for a pass-through, 6.7 -> 8.4 for a
+normal delay. To keep that low the loop only stores each accepted and each popped
+send time (one store per packet) and folds them in tight loops after the push and
+the pop loop; keeping the accumulators inside the push loop, which calls into the
+buffer, cost several times as much.
+
+### Delay statistics off
+
+Each direction can switch the delay statistics and the histogram off with the
+per-direction `"delay_stats": [true|false, ..]` array of its link in the
+`--links` file (one flag per direction, default all `true`; see the README).
+For a direction with `false`:
+
+- the worker does not record the intended delay, the lateness or the histogram.
+  `forward::run` picks the loop without them once, before it starts, so the
+  push and pop loops carry no statistics code at all (no per-packet and no
+  per-burst work, same cost as a build without the `telemetry` feature);
+- `/dpds/stats,<dir>` **does not contain** the six keys `delay_mean_ns`,
+  `delay_std_ns`, `delay_min_ns`, `delay_max_ns`, `lateness_mean_ns`,
+  `lateness_max_ns` (20 keys instead of 26; they are absent, not `null` and not
+  0, which dicts cannot express anyway). Everything else is unchanged: the
+  counters, the drop causes, the gauges, the first-loss result and the epochs;
+- `/dpds/delay_hist,<dir>` returns an empty reply;
+- `/dpds/ports` reports `dir<d>_delay_stats` `0` (and `1` for the others).
+
+A consumer checks `dir<d>_delay_stats` once, or tests for the absent keys.
+
+## `/dpds/delay_hist,<dir>`
+
+A cumulative linear histogram of the intended delay (as defined above) of every
+accepted packet of direction `<dir>`, since start. Fields:
+
+| field | meaning |
+| --- | --- |
+| `lo_ns` | Lower edge (inclusive) of bin 0, a decimal string (telemetry has no float). |
+| `bin_ns` | Width of each bin, a decimal string. |
+| `num_bins` | Number of bins (uint). |
+| `bins` | Array of `num_bins` counts; bin `i` counts delays in `[lo_ns + i * bin_ns, lo_ns + (i + 1) * bin_ns)`. |
+| `underflow` | Delays below `lo_ns`. |
+| `overflow` | Delays at or above `lo_ns + num_bins * bin_ns`. |
+
+Every accepted packet is in exactly one of the bins, `underflow` or `overflow`.
+The bin index is one subtraction and one multiplication by the reciprocal of
+`bin_ns` computed at startup (no division per packet).
+
+**Range.** The range is fixed at startup, from the direction's config unless the
+`--links` file overrides it with `histograms` (`bins`, `lo_ns`, `hi_ns`, each
+optional). The automatic rule, from `delayer.mean_ns`, `delayer.std_ns` (for any
+distribution) and, for an active Spacer, its queueing allowance
+`extra = limit_bit / rate_bps * 1e9` ns (a packet can wait up to a full limit's
+worth of bits behind the others, and the intended delay includes that wait):
+
+```
+lo = max(0, mean - 6 * std)
+hi = mean + 6 * std + extra
+if hi - lo < 1000 ns:      mid = (lo + hi) / 2;  lo = max(0, mid - 500);  hi = lo + 1000
+bin_ns = (hi - lo) / 256
+```
+
+So a deterministic delay gets a 1 us window around the mean (bin width 3.90625 ns),
+and a Normal delay `mean +- 6 sigma`. A Token Bucket Filter adds no delay and no
+allowance. With explicit values: a missing `bins` is 256, a missing `lo_ns` /
+`hi_ns` is the automatic one, `bin_ns = (hi - lo) / bins`, and explicit values are
+used as given (the 1 us minimum applies to the automatic range only). Startup
+fails, naming the link, if `bins` is not in 1..=500 (DPDK's telemetry array limit
+is 512 entries), `lo_ns` or `hi_ns` is negative, or the effective `lo_ns` is not
+below the effective `hi_ns`, also when only one of them is given and it lies beyond
+the automatic other one.
+
+Keep the histogram out of frequent polls: the reply holds up to 500 counts, about
+5 KB with small counts and up to about 10.5 KB for 500 bins whose counts have
+reached 20 digits (500 x 21 characters with the comma), below the 16384-byte reply limit
+of DPDK's telemetry socket.
+
+**Switched off.** A direction with `"delay_stats": false` has no histogram:
+`/dpds/delay_hist,<dir>` returns an empty reply, like for a bad `<dir>` (see
+[Delay statistics off](#delay-statistics-off)).
+
 ## First-loss reasons
 
 `first_loss_reason` is the first loss ever recorded (cumulative) or per epoch.
@@ -137,7 +281,7 @@ approximate while traffic flows; they are exact once the worker is idle.
 
 | reason | detail | meaning |
 | --- | --- | --- |
-| `DpdsReject` | `from=dpds` | `Buffer::push` returned false: loss model, limiter or buffer full (not distinguished). |
+| `DpdsReject` | `from=dpds,cause=<cause>` | `Buffer::push_outcome` rejected a packet; `<cause>` is `loss` (loss model), `limiter` or `buffer_full`, with the [precedence](#drop-causes) loss, limiter, buffer full. |
 | `DescriptorFull` | `from=dpds,to=nic` | A partial `tx_burst`: the NIC's TX descriptor ring was full. |
 | `IMissed` | `from=dpds,count=<n>` | NIC hardware: `imissed` rose, i.e. the NIC's RX ring had no room and dropped packets before software saw them. |
 | `RX_NoMbuf` | `from=dpds,count=<n>` | NIC hardware: `rx_nombuf` rose, no free mbuf in the pool (pool exhausted, which the derived pool size rules out unless mbufs leak). |
@@ -152,22 +296,36 @@ ones answer "which traffic burst broke first".
 ## `/dpds/ports`
 
 Static, read once at startup (also printed once to stdout at startup). Port keys:
-`num_ports` (1 or 2), then per port index `i`: `port<i>_name` (device name, e.g.
+`num_ports` (at most 16, see the size limit below), then per port index `i`:
+`port<i>_name` (device name, e.g.
 a PCI address or `net_pcap0`), `port<i>_rx_ring` and `port<i>_tx_ring` (descriptor
 ring sizes the driver **applied**), `port<i>_rx_ring_requested` and
 `port<i>_tx_ring_requested` (what DPDS asked for, 4096; the driver may clamp it
 or round it down, so compare the two). Port indices are DPDK's port ids.
 
-Direction keys: `num_directions` (equal to `num_ports`), then per direction `d`:
+Direction keys: `num_directions` (equal to `num_ports`: a one-port link has one
+direction, a two-port link two), `num_links`, then per direction `d` (see
+[Commands](#commands) for the numbering):
 
 | key | meaning |
 | --- | --- |
-| `dir<d>_rx_port` | Port the direction receives on (`d`). |
-| `dir<d>_tx_port` | Port it transmits on (`d ^ 1` with two ports, `0` with one). |
-| `dir<d>_lcore` | EAL lcore id of the direction's worker. |
-| `dir<d>_config` | Path of the config file the direction uses (string). |
+| `dir<d>_rx_port` | DPDK port id the direction receives on. |
+| `dir<d>_tx_port` | Port id it transmits on (the same one for a loopback link). |
+| `dir<d>_lcore` | EAL lcore id of the direction's worker (the listed `lcores` entry, or the i-th worker lcore). |
+| `dir<d>_config` | Where the direction's config comes from (string): its config file, or the links file. |
 | `dir<d>_pool_size` | Mbufs in the direction's pool, derived from `buffer_capacity` and the applied RX/TX descriptor counts. |
 | `dir<d>_raw_free` | `1` if the worker frees with `rte_mbuf_raw_free_bulk` (both ports report `MBUF_FAST_FREE`), `0` if with `rte_pktmbuf_free_bulk`. |
+| `dir<d>_link` | Name of the link the direction belongs to (string; `default` without `--links`). |
+| `dir<d>_rx_name` | DPDK device name of the receiving port (string), the entry of the links file. |
+| `dir<d>_tx_name` | DPDK device name of the transmitting port (string). |
+| `dir<d>_delay_stats` | `1` if the direction records [delay statistics](#delay-statistics-off) and the histogram, `0` if its link switched them off. |
+
+**Size limit.** DPDK's telemetry dict holds at most 256 entries
+(`RTE_TEL_MAX_DICT_ENTRIES`), and this reply has `3 + 5 * ports + 10 *
+directions` of them (the 3 are `num_ports`, `num_directions`, `num_links`).
+With one direction per port that is 15 keys per port, so **at most 16 ports**
+(243 keys) fit; 17 would need 258. DPDS checks this when it reads the links file
+and exits with an error naming the maximum (256), before anything is probed.
 
 ## `/nic/hw_first_loss,<port>`
 

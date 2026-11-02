@@ -11,6 +11,7 @@ use crate::counters::{
     epochs_reply, DpdsCounters, DpdsEpochLog, EpochDriver, EpochFirstLoss, NicEpochLog,
     NicEpochTracker,
 };
+use crate::delay_stats::{DelayStats, HistRange};
 use crate::first_loss::{
     detect_hardware_drop, format_first_loss, FirstLossReason, Stage, StageLossDetail,
     StageLossTracker,
@@ -18,11 +19,18 @@ use crate::first_loss::{
 use crate::reply::{Reply, Value};
 
 /// Everything the worker lcore writes and the telemetry thread reads.
-#[derive(Default)]
 pub struct Stats {
     pub first_loss: StageLossTracker,
     pub counters: DpdsCounters,
     pub epochs: DpdsEpochLog,
+    /// Intended delay / lateness statistics and the delay histogram.
+    pub delay: DelayStats,
+}
+
+impl Default for Stats {
+    fn default() -> Self {
+        Stats::with_range(HistRange::default())
+    }
 }
 
 fn uint(key: &str, v: u64) -> (String, Value) {
@@ -34,6 +42,29 @@ fn string(key: &str, v: impl Into<String>) -> (String, Value) {
 }
 
 impl Stats {
+    /// Stats whose delay histogram covers `range`.
+    pub fn with_range(range: HistRange) -> Stats {
+        Stats::with_delay_stats(range, true)
+    }
+
+    /// As [`with_range`](Self::with_range); with `delay_stats` off the
+    /// direction records no delay statistics, its `/dpds/stats` has no delay
+    /// keys and its histogram reply is empty.
+    pub fn with_delay_stats(range: HistRange, delay_stats: bool) -> Stats {
+        Stats {
+            first_loss: StageLossTracker::new(),
+            counters: DpdsCounters::default(),
+            epochs: DpdsEpochLog::default(),
+            delay: DelayStats::with_enabled(range, delay_stats),
+        }
+    }
+
+    /// The `/dpds/delay_hist` reply: the cumulative histogram of the intended
+    /// delay of the accepted packets.
+    pub fn delay_hist_reply(&self) -> Reply {
+        self.delay.hist_reply()
+    }
+
     /// The `/dpds/stats` reply: cumulative since start. Gauges are the max
     /// over closed epochs and the live (open) epoch.
     pub fn stats_reply(&self, uptime_ns: u64) -> Reply {
@@ -41,12 +72,15 @@ impl Stats {
         let tx_pkts = c.tx_pkts.get();
         let tx_sent = c.tx_sent.get();
         let fields = format_first_loss(self.first_loss.current());
-        vec![
+        let mut reply = vec![
             uint("uptime_ns", uptime_ns),
             uint("polls", c.polls.get()),
             uint("rx_pkts", c.rx_pkts.get()),
             uint("rx_full_bursts", c.rx_full_bursts.get()),
             uint("dpds_rejects", c.dpds_rejects.get()),
+            uint("loss_drops", c.loss_drops.get()),
+            uint("limiter_drops", c.limiter_drops.get()),
+            uint("buffer_full_drops", c.buffer_full_drops.get()),
             uint("pops", c.pops.get()),
             uint("tx_calls", c.tx_calls.get()),
             uint("tx_pkts", tx_pkts),
@@ -68,7 +102,9 @@ impl Stats {
             string("first_loss_reason", fields.reason),
             string("first_loss_detail", fields.detail),
             uint("first_loss_relative_ns", fields.relative_ns),
-        ]
+        ];
+        reply.extend(self.delay.stats_fields(c.pops.get()));
+        reply
     }
 
     /// The `/dpds/epochs` reply.
@@ -97,8 +133,21 @@ fn index_param(param: &str) -> Option<usize> {
 
 impl DirectionStats {
     pub fn new(num_directions: usize) -> DirectionStats {
+        DirectionStats::with_ranges(vec![HistRange::default(); num_directions])
+    }
+
+    /// One direction per range, each with its own delay histogram range.
+    pub fn with_ranges(ranges: Vec<HistRange>) -> DirectionStats {
+        DirectionStats::with_delay_settings(ranges.into_iter().map(|r| (r, true)).collect())
+    }
+
+    /// One direction per `(range, delay_stats)`.
+    pub fn with_delay_settings(settings: Vec<(HistRange, bool)>) -> DirectionStats {
         DirectionStats {
-            stats: (0..num_directions).map(|_| Stats::default()).collect(),
+            stats: settings
+                .into_iter()
+                .map(|(range, on)| Stats::with_delay_stats(range, on))
+                .collect(),
         }
     }
 
@@ -114,8 +163,14 @@ impl DirectionStats {
         Some(self.stats.get(index_param(param)?)?.epochs_reply())
     }
 
-    /// Registers `/dpds/stats` and `/dpds/epochs` (no-op without the
-    /// feature). `start_ns` is the shared `now_ns()` zero point. A bad param
+    /// `/dpds/delay_hist,<param>`: the delay histogram of that direction.
+    /// `None` for a bad param.
+    pub fn delay_hist_reply(&self, param: &str) -> Option<Reply> {
+        Some(self.stats.get(index_param(param)?)?.delay_hist_reply())
+    }
+
+    /// Registers `/dpds/stats`, `/dpds/epochs` and `/dpds/delay_hist` (no-op
+    /// without the feature). `start_ns` is the shared `now_ns()` zero point. A bad param
     /// yields an empty dict, like `/nic/epochs`.
     #[cfg(not(feature = "telemetry"))]
     pub fn register_telemetry(
@@ -145,6 +200,15 @@ impl DirectionStats {
             "DPDS per-epoch counter/gauge history of one direction (query with ,0 / ,1)",
             move |param, d| {
                 if let Some(reply) = stats.epochs_reply(param) {
+                    fill(d, reply);
+                }
+            },
+        )?;
+        dpdk::telemetry::register_command(
+            "/dpds/delay_hist",
+            "Cumulative histogram of the intended delay of one direction (query with ,0 / ,1 ...)",
+            move |param, d| {
+                if let Some(reply) = stats.delay_hist_reply(param) {
                     fill(d, reply);
                 }
             },
@@ -249,21 +313,34 @@ pub struct DirectionInfo {
     pub tx_port: u16,
     /// EAL lcore of the direction's worker.
     pub lcore: u32,
-    /// Path of the direction's config file.
+    /// Where the direction's config comes from: the config file, or the links
+    /// file.
     pub config: String,
     /// Mbufs in the direction's mempool.
     pub pool_size: u32,
     /// Whether the direction frees mbufs with the raw bulk free.
     pub raw_free: bool,
+    /// Name of the link the direction belongs to (`default` without `--links`).
+    pub link: String,
+    /// DPDK device names of the receiving and the transmitting port.
+    pub rx_name: String,
+    pub tx_name: String,
+    /// Whether the direction records delay statistics.
+    pub delay_stats: bool,
 }
 
 /// The `/dpds/ports` reply: `num_ports`, then per port index `i`
 /// `port<i>_name` (string), `port<i>_rx_ring`, `port<i>_tx_ring`,
 /// `port<i>_rx_ring_requested`, `port<i>_tx_ring_requested`; then
-/// `num_directions` and per direction `d` `dir<d>_rx_port`, `dir<d>_tx_port`,
-/// `dir<d>_lcore`, `dir<d>_config` (string), `dir<d>_pool_size`,
-/// `dir<d>_raw_free` (0 or 1).
-pub fn ports_reply(ports: &[PortInfo], directions: &[DirectionInfo]) -> Reply {
+/// `num_directions`, `num_links` and per direction `d` `dir<d>_rx_port`,
+/// `dir<d>_tx_port`, `dir<d>_lcore`, `dir<d>_config` (string),
+/// `dir<d>_pool_size`, `dir<d>_raw_free` (0 or 1), `dir<d>_link` (string, the
+/// link name), `dir<d>_rx_name` and `dir<d>_tx_name` (strings, DPDK device
+/// names), `dir<d>_delay_stats` (0 or 1: the direction's delay statistics are
+/// off or on). That is `3 + 5 * ports + 10 * directions` keys in all, which
+/// must stay within DPDK's `RTE_TEL_MAX_DICT_ENTRIES`
+/// ([`MAX_TELEMETRY_DICT_ENTRIES`](crate::consts::MAX_TELEMETRY_DICT_ENTRIES)).
+pub fn ports_reply(ports: &[PortInfo], directions: &[DirectionInfo], num_links: usize) -> Reply {
     let mut reply = vec![uint("num_ports", ports.len() as u64)];
     for (i, p) in ports.iter().enumerate() {
         reply.push(string(&format!("port{i}_name"), p.name.as_str()));
@@ -279,6 +356,7 @@ pub fn ports_reply(ports: &[PortInfo], directions: &[DirectionInfo]) -> Reply {
         ));
     }
     reply.push(uint("num_directions", directions.len() as u64));
+    reply.push(uint("num_links", num_links as u64));
     for (d, dir) in directions.iter().enumerate() {
         reply.push(uint(&format!("dir{d}_rx_port"), dir.rx_port as u64));
         reply.push(uint(&format!("dir{d}_tx_port"), dir.tx_port as u64));
@@ -286,6 +364,10 @@ pub fn ports_reply(ports: &[PortInfo], directions: &[DirectionInfo]) -> Reply {
         reply.push(string(&format!("dir{d}_config"), dir.config.as_str()));
         reply.push(uint(&format!("dir{d}_pool_size"), dir.pool_size as u64));
         reply.push(uint(&format!("dir{d}_raw_free"), dir.raw_free as u64));
+        reply.push(string(&format!("dir{d}_link"), dir.link.as_str()));
+        reply.push(string(&format!("dir{d}_rx_name"), dir.rx_name.as_str()));
+        reply.push(string(&format!("dir{d}_tx_name"), dir.tx_name.as_str()));
+        reply.push(uint(&format!("dir{d}_delay_stats"), dir.delay_stats as u64));
     }
     reply
 }
@@ -296,6 +378,7 @@ pub fn ports_reply(ports: &[PortInfo], directions: &[DirectionInfo]) -> Reply {
 pub fn register_port_telemetry(
     _ports: Vec<PortInfo>,
     _directions: Vec<DirectionInfo>,
+    _num_links: usize,
 ) -> Result<(), dpdk::DpdkError> {
     Ok(())
 }
@@ -304,11 +387,12 @@ pub fn register_port_telemetry(
 pub fn register_port_telemetry(
     ports: Vec<PortInfo>,
     directions: Vec<DirectionInfo>,
+    num_links: usize,
 ) -> Result<(), dpdk::DpdkError> {
     dpdk::telemetry::register_command(
         "/dpds/ports",
         "DPDS ports (names, applied/requested rings) and per-direction layout",
-        move |_param, d| fill(d, ports_reply(&ports, &directions)),
+        move |_param, d| fill(d, ports_reply(&ports, &directions, num_links)),
     )
 }
 

@@ -78,6 +78,12 @@ impl FakeMbufs {
         (0..self.mbufs.len()).map(|i| self.ptr(i)).collect()
     }
 
+    /// Sets the packet length of mbuf `i` (what `rte_pktmbuf_pkt_len` reads).
+    #[cfg(feature = "telemetry")]
+    pub fn set_pkt_len(&mut self, i: usize, len: u32) {
+        self.mbufs[i].__bindgen_anon_2.__bindgen_anon_1.pkt_len = len;
+    }
+
     pub fn set_port(&mut self, i: usize, port: u16) {
         self.mbufs[i].__bindgen_anon_1.__bindgen_anon_1.port = port;
     }
@@ -276,6 +282,45 @@ pub fn config_full(
             "limit_bit": limit_bit
         },
         "loss_model": { "Random": loss }
+    }))
+    .expect("test config must deserialize")
+}
+
+/// The general config builder of the drop-cause / delay-statistics tests.
+/// `limiter` = `(mode, rate_bps, limit_bit)` with `mode` the JSON name
+/// (`"Spacer"` / `"TokenBucketFilter"`); `loss` is the JSON of the loss model,
+/// e.g. `json!({"Random": 0.0})` or `json!({"GilbertElliot": [1.0, 0.0, 0.0, 1.0, true]})`.
+pub fn config_general(
+    capacity: usize,
+    reordering: bool,
+    distribution: &str,
+    mean_ns: f64,
+    std_ns: f64,
+    limiter: Option<(&str, f64, f64)>,
+    loss: serde_json::Value,
+) -> Config {
+    let (mode, activate, rate_bps, limit_bit) = match limiter {
+        Some((m, r, l)) => (m, true, r, l),
+        None => ("Spacer", false, 1e9, 1e9),
+    };
+    serde_json::from_value(serde_json::json!({
+        "buffer_capacity": capacity,
+        "reordering": reordering,
+        "delayer": {
+            "distribution": distribution,
+            "mean_ns": mean_ns,
+            "std_ns": std_ns,
+            "activate_correlation": false,
+            "half_life_period_ns": 1.0
+        },
+        "limiter": {
+            "mode": mode,
+            "activate": activate,
+            "rate_bps": rate_bps,
+            "limit_bit": limit_bit
+        },
+        "loss_model": loss,
+        "seed": 1
     }))
     .expect("test config must deserialize")
 }

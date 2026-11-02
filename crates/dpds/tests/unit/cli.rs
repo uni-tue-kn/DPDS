@@ -370,3 +370,67 @@ fn config0_with_one_port_is_fine() {
     let cli = app(&["--config0", "zero.json"]);
     assert_eq!(cli.direction_configs(1).unwrap(), paths(&["zero.json"]));
 }
+
+// ── --links (multi-link mode) ───────────────────────────────────────
+//
+// `Cli` gets `pub links: Option<PathBuf>` (None when absent). `--links <file>`
+// is mutually exclusive with `--config`, `--config0` and `--config1`:
+// `parse_args` returns an Err whose Display names `--links` and the other flag
+// and contains "Usage". A second `--links` or a missing value is an error like
+// for the other flags; the usage line lists `--links`.
+
+#[test]
+fn links_is_parsed_and_alone_leaves_the_config_flags_unset() {
+    let cli = app(&["--links", "/etc/dpds/links.json"]);
+    assert_eq!(cli.links, Some(PathBuf::from("/etc/dpds/links.json")));
+    assert_eq!((cli.config, cli.config0, cli.config1), (None, None, None));
+    // without the flag it is None
+    assert_eq!(app(&["--config", "c.json"]).links, None);
+    assert_eq!(parse_args(&args(&["dpds"])).unwrap().links, None);
+}
+
+#[test]
+fn links_goes_with_the_eal_split_like_the_other_flags() {
+    let cli = parse_args(&args(&["dpds", "-l", "0-3", "--", "--links", "l.json"])).unwrap();
+    assert_eq!(cli.eal_args, args(&["dpds", "-l", "0-3"]));
+    assert_eq!(cli.links, Some(PathBuf::from("l.json")));
+    // an EAL arg named --links stays with the EAL
+    let cli = parse_args(&args(&["dpds", "--links", "x", "--"])).unwrap();
+    assert_eq!(cli.links, None);
+}
+
+#[test]
+fn links_excludes_every_config_flag_in_either_order() {
+    for other in ["--config", "--config0", "--config1"] {
+        for links_first in [true, false] {
+            let a: Vec<&str> = if links_first {
+                vec!["dpds", "--", "--links", "l.json", other, "c.json"]
+            } else {
+                vec!["dpds", "--", other, "c.json", "--links", "l.json"]
+            };
+            let err = parse_args(&args(&a)).unwrap_err();
+            let msg = err.to_string();
+            assert!(msg.contains("Usage"), "{a:?}: {msg}");
+            assert!(msg.contains("--links"), "{a:?}: names --links: {msg}");
+            assert!(msg.contains(other), "{a:?}: names {other}: {msg}");
+        }
+    }
+}
+
+#[test]
+fn links_given_twice_or_without_a_value_is_an_error() {
+    let err = parse_args(&args(&["dpds", "--", "--links", "a", "--links", "b"])).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("Usage") && msg.contains("--links"), "{msg}");
+    let err = parse_args(&args(&["dpds", "--", "--links"])).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("Usage") && msg.contains("--links"), "{msg}");
+}
+
+#[test]
+fn the_usage_text_lists_links() {
+    let err = parse_args(&args(&["dpds", "--", "--bogus"])).unwrap_err();
+    let usage = err.to_string();
+    let line = usage.lines().find(|l| l.contains("Usage")).unwrap();
+    assert!(line.contains("--links"), "{line}");
+}

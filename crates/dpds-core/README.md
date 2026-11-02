@@ -104,12 +104,25 @@ pops packets. Everything is in `dpds_core::buffer` and the crate root:
 | `Buffer::new(config) -> Buffer`                                       | Create a buffer for the given config; panics on invalid parameters.              |
 | `Buffer::try_new(config) -> Result<Buffer, BuildError>`               | Same, but invalid delay distribution parameters, a negative/NaN/infinite (or, with correlation, absurdly long) `half_life_period_ns` or an unallocatable `buffer_capacity` are an error naming the parameter. |
 | `Buffer::push(&mut self, pkt: *mut c_void, len_byte: u32, now_ns: f64) -> bool` | Offer a packet. Returns `false` if it was dropped or the buffer was full.  |
+| `Buffer::push_outcome(&mut self, pkt, len_byte, now_ns) -> PushOutcome` | Like `push`, but says why a packet was rejected and when an accepted one leaves: `Accepted { send_time_ns }`, `Lost`, `LimiterDrop` or `BufferFull` (**API change: addition**, `push` is a wrapper of it; see the precedence below). |
 | `Buffer::pop_due(&mut self, now_ns: f64) -> Option<*mut c_void>`      | Pop the head packet iff its send time (as `front_time` reports it) is `<= now_ns`. |
+| `Buffer::pop_due_with_time(&mut self, now_ns: f64) -> Option<(*mut c_void, u64)>` | Like `pop_due`, and also returns the whole-ns send time of the popped packet (what `front_time` reported before the pop) (**API change: addition**). |
 | `Buffer::peek_nth(&self, n: usize) -> Option<*mut c_void>`            | The packet that would be popped `n`-th from now, without popping (e.g. to prefetch). FIFO mode: the `n`-th queued entry. Reordering mode: only `n == 0` (the head) is answered, `n > 0` is `None`. |
 | `Buffer::front_time(&self) -> Option<f64>`                            | Send time (ns) of the head packet, `None` if empty.                              |
 | `Buffer::pop(&mut self) -> Option<*mut c_void>`                       | Remove and return the head packet pointer, `None` if empty.                      |
 | `Buffer::is_empty(&self)`, `len(&self)`, `capacity(&self)`            | Occupancy and configured capacity.                                               |
 | `Delayer::try_new(..)`, `Delayer::try_new_seeded(.., seed)`, `Dropper::new(loss_model)`, `Dropper::with_seed(loss_model, seed)` | The individual stages, usable on their own. |
+
+`PushOutcome` (`dpds_core::buffer`) reports the cause of a rejection by the
+order in which a push is evaluated: the limiter accounts for the packet first
+(also when it is rejected afterwards), then the loss model decides, then the
+capacity is checked. The reported cause is the first that rejects the packet:
+loss model (`Lost`), else limiter (`LimiterDrop`), else capacity (`BufferFull`).
+A packet that both the loss model and the limiter reject is therefore `Lost`, so
+counting `LimiterDrop` can under-count the limiter's own rejections while a loss
+model is active. `Accepted.send_time_ns` is the whole-ns send time `front_time`
+reports for the entry (in reordering mode including the 1/64 ns tie offsets).
+`push` and the draws of the random number generators are unchanged.
 
 `BuildError` implements `std::error::Error`; its message names the offending
 parameter (`mean_ns`, `std_ns`, `half_life_period_ns`, `buffer_capacity`).

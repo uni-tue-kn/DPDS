@@ -11,6 +11,10 @@ license = "Apache-2.0"
 name = "dpds"
 path = "src/main.rs"
 
+[[bench]]
+name = "forward"
+harness = false
+
 # Off by default: every counter/gauge/epoch/first-loss type is a zero-sized
 # no-op without it and nothing is registered on DPDK's telemetry socket (same
 # convention as preof's `telemetry` feature). Build with `--features telemetry`.
@@ -21,8 +25,9 @@ telemetry = []
 dpdk = { path = "../dpdk" }
 dpdk-sys = { path = "../dpdk-sys" }
 dpds-core = { path = "../dpds-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [dev-dependencies]
 tempfile = "3"
 libc = "0.2"
-serde_json = "1"

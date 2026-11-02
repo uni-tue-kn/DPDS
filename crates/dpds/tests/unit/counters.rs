@@ -77,6 +77,10 @@ mod shape {
                 "tx_pkts",
                 "tx_sent",
                 "tx_short_calls",
+                // the drop causes, appended
+                "loss_drops",
+                "limiter_drops",
+                "buffer_full_drops",
             ]
         );
     }
@@ -90,11 +94,11 @@ mod shape {
     }
 
     #[test]
-    fn dpds_epoch_log_has_nine_counters_and_two_gauges() {
+    fn dpds_epoch_log_has_twelve_counters_and_two_gauges() {
         // Fails to compile if the alias width drifts from the names above.
-        fn accepts(_log: EpochLog<9, 2>) {}
+        fn accepts(_log: EpochLog<12, 2>) {}
         accepts(DpdsEpochLog::default());
-        assert_eq!(DpdsCounters::default().cumulative_snapshot().len(), 9);
+        assert_eq!(DpdsCounters::default().cumulative_snapshot().len(), 12);
     }
 
     #[test]
@@ -271,9 +275,17 @@ mod telemetry_tests {
         c.tx_pkts.add(7);
         c.tx_sent.add(8);
         c.tx_short_calls.add(9);
+        c.loss_drops.add(10);
+        c.limiter_drops.add(11);
+        c.buffer_full_drops.add(12);
         c.tx_batch_max.observe(100);
         c.buffer_len_max.observe(200);
-        assert_eq!(c.cumulative_snapshot(), [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        // the three drop causes are appended after the nine original counters
+        assert_eq!(
+            c.cumulative_snapshot(),
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        );
+        assert_eq!(DpdsCounters::EPOCH_COUNTER_NAMES.len(), 12);
         for (i, name) in DpdsCounters::EPOCH_COUNTER_NAMES.iter().enumerate() {
             let expected = match *name {
                 "polls" => 1,
@@ -285,6 +297,9 @@ mod telemetry_tests {
                 "tx_pkts" => 7,
                 "tx_sent" => 8,
                 "tx_short_calls" => 9,
+                "loss_drops" => 10,
+                "limiter_drops" => 11,
+                "buffer_full_drops" => 12,
                 other => panic!("unexpected counter name {other}"),
             };
             assert_eq!(c.cumulative_snapshot()[i], expected, "{name}");
@@ -295,7 +310,7 @@ mod telemetry_tests {
     fn cumulative_snapshot_does_not_reset_or_include_gauges() {
         let c = DpdsCounters::default();
         c.tx_batch_max.observe(16);
-        assert_eq!(c.cumulative_snapshot(), [0; 9]);
+        assert_eq!(c.cumulative_snapshot(), [0; 12]);
         assert_eq!(c.tx_batch_max.get(), 16);
     }
 

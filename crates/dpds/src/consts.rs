@@ -17,3 +17,7 @@ pub const MTU: u32 = 1500;
 /// Main lcore's poll interval for the NIC hardware counters
 /// (`eth_stats_get`) and for noticing the quit flag.
 pub const HW_STATS_POLL_INTERVAL_MS: u64 = 250;
+
+/// DPDK's `RTE_TEL_MAX_DICT_ENTRIES`: the most keys one telemetry dict (one
+/// reply) holds. `/dpds/ports` has `3 + 5 * ports + 10 * directions` of them.
+pub const MAX_TELEMETRY_DICT_ENTRIES: usize = 256;

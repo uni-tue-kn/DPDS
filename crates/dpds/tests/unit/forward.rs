@@ -875,7 +875,13 @@ mod counters {
         assert_eq!(c.tx_calls.get(), 0);
         let ev = o.stats.first_loss.current().unwrap();
         assert_eq!(ev.reason, FirstLossReason::DpdsReject);
-        assert_eq!(ev.detail, StageLossDetail::Single { from: Stage::Dpds });
+        // the detail names the cause: here the loss model
+        assert_eq!(
+            dpds::first_loss::format_first_loss(Some(ev)).detail,
+            "from=dpds,cause=loss"
+        );
+        assert_eq!(c.loss_drops.get(), 32);
+        assert_eq!((c.limiter_drops.get(), c.buffer_full_drops.get()), (0, 0));
         assert_eq!(ev.relative_ns, 4_000.0, "now - start");
     }
 
@@ -888,6 +894,12 @@ mod counters {
             .run();
         let c = &o.stats.counters;
         assert_eq!(c.dpds_rejects.get(), 6);
+        assert_eq!(c.buffer_full_drops.get(), 6, "capacity 4 of 10 packets");
+        assert_eq!((c.loss_drops.get(), c.limiter_drops.get()), (0, 0));
+        assert_eq!(
+            dpds::first_loss::format_first_loss(o.stats.first_loss.current()).detail,
+            "from=dpds,cause=buffer_full"
+        );
         assert_eq!(
             c.buffer_len_max.get(),
             4,

@@ -25,7 +25,7 @@ fn registration_without_the_feature_registers_nothing_and_succeeds() {
     assert!(DirectionStats::register_telemetry(dirs, 0.0).is_ok());
     let hw: &'static NicHwStats = Box::leak(Box::new(NicHwStats::new(2)));
     assert!(NicHwStats::register_telemetry(hw).is_ok());
-    assert!(dpds::stats::register_port_telemetry(vec![], vec![]).is_ok());
+    assert!(dpds::stats::register_port_telemetry(vec![], vec![], 0).is_ok());
 }
 
 #[test]
@@ -176,7 +176,7 @@ mod with_feature {
         // `uptime_ns` of /dpds/stats), NOT the raw now_ns() clock
         assert_eq!(r.start_uptime_ns, 0, "the first epoch starts at the start");
         assert_eq!(r.end_uptime_ns, (close_at - 1_000.0) as u64);
-        assert_eq!(r.counters, [10, 7, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(r.counters, [10, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(r.gauges, [5, 9], "tx_batch_max, buffer_len_max");
         let loss = stats
             .epochs
@@ -251,12 +251,15 @@ mod with_feature {
 
     // ── /dpds/stats ──────────────────────────────────────────────────
 
-    const STATS_KEYS: [&str; 17] = [
+    const STATS_KEYS: [&str; 26] = [
         "uptime_ns",
         "polls",
         "rx_pkts",
         "rx_full_bursts",
         "dpds_rejects",
+        "loss_drops",
+        "limiter_drops",
+        "buffer_full_drops",
         "pops",
         "tx_calls",
         "tx_pkts",
@@ -269,6 +272,12 @@ mod with_feature {
         "first_loss_reason",
         "first_loss_detail",
         "first_loss_relative_ns",
+        "delay_mean_ns",
+        "delay_std_ns",
+        "delay_min_ns",
+        "delay_max_ns",
+        "lateness_mean_ns",
+        "lateness_max_ns",
     ];
 
     #[test]
@@ -279,7 +288,8 @@ mod with_feature {
         assert_eq!(r.len(), STATS_KEYS.len(), "no duplicate keys");
         for k in STATS_KEYS {
             match k {
-                "tx_pkts_per_call" | "first_loss_reason" | "first_loss_detail" => {
+                "tx_pkts_per_call" | "first_loss_reason" | "first_loss_detail"
+                | "delay_mean_ns" | "delay_std_ns" | "lateness_mean_ns" => {
                     assert!(matches!(get(&r, k), Value::Str(_)), "{k} is a string")
                 }
                 _ => assert!(matches!(get(&r, k), Value::Uint(_)), "{k} is a uint"),
@@ -293,7 +303,9 @@ mod with_feature {
         let r = Stats::default().stats_reply(0);
         for k in STATS_KEYS {
             match k {
-                "tx_pkts_per_call" => assert_eq!(string(&r, k), "0.00"),
+                "tx_pkts_per_call" | "delay_mean_ns" | "delay_std_ns" | "lateness_mean_ns" => {
+                    assert_eq!(string(&r, k), "0.00", "{k}")
+                }
                 "first_loss_reason" => assert_eq!(string(&r, k), "Clean"),
                 "first_loss_detail" => assert_eq!(string(&r, k), ""),
                 _ => assert_eq!(uint(&r, k), 0, "{k}"),
@@ -356,8 +368,8 @@ mod with_feature {
     #[test]
     fn stats_reply_gauges_are_the_max_over_closed_epochs_and_the_live_value() {
         let stats = Stats::default();
-        stats.epochs.close([0; 9], [16, 40], 0, 100, None);
-        stats.epochs.close([0; 9], [3, 5], 100, 200, None);
+        stats.epochs.close([0; 12], [16, 40], 0, 100, None);
+        stats.epochs.close([0; 12], [3, 5], 100, 200, None);
         stats.counters.tx_batch_max.observe(8);
         stats.counters.buffer_len_max.observe(2);
         let r = stats.stats_reply(0);
@@ -376,10 +388,12 @@ mod with_feature {
     fn stats_reply_gauges_survive_epochs_dropped_past_the_capacity() {
         let stats = Stats::default();
         for i in 0..EPOCH_CAPACITY as u64 {
-            stats.epochs.close([0; 9], [1, 1], i * 10, i * 10 + 5, None);
+            stats
+                .epochs
+                .close([0; 12], [1, 1], i * 10, i * 10 + 5, None);
         }
         // the 33rd epoch is dropped, but its peak must still show up
-        stats.epochs.close([0; 9], [128, 999], 1_000, 1_005, None);
+        stats.epochs.close([0; 12], [128, 999], 1_000, 1_005, None);
         assert_eq!(stats.epochs.epochs_dropped(), 1);
         let r = stats.stats_reply(0);
         assert_eq!(uint(&r, "tx_batch_max"), 128);
@@ -403,7 +417,7 @@ mod with_feature {
             StageLossDetail::Single { from: Stage::Dpds },
             1.0,
         );
-        stats.epochs.close([0; 9], [0, 0], 0, 1, None);
+        stats.epochs.close([0; 12], [0, 0], 0, 1, None);
         let r = stats.stats_reply(0);
         assert_eq!(string(&r, "first_loss_reason"), "DescriptorFull");
         assert_eq!(string(&r, "first_loss_detail"), "from=dpds,to=nic");
@@ -425,7 +439,7 @@ mod with_feature {
 
     // ── /dpds/epochs ─────────────────────────────────────────────────
 
-    const EPOCH_KEYS: [&str; 18] = [
+    const EPOCH_KEYS: [&str; 21] = [
         "epochs_closed",
         "epochs_dropped",
         "epoch_start_uptime_ns",
@@ -443,6 +457,9 @@ mod with_feature {
         "tx_pkts",
         "tx_sent",
         "tx_short_calls",
+        "loss_drops",
+        "limiter_drops",
+        "buffer_full_drops",
         // gauges
         "tx_batch_max",
         // + buffer_len_max below
@@ -478,7 +495,7 @@ mod with_feature {
         use dpds::first_loss::StageLossEvent;
         let stats = Stats::default();
         stats.epochs.close(
-            [10, 4, 0, 4, 0, 0, 0, 0, 0],
+            [10, 4, 0, 4, 0, 0, 0, 0, 0, 3, 1, 0],
             [0, 7],
             1_000,
             2_000,
@@ -488,9 +505,13 @@ mod with_feature {
                 relative_ns: 1_500.7,
             }),
         );
-        stats
-            .epochs
-            .close([25, 9, 0, 4, 0, 5, 0, 5, 0], [3, 2], 2_000, 3_500, None);
+        stats.epochs.close(
+            [25, 9, 0, 6, 0, 5, 0, 5, 0, 3, 1, 2],
+            [3, 2],
+            2_000,
+            3_500,
+            None,
+        );
         let r = stats.epochs_reply();
 
         assert_eq!(uint(&r, "epochs_closed"), 2);
@@ -504,12 +525,16 @@ mod with_feature {
         assert_eq!(uints(&r, "polls"), [10, 15]);
         assert_eq!(uints(&r, "rx_pkts"), [4, 5]);
         assert_eq!(uints(&r, "rx_full_bursts"), [0, 0]);
-        assert_eq!(uints(&r, "dpds_rejects"), [4, 0]);
+        assert_eq!(uints(&r, "dpds_rejects"), [4, 2]);
         assert_eq!(uints(&r, "pops"), [0, 0]);
         assert_eq!(uints(&r, "tx_calls"), [0, 5]);
         assert_eq!(uints(&r, "tx_pkts"), [0, 0]);
         assert_eq!(uints(&r, "tx_sent"), [0, 5]);
         assert_eq!(uints(&r, "tx_short_calls"), [0, 0]);
+        // the drop causes are per-epoch deltas too (epoch 1: 4 rejects = 3 + 1 + 0, epoch 2: 2 = 0 + 0 + 2)
+        assert_eq!(uints(&r, "loss_drops"), [3, 0]);
+        assert_eq!(uints(&r, "limiter_drops"), [1, 0]);
+        assert_eq!(uints(&r, "buffer_full_drops"), [0, 2]);
         // gauges are per-epoch maxima
         assert_eq!(uints(&r, "tx_batch_max"), [0, 3]);
         assert_eq!(uints(&r, "buffer_len_max"), [7, 2]);
@@ -520,7 +545,7 @@ mod with_feature {
         let stats = Stats::default();
         for i in 0..(EPOCH_CAPACITY as u64 + 3) {
             stats.epochs.close(
-                [i + 1, 0, 0, 0, 0, 0, 0, 0, 0],
+                [i + 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
                 [0, 0],
                 i * 10,
                 i * 10 + 5,
@@ -564,17 +589,17 @@ mod with_feature {
             assert_eq!(uint(&r, "rx_pkts"), rx, "dir {param}");
             assert_eq!(uint(&r, "tx_sent"), sent, "dir {param}");
             assert_eq!(uint(&r, "uptime_ns"), 99);
-            // same 17 keys as the per-direction Stats builder
+            // same 26 keys as the per-direction Stats builder
             let direct = ds.stats[param.parse::<usize>().unwrap()].stats_reply(99);
             assert_eq!(r, direct);
-            assert_eq!(r.len(), 17);
+            assert_eq!(r.len(), 26);
         }
     }
 
     #[test]
     fn the_epochs_reply_of_a_direction_is_that_directions_epochs_reply() {
         let ds = DirectionStats::new(2);
-        ds.stats[1].epochs.close([1; 9], [4, 5], 10, 20, None);
+        ds.stats[1].epochs.close([1; 12], [4, 5], 10, 20, None);
         let r1 = ds.epochs_reply("1").unwrap();
         assert_eq!(r1, ds.stats[1].epochs_reply());
         assert_eq!(uint(&r1, "epochs_closed"), 1);
@@ -630,6 +655,10 @@ mod with_feature {
             config: config.to_string(),
             pool_size: pool,
             raw_free: raw,
+            link: format!("link{rx}"),
+            rx_name: format!("rx{rx}"),
+            tx_name: format!("tx{tx}"),
+            delay_stats: true,
         }
     }
 
@@ -644,6 +673,7 @@ mod with_feature {
                 dir(0, 1, 1, "/etc/d0.json", 1_048_575, true),
                 dir(1, 0, 2, "d1.json", 2_000, false),
             ],
+            1,
         );
         assert_eq!(uint(&r, "num_ports"), 2);
         assert_eq!(string(&r, "port0_name"), "0000:65:00.1");
@@ -658,6 +688,13 @@ mod with_feature {
         assert_eq!(uint(&r, "port1_tx_ring_requested"), 4095);
 
         assert_eq!(uint(&r, "num_directions"), 2);
+        assert_eq!(uint(&r, "num_links"), 1);
+        assert_eq!(string(&r, "dir0_link"), "link0");
+        assert_eq!(string(&r, "dir0_rx_name"), "rx0");
+        assert_eq!(string(&r, "dir0_tx_name"), "tx1");
+        assert_eq!(string(&r, "dir1_link"), "link1");
+        assert_eq!(string(&r, "dir1_rx_name"), "rx1");
+        assert_eq!(string(&r, "dir1_tx_name"), "tx0");
         assert_eq!(uint(&r, "dir0_rx_port"), 0);
         assert_eq!(uint(&r, "dir0_tx_port"), 1);
         assert_eq!(uint(&r, "dir0_lcore"), 1);
@@ -672,8 +709,8 @@ mod with_feature {
         assert_eq!(uint(&r, "dir1_raw_free"), 0);
         assert_eq!(
             r.len(),
-            1 + 2 * 5 + 1 + 2 * 6,
-            "num_ports + five fields per port + num_directions + six per direction"
+            1 + 2 * 5 + 2 + 2 * 10,
+            "num_ports + five fields per port + num_directions + num_links + ten per direction"
         );
     }
 
@@ -682,6 +719,7 @@ mod with_feature {
         let r = ports_reply(
             &[port("a", 1, 1, 1, 1)],
             &[dir(0, 0, 1, "c.json", 9, false)],
+            1,
         );
         let order: Vec<&str> = r.iter().map(|(k, _)| k.as_str()).collect();
         assert_eq!(
@@ -694,12 +732,17 @@ mod with_feature {
                 "port0_rx_ring_requested",
                 "port0_tx_ring_requested",
                 "num_directions",
+                "num_links",
                 "dir0_rx_port",
                 "dir0_tx_port",
                 "dir0_lcore",
                 "dir0_config",
                 "dir0_pool_size",
                 "dir0_raw_free",
+                "dir0_link",
+                "dir0_rx_name",
+                "dir0_tx_name",
+                "dir0_delay_stats",
             ]
         );
     }
@@ -709,6 +752,7 @@ mod with_feature {
         let r = ports_reply(
             &[port("net_null0", 256, 256, 4096, 4096)],
             &[dir(0, 0, 1, "config.json", 64, false)],
+            1,
         );
         assert_eq!(uint(&r, "num_ports"), 1);
         assert_eq!(string(&r, "port0_name"), "net_null0");
@@ -718,7 +762,7 @@ mod with_feature {
         assert!(keys(&r)
             .iter()
             .all(|k| !k.starts_with("port1_") && !k.starts_with("dir1_")));
-        assert_eq!(r.len(), 1 + 5 + 1 + 6);
+        assert_eq!(r.len(), 1 + 5 + 2 + 10);
     }
 
     #[test]
@@ -727,7 +771,52 @@ mod with_feature {
         let r = ports_reply(
             &[port("x", 1, 1, 1, 1), port("y", 1, 1, 1, 1)],
             &[dir(0, 1, 1, "a", 1, true), dir(1, 0, 2, "b", 1, true)],
+            1,
         );
+        assert!(r.iter().all(|(k, _)| k.len() < 64));
+    }
+
+    #[test]
+    fn ports_reply_of_a_multi_link_setup_names_link_and_devices_per_direction() {
+        // link "a-b": ports 1 and 0 listed in that order (dir 0: port 1 -> port 0,
+        // dir 1: port 0 -> port 1); link "loop": port 2, one direction.
+        let mk = |rx, tx, link: &str, rxn: &str, txn: &str| DirectionInfo {
+            link: link.into(),
+            rx_name: rxn.into(),
+            tx_name: txn.into(),
+            ..dir(rx, tx, 1 + rx as u32, "links.json", 7, false)
+        };
+        let r = ports_reply(
+            &[
+                port("net_pcap0", 1, 1, 1, 1),
+                port("net_pcap1", 1, 1, 1, 1),
+                port("net_null2", 1, 1, 1, 1),
+            ],
+            &[
+                mk(1, 0, "a-b", "net_pcap1", "net_pcap0"),
+                mk(0, 1, "a-b", "net_pcap0", "net_pcap1"),
+                mk(2, 2, "loop", "net_null2", "net_null2"),
+            ],
+            2,
+        );
+        assert_eq!(uint(&r, "num_ports"), 3);
+        assert_eq!(uint(&r, "num_directions"), 3);
+        assert_eq!(uint(&r, "num_links"), 2);
+        for (d, link, rxn, txn) in [
+            (0, "a-b", "net_pcap1", "net_pcap0"),
+            (1, "a-b", "net_pcap0", "net_pcap1"),
+            (2, "loop", "net_null2", "net_null2"),
+        ] {
+            assert_eq!(string(&r, &format!("dir{d}_link")), link);
+            assert_eq!(string(&r, &format!("dir{d}_rx_name")), rxn);
+            assert_eq!(string(&r, &format!("dir{d}_tx_name")), txn);
+        }
+        assert_eq!(
+            uint(&r, "dir0_rx_port"),
+            1,
+            "the listed order, not the port-id order"
+        );
+        assert_eq!(r.len(), 1 + 3 * 5 + 2 + 3 * 10);
         assert!(r.iter().all(|(k, _)| k.len() < 64));
     }
 
@@ -737,8 +826,44 @@ mod with_feature {
         // with a longer string is not specified here; the reply builder
         // itself passes the path through unchanged.
         let path = "/some/long/directory/name/for/the/dpds/configs/direction-zero.json";
-        let r = ports_reply(&[port("x", 1, 1, 1, 1)], &[dir(0, 0, 1, path, 1, false)]);
+        let r = ports_reply(&[port("x", 1, 1, 1, 1)], &[dir(0, 0, 1, path, 1, false)], 1);
         assert_eq!(string(&r, "dir0_config"), path);
+    }
+
+    // ── D5 / D2: dir<d>_delay_stats and the dict limit ──────────────
+
+    #[test]
+    fn ports_reply_reports_the_delay_stats_switch_per_direction() {
+        let off = DirectionInfo {
+            delay_stats: false,
+            ..dir(1, 0, 2, "c.json", 1, false)
+        };
+        let r = ports_reply(
+            &[port("a", 1, 1, 1, 1), port("b", 1, 1, 1, 1)],
+            &[dir(0, 1, 1, "c.json", 1, false), off],
+            1,
+        );
+        assert_eq!(uint(&r, "dir0_delay_stats"), 1);
+        assert_eq!(uint(&r, "dir1_delay_stats"), 0);
+        assert!(r.iter().all(|(k, _)| k.len() < 64));
+    }
+
+    #[test]
+    fn ports_reply_has_three_plus_five_per_port_plus_ten_per_direction_keys() {
+        // RTE_TEL_MAX_DICT_ENTRIES is 256: this is the formula `--links`
+        // validation (tests/unit/links.rs, "dict limit") must use. With
+        // one direction per port, 16 ports fit (243 keys) and 17 do not (258).
+        for (n_ports, fits) in [(1usize, true), (2, true), (16, true), (17, false)] {
+            let ports: Vec<PortInfo> = (0..n_ports)
+                .map(|i| port(&format!("p{i}"), 1, 1, 1, 1))
+                .collect();
+            let dirs: Vec<DirectionInfo> = (0..n_ports as u16)
+                .map(|i| dir(i, i, 1 + i as u32, "links.json", 1, false))
+                .collect();
+            let r = ports_reply(&ports, &dirs, n_ports);
+            assert_eq!(r.len(), 3 + 5 * n_ports + 10 * n_ports, "{n_ports} ports");
+            assert_eq!(r.len() <= 256, fits, "{n_ports} ports: {} keys", r.len());
+        }
     }
 
     // ── /nic/hw_first_loss and /nic/epochs ──────────────────────────

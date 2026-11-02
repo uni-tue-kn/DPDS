@@ -12,6 +12,31 @@ const TIE_SCALE: f64 = (1u64 << TIE_FRAC_BITS) as f64;
 /// XOR-ed into the seed for the dropper so that it differs from the delayer's.
 const DROPPER_SEED_XOR: u64 = 0x9E37_79B9_7F4A_7C15;
 
+/// What [`Buffer::push_outcome`] did with a packet.
+///
+/// The cause of a rejection follows the evaluation order of the push: the
+/// limiter accounts the packet first (also when the packet is rejected
+/// afterwards), then the loss model decides, then the capacity is checked. The
+/// reported cause is the first of these that rejects the packet: the loss model
+/// (`Lost`), else the limiter (`LimiterDrop`), else the capacity (`BufferFull`).
+/// A packet that both the loss model and the limiter reject therefore counts as
+/// `Lost`, so with a loss model active `LimiterDrop` can under-count the
+/// packets the limiter alone would have rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PushOutcome {
+    /// The packet is queued and leaves at `send_time_ns` (whole ns, exactly
+    /// what [`Buffer::front_time`] reports for its entry; in reordering mode
+    /// this includes the 1/64 ns tie offsets).
+    Accepted { send_time_ns: u64 },
+    /// The loss model dropped the packet.
+    Lost,
+    /// The limiter rejected the packet (and the loss model did not drop it).
+    LimiterDrop,
+    /// The packet was accepted by loss model and limiter, but the buffer
+    /// already holds `buffer_capacity` packets.
+    BufferFull,
+}
+
 enum InnerBuffer {
     Queue(VecDeque<TimeToPacket>),
     Heap(BinaryHeap<Reverse<HeapEntry>>),
@@ -199,6 +224,8 @@ impl Buffer {
     /// Pushes a packet into the buffer, applying the delayer, limiter and
     /// dropper. Returns `false` if the packet was dropped or the buffer is full.
     ///
+    /// Same as [`Buffer::push_outcome`] reduced to "accepted or not".
+    ///
     /// The buffer does not own `packet_ptr` and never dereferences it; the
     /// caller must keep it valid until it is popped.
     pub fn push(
@@ -207,6 +234,23 @@ impl Buffer {
         packet_length_byte: u32,
         current_time_ns: f64,
     ) -> bool {
+        matches!(
+            self.push_outcome(packet_ptr, packet_length_byte, current_time_ns),
+            PushOutcome::Accepted { .. }
+        )
+    }
+
+    /// Like [`Buffer::push`], but tells why a packet was rejected and, for an
+    /// accepted one, when it leaves. See [`PushOutcome`] for the precedence of
+    /// the causes.
+    ///
+    /// **API change (addition):** new method; `push` is a wrapper around it.
+    pub fn push_outcome(
+        &mut self,
+        packet_ptr: *mut c_void,
+        packet_length_byte: u32,
+        current_time_ns: f64,
+    ) -> PushOutcome {
         let time_to_send_ns = current_time_ns + self.delayer.delayer_sample_ns(current_time_ns);
 
         // Increase by 4 because L2 FEC is removed
@@ -218,11 +262,11 @@ impl Buffer {
 
         // Drop packets after they are accounted for the limiter
         if self.dropper.dropper_drop() {
-            return false;
+            return PushOutcome::Lost;
         }
 
         let Some(time_offset_ns) = limiter_result else {
-            return false;
+            return PushOutcome::LimiterDrop;
         };
 
         let send_time_ns = time_to_send_ns + time_offset_ns;
@@ -230,16 +274,20 @@ impl Buffer {
         match &mut self.inner {
             InnerBuffer::Queue(q) => {
                 if q.len() >= self.capacity {
-                    return false;
+                    return PushOutcome::BufferFull;
                 }
+                let time_to_send_ns = send_time_ns as u64;
                 q.push_back(TimeToPacket {
-                    time_to_send_ns: send_time_ns as u64,
+                    time_to_send_ns,
                     packet_ptr,
                 });
+                PushOutcome::Accepted {
+                    send_time_ns: time_to_send_ns,
+                }
             }
             InnerBuffer::Heap(h) => {
                 if h.len() >= self.capacity {
-                    return false;
+                    return PushOutcome::BufferFull;
                 }
                 if current_time_ns != self.tie_instant_ns {
                     self.tie_instant_ns = current_time_ns;
@@ -249,9 +297,11 @@ impl Buffer {
                 let key = ((send_time_ns * TIE_SCALE) as u64).saturating_add(self.tie);
                 self.tie = self.tie.saturating_add(1);
                 h.push(Reverse(HeapEntry { key, packet_ptr }));
+                PushOutcome::Accepted {
+                    send_time_ns: key >> TIE_FRAC_BITS,
+                }
             }
         }
-        true
     }
 
     /// Removes and returns the head packet pointer, or `None` if the buffer is empty.
@@ -280,6 +330,33 @@ impl Buffer {
                 let head = h.peek_mut()?;
                 if head.0.time_ns() <= now_ns {
                     Some(PeekMut::pop(head).0.packet_ptr)
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    /// Like [`Buffer::pop_due`], but also returns the send time (whole ns, as
+    /// [`Buffer::front_time`] reported it before the pop) of the popped packet.
+    ///
+    /// **API change (addition):** new method.
+    #[inline]
+    pub fn pop_due_with_time(&mut self, now_ns: f64) -> Option<(*mut c_void, u64)> {
+        match &mut self.inner {
+            InnerBuffer::Queue(q) => {
+                let send_time_ns = q.front()?.time_to_send_ns;
+                if send_time_ns as f64 <= now_ns {
+                    q.pop_front().map(|t| (t.packet_ptr, send_time_ns))
+                } else {
+                    None
+                }
+            }
+            InnerBuffer::Heap(h) => {
+                let head = h.peek_mut()?;
+                if head.0.time_ns() <= now_ns {
+                    let entry = PeekMut::pop(head).0;
+                    Some((entry.packet_ptr, entry.key >> TIE_FRAC_BITS))
                 } else {
                     None
                 }

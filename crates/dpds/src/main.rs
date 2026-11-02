@@ -1,26 +1,30 @@
 //! DPDS: DPDK-based network-link emulator. See the README for usage.
 //!
-//! One worker lcore per direction (direction `d` = traffic received on port
-//! `d`, each with its own config, buffer and mempool): the EAL main lcore
-//! handles signals and polls the NIC hardware counters; every worker lcore
-//! runs RX -> DPDS -> TX (`dpds::forward::run`).
+//! One worker lcore per direction (each with its own config, buffer and
+//! mempool; a direction is the traffic received on one port): the EAL main
+//! lcore handles signals and polls the NIC hardware counters; every worker
+//! lcore runs RX -> DPDS -> TX (`dpds::forward::run`). The directions come from
+//! the `--links` file (links of one or two ports, ports named by their DPDK
+//! device name) or, with `--config*`, from the one or two probed ports (one
+//! link named `default`, direction `d` = traffic received on port `d`).
 
 use std::error::Error;
-use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use dpdk::eal::{self, foreach_worker, lcore_count};
+use dpdk::eal::{self, foreach_worker, lcore_count, main_lcore};
 use dpdk::mempool::{mbuf_buf_size_for_frame, MbufFreer};
 use dpdk::port::{self, adjust_nb_rx_tx_desc, foreach_dev, shutdown_port};
 use dpdk::{now_ns, Clock, Eal, Mempool, Port, PortDiscardXstats, RxQueue, TxQueue};
 use dpds::cli::parse_args;
 use dpds::consts::{HW_STATS_POLL_INTERVAL_MS, MBUF_CACHE_SIZE, MTU, NIC_DESCRIPTORS};
+use dpds::delay_stats::HistRange;
 use dpds::forward;
 use dpds::io::{NicRx, NicTx, PktmbufFree, RawFree};
+use dpds::links::{load_links, num_directions, resolve_directions, LinkSpec};
 use dpds::quit::QUIT;
-use dpds::setup::{egress_port, required_mbufs, validate_lcore_count, validate_port_count};
+use dpds::setup::{required_mbufs, validate_lcore_count, validate_port_count};
 use dpds::stats::{
     register_port_telemetry, DirectionInfo, DirectionStats, NicHwStats, NicPoller, PortInfo,
     Telemetry,
@@ -28,6 +32,9 @@ use dpds::stats::{
 use dpds::worker::Worker;
 use dpds_core::buffer::Buffer;
 use dpds_core::Config;
+
+/// Name of the single link of the `--config*` mode.
+const DEFAULT_LINK: &str = "default";
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -75,27 +82,25 @@ const MBUF_DATA_ROOM: u16 = mbuf_buf_size_for_frame((MTU + 14 + 4) as u16);
 /// A direction as set up before its worker starts.
 struct Direction {
     worker: Worker,
-    config: PathBuf,
+    /// Where the config comes from: the config file or the links file.
+    config: String,
+    link: String,
+    rx_name: String,
+    tx_name: String,
     lcore: u32,
+    delay_stats: bool,
     freer: MbufFreer,
     raw_free: bool,
-}
-
-/// Loads and builds the buffer of every direction from its config file.
-fn load_buffers(configs: &[PathBuf]) -> Result<Vec<Buffer>> {
-    configs
-        .iter()
-        .map(|path| {
-            let config = Config::from_file(path)?;
-            Buffer::try_new(config).map_err(|e| format!("{}: {e}", path.display()).into())
-        })
-        .collect()
 }
 
 /// One mempool of `num_mbufs` per direction on the socket of its RX port (the
 /// socket of the calling lcore if the port reports none). Leaked: the ports'
 /// queue handles and the workers need `'static` access.
-fn create_pool(direction: usize, num_mbufs: u64) -> Result<(&'static Mempool, String, u32)> {
+fn create_pool(
+    direction: usize,
+    rx_port: u16,
+    num_mbufs: u64,
+) -> Result<(&'static Mempool, String, u32)> {
     let name = format!("dpds_pool_{direction}");
     let failed = |why: &dyn std::fmt::Display| {
         format!(
@@ -103,7 +108,7 @@ fn create_pool(direction: usize, num_mbufs: u64) -> Result<(&'static Mempool, St
         )
     };
     let count = u32::try_from(num_mbufs).map_err(|_| failed(&"more than u32::MAX mbufs"))?;
-    let port_socket = port::rte_eth_dev_socket_id(direction as u16);
+    let port_socket = port::rte_eth_dev_socket_id(rx_port);
     let socket = u32::try_from(port_socket).unwrap_or_else(|_| port::rte_socket_id());
     let pool = Mempool::create(&name, count, MBUF_CACHE_SIZE, MBUF_DATA_ROOM, socket)
         .map_err(|e| failed(&e))?;
@@ -174,24 +179,87 @@ fn poll_nics(
 
 // ── Main flow ────────────────────────────────────────────────────────────────
 
+/// The links of the run, where each direction's config comes from, and (with
+/// `--config*`) a label per direction for error messages.
+struct Layout {
+    links: Vec<LinkSpec>,
+    /// Per direction: the config file, or the links file.
+    sources: Vec<String>,
+}
+
+/// The `--config*` mode: one link named `default` over the probed ports, direction
+/// `d` = traffic received on port `d`, with its own config file.
+fn default_link(cli: &dpds::cli::Cli, probed: &[(String, u16)]) -> Result<Layout> {
+    validate_port_count(probed.len())?;
+    let paths = cli.direction_configs(probed.len())?;
+    let configs = paths
+        .iter()
+        .map(|path| Config::from_file(path).map_err(Box::<dyn Error>::from))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Layout {
+        links: vec![LinkSpec {
+            name: DEFAULT_LINK.into(),
+            ports: probed.iter().map(|(name, _)| name.clone()).collect(),
+            histograms: vec![Default::default(); configs.len()],
+            delay_stats: vec![true; configs.len()],
+            configs,
+            lcores: None,
+        }],
+        sources: paths.iter().map(|p| p.display().to_string()).collect(),
+    })
+}
+
 fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let cli = parse_args(&args)?;
+
+    // The links file needs no EAL: a bad file fails before anything starts.
+    let links_file = match &cli.links {
+        Some(path) => Some((path, load_links(path)?)),
+        None => None,
+    };
 
     // Dropped last: cleans up the EAL after everything else is gone.
     let _eal = Eal::new(&cli.eal_args).map_err(|e| format!("EAL initialization failed: {e}"))?;
 
     // Everything that can fail without side effects comes before the ports start.
     let port_ids: Vec<u16> = foreach_dev().collect();
-    validate_port_count(port_ids.len())?;
     if port_ids.iter().copied().ne(0..port_ids.len() as u16) {
         return Err(format!("expected port ids 0..{}, got {port_ids:?}", port_ids.len()).into());
     }
-    let num_ports = port_ids.len();
-    validate_lcore_count(lcore_count(), num_ports)?;
-    let lcores: Vec<u32> = foreach_worker().collect();
-    let configs = cli.direction_configs(num_ports)?;
-    let buffers = load_buffers(&configs)?;
+    let probed: Vec<(String, u16)> = port_ids
+        .iter()
+        .map(|&id| Ok((port::device_name(id)?, id)))
+        .collect::<std::result::Result<_, dpdk::DpdkError>>()?;
+    let layout = match links_file {
+        Some((path, links)) => {
+            let sources = vec![path.display().to_string(); num_directions(&links)];
+            Layout { links, sources }
+        }
+        None => default_link(&cli, &probed)?,
+    };
+    let num_dirs = num_directions(&layout.links);
+    validate_lcore_count(lcore_count(), num_dirs)?;
+    let workers: Vec<u32> = foreach_worker().collect();
+    let dirs = resolve_directions(&layout.links, &probed, main_lcore(), &workers)?;
+
+    // Buffers and histogram ranges: a bad config or histogram names its link.
+    let mut buffers = Vec::new();
+    let mut ranges = Vec::new();
+    for (d, dir) in dirs.iter().enumerate() {
+        let label = if cli.links.is_some() {
+            format!("link '{}', direction {d}", layout.links[dir.link].name)
+        } else {
+            layout.sources[d].clone()
+        };
+        buffers.push(Buffer::try_new(dir.config).map_err(|e| format!("{label}: {e}"))?);
+        ranges.push((
+            HistRange::from_spec(&dir.config, &dir.histogram)
+                .map_err(|e| format!("{label}: {e}"))?,
+            dir.delay_stats,
+        ));
+    }
+    let name_of = |id: u16| probed[id as usize].0.clone();
 
     // The pool size of a direction is derived: its delay buffer plus the RX
     // ring it fills and the TX ring it feeds. The drivers' applied ring sizes
@@ -206,21 +274,28 @@ fn run() -> Result<()> {
         .collect::<std::result::Result<_, _>>()?;
 
     // One pool per direction, then every port with the pool of the direction
-    // that receives on it.
+    // that receives on it (every port receives for exactly one direction).
     let mut pools = Vec::new();
     let mut pool_sizes = Vec::new();
-    for (d, buffer) in buffers.iter().enumerate() {
-        let tx_port = egress_port(d as u16, num_ports) as usize;
-        let size = required_mbufs(buffer.capacity(), applied[d].0, applied[tx_port].1);
-        pools.push(create_pool(d, size)?);
+    for (d, (dir, buffer)) in dirs.iter().zip(&buffers).enumerate() {
+        let size = required_mbufs(
+            buffer.capacity(),
+            applied[dir.rx_port as usize].0,
+            applied[dir.tx_port as usize].1,
+        );
+        pools.push(create_pool(d, dir.rx_port, size)?);
         pool_sizes.push(size as u32);
+    }
+    let mut pool_of_port = vec![0usize; port_ids.len()];
+    for (d, dir) in dirs.iter().enumerate() {
+        pool_of_port[dir.rx_port as usize] = d;
     }
     // On an early return the already started ports are dropped, which stops them.
     let mut ports = Vec::new();
     for &id in &port_ids {
         let port = Port::init(
             id,
-            pools[id as usize].0,
+            pools[pool_of_port[id as usize]].0,
             NIC_DESCRIPTORS,
             NIC_DESCRIPTORS,
             1,
@@ -247,13 +322,8 @@ fn run() -> Result<()> {
     }
 
     let mut directions = Vec::new();
-    for (d, (buffer, (&lcore, config))) in buffers
-        .into_iter()
-        .zip(lcores.iter().zip(configs))
-        .enumerate()
-    {
-        let rx_port = d as u16;
-        let tx_port = egress_port(rx_port, num_ports);
+    for (d, (dir, buffer)) in dirs.iter().zip(buffers).enumerate() {
+        let (rx_port, tx_port, lcore) = (dir.rx_port, dir.tx_port, dir.lcore);
         let (pool, pool_name, pool_socket) = pools[d].clone();
         let lcore_socket = unsafe { dpdk_sys::rte_lcore_to_socket_id(lcore) };
         if port::rte_eth_dev_socket_id(rx_port) >= 0 && lcore_socket != pool_socket {
@@ -264,10 +334,11 @@ fn run() -> Result<()> {
         }
         let raw_free =
             ports[rx_port as usize].mbuf_fast_free() && ports[tx_port as usize].mbuf_fast_free();
+        let link = layout.links[dir.link].name.clone();
         println!(
-            "Direction {d}: lcore {lcore}, port {rx_port} -> port {tx_port}, config {}, \
-             pool {pool_name} with {} mbufs on socket {pool_socket}, free: {}",
-            config.display(),
+            "Direction {d}: lcore {lcore}, link {link}, port {rx_port} -> port {tx_port}, \
+             config {}, pool {pool_name} with {} mbufs on socket {pool_socket}, free: {}",
+            layout.sources[d],
             pool_sizes[d],
             if raw_free {
                 "raw bulk (MBUF_FAST_FREE on both ports)"
@@ -277,8 +348,12 @@ fn run() -> Result<()> {
         );
         directions.push(Direction {
             worker: Worker::new(buffer, rx_port, tx_port),
-            config,
+            config: layout.sources[d].clone(),
+            link,
+            rx_name: name_of(rx_port),
+            tx_name: name_of(tx_port),
             lcore,
+            delay_stats: dir.delay_stats,
             freer: pool.freer(),
             raw_free,
         });
@@ -309,7 +384,15 @@ fn run() -> Result<()> {
         queues.tx.push(t.drain(..1).next());
     }
 
-    let result = serve(&port_ids, directions, queues, port_infos, &pool_sizes);
+    let result = serve(
+        &port_ids,
+        directions,
+        queues,
+        port_infos,
+        &pool_sizes,
+        ranges,
+        layout.links.len(),
+    );
 
     // The ports were leaked (no `Drop`), stop and close them by id.
     for id in port_ids {
@@ -326,11 +409,14 @@ fn serve(
     mut queues: Queues,
     port_infos: Vec<PortInfo>,
     pool_sizes: &[u32],
+    ranges: Vec<(HistRange, bool)>,
+    num_links: usize,
 ) -> Result<()> {
     let clock = Clock::new();
     // The shared zero point of every `uptime_ns` / `relative_ns` / epoch time.
     let start_ns = clock.now_ns();
-    let stats: &'static DirectionStats = Box::leak(Box::new(DirectionStats::new(directions.len())));
+    let stats: &'static DirectionStats =
+        Box::leak(Box::new(DirectionStats::with_delay_settings(ranges)));
     let hw: &'static NicHwStats = Box::leak(Box::new(NicHwStats::new(port_ids.len())));
     let register = |e: dpdk::DpdkError| format!("cannot register telemetry command: {e}");
     DirectionStats::register_telemetry(stats, start_ns).map_err(register)?;
@@ -342,12 +428,16 @@ fn serve(
             rx_port: d.worker.rx_port(),
             tx_port: d.worker.tx_port(),
             lcore: d.lcore,
-            config: d.config.display().to_string(),
+            config: d.config.clone(),
             pool_size,
             raw_free: d.raw_free,
+            link: d.link.clone(),
+            rx_name: d.rx_name.clone(),
+            tx_name: d.tx_name.clone(),
+            delay_stats: d.delay_stats,
         })
         .collect();
-    register_port_telemetry(port_infos, direction_infos).map_err(register)?;
+    register_port_telemetry(port_infos, direction_infos, num_links).map_err(register)?;
     let mut pollers = nic_pollers(port_ids, start_ns);
 
     install_signal_handlers()?;

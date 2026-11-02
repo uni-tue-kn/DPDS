@@ -101,12 +101,68 @@
 //!                NicHwStats / NicPoller                                         (unchanged)
 //! ```
 //!
+//! ## v5 additions (multi-link, drop causes, delay statistics) -- all NEW API
+//!
+//! Full definitions (and the pinned semantics) are in the header of the module
+//! named in brackets; this is the checklist for the implementer.
+//!
+//! ```text
+//! dpds_core::buffer   PushOutcome, Buffer::push_outcome, Buffer::pop_due_with_time
+//!                     (crates/dpds-core/tests/push_outcome.rs)
+//! dpds::cli           Cli.links: Option<PathBuf>; `--links <file>`, mutually exclusive
+//!                     with --config/--config0/--config1                       [cli.rs]
+//! dpds::links         LinkSpec, parse_links, load_links, num_directions,
+//!                     LinkDirection{.., histogram, lcore}, LinkSpec.{histograms, lcores},
+//!                     resolve_directions(links, probed, main_lcore, workers),
+//!                     LinksError, MAX_NAME_LEN                                [links.rs]
+//! dpds::setup         validate_lcore_count(lcores, num_directions): unchanged fn, 1 + n [setup.rs]
+//! dpds::counters      DpdsCounters.{loss_drops, limiter_drops, buffer_full_drops};
+//!                     EPOCH_COUNTER_NAMES / cumulative_snapshot(): 12 entries, the
+//!                     three causes appended; DpdsEpochLog = EpochLog<12, 2>   [causes.rs, counters.rs]
+//! dpds::first_loss    first_loss_detail of a DpdsReject: "from=dpds,cause=loss|limiter|buffer_full"
+//!                     (StageLossDetail::Single -> "from=dpds" stays)            [causes.rs]
+//! dpds::delay_stats   HIST_BINS, MIN_WIDTH_NS, HistRange{lo_ns,bin_ns} (new, default,
+//!                     from_config, hi_ns, bin), Bin{Underflow,Index,Overflow}   [delay_stats.rs]
+//! dpds::stats         Stats::with_range(HistRange), Stats::delay_hist_reply(),
+//!                     DirectionStats::with_ranges(Vec<HistRange>),
+//!                     DirectionStats::delay_hist_reply(param) -> Option<Reply>,
+//!                     stats_reply: 26 keys (+loss_drops, limiter_drops,
+//!                     buffer_full_drops, delay_mean_ns, delay_std_ns, delay_min_ns,
+//!                     delay_max_ns, lateness_mean_ns, lateness_max_ns),
+//!                     DirectionInfo += link: String, rx_name: String, tx_name: String,
+//!                     ports_reply(ports, directions, num_links: usize): after
+//!                     num_directions comes `num_links`; per direction the six old
+//!                     keys then dir<d>_link, dir<d>_rx_name, dir<d>_tx_name,
+//!                     register_port_telemetry(ports, directions, num_links)    [stats.rs]
+//! ```
+//!
+//! ## v6 fix round (D1, D2, D4, D5) -- new API
+//!
+//! ```text
+//! dpds::links         #[serde(deny_unknown_fields)] on the file, link and histogram objects
+//!                     (D1); parse_links also refuses a file whose /dpds/ports reply would
+//!                     exceed 256 keys: 3 + 5 * ports + 10 * directions (D2);
+//!                     LinkSpec.delay_stats: Vec<bool> (always configs.len() entries, default
+//!                     all true), LinkDirection.delay_stats: bool (D5)         [links.rs]
+//! dpds::delay_stats   HistRange::with_bins(..) -> Result<HistRange, HistogramError>, Err
+//!                     for 0 bins (D4)                                 [delay_stats.rs]
+//! dpds::stats         Stats::with_delay_stats(HistRange, enabled: bool),
+//!                     DirectionStats::with_delay_settings(Vec<(HistRange, bool)>);
+//!                     off: the six delay_* / lateness_* keys of stats_reply are absent and
+//!                     delay_hist_reply is empty; DirectionInfo.delay_stats: bool and
+//!                     ports_reply gets dir<d>_delay_stats (Uint 0/1) as the LAST key of a
+//!                     direction (ten keys per direction)           [delay_stats.rs, stats.rs]
+//! ```
+//!
 //! Semantics are documented at the top of each test module.
 
+mod causes;
 mod cli;
 mod counters;
+mod delay_stats;
 mod first_loss;
 mod forward;
+mod links;
 mod quit;
 mod setup;
 mod stats;

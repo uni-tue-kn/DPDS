@@ -107,6 +107,11 @@ pub fn lcore_count() -> usize {
     unsafe { dpdk_sys::rte_lcore_count() as usize }
 }
 
+/// The EAL main lcore (`rte_get_main_lcore`).
+pub fn main_lcore() -> u32 {
+    unsafe { dpdk_sys::rte_get_main_lcore() }
+}
+
 /// Iterator over every enabled worker lcore (i.e. every lcore except the
 /// main lcore), mirroring `RTE_LCORE_FOREACH_WORKER` — a macro, so not
 /// itself bindgen-reachable; reimplemented on top of the plain function

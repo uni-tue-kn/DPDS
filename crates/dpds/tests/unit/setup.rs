@@ -194,3 +194,30 @@ fn the_size_function_never_panics_on_huge_capacities() {
     assert_eq!(required_mbufs(usize::MAX, 4096, 4096), u64::MAX);
     assert!(required_mbufs(u32::MAX as usize + 1, 0, 0) > u32::MAX as u64);
 }
+
+// ── multi-link mode: 1 + num_directions lcores ──────────────────────
+//
+// With `--links` the number of directions is the total number of ports of all
+// links (a loopback link has one port and one direction, a two-port link two
+// directions), so the rule `validate_lcore_count(lcores, num_directions)` is the
+// same function: Ok iff `lcores == 1 + num_directions`.
+
+#[test]
+fn the_lcore_rule_for_any_number_of_directions_is_one_plus_directions() {
+    for directions in 1usize..=8 {
+        assert!(validate_lcore_count(1 + directions, directions).is_ok());
+        for wrong in [directions, 2 + directions, 0] {
+            assert_eq!(
+                validate_lcore_count(wrong, directions).unwrap_err(),
+                SetupError::LcoreCount {
+                    found: wrong,
+                    required: 1 + directions
+                }
+            );
+        }
+    }
+    // a 2-port link plus a loopback link: 3 directions, 4 lcores
+    let msg = validate_lcore_count(3, 3).unwrap_err().to_string();
+    assert!(msg.contains("3 ports need 4 lcores, e.g. -l 0-3"), "{msg}");
+    assert!(msg.contains('3'), "names the found count: {msg}");
+}

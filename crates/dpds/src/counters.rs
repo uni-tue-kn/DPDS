@@ -142,7 +142,14 @@ pub struct DpdsCounters {
     pub rx_pkts: Counter,
     /// `rx_burst` returned a full `BURST_SIZE` batch: intake-limited.
     pub rx_full_bursts: Counter,
+    /// Rejected pushes: always `loss_drops + limiter_drops + buffer_full_drops`.
     pub dpds_rejects: Counter,
+    /// Rejected by the loss model (takes precedence over the other causes).
+    pub loss_drops: Counter,
+    /// Rejected by the limiter (and not dropped by the loss model).
+    pub limiter_drops: Counter,
+    /// Accepted by loss model and limiter, but the buffer was full.
+    pub buffer_full_drops: Counter,
     pub pops: Counter,
     pub tx_calls: Counter,
     pub tx_pkts: Counter,
@@ -154,7 +161,7 @@ pub struct DpdsCounters {
 
 impl DpdsCounters {
     /// Positional with [`cumulative_snapshot`](Self::cumulative_snapshot).
-    pub const EPOCH_COUNTER_NAMES: [&'static str; 9] = [
+    pub const EPOCH_COUNTER_NAMES: [&'static str; 12] = [
         "polls",
         "rx_pkts",
         "rx_full_bursts",
@@ -164,12 +171,15 @@ impl DpdsCounters {
         "tx_pkts",
         "tx_sent",
         "tx_short_calls",
+        "loss_drops",
+        "limiter_drops",
+        "buffer_full_drops",
     ];
     /// Positional with the `epoch_gauges` array fed to `EpochLog::close`.
     pub const EPOCH_GAUGE_NAMES: [&'static str; 2] = ["tx_batch_max", "buffer_len_max"];
 
     /// Current cumulative values in `EPOCH_COUNTER_NAMES` order.
-    pub fn cumulative_snapshot(&self) -> [u64; 9] {
+    pub fn cumulative_snapshot(&self) -> [u64; 12] {
         [
             self.polls.get(),
             self.rx_pkts.get(),
@@ -180,11 +190,14 @@ impl DpdsCounters {
             self.tx_pkts.get(),
             self.tx_sent.get(),
             self.tx_short_calls.get(),
+            self.loss_drops.get(),
+            self.limiter_drops.get(),
+            self.buffer_full_drops.get(),
         ]
     }
 }
 
-pub type DpdsEpochLog = EpochLog<9, 2>;
+pub type DpdsEpochLog = EpochLog<12, 2>;
 
 // ── Epochs ───────────────────────────────────────────────────────────────
 //

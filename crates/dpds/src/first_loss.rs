@@ -8,8 +8,8 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum FirstLossReason {
-    /// `Buffer::push` returned false (loss model, buffer full or limiter,
-    /// undifferentiated).
+    /// `Buffer::push_outcome` rejected a packet (the `cause=` of the detail
+    /// says which of loss model, limiter or buffer capacity).
     DpdsReject,
     /// A partial `tx_burst` (the NIC's TX descriptor ring was full).
     DescriptorFull,
@@ -89,10 +89,44 @@ impl fmt::Display for Stage {
     }
 }
 
+/// Why the DPDS buffer rejected a packet; the precedence is loss model, then
+/// limiter, then capacity (see `dpds_core::buffer::PushOutcome`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DropCause {
+    Loss,
+    Limiter,
+    BufferFull,
+}
+
+impl DropCause {
+    #[cfg(feature = "telemetry")]
+    fn from_u32(v: u32) -> Self {
+        match v {
+            0 => DropCause::Loss,
+            1 => DropCause::Limiter,
+            2 => DropCause::BufferFull,
+            _ => unreachable!("invalid DropCause code {v}"),
+        }
+    }
+}
+
+/// Wire spelling, part of the `first_loss_detail` format.
+impl fmt::Display for DropCause {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            DropCause::Loss => "loss",
+            DropCause::Limiter => "limiter",
+            DropCause::BufferFull => "buffer_full",
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StageLossDetail {
-    /// `DpdsReject`: `from=<stage>`.
+    /// `DpdsReject` without a known cause: `from=<stage>`.
     Single { from: Stage },
+    /// `DpdsReject`: `from=<stage>,cause=<loss|limiter|buffer_full>`.
+    Reject { from: Stage, cause: DropCause },
     /// `DescriptorFull`: `from=<stage>,to=<stage>` (`to` is `Stage::Nic`).
     RingFull { from: Stage, to: Stage },
     /// `RxMissed`/`RxNoMbuf`/`RxError`/`TxError`: `from=<stage>,count=<n>`.
@@ -136,6 +170,7 @@ mod shape_tag {
     pub const SINGLE: u8 = 0;
     pub const RING_FULL: u8 = 1;
     pub const HARDWARE_DROP: u8 = 2;
+    pub const REJECT: u8 = 3;
 }
 
 #[repr(align(64))]
@@ -177,6 +212,10 @@ impl StageLossTracker {
         // the ones the stored shape uses.
         let (shape, from, to, count) = match detail {
             StageLossDetail::Single { from } => (shape_tag::SINGLE, from, Stage::Dpds, 0),
+            // the cause code travels in `count`
+            StageLossDetail::Reject { from, cause } => {
+                (shape_tag::REJECT, from, Stage::Dpds, cause as u32)
+            }
             StageLossDetail::RingFull { from, to } => (shape_tag::RING_FULL, from, to, 0),
             StageLossDetail::HardwareDrop { from, count } => {
                 (shape_tag::HARDWARE_DROP, from, Stage::Dpds, count)
@@ -207,6 +246,10 @@ impl StageLossTracker {
             shape_tag::RING_FULL => StageLossDetail::RingFull {
                 from,
                 to: Stage::from_u8(self.to.load(Ordering::Relaxed)),
+            },
+            shape_tag::REJECT => StageLossDetail::Reject {
+                from,
+                cause: DropCause::from_u32(self.count.load(Ordering::Relaxed)),
             },
             shape_tag::HARDWARE_DROP => StageLossDetail::HardwareDrop {
                 from,
@@ -267,6 +310,7 @@ pub fn format_first_loss(event: Option<StageLossEvent>) -> FirstLossFields {
         Some(event) => {
             let detail = match event.detail {
                 StageLossDetail::Single { from } => format!("from={from}"),
+                StageLossDetail::Reject { from, cause } => format!("from={from},cause={cause}"),
                 StageLossDetail::RingFull { from, to } => format!("from={from},to={to}"),
                 StageLossDetail::HardwareDrop { from, count } => {
                     format!("from={from},count={count}")

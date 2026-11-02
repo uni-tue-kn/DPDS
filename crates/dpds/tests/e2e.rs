@@ -550,6 +550,8 @@ struct Env {
     config: PathBuf,
     prefix: String,
     extra_app_args: Vec<String>,
+    /// `Some`: the app args are `--links <file>` instead of `--config <file>`.
+    links: Option<PathBuf>,
 }
 
 impl Env {
@@ -585,6 +587,7 @@ impl Env {
             vdevs: Vec::new(),
             lcore_list: lcore_list.to_string(),
             extra_app_args: Vec::new(),
+            links: None,
             xdg,
             dir,
         }
@@ -624,7 +627,10 @@ impl Env {
     }
 
     fn app_args(&self) -> Vec<String> {
-        let mut a = vec!["--config".into(), self.config.display().to_string()];
+        let mut a = match &self.links {
+            Some(l) => vec!["--links".into(), l.display().to_string()],
+            None => vec!["--config".into(), self.config.display().to_string()],
+        };
         a.extend(self.extra_app_args.iter().cloned());
         a
     }
@@ -1116,7 +1122,11 @@ fn full_loss_transmits_nothing_and_counts_dpds_rejects() {
         assert_eq!(u(&st, "tx_sent"), 0, "{st}");
         assert_eq!(u(&st, "tx_calls"), 0, "{st}");
         assert_eq!(s(&st, "first_loss_reason"), "DpdsReject", "{st}");
-        assert_eq!(s(&st, "first_loss_detail"), "from=dpds", "{st}");
+        // the detail names the cause of the first reject: the loss model here
+        assert_eq!(s(&st, "first_loss_detail"), "from=dpds,cause=loss", "{st}");
+        assert_eq!(u(&st, "loss_drops"), N as u64, "{st}");
+        assert_eq!(u(&st, "limiter_drops"), 0, "{st}");
+        assert_eq!(u(&st, "buffer_full_drops"), 0, "{st}");
         assert!(u(&st, "first_loss_relative_ns") > 0, "{st}");
         assert_eq!(s(&st, "tx_pkts_per_call"), "0.00", "{st}");
     }
@@ -1327,6 +1337,7 @@ mod with_telemetry {
         for c in [
             "/dpds/stats",
             "/dpds/epochs",
+            "/dpds/delay_hist",
             "/dpds/ports",
             "/nic/hw_first_loss",
             "/nic/epochs",
@@ -1375,6 +1386,21 @@ mod with_telemetry {
         assert!(p.get("port2_name").is_none(), "{p}");
 
         assert_eq!(u(&p, "num_directions"), 2, "{p}");
+        // the --config mode is one link ("default") of its ports
+        assert_eq!(u(&p, "num_links"), 1, "{p}");
+        for d in 0..2 {
+            assert_eq!(s(&p, &format!("dir{d}_link")), "default", "{p}");
+            assert_eq!(
+                s(&p, &format!("dir{d}_rx_name")),
+                format!("net_pcap{d}"),
+                "{p}"
+            );
+            assert_eq!(
+                s(&p, &format!("dir{d}_tx_name")),
+                format!("net_pcap{}", d ^ 1),
+                "{p}"
+            );
+        }
         // direction d receives on port d and leaves on port d ^ 1
         assert_eq!(u(&p, "dir0_rx_port"), 0, "{p}");
         assert_eq!(u(&p, "dir0_tx_port"), 1, "{p}");
@@ -1456,6 +1482,10 @@ mod with_telemetry {
         assert_eq!(s(&p, "port0_name"), "net_null0", "{p}");
         assert!(p.get("port1_name").is_none(), "{p}");
         assert_eq!(u(&p, "num_directions"), 1, "{p}");
+        assert_eq!(u(&p, "num_links"), 1, "{p}");
+        assert_eq!(s(&p, "dir0_link"), "default", "{p}");
+        assert_eq!(s(&p, "dir0_rx_name"), "net_null0", "{p}");
+        assert_eq!(s(&p, "dir0_tx_name"), "net_null0", "{p}");
         assert_eq!(u(&p, "dir0_rx_port"), 0, "{p}");
         assert_eq!(u(&p, "dir0_tx_port"), 0, "one port: loopback {p}");
         assert_eq!(u(&p, "dir0_lcore"), 1, "{p}");
@@ -1513,6 +1543,15 @@ mod with_telemetry {
                 "first_loss_reason",
                 "first_loss_detail",
                 "first_loss_relative_ns",
+                "loss_drops",
+                "limiter_drops",
+                "buffer_full_drops",
+                "delay_mean_ns",
+                "delay_std_ns",
+                "delay_min_ns",
+                "delay_max_ns",
+                "lateness_mean_ns",
+                "lateness_max_ns",
             ] {
                 assert!(st.get(k).is_some(), "{k} missing: {st}");
             }
@@ -2363,4 +2402,1206 @@ fn the_readme_without_hardware_examples_start_cleanly_and_stop_with_sigint() {
         assert!(!out.contains("too small"), "{cmd:?}\n{out}");
         assert!(!out.contains("panicked"), "{cmd:?}\n{out}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// multi-link mode: `--links <file>` (A1), drop causes (A2), delay statistics
+// and histogram (A3)
+// ---------------------------------------------------------------------------
+//
+// Test-facing behaviour (see crates/dpds/tests/unit/main.rs for the unit API):
+// - `--links <file>`, JSON `{"links": [{"name", "ports": [device names],
+//   "configs": [Config, ..]}]}`, is mutually exclusive with `--config*`.
+// - Ports are DPDK device names (here `net_pcap<i>` / `net_null<i>` vdevs),
+//   resolved by name. Directions are numbered in file order: link 0 dir 0
+//   (ports[0] -> ports[1], configs[0]), link 0 dir 1, link 1 dir 0, ...
+//   A one-port link is a loopback with one direction. `-l` must name exactly
+//   `1 + number of directions` lcores; the i-th worker lcore runs direction i.
+// - `/dpds/ports`: `num_links`, per direction `dir<d>_link`, `dir<d>_rx_name`,
+//   `dir<d>_tx_name`; the `--config` mode reports one link named "default".
+// - `/dpds/stats,<d>`: `loss_drops`, `limiter_drops`, `buffer_full_drops`
+//   (their sum is `dpds_rejects`), `delay_*`/`lateness_*` (numbers, as Uint or
+//   2-decimal strings), first-loss detail "from=dpds,cause=<loss|limiter|buffer_full>".
+// - `/dpds/delay_hist,<d>`: `lo_ns`, `bin_ns` (numbers), `bins` (256 uints),
+//   `underflow`, `overflow`; the range rule is in unit/delay_stats.rs.
+
+/// One link object of the links file.
+fn link_json(name: &str, ports: &[&str], configs: &[String]) -> String {
+    format!(
+        r#"{{ "name": "{name}", "ports": [{}], "configs": [{}] }}"#,
+        ports
+            .iter()
+            .map(|p| format!("\"{p}\""))
+            .collect::<Vec<_>>()
+            .join(", "),
+        configs.join(", ")
+    )
+}
+
+/// As [`link_json`] with the optional `"histograms"` array (one JSON object
+/// text per direction, e.g. `{"bins": 100}`).
+fn link_json_hist(name: &str, ports: &[&str], configs: &[String], histograms: &[&str]) -> String {
+    let base = link_json(name, ports, configs);
+    let cut = base.rfind('}').unwrap();
+    format!(
+        r#"{}, "histograms": [{}] }}"#,
+        base[..cut].trim_end(),
+        histograms.join(", ")
+    )
+}
+
+/// As [`link_json`] with an explicit `"lcores"` array (one lcore per direction).
+fn link_json_lcores(name: &str, ports: &[&str], configs: &[String], lcores: &[u32]) -> String {
+    let base = link_json(name, ports, configs);
+    let cut = base.rfind('}').unwrap();
+    let list: Vec<String> = lcores.iter().map(u32::to_string).collect();
+    format!(
+        r#"{}, "lcores": [{}] }}"#,
+        base[..cut].trim_end(),
+        list.join(", ")
+    )
+}
+
+/// An environment in `--links` mode.
+fn links_env(lcore_list: &str, links: &[String]) -> Env {
+    let mut env = Env::with_lcores(lcore_list, &config_json(0, 0.0));
+    let path = env.path("links.json");
+    fs::write(&path, format!(r#"{{ "links": [{}] }}"#, links.join(",\n"))).unwrap();
+    env.links = Some(path);
+    env
+}
+
+/// A seeded config with another delay distribution.
+#[cfg(feature = "telemetry")]
+fn config_dist(distribution: &str, mean_ns: u64, std_ns: u64) -> String {
+    config_json(mean_ns, 0.0)
+        .replace(
+            r#""distribution": "DeterministicDistribution""#,
+            &format!(r#""distribution": "{distribution}""#),
+        )
+        .replace(r#""std_ns": 0.0"#, &format!(r#""std_ns": {std_ns}.0"#))
+        .replacen('{', "{\n    \"seed\": 12345,", 1)
+}
+
+#[cfg(feature = "telemetry")]
+/// A Spacer config that admits exactly three 64-byte frames at one instant
+/// and spaces them 7.04 ms apart (1e5 bit/s; a 64-byte frame is
+/// (64 + 4 + 20) * 8 = 704 bit on the wire, the limit is three of them).
+fn config_spacer_three() -> String {
+    let base = config_json(0, 0.0);
+    let cfg = base.replace(
+        r#""activate": false,
+        "rate_bps": 100000000000.0,
+        "limit_bit": 6152000000.0"#,
+        r#""activate": true,
+        "rate_bps": 100000.0,
+        "limit_bit": 2112.0"#,
+    );
+    assert_ne!(cfg, base, "the limiter block of config_json changed");
+    cfg
+}
+
+fn pcap_out(env: &Env, i: usize) -> PathBuf {
+    env.path(&format!("out{i}.pcap"))
+}
+
+#[test]
+fn links_file_with_two_links_forwards_every_direction_by_its_own_config() {
+    // link "ab": net_pcap0 <-> net_pcap1, link "loop": net_pcap2 (loopback).
+    // dir 0 = ab: pcap0 -> pcap1 (1 ms), dir 1 = ab: pcap1 -> pcap0 (no delay),
+    // dir 2 = loop: pcap2 -> pcap2 (2 ms). `-l 0-3`.
+    const N: [u32; 3] = [300, 200, 100];
+    require_cpus(4);
+    let _g = serial();
+    let mut env = links_env(
+        "0-3",
+        &[
+            link_json(
+                "ab",
+                &["net_pcap0", "net_pcap1"],
+                &[config_json(1_000_000, 0.0), config_json(0, 0.0)],
+            ),
+            link_json("loop", &["net_pcap2"], &[config_json(2_000_000, 0.0)]),
+        ],
+    );
+    for (i, n) in N.iter().enumerate() {
+        add_pcap_port(&mut env, i, &frames(i as u8, *n));
+    }
+    let outs: Vec<PathBuf> = (0..3).map(|i| pcap_out(&env, i)).collect();
+    let mut run = env.spawn();
+
+    // pcap0 -> pcap1: out1 gets in0; pcap1 -> pcap0: out0 gets in1; loop: out2 gets in2
+    wait_frames(&mut run, &outs[1], N[0] as usize);
+    wait_frames(&mut run, &outs[0], N[1] as usize);
+    wait_frames(&mut run, &outs[2], N[2] as usize);
+    thread::sleep(Duration::from_millis(700));
+
+    #[cfg(feature = "telemetry")]
+    {
+        let p = run.query("/dpds/ports");
+        assert_eq!(u(&p, "num_ports"), 3, "{p}");
+        assert_eq!(u(&p, "num_directions"), 3, "{p}");
+        assert_eq!(u(&p, "num_links"), 2, "{p}");
+        for (d, link, rx, tx) in [
+            (0, "ab", "net_pcap0", "net_pcap1"),
+            (1, "ab", "net_pcap1", "net_pcap0"),
+            (2, "loop", "net_pcap2", "net_pcap2"),
+        ] {
+            assert_eq!(s(&p, &format!("dir{d}_link")), link, "{p}");
+            assert_eq!(s(&p, &format!("dir{d}_rx_name")), rx, "{p}");
+            assert_eq!(s(&p, &format!("dir{d}_tx_name")), tx, "{p}");
+            // the i-th worker lcore runs direction i: `-l 0-3` -> 1, 2, 3
+            assert_eq!(u(&p, &format!("dir{d}_lcore")), 1 + d as u64, "{p}");
+            assert!(
+                s(&p, &format!("dir{d}_config")).contains("links.json"),
+                "the config source is the links file: {p}"
+            );
+        }
+        assert!(p.get("dir3_link").is_none(), "{p}");
+        // names and ids agree
+        for d in 0..3 {
+            let rx_id = u(&p, &format!("dir{d}_rx_port"));
+            assert_eq!(
+                s(&p, &format!("port{rx_id}_name")),
+                s(&p, &format!("dir{d}_rx_name")),
+                "{p}"
+            );
+            let tx_id = u(&p, &format!("dir{d}_tx_port"));
+            assert_eq!(
+                s(&p, &format!("port{tx_id}_name")),
+                s(&p, &format!("dir{d}_tx_name")),
+                "{p}"
+            );
+        }
+        for (d, &n) in N.iter().enumerate() {
+            let st = run.query(&format!("/dpds/stats,{d}"));
+            let n = n as u64;
+            assert_eq!(u(&st, "rx_pkts"), n, "dir {d}: {st}");
+            assert_eq!(u(&st, "tx_sent"), n, "dir {d}: {st}");
+            assert_eq!(u(&st, "dpds_rejects"), 0, "dir {d}: {st}");
+            for k in ["loss_drops", "limiter_drops", "buffer_full_drops"] {
+                assert_eq!(u(&st, k), 0, "dir {d} {k}: {st}");
+            }
+            assert_eq!(s(&st, "first_loss_reason"), "Clean", "dir {d}: {st}");
+        }
+        // each direction has its own delay: 1 ms, none, 2 ms
+        for (d, delay) in [(0, 1_000_000.0), (1, 0.0), (2, 2_000_000.0)] {
+            let st = run.query(&format!("/dpds/stats,{d}"));
+            let mean = num(&st, "delay_mean_ns");
+            assert!(
+                (delay - 1.0..=delay).contains(&mean),
+                "dir {d}: mean {mean} for a delay of {delay}: {st}"
+            );
+        }
+    }
+
+    run.signal(libc::SIGINT);
+    assert_clean_exit(run.wait_exit(), &run);
+    assert!(
+        read_pcap(&outs[1]) == frames(0, N[0]),
+        "link ab, direction 0"
+    );
+    assert!(
+        read_pcap(&outs[0]) == frames(1, N[1]),
+        "link ab, direction 1"
+    );
+    assert!(read_pcap(&outs[2]) == frames(2, N[2]), "the loopback link");
+}
+
+/// A number that may be a JSON number or a decimal string.
+#[cfg(feature = "telemetry")]
+fn num(v: &Value, key: &str) -> f64 {
+    match &v[key] {
+        Value::Number(n) => n.as_f64().unwrap(),
+        Value::String(t) => t
+            .parse()
+            .unwrap_or_else(|_| panic!("{key} is not a number in {v}")),
+        other => panic!("{key} is {other:?}, not a number, in {v}"),
+    }
+}
+
+#[test]
+fn directions_follow_the_link_file_order_not_the_port_id_order() {
+    // The link lists net_pcap1 first. Its first config (100 % loss) is for
+    // net_pcap1 -> net_pcap0, the second (lossless) for net_pcap0 -> net_pcap1,
+    // whichever port id the two devices got (vdev creation order is varied).
+    const N0: u32 = 200;
+    const N1: u32 = 300;
+    require_cpus(3);
+    for reverse_creation in [false, true] {
+        let _g = serial();
+        let mut env = links_env(
+            "0-2",
+            &[link_json(
+                "ba",
+                &["net_pcap1", "net_pcap0"],
+                &[config_json(0, 1.0), config_json(0, 0.0)],
+            )],
+        );
+        if reverse_creation {
+            add_pcap_port(&mut env, 1, &frames(1, N1));
+            add_pcap_port(&mut env, 0, &frames(0, N0));
+        } else {
+            add_pcap_port(&mut env, 0, &frames(0, N0));
+            add_pcap_port(&mut env, 1, &frames(1, N1));
+        }
+        let (out0, out1) = (pcap_out(&env, 0), pcap_out(&env, 1));
+        let mut run = env.spawn();
+        // direction 1 = net_pcap0 -> net_pcap1, lossless
+        wait_frames(&mut run, &out1, N0 as usize);
+        thread::sleep(Duration::from_millis(700));
+
+        #[cfg(feature = "telemetry")]
+        {
+            let p = run.query("/dpds/ports");
+            assert_eq!(u(&p, "num_links"), 1, "{p}");
+            assert_eq!(s(&p, "dir0_link"), "ba", "{p}");
+            assert_eq!(s(&p, "dir0_rx_name"), "net_pcap1", "{p}");
+            assert_eq!(s(&p, "dir0_tx_name"), "net_pcap0", "{p}");
+            assert_eq!(s(&p, "dir1_rx_name"), "net_pcap0", "{p}");
+            assert_eq!(s(&p, "dir1_tx_name"), "net_pcap1", "{p}");
+            let id_of = |name: &str| {
+                (0..2)
+                    .find(|i| s(&p, &format!("port{i}_name")) == name)
+                    .unwrap_or_else(|| panic!("{name} not in {p}"))
+            };
+            assert_eq!(u(&p, "dir0_rx_port"), id_of("net_pcap1"), "{p}");
+            assert_eq!(u(&p, "dir0_tx_port"), id_of("net_pcap0"), "{p}");
+            assert_eq!(u(&p, "dir1_rx_port"), id_of("net_pcap0"), "{p}");
+            // direction 0 saw the 300 frames of net_pcap1 and lost them all
+            let d0 = run.query("/dpds/stats,0");
+            assert_eq!(u(&d0, "rx_pkts"), N1 as u64, "{d0}");
+            assert_eq!(u(&d0, "loss_drops"), N1 as u64, "{d0}");
+            assert_eq!(u(&d0, "tx_sent"), 0, "{d0}");
+            let d1 = run.query("/dpds/stats,1");
+            assert_eq!(u(&d1, "rx_pkts"), N0 as u64, "{d1}");
+            assert_eq!(u(&d1, "tx_sent"), N0 as u64, "{d1}");
+            assert_eq!(u(&d1, "dpds_rejects"), 0, "{d1}");
+        }
+
+        run.signal(libc::SIGINT);
+        assert_clean_exit(run.wait_exit(), &run);
+        assert!(
+            read_pcap(&out1) == frames(0, N0),
+            "net_pcap0 -> net_pcap1 uses the second config (reverse_creation={reverse_creation})"
+        );
+        assert_eq!(
+            read_pcap(&out0).len(),
+            0,
+            "net_pcap1 -> net_pcap0 uses the first config, 100 % loss (reverse_creation={reverse_creation})"
+        );
+    }
+}
+
+#[test]
+fn a_net_null_loopback_link_runs_next_to_a_pcap_link() {
+    const N: u32 = 50;
+    require_cpus(4);
+    let _g = serial();
+    let mut env = links_env(
+        "0-3",
+        &[
+            link_json("nul", &["net_null2"], &[config_json(0, 0.0)]),
+            link_json(
+                "ab",
+                &["net_pcap0", "net_pcap1"],
+                &[config_json(0, 0.0), config_json(0, 0.0)],
+            ),
+        ],
+    );
+    add_pcap_port(&mut env, 0, &frames(0, N));
+    add_pcap_port(&mut env, 1, &frames(1, N));
+    env.vdevs.push("net_null2".into());
+    let (out0, out1) = (pcap_out(&env, 0), pcap_out(&env, 1));
+    let mut run = env.spawn();
+    wait_frames(&mut run, &out0, N as usize);
+    wait_frames(&mut run, &out1, N as usize);
+
+    #[cfg(feature = "telemetry")]
+    {
+        let p = run.query("/dpds/ports");
+        // the loopback link is direction 0 (file order), then ab's two
+        assert_eq!(s(&p, "dir0_link"), "nul", "{p}");
+        assert_eq!(s(&p, "dir0_rx_name"), "net_null2", "{p}");
+        assert_eq!(s(&p, "dir0_tx_name"), "net_null2", "{p}");
+        assert_eq!(s(&p, "dir1_link"), "ab", "{p}");
+        assert_eq!(s(&p, "dir2_link"), "ab", "{p}");
+        assert_eq!(u(&p, "num_links"), 2, "{p}");
+        run.wait_until("net_null traffic on direction 0", START_TIMEOUT, |r| {
+            r.try_query("/dpds/stats,0")
+                .is_some_and(|v| u(&v, "rx_pkts") > 0 && u(&v, "tx_sent") > 0)
+        });
+        for d in [1, 2] {
+            let st = run.query(&format!("/dpds/stats,{d}"));
+            assert_eq!(u(&st, "rx_pkts"), N as u64, "{st}");
+            assert_eq!(u(&st, "tx_sent"), N as u64, "{st}");
+        }
+    }
+
+    run.signal(libc::SIGINT);
+    assert_clean_exit(run.wait_exit(), &run);
+    assert!(read_pcap(&out1) == frames(0, N));
+    assert!(read_pcap(&out0) == frames(1, N));
+}
+
+#[cfg(feature = "telemetry")]
+mod links_telemetry {
+    use super::*;
+
+    fn bins_of(h: &Value) -> Vec<u64> {
+        arr_u(h, "bins")
+    }
+
+    /// Every accepted packet is in exactly one of bins/underflow/overflow.
+    fn hist_total(h: &Value) -> u64 {
+        bins_of(h).iter().sum::<u64>() + u(h, "underflow") + u(h, "overflow")
+    }
+
+    #[test]
+    fn drop_causes_are_counted_per_direction_and_the_first_loss_names_the_cause() {
+        // dir 0: 100 % loss. dir 1: a buffer of 8 packets and a delay nothing
+        // leaves within (5 s; SIGINT drains it): all frames after the first 8
+        // find the buffer full.
+        const N0: u32 = 100;
+        const N1: u32 = 100;
+        require_cpus(3);
+        let _g = serial();
+        let mut env = links_env(
+            "0-2",
+            &[link_json(
+                "ab",
+                &["net_pcap0", "net_pcap1"],
+                &[config_json(0, 1.0), config_json_cap(5_000_000_000, 0.0, 8)],
+            )],
+        );
+        add_pcap_port(&mut env, 0, &frames(0, N0));
+        add_pcap_port(&mut env, 1, &frames(1, N1));
+        let out0 = pcap_out(&env, 0);
+        let mut run = env.spawn();
+        wait_rx(&mut run, 0, N0 as u64);
+        wait_rx(&mut run, 1, N1 as u64);
+        thread::sleep(Duration::from_millis(500));
+
+        let d0 = run.query("/dpds/stats,0");
+        assert_eq!(u(&d0, "loss_drops"), N0 as u64, "{d0}");
+        assert_eq!(u(&d0, "limiter_drops"), 0, "{d0}");
+        assert_eq!(u(&d0, "buffer_full_drops"), 0, "{d0}");
+        assert_eq!(u(&d0, "dpds_rejects"), N0 as u64, "{d0}");
+        assert_eq!(s(&d0, "first_loss_reason"), "DpdsReject", "{d0}");
+        assert_eq!(s(&d0, "first_loss_detail"), "from=dpds,cause=loss", "{d0}");
+
+        let d1 = run.query("/dpds/stats,1");
+        assert_eq!(u(&d1, "loss_drops"), 0, "{d1}");
+        assert_eq!(u(&d1, "limiter_drops"), 0, "{d1}");
+        assert_eq!(u(&d1, "buffer_full_drops"), N1 as u64 - 8, "{d1}");
+        assert_eq!(u(&d1, "dpds_rejects"), N1 as u64 - 8, "{d1}");
+        assert_eq!(u(&d1, "tx_sent"), 0, "nothing is due yet: {d1}");
+        assert_eq!(u(&d1, "buffer_len_max"), 8, "{d1}");
+        assert_eq!(s(&d1, "first_loss_reason"), "DpdsReject", "{d1}");
+        assert_eq!(
+            s(&d1, "first_loss_detail"),
+            "from=dpds,cause=buffer_full",
+            "{d1}"
+        );
+        // exactly the 8 accepted packets have an intended delay of ~5 s
+        let mean = num(&d1, "delay_mean_ns");
+        assert!((4_999_999_000.0..=5_000_000_000.0).contains(&mean), "{d1}");
+        let h = run.query("/dpds/delay_hist,1");
+        assert_eq!(hist_total(&h), 8, "only accepted packets are binned: {h}");
+
+        // the epochs carry the causes too (an idle gap closes an epoch)
+        run.wait_until("a closed epoch on direction 0", START_TIMEOUT, |r| {
+            r.try_query("/dpds/epochs,0")
+                .is_some_and(|v| u(&v, "epochs_closed") >= 1)
+        });
+        let ep = run.query("/dpds/epochs,0");
+        assert_eq!(
+            arr_u(&ep, "loss_drops").iter().sum::<u64>(),
+            N0 as u64,
+            "{ep}"
+        );
+        assert_eq!(arr_u(&ep, "limiter_drops").iter().sum::<u64>(), 0, "{ep}");
+        assert_eq!(
+            arr_u(&ep, "buffer_full_drops").iter().sum::<u64>(),
+            0,
+            "{ep}"
+        );
+        assert_eq!(
+            arr_u(&ep, "dpds_rejects").iter().sum::<u64>(),
+            N0 as u64,
+            "{ep}"
+        );
+
+        run.signal(libc::SIGINT);
+        assert_clean_exit(run.wait_exit(), &run);
+        assert_eq!(
+            read_pcap(&out0).len(),
+            8,
+            "the SIGINT drain emits the 8 held packets"
+        );
+        assert!(read_pcap(&out0) == frames(1, N1)[..8].to_vec());
+    }
+
+    #[test]
+    fn limiter_drops_are_counted_and_the_histogram_covers_the_spacer_queueing() {
+        // Loopback link with a Spacer that admits three 64-byte frames at one
+        // instant (see config_spacer_three): of 100 frames 3 are accepted.
+        const N: u32 = 100;
+        require_cpus(2);
+        let _g = serial();
+        let mut env = links_env(
+            "0-1",
+            &[link_json("l", &["net_pcap0"], &[config_spacer_three()])],
+        );
+        add_pcap_port(&mut env, 0, &frames(0, N));
+        let out0 = pcap_out(&env, 0);
+        let mut run = env.spawn();
+        wait_frames(&mut run, &out0, 3);
+        wait_rx(&mut run, 0, N as u64);
+        thread::sleep(Duration::from_millis(300));
+
+        let st = run.query("/dpds/stats,0");
+        assert_eq!(u(&st, "rx_pkts"), N as u64, "{st}");
+        assert_eq!(u(&st, "limiter_drops"), N as u64 - 3, "{st}");
+        assert_eq!(u(&st, "loss_drops"), 0, "{st}");
+        assert_eq!(u(&st, "buffer_full_drops"), 0, "{st}");
+        assert_eq!(u(&st, "dpds_rejects"), N as u64 - 3, "{st}");
+        assert_eq!(u(&st, "tx_sent"), 3, "{st}");
+        assert_eq!(
+            s(&st, "first_loss_detail"),
+            "from=dpds,cause=limiter",
+            "{st}"
+        );
+        // the third frame waits two frame times: ~14.08 ms
+        let max = num(&st, "delay_max_ns");
+        assert!((14_079_000.0..=14_081_000.0).contains(&max), "{st}");
+        assert!(
+            num(&st, "delay_min_ns") < 1000.0,
+            "the first frame is not delayed: {st}"
+        );
+        // range [0, 21.12 ms] (the queueing allowance of the limiter): all 3 inside
+        let h = run.query("/dpds/delay_hist,0");
+        assert_eq!(hist_total(&h), 3, "{h}");
+        assert_eq!((u(&h, "underflow"), u(&h, "overflow")), (0, 0), "{h}");
+        assert!(num(&h, "lo_ns") < 1000.0, "{h}");
+        let hi = num(&h, "lo_ns") + 256.0 * num(&h, "bin_ns");
+        assert!(
+            hi >= 21_000_000.0,
+            "the range reaches the limiter's allowance: {h}"
+        );
+
+        run.signal(libc::SIGINT);
+        assert_clean_exit(run.wait_exit(), &run);
+        assert_eq!(read_pcap(&out0).len(), 3);
+    }
+
+    #[test]
+    fn the_delay_histogram_has_the_documented_shape_for_a_deterministic_and_a_normal_delay() {
+        // dir 0: deterministic 2 ms, 500 frames. dir 1: Normal(5 ms, 0.5 ms),
+        // 2000 frames, seeded. Both lossless with a big buffer.
+        const N0: u32 = 500;
+        const N1: u32 = 2000;
+        require_cpus(3);
+        let _g = serial();
+        let mut env = links_env(
+            "0-2",
+            &[link_json(
+                "ab",
+                &["net_pcap0", "net_pcap1"],
+                &[
+                    config_json(2_000_000, 0.0),
+                    config_dist("NormalDistribution", 5_000_000, 500_000),
+                ],
+            )],
+        );
+        add_pcap_port(&mut env, 0, &frames(0, N0));
+        add_pcap_port(&mut env, 1, &frames(1, N1));
+        let mut run = env.spawn();
+        for (d, n) in [(0, N0), (1, N1)] {
+            let cmd = format!("/dpds/stats,{d}");
+            run.wait_until(&format!("{cmd} tx_sent == {n}"), START_TIMEOUT, |r| {
+                r.try_query(&cmd)
+                    .is_some_and(|v| u(&v, "tx_sent") >= n as u64)
+            });
+        }
+
+        // deterministic delay: a 1 us window around 2 ms
+        let st = run.query("/dpds/stats,0");
+        assert_eq!(u(&st, "dpds_rejects"), 0, "{st}");
+        for k in ["delay_min_ns", "delay_max_ns"] {
+            let v = num(&st, k);
+            assert!((1_999_999.0..=2_000_000.0).contains(&v), "{k}: {st}");
+        }
+        assert!(num(&st, "delay_std_ns") < 1.0, "{st}");
+        let h0 = run.query("/dpds/delay_hist,0");
+        let mut keys: Vec<&str> = h0.as_object().unwrap().keys().map(|k| k.as_str()).collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            [
+                "bin_ns",
+                "bins",
+                "lo_ns",
+                "num_bins",
+                "overflow",
+                "underflow"
+            ],
+            "{h0}"
+        );
+        assert_eq!(bins_of(&h0).len(), 256, "{h0}");
+        assert_eq!(hist_total(&h0), N0 as u64, "{h0}");
+        assert_eq!((u(&h0, "underflow"), u(&h0, "overflow")), (0, 0), "{h0}");
+        assert!((num(&h0, "lo_ns") - 1_999_500.0).abs() < 1.0, "{h0}");
+        assert!((num(&h0, "bin_ns") - 3.90625).abs() < 1e-6, "{h0}");
+        // delay = 2e6 - (0..1) ns: bin 127 or 128 (the window centre)
+        let b0 = bins_of(&h0);
+        assert_eq!(b0[127] + b0[128], N0 as u64, "{h0}");
+
+        // normal delay: range [mean - 6 std, mean + 6 std] = [2 ms, 8 ms]
+        let st = run.query("/dpds/stats,1");
+        assert_eq!(u(&st, "dpds_rejects"), 0, "{st}");
+        let mean = num(&st, "delay_mean_ns");
+        assert!(
+            (4_900_000.0..=5_100_000.0).contains(&mean),
+            "mean {mean}: {st}"
+        );
+        let std = num(&st, "delay_std_ns");
+        assert!((450_000.0..=550_000.0).contains(&std), "std {std}: {st}");
+        assert!(
+            num(&st, "delay_min_ns") <= mean && mean <= num(&st, "delay_max_ns"),
+            "{st}"
+        );
+        assert!(num(&st, "delay_min_ns") >= 2_000_000.0, "{st}");
+        assert!(num(&st, "delay_max_ns") <= 8_000_000.0, "{st}");
+        assert!(num(&st, "lateness_mean_ns") >= 0.0, "{st}");
+        assert!(
+            num(&st, "lateness_mean_ns") <= num(&st, "lateness_max_ns"),
+            "{st}"
+        );
+        assert!(
+            num(&st, "lateness_max_ns") < 2.0e9,
+            "a poll loop is not 2 s late: {st}"
+        );
+
+        let h1 = run.query("/dpds/delay_hist,1");
+        assert_eq!(bins_of(&h1).len(), 256, "{h1}");
+        assert_eq!(u(&h1, "num_bins"), 256, "{h1}");
+        assert_eq!(hist_total(&h1), N1 as u64, "{h1}");
+        assert_eq!(
+            (u(&h1, "underflow"), u(&h1, "overflow")),
+            (0, 0),
+            "6 sigma: {h1}"
+        );
+        let (lo, bin) = (num(&h1, "lo_ns"), num(&h1, "bin_ns"));
+        assert!((lo - 2_000_000.0).abs() < 1.0, "{h1}");
+        assert!((bin - 23_437.5).abs() < 1e-3, "{h1}");
+        let b1 = bins_of(&h1);
+        let core: u64 = b1[64..=192].iter().sum(); // +- 3 sigma (sigma = 21.3 bins)
+        assert!(
+            core * 100 >= N1 as u64 * 99,
+            "{core} of {N1} within 3 sigma: {h1}"
+        );
+        assert!(
+            b1[..16].iter().sum::<u64>() == 0 && b1[240..].iter().sum::<u64>() == 0,
+            "{h1}"
+        );
+        // the mean of the bin centres agrees with delay_mean_ns within a bin
+        let centre_mean = b1
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (lo + (i as f64 + 0.5) * bin) * *c as f64)
+            .sum::<f64>()
+            / N1 as f64;
+        assert!((centre_mean - mean).abs() < bin, "{centre_mean} vs {mean}");
+
+        // cumulative: a second query never decreases a bin
+        let again = bins_of(&run.query("/dpds/delay_hist,1"));
+        assert!(again.iter().zip(&b1).all(|(a, b)| a >= b));
+
+        // bad direction params are error replies, like /dpds/stats
+        for bad in ["", ",2", ",x", ",-1", ",", ",0,1"] {
+            let reply = run.try_query(&format!("/dpds/delay_hist{bad}"));
+            assert!(
+                reply.is_none_or(|v| v.get("bins").is_none()),
+                "/dpds/delay_hist{bad} must be an error reply"
+            );
+        }
+        run.signal(libc::SIGINT);
+        assert_clean_exit(run.wait_exit(), &run);
+    }
+}
+
+#[cfg(feature = "telemetry")]
+#[test]
+fn a_custom_histogram_per_direction_sets_bins_and_range() {
+    // dir 0: deterministic 2 ms with 100 bins over [1_999_000, 2_001_000)
+    // (20 ns each). dir 1: Normal(5 ms, 0.5 ms) with only `bins` given: 50 bins
+    // over the automatic range [2 ms, 8 ms) (120 us each).
+    const N0: u32 = 300;
+    const N1: u32 = 1500;
+    require_cpus(3);
+    let _g = serial();
+    let mut env = links_env(
+        "0-2",
+        &[link_json_hist(
+            "ab",
+            &["net_pcap0", "net_pcap1"],
+            &[
+                config_json(2_000_000, 0.0),
+                config_dist("NormalDistribution", 5_000_000, 500_000),
+            ],
+            &[
+                r#"{ "bins": 100, "lo_ns": 1999000, "hi_ns": 2001000 }"#,
+                r#"{ "bins": 50 }"#,
+            ],
+        )],
+    );
+    add_pcap_port(&mut env, 0, &frames(0, N0));
+    add_pcap_port(&mut env, 1, &frames(1, N1));
+    let mut run = env.spawn();
+    for (d, n) in [(0, N0), (1, N1)] {
+        let cmd = format!("/dpds/stats,{d}");
+        run.wait_until(&format!("{cmd} tx_sent == {n}"), START_TIMEOUT, |r| {
+            r.try_query(&cmd)
+                .is_some_and(|v| u(&v, "tx_sent") >= n as u64)
+        });
+    }
+
+    let h0 = run.query("/dpds/delay_hist,0");
+    assert_eq!(u(&h0, "num_bins"), 100, "{h0}");
+    let b0 = arr_u(&h0, "bins");
+    assert_eq!(b0.len(), 100, "{h0}");
+    assert!((num(&h0, "lo_ns") - 1_999_000.0).abs() < 1e-3, "{h0}");
+    assert!((num(&h0, "bin_ns") - 20.0).abs() < 1e-6, "{h0}");
+    assert_eq!((u(&h0, "underflow"), u(&h0, "overflow")), (0, 0), "{h0}");
+    // the delay is 2e6 - (0..1) ns: 1000 ns above lo = 50 bins (49.95..50)
+    assert_eq!(b0[49] + b0[50], N0 as u64, "{h0}");
+
+    let h1 = run.query("/dpds/delay_hist,1");
+    assert_eq!(u(&h1, "num_bins"), 50, "{h1}");
+    let b1 = arr_u(&h1, "bins");
+    assert_eq!(b1.len(), 50, "{h1}");
+    assert!((num(&h1, "lo_ns") - 2_000_000.0).abs() < 1.0, "{h1}");
+    assert!((num(&h1, "bin_ns") - 120_000.0).abs() < 1e-3, "{h1}");
+    let total = b1.iter().sum::<u64>() + u(&h1, "underflow") + u(&h1, "overflow");
+    assert_eq!(total, N1 as u64, "{h1}");
+    // sigma = 4.2 bins around bin 25: +-3 sigma is bins 12..=37
+    let core: u64 = b1[12..=37].iter().sum();
+    assert!(core * 100 >= N1 as u64 * 99, "{core} of {N1}: {h1}");
+
+    run.signal(libc::SIGINT);
+    assert_clean_exit(run.wait_exit(), &run);
+}
+
+// ---------------------------------------------------------------------------
+// --links: startup errors must be clean error exits that name the problem
+// ---------------------------------------------------------------------------
+
+#[test]
+fn links_with_the_wrong_lcore_count_names_the_requirement() {
+    require_cpus(4);
+    let _g = serial();
+    // a 2-port link is 2 directions: 3 lcores, not 2
+    let mut env = links_env(
+        "0-1",
+        &[link_json(
+            "ab",
+            &["net_pcap0", "net_pcap1"],
+            &[config_json(0, 0.0), config_json(0, 0.0)],
+        )],
+    );
+    add_pcap_port(&mut env, 0, &frames(0, 1));
+    add_pcap_port(&mut env, 1, &frames(1, 1));
+    let out = expect_failure(&env);
+    assert!(out.contains("2 ports need 3 lcores, e.g. -l 0-2"), "{out}");
+
+    // a 2-port link plus a loopback link: 3 directions, so `-l 0-2` is too few
+    let mut env = links_env(
+        "0-2",
+        &[
+            link_json(
+                "ab",
+                &["net_pcap0", "net_pcap1"],
+                &[config_json(0, 0.0), config_json(0, 0.0)],
+            ),
+            link_json("loop", &["net_null2"], &[config_json(0, 0.0)]),
+        ],
+    );
+    add_pcap_port(&mut env, 0, &frames(0, 1));
+    add_pcap_port(&mut env, 1, &frames(1, 1));
+    env.vdevs.push("net_null2".into());
+    let out = expect_failure(&env);
+    assert!(out.contains("3 ports need 4 lcores, e.g. -l 0-3"), "{out}");
+
+    // ... and too many is an error as well
+    let mut env = links_env(
+        "0-3",
+        &[link_json("loop", &["net_null0"], &[config_json(0, 0.0)])],
+    );
+    env.vdevs.push("net_null0".into());
+    let out = expect_failure(&env);
+    assert!(out.contains("1 port needs 2 lcores, e.g. -l 0-1"), "{out}");
+}
+
+#[test]
+fn explicit_lcores_in_descending_order_are_honoured_literally() {
+    // `-l 0-2`: the workers are 1 and 2, the link asks for direction 0 on 2 and
+    // direction 1 on 1 (the opposite of the default ascending assignment).
+    const N0: u32 = 120;
+    const N1: u32 = 80;
+    require_cpus(3);
+    let _g = serial();
+    let mut env = links_env(
+        "0-2",
+        &[link_json_lcores(
+            "ab",
+            &["net_pcap0", "net_pcap1"],
+            &[config_json(0, 0.0), config_json(0, 0.0)],
+            &[2, 1],
+        )],
+    );
+    add_pcap_port(&mut env, 0, &frames(0, N0));
+    add_pcap_port(&mut env, 1, &frames(1, N1));
+    let (out0, out1) = (pcap_out(&env, 0), pcap_out(&env, 1));
+    let mut run = env.spawn();
+    wait_frames(&mut run, &out1, N0 as usize);
+    wait_frames(&mut run, &out0, N1 as usize);
+    thread::sleep(Duration::from_millis(500));
+
+    // the startup log shows where each direction runs
+    let log = run.output();
+    assert!(log.contains("Direction 0: lcore 2"), "{log}");
+    assert!(log.contains("Direction 1: lcore 1"), "{log}");
+
+    #[cfg(feature = "telemetry")]
+    {
+        let p = run.query("/dpds/ports");
+        assert_eq!(u(&p, "dir0_lcore"), 2, "{p}");
+        assert_eq!(u(&p, "dir1_lcore"), 1, "{p}");
+        assert_eq!(u(&run.query("/dpds/stats,0"), "rx_pkts"), N0 as u64);
+        assert_eq!(u(&run.query("/dpds/stats,1"), "rx_pkts"), N1 as u64);
+    }
+
+    run.signal(libc::SIGINT);
+    assert_clean_exit(run.wait_exit(), &run);
+    assert!(read_pcap(&out1) == frames(0, N0));
+    assert!(read_pcap(&out0) == frames(1, N1));
+}
+
+#[test]
+fn bad_explicit_lcores_are_clean_exits_naming_the_problem() {
+    require_cpus(3);
+    let _g = serial();
+    let cfg = || config_json(0, 0.0);
+    let two = |lcores: &[u32]| {
+        link_json_lcores("ab", &["net_null0", "net_null1"], &[cfg(), cfg()], lcores)
+    };
+
+    // the main lcore (0) cannot run a direction
+    let out = links_failure(&[two(&[0, 1])], 2, "0-2");
+    assert!(out.contains("main"), "main lcore\n{out}");
+
+    // an lcore that is not an EAL worker
+    let out = links_failure(&[two(&[1, 9])], 2, "0-2");
+    assert!(
+        out.contains('9') && out.contains("worker"),
+        "not a worker\n{out}"
+    );
+
+    // the same lcore twice
+    let out = links_failure(&[two(&[1, 1])], 2, "0-2");
+    assert!(out.contains("lcore"), "duplicate\n{out}");
+
+    // lcores of the wrong length
+    let out = links_failure(
+        &[link_json_lcores("one", &["net_null0"], &[cfg()], &[1, 2])],
+        1,
+        "0-1",
+    );
+    assert!(out.contains("one"), "length\n{out}");
+
+    // some links with lcores, some without
+    let out = links_failure(
+        &[
+            link_json_lcores("with", &["net_null0"], &[cfg()], &[1]),
+            link_json("without", &["net_null1"], &[cfg()]),
+        ],
+        2,
+        "0-2",
+    );
+    assert!(out.contains("lcores"), "mixing\n{out}");
+}
+
+#[test]
+fn links_excludes_config_flags_with_a_usage_error() {
+    require_cpus(2);
+    let _g = serial();
+    for flag in ["--config", "--config0", "--config1"] {
+        let mut env = links_env(
+            "0-1",
+            &[link_json("loop", &["net_null0"], &[config_json(0, 0.0)])],
+        );
+        env.vdevs.push("net_null0".into());
+        let cfg = env.config.display().to_string();
+        env.extra_app_args = vec![flag.into(), cfg];
+        let out = expect_failure(&env);
+        assert!(out.contains("Usage"), "{flag}\n{out}");
+        assert!(out.contains("--links"), "{flag}\n{out}");
+        assert!(out.contains(flag), "{flag}\n{out}");
+    }
+}
+
+/// `--links` with the given `links` JSON array text, vdevs `net_null<i>` for
+/// `0..null_ports`, and `-l 0-<lcores>`; runs until it fails and returns the
+/// output.
+fn links_failure(links: &[String], null_ports: usize, lcores: &str) -> String {
+    let mut env = links_env(lcores, links);
+    for i in 0..null_ports {
+        env.vdevs.push(format!("net_null{i}"));
+    }
+    expect_failure(&env)
+}
+
+#[test]
+fn links_file_errors_are_clean_exits_naming_the_problem() {
+    require_cpus(3);
+    let _g = serial();
+    let cfg = || config_json(0, 0.0);
+
+    // a port that no probed device has
+    let out = links_failure(
+        &[link_json(
+            "ab",
+            &["net_null0", "net_null9"],
+            &[cfg(), cfg()],
+        )],
+        1,
+        "0-2",
+    );
+    assert!(out.contains("net_null9"), "unknown port\n{out}");
+
+    // a probed port that no link uses
+    let out = links_failure(&[link_json("l", &["net_null0"], &[cfg()])], 2, "0-1");
+    assert!(out.contains("net_null1"), "unused probed port\n{out}");
+
+    // a port in two links
+    let out = links_failure(
+        &[
+            link_json("a", &["net_null0"], &[cfg()]),
+            link_json("b", &["net_null0"], &[cfg()]),
+        ],
+        1,
+        "0-2",
+    );
+    assert!(out.contains("net_null0"), "port in two links\n{out}");
+
+    // configs count differs from the ports count
+    let out = links_failure(
+        &[link_json("mismatch", &["net_null0"], &[cfg(), cfg()])],
+        1,
+        "0-1",
+    );
+    assert!(out.contains("mismatch"), "configs count\n{out}");
+
+    // bad and duplicate link names
+    let out = links_failure(
+        &[link_json("bad name!", &["net_null0"], &[cfg()])],
+        1,
+        "0-1",
+    );
+    assert!(out.contains("bad name!"), "bad name\n{out}");
+    let out = links_failure(
+        &[
+            link_json("same", &["net_null0"], &[cfg()]),
+            link_json("same", &["net_null1"], &[cfg()]),
+        ],
+        2,
+        "0-2",
+    );
+    assert!(out.contains("same"), "duplicate name\n{out}");
+    let long = "x".repeat(33);
+    let out = links_failure(&[link_json(&long, &["net_null0"], &[cfg()])], 1, "0-1");
+    assert!(out.contains(&long), "name over 32 characters\n{out}");
+
+    // a link config with invalid parameters names the link (and the parameter)
+    let out = links_failure(
+        &[link_json("badcfg", &["net_null0"], &[config_bad_params()])],
+        1,
+        "0-1",
+    );
+    assert!(out.contains("badcfg"), "the link is named\n{out}");
+    assert_names_bad_params(&out);
+}
+
+#[test]
+fn bad_histogram_settings_are_clean_exits_naming_the_link() {
+    require_cpus(2);
+    let _g = serial();
+    let cfg = || config_json(1_000_000, 0.0); // automatic range [999_500, 1_000_500)
+    for (hist, what) in [
+        (r#"{ "bins": 0 }"#, "bins 0"),
+        (r#"{ "bins": 501 }"#, "bins 501"),
+        (r#"{ "lo_ns": 5000, "hi_ns": 5000 }"#, "lo == hi"),
+        (r#"{ "lo_ns": -1 }"#, "negative lo"),
+        // valid on its own, but beyond the automatic hi: caught at startup
+        (r#"{ "lo_ns": 5000000 }"#, "lo above the automatic hi"),
+        (r#"{ "hi_ns": 100 }"#, "hi below the automatic lo"),
+    ] {
+        let out = links_failure(
+            &[link_json_hist(
+                "histlink",
+                &["net_null0"],
+                &[cfg()],
+                &[hist],
+            )],
+            1,
+            "0-1",
+        );
+        assert!(out.contains("histlink"), "{what}: the link is named\n{out}");
+    }
+    // the array must have one entry per direction
+    let out = links_failure(
+        &[link_json_hist(
+            "lenlink",
+            &["net_null0"],
+            &[cfg()],
+            &["{}", "{}"],
+        )],
+        1,
+        "0-1",
+    );
+    assert!(out.contains("lenlink"), "{out}");
+}
+
+#[test]
+fn a_missing_or_malformed_links_file_is_an_error_exit_not_a_crash() {
+    require_cpus(2);
+    let _g = serial();
+    let mut env = links_env(
+        "0-1",
+        &[link_json("loop", &["net_null0"], &[config_json(0, 0.0)])],
+    );
+    env.vdevs.push("net_null0".into());
+    env.links = Some(env.path("does-not-exist.json"));
+    let out = expect_failure(&env);
+    assert!(out.contains("does-not-exist.json"), "{out}");
+
+    let bad = env.write_config("malformed.json", "{ \"links\": [ not json");
+    env.links = Some(bad);
+    expect_failure(&env);
+    let empty = env.write_config("empty-list.json", r#"{ "links": [] }"#);
+    env.links = Some(empty);
+    expect_failure(&env);
+}
+
+// ---------------------------------------------------------------------------
+// fix round (spec v6): D1 unknown keys, D2 dict limit, D5 delay statistics off
+// ---------------------------------------------------------------------------
+
+/// As [`link_json`] with the optional `"delay_stats"` array (one flag per direction).
+fn link_json_delay_stats(name: &str, ports: &[&str], configs: &[String], flags: &[bool]) -> String {
+    let base = link_json(name, ports, configs);
+    let cut = base.rfind('}').unwrap();
+    let list: Vec<String> = flags.iter().map(bool::to_string).collect();
+    format!(
+        r#"{}, "delay_stats": [{}] }}"#,
+        base[..cut].trim_end(),
+        list.join(", ")
+    )
+}
+
+#[test]
+fn an_unknown_key_in_the_links_file_is_a_clean_exit_naming_it() {
+    require_cpus(2);
+    let _g = serial();
+    let cfg = || config_json(0, 0.0);
+
+    // a typo of an optional link key (`lcore` for `lcores`)
+    let typo = link_json("l", &["net_null0"], &[cfg()]).replacen('{', r#"{ "lcore": [1],"#, 1);
+    let out = links_failure(&[typo], 1, "0-1");
+    assert!(out.contains("lcore"), "link level\n{out}");
+
+    // a typo in a histogram entry
+    let hist = link_json_hist(
+        "l",
+        &["net_null0"],
+        &[cfg()],
+        &[r#"{ "bins": 10, "lo": 5 }"#],
+    );
+    let out = links_failure(&[hist], 1, "0-1");
+    assert!(out.contains("lo"), "histogram level\n{out}");
+    assert!(
+        out.to_lowercase().contains("unknown"),
+        "serde's wording\n{out}"
+    );
+
+    // a typo at the top level
+    let mut env = links_env("0-1", &[link_json("l", &["net_null0"], &[cfg()])]);
+    env.vdevs.push("net_null0".into());
+    let bad = env.write_config(
+        "top-level-typo.json",
+        &format!(
+            r#"{{ "links": [{}], "lnks": [] }}"#,
+            link_json("l", &["net_null0"], &[cfg()])
+        ),
+    );
+    env.links = Some(bad);
+    let out = expect_failure(&env);
+    assert!(out.contains("lnks"), "top level\n{out}");
+}
+
+#[test]
+fn a_links_file_over_the_telemetry_dict_limit_is_a_clean_exit_naming_the_maximum() {
+    // 17 loopback links = 17 ports = 17 directions: 3 + 5 * 17 + 10 * 17 = 258 keys in
+    // /dpds/ports, over DPDK's 256. The file is validated before any port is probed
+    // or the lcores are counted, so one vdev and `-l 0-1` do not matter.
+    require_cpus(2);
+    let _g = serial();
+    let links: Vec<String> = (0..17)
+        .map(|i| {
+            link_json(
+                &format!("l{i}"),
+                &[&format!("net_null{i}")],
+                &[config_json(0, 0.0)],
+            )
+        })
+        .collect();
+    let out = links_failure(&links, 1, "0-1");
+    assert!(out.contains("256"), "the maximum is named\n{out}");
+}
+
+#[test]
+fn delay_stats_off_in_the_links_file_still_forwards_and_counts() {
+    // dir 0 (pcap0 -> pcap1, delay_stats off) and dir 1 (pcap1 -> pcap0, on): both
+    // forward every frame; with telemetry only dir 1 has delay statistics.
+    const N: [u32; 2] = [200, 150];
+    require_cpus(3);
+    let _g = serial();
+    let mut env = links_env(
+        "0-2",
+        &[link_json_delay_stats(
+            "ab",
+            &["net_pcap0", "net_pcap1"],
+            &[config_json(1_000_000, 0.0), config_json(2_000_000, 0.0)],
+            &[false, true],
+        )],
+    );
+    for (i, n) in N.iter().enumerate() {
+        add_pcap_port(&mut env, i, &frames(i as u8, *n));
+    }
+    let outs: Vec<PathBuf> = (0..2).map(|i| pcap_out(&env, i)).collect();
+    let mut run = env.spawn();
+    wait_frames(&mut run, &outs[1], N[0] as usize);
+    wait_frames(&mut run, &outs[0], N[1] as usize);
+    thread::sleep(Duration::from_millis(700));
+
+    #[cfg(feature = "telemetry")]
+    {
+        const DELAY_KEYS: [&str; 6] = [
+            "delay_mean_ns",
+            "delay_std_ns",
+            "delay_min_ns",
+            "delay_max_ns",
+            "lateness_mean_ns",
+            "lateness_max_ns",
+        ];
+        let p = run.query("/dpds/ports");
+        assert_eq!(u(&p, "dir0_delay_stats"), 0, "{p}");
+        assert_eq!(u(&p, "dir1_delay_stats"), 1, "{p}");
+
+        // counters and drop causes are there for both
+        for (d, &n) in N.iter().enumerate() {
+            let st = run.query(&format!("/dpds/stats,{d}"));
+            assert_eq!(u(&st, "rx_pkts"), n as u64, "dir {d}: {st}");
+            assert_eq!(u(&st, "tx_sent"), n as u64, "dir {d}: {st}");
+            for k in [
+                "dpds_rejects",
+                "loss_drops",
+                "limiter_drops",
+                "buffer_full_drops",
+            ] {
+                assert_eq!(u(&st, k), 0, "dir {d} {k}: {st}");
+            }
+        }
+        // dir 0: no delay keys at all; dir 1: all six, around its 2 ms
+        let st0 = run.query("/dpds/stats,0");
+        for k in DELAY_KEYS {
+            assert!(st0.get(k).is_none(), "dir 0 must not report {k}: {st0}");
+        }
+        let st1 = run.query("/dpds/stats,1");
+        for k in DELAY_KEYS {
+            assert!(st1.get(k).is_some(), "dir 1 reports {k}: {st1}");
+        }
+        let mean = num(&st1, "delay_mean_ns");
+        assert!((1_999_999.0..=2_000_000.0).contains(&mean), "{mean}");
+
+        // the histogram of dir 1 has its counts, the one of dir 0 is empty
+        let h1 = run.query("/dpds/delay_hist,1");
+        let total =
+            arr_u(&h1, "bins").iter().sum::<u64>() + u(&h1, "underflow") + u(&h1, "overflow");
+        assert_eq!(total, N[1] as u64, "{h1}");
+        match run.try_query("/dpds/delay_hist,0") {
+            None => {} // an error reply is an empty histogram too
+            Some(h0) => {
+                assert!(
+                    h0.get("bins")
+                        .and_then(Value::as_array)
+                        .is_none_or(Vec::is_empty),
+                    "dir 0 has no bins: {h0}"
+                );
+                for k in ["num_bins", "underflow", "overflow"] {
+                    assert!(
+                        h0.get(k).and_then(Value::as_u64).is_none_or(|n| n == 0),
+                        "dir 0 {k}: {h0}"
+                    );
+                }
+            }
+        }
+    }
+
+    run.signal(libc::SIGINT);
+    assert_clean_exit(run.wait_exit(), &run);
+    assert!(read_pcap(&outs[1]) == frames(0, N[0]), "direction 0");
+    assert!(read_pcap(&outs[0]) == frames(1, N[1]), "direction 1");
+}
+
+#[cfg(feature = "telemetry")]
+#[test]
+fn delay_stats_default_to_on_and_ports_reports_the_switch_of_every_direction() {
+    require_cpus(3);
+    let _g = serial();
+    let mut env = links_env(
+        "0-2",
+        &[
+            link_json("a", &["net_null0"], &[config_json(0, 0.0)]),
+            link_json_delay_stats("b", &["net_null1"], &[config_json(0, 0.0)], &[false]),
+        ],
+    );
+    env.vdevs.push("net_null0".into());
+    env.vdevs.push("net_null1".into());
+    let mut run = env.spawn();
+    let p = run.query("/dpds/ports");
+    assert_eq!(u(&p, "dir0_delay_stats"), 1, "no `delay_stats` = on: {p}");
+    assert_eq!(u(&p, "dir1_delay_stats"), 0, "{p}");
+    // a dict of at most 256 entries
+    assert!(p.as_object().unwrap().len() <= 256, "{p}");
+    run.signal(libc::SIGINT);
+    assert_clean_exit(run.wait_exit(), &run);
+}
+
+#[test]
+fn a_bad_delay_stats_array_is_a_clean_exit_naming_the_link() {
+    require_cpus(2);
+    let _g = serial();
+    let out = links_failure(
+        &[link_json_delay_stats(
+            "flaglink",
+            &["net_null0"],
+            &[config_json(0, 0.0)],
+            &[true, false],
+        )],
+        1,
+        "0-1",
+    );
+    assert!(out.contains("flaglink"), "{out}");
 }

@@ -52,6 +52,16 @@
 //! assert!(buf.is_empty());
 //! ```
 //!
+//! ## Why a packet was rejected
+//!
+//! **API change (addition):** [`Buffer::push_outcome`](buffer::Buffer::push_outcome)
+//! returns a [`PushOutcome`](buffer::PushOutcome): `Accepted { send_time_ns }`,
+//! `Lost` (loss model), `LimiterDrop` or `BufferFull`. `push` is a wrapper of it.
+//! A packet that both the loss model and the limiter reject is `Lost` (the
+//! precedence is loss model, limiter, capacity), and
+//! [`Buffer::pop_due_with_time`](buffer::Buffer::pop_due_with_time) also returns
+//! the send time of the popped packet.
+//!
 //! ## Ownership and threads
 //!
 //! The buffer stores the packet pointers (`*mut c_void`) but never
