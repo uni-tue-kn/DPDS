@@ -1,0 +1,13 @@
+# Web frontend of the DPDS controller. The controller itself runs on the host (systemd, needs root + hugepages),
+# so the container uses the host network and reaches it on 127.0.0.1.
+services:
+  frontend:
+    build: ./frontend
+    image: dpds-frontend
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      DPDS_FRONTEND_BIND: ${DPDS_FRONTEND_BIND:-0.0.0.0}
+      DPDS_FRONTEND_PORT: ${DPDS_FRONTEND_PORT:-8080}
+      # http://host:port, without a path
+      DPDS_CONTROLLER: ${DPDS_CONTROLLER:-http://127.0.0.1:8100}
