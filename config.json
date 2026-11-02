@@ -1,0 +1,20 @@
+{
+    "buffer_capacity": 1000000,
+    "reordering": false,
+    "delayer": {
+        "distribution": "NormalDistribution",
+        "mean_ns": 10000000,
+        "std_ns": 3000000,
+        "activate_correlation": true,
+        "half_life_period_ns": 30000000
+    },
+    "limiter": {
+        "mode": "Spacer",
+        "activate": false,
+        "rate_bps": 100000000000,
+        "limit_bit": 6152000000
+    },
+    "loss_model": {
+        "Random": 0.00
+    }
+}

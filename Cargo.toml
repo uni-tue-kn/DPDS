@@ -1,0 +1,14 @@
+[workspace]
+members = ["crates/dpds-core", "crates/dpdk-sys", "crates/dpdk", "crates/dpds"]
+resolver = "2"
+
+# Fast-path tuning (from preof's dpdk-peof): LTO is done by the linker
+# (-Clinker-plugin-lto in .cargo/config.toml), so rustc's own LTO must be
+# OFF — rustc-side LTO strips the ThinLTO summaries lld needs to inline
+# DPDK's static-inline wrappers (rx/tx burst, rdtsc) into the Rust loop.
+# codegen-units = 1 keeps one big module per crate for the linker's ThinLTO;
+# panic = "abort" removes unwinding landing pads from the hot loop.
+[profile.release]
+lto = "off"
+codegen-units = 1
+panic = "abort"

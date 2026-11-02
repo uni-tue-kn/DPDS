@@ -1,0 +1,27 @@
+[package]
+name = "dpds"
+version = "0.1.0"
+edition = "2021"
+authors = ["Etienne Zink <etienne.zink@uni-tuebingen.de>"]
+description = "DPDS: DPDK-based network-link emulator (delay, rate limiting, loss)."
+license = "Apache-2.0"
+
+[[bin]]
+name = "dpds"
+path = "src/main.rs"
+
+# Off by default: every counter/gauge/epoch/first-loss type is a zero-sized
+# no-op without it and nothing is registered on DPDK's telemetry socket (same
+# convention as preof's `telemetry` feature). Build with `--features telemetry`.
+[features]
+telemetry = []
+
+[dependencies]
+dpdk = { path = "../dpdk" }
+dpdk-sys = { path = "../dpdk-sys" }
+dpds-core = { path = "../dpds-core" }
+
+[dev-dependencies]
+tempfile = "3"
+libc = "0.2"
+serde_json = "1"

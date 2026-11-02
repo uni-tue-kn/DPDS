@@ -1,0 +1,20 @@
+{
+  "buffer_capacity": 100000,
+  "reordering": false,
+  "delayer": {
+    "distribution": "LogNormalDistribution",
+    "mean_ns": 5000000.0,
+    "std_ns": 500000.0,
+    "activate_correlation": true,
+    "half_life_period_ns": 50000000.0
+  },
+  "limiter": {
+    "mode": "TokenBucketFilter",
+    "activate": true,
+    "rate_bps": 1000000000.0,
+    "limit_bit": 2000000.0
+  },
+  "loss_model": {
+    "GilbertElliot": [0.01, 0.3, 1.0, 0.5, true]
+  }
+}
