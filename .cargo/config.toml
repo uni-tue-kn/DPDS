@@ -1,0 +1,22 @@
+# Maximum-performance build (the default for this repo — see README.md):
+#
+# - target-cpu=native: DPDK is built for the host CPU by default; build the
+#   Rust side the same way.
+# - linker-plugin-lto + lld + --fat-lto-objects: cross-language LTO.
+#   dpdk-sys compiles bindgen's extern.c wrappers to LLVM bitcode (clang
+#   -flto -ffat-lto-objects); rust-lld then inlines rte_eth_rx/tx_burst into
+#   the Rust forwarding loop at link time, matching the static-inline fast
+#   path a C application gets.
+#
+# Requirements: clang with the SAME LLVM major as rustc (a mismatch does
+# not fail the build — lld silently links the fat objects' machine code
+# instead of inlining their bitcode; see README).  On a host without
+# clang/lld, opt out by overriding the flags:
+#   RUSTFLAGS='-Ctarget-cpu=native' cargo build --release
+[build]
+rustflags = [
+    "-C", "target-cpu=native",
+    "-C", "linker-plugin-lto",
+    "-C", "link-arg=-fuse-ld=lld",
+    "-C", "link-arg=-Wl,--fat-lto-objects",
+]

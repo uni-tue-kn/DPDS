@@ -1,0 +1,15 @@
+[package]
+name = "dpdk-sys"
+version = "0.1.0"
+edition = "2021"
+links = "dpdk"
+
+[build-dependencies]
+bindgen = { version = "0.72.1", features = ["experimental"] }
+cc = "1.4.2"
+pkg-config = "0.3.33"
+
+# The generated bindings carry DPDK doxygen comments, whose code samples are C,
+# not Rust — never run them as doctests.
+[lib]
+doctest = false
