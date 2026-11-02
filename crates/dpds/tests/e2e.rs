@@ -1,5 +1,6 @@
-//! End-to-end tests: run the real `dpds` binary (single data-plane core:
-//! EAL main lcore + one worker, `-l 0-1`) against DPDK virtual devices.
+//! End-to-end tests: run the real `dpds` binary (one worker lcore per
+//! direction: 1 port = `-l 0-1`, 2 ports = `-l 0-2`) against DPDK virtual
+//! devices.
 //!
 //! Environment: DPDK 26.07 with the `net_pcap` and `net_null` PMDs, no root,
 //! no hugepages (`--no-huge -m 256 --no-pci --in-memory`).
@@ -9,7 +10,7 @@
 //! Exact packet counts are checked through TWO independent channels:
 //! 1. the `tx_pcap` output files (frame by frame against the input), and
 //! 2. with `--features telemetry`: DPDK's telemetry socket,
-//!    `/dpds/stats` (`tx_sent == N`, `emulator_rejects == 0`, ...), queried
+//!    `/dpds/stats,<dir>` (`tx_sent == N`, `dpds_rejects == 0`, ...), queried
 //!    BEFORE the SIGINT, plus `/dpds/epochs`, `/dpds/ports`, `/nic/*`.
 //!
 //! Tests that need the socket oracle are `#[cfg(feature = "telemetry")]`;
@@ -38,9 +39,19 @@
 //!
 //! ## Other tests
 //!
-//! Network topology: with two ports the worker flips the port, so frames read
-//! from port 0 leave on port 1 and vice versa. The two input files hold a
-//! different number of frames so a mix-up cannot go unnoticed.
+//! Network topology: direction `d` = traffic received on port `d`, handled by
+//! its own worker lcore, its own config (`--config<d>`), its own mempool and
+//! its own telemetry counters (`/dpds/stats,<d>`). With two ports frames read
+//! from port 0 leave on port 1 and vice versa; with one port they leave on
+//! the port they came in on. The two input files hold a different number of
+//! frames so a mix-up cannot go unnoticed.
+//!
+//! Pool size: there is no `--num-mbufs` (it is a usage error). Direction d's
+//! pool holds `buffer_capacity_d + rx_desc(port d) + tx_desc(port e(d)) + 768 +
+//! 64` mbufs, derived at startup from the applied descriptor counts (rings are
+//! requested with 4096 descriptors; net_null applies them unchanged). Tests
+//! that need a small pool use a small `buffer_capacity`; the size is read back
+//! from `/dpds/ports` (`dir<d>_pool_size`) and the startup log.
 //!
 //! Tests are serialised with a global lock (each spawns a busy-polling lcore,
 //! and EAL runtime directories are per `--file-prefix`, which is also unique
@@ -60,7 +71,8 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 const DPDS: &str = env!("CARGO_BIN_EXE_dpds");
-const NUM_MBUFS: &str = "8192";
+#[cfg(feature = "telemetry")]
+const BURST_SIZE: u64 = 32;
 const FRAME_LEN: usize = 64;
 const START_TIMEOUT: Duration = Duration::from_secs(40);
 const EXIT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -162,10 +174,42 @@ fn config_json(delay_ns: u64, loss: f64) -> String {
 }
 
 fn config_json_cap(delay_ns: u64, loss: f64, buffer_capacity: usize) -> String {
+    config_full(delay_ns, loss, buffer_capacity, false)
+}
+
+/// Reordering mode with a constant delay: equal send times must keep the
+/// entry order.
+fn config_reordering(delay_ns: u64) -> String {
+    config_full(delay_ns, 0.0, 4096, true)
+}
+
+/// A Uniform-distribution delay with a negative standard deviation
+/// (`low > high`, which `Uniform::new` rejects; rand_distr's `Normal` would
+/// accept a negative std): invalid parameters must be a clean startup error,
+/// not a panic.
+fn config_bad_params() -> String {
+    config_json(0, 0.0)
+        .replace(
+            r#""distribution": "DeterministicDistribution""#,
+            r#""distribution": "UniformDistribution""#,
+        )
+        .replace(r#""std_ns": 0.0"#, r#""std_ns": -1000.0"#)
+}
+
+/// The message must name the bad parameter (its config name or the
+/// distribution it belongs to).
+fn assert_names_bad_params(out: &str) {
+    assert!(
+        out.contains("std") || out.to_lowercase().contains("uniform"),
+        "the message names the bad parameter\n{out}"
+    );
+}
+
+fn config_full(delay_ns: u64, loss: f64, buffer_capacity: usize, reordering: bool) -> String {
     format!(
         r#"{{
     "buffer_capacity": {buffer_capacity},
-    "reordering": false,
+    "reordering": {reordering},
     "delayer": {{
         "distribution": "DeterministicDistribution",
         "mean_ns": {delay_ns}.0,
@@ -509,9 +553,21 @@ struct Env {
 }
 
 impl Env {
-    /// `-l 0-1`: the main lcore plus the one data-plane worker.
+    /// `-l 0-1`: the main lcore plus the worker of the one direction.
     fn new(config: &str) -> Env {
         Env::with_lcores("0-1", config)
+    }
+
+    /// `-l 0-2`: the main lcore plus one worker per direction (two ports).
+    fn two_ports(config: &str) -> Env {
+        Env::with_lcores("0-2", config)
+    }
+
+    /// Writes an extra config file next to the default one.
+    fn write_config(&self, name: &str, contents: &str) -> PathBuf {
+        let p = self.path(name);
+        fs::write(&p, contents).unwrap();
+        p
     }
 
     fn with_lcores(lcore_list: &str, config: &str) -> Env {
@@ -568,12 +624,7 @@ impl Env {
     }
 
     fn app_args(&self) -> Vec<String> {
-        let mut a = vec![
-            "--config".into(),
-            self.config.display().to_string(),
-            "--num-mbufs".into(),
-            NUM_MBUFS.into(),
-        ];
+        let mut a = vec!["--config".into(), self.config.display().to_string()];
         a.extend(self.extra_app_args.iter().cloned());
         a
     }
@@ -621,7 +672,7 @@ fn assert_clean_exit(st: ExitStatus, run: &Run) {
 fn assert_no_old_output(run: &Run) {
     let out = run.output();
     for gone in [
-        "Emulator Stats",
+        "DPDS Stats",
         "=== Final Stats ===",
         "Burst Histograms",
         "burst/s",
@@ -682,17 +733,27 @@ fn arr_s(v: &Value, key: &str) -> Vec<String> {
 // "RX has read everything": the telemetry oracle with the feature, time without
 // ---------------------------------------------------------------------------
 
-/// Waits until dpds has received `n` packets. With telemetry: `/dpds/stats`
-/// `rx_pkts >= n`. Without: a fixed grace period (pcap files are tiny).
-fn wait_rx(run: &mut Run, n: u64) {
+/// Waits until direction `dir` has received `n` packets. With telemetry:
+/// `/dpds/stats,<dir>` `rx_pkts >= n`. Without: a fixed grace period (pcap
+/// files are tiny).
+fn wait_rx(run: &mut Run, dir: usize, n: u64) {
     if cfg!(feature = "telemetry") {
-        run.wait_until(&format!("rx_pkts >= {n}"), START_TIMEOUT, |r| {
-            r.try_query("/dpds/stats")
-                .is_some_and(|v| u(&v, "rx_pkts") >= n)
+        let cmd = format!("/dpds/stats,{dir}");
+        run.wait_until(&format!("{cmd} rx_pkts >= {n}"), START_TIMEOUT, |r| {
+            r.try_query(&cmd).is_some_and(|v| u(&v, "rx_pkts") >= n)
         });
     } else {
         thread::sleep(Duration::from_millis(2500));
     }
+}
+
+/// Waits until the pcap file holds at least `n` frames.
+fn wait_frames(run: &mut Run, path: &Path, n: usize) {
+    run.wait_until(
+        &format!("{n} frames in {}", path.display()),
+        START_TIMEOUT,
+        |_| read_pcap(path).len() >= n,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -700,15 +761,20 @@ fn wait_rx(run: &mut Run, n: u64) {
 // ---------------------------------------------------------------------------
 
 fn exact_count(in_frames: &[Vec<Vec<u8>>]) {
-    require_cpus(2);
-    let _g = serial();
     let ports = in_frames.len();
-    let mut env = Env::new(&config_json(1_000_000, 0.0));
+    require_cpus(ports + 1);
+    let _g = serial();
+    let cfg = config_json(1_000_000, 0.0);
+    let mut env = if ports == 2 {
+        Env::two_ports(&cfg)
+    } else {
+        Env::new(&cfg)
+    };
     for (i, f) in in_frames.iter().enumerate() {
         add_pcap_port(&mut env, i, f);
     }
-    // Where each input stream must come out: with two ports the worker flips
-    // the port, with one port frames leave on the port they came in on.
+    // Where each input stream must come out: with two ports direction d
+    // leaves on port d ^ 1, with one port frames leave on the port they came in on.
     let dest = |i: usize| if ports == 2 { 1 - i } else { i };
     let total: usize = in_frames.iter().map(Vec::len).sum();
 
@@ -723,45 +789,55 @@ fn exact_count(in_frames: &[Vec<Vec<u8>>]) {
     // Linger: duplicates or late stragglers would show up here.
     thread::sleep(Duration::from_millis(700));
 
-    // Telemetry oracle, queried BEFORE the SIGINT.
+    // Telemetry oracle, queried BEFORE the SIGINT, per direction.
     #[cfg(feature = "telemetry")]
     {
-        let st = run.query("/dpds/stats");
-        let total = total as u64;
-        assert_eq!(u(&st, "rx_pkts"), total, "{st}");
-        assert_eq!(u(&st, "pops"), total, "{st}");
-        assert_eq!(u(&st, "tx_pkts"), total, "{st}");
-        assert_eq!(u(&st, "tx_sent"), total, "{st}");
-        assert_eq!(u(&st, "emulator_rejects"), 0, "{st}");
-        assert_eq!(u(&st, "tx_drops"), 0, "{st}");
-        assert_eq!(u(&st, "tx_short_calls"), 0, "{st}");
-        assert!(
-            u(&st, "tx_calls") >= 1 && u(&st, "tx_calls") <= total,
-            "{st}"
-        );
-        assert!(
-            u(&st, "tx_batch_max") >= 1 && u(&st, "tx_batch_max") <= 16,
-            "{st}"
-        );
-        assert!(u(&st, "polls") >= 1, "{st}");
-        assert!(u(&st, "uptime_ns") > 0, "{st}");
-        // Zero delay: sampled after the pop, so the depth stays small.
-        assert!(u(&st, "buffer_len_max") <= total, "{st}");
-        assert_eq!(s(&st, "first_loss_reason"), "Clean", "{st}");
-        assert_eq!(s(&st, "first_loss_detail"), "", "{st}");
-        assert_eq!(u(&st, "first_loss_relative_ns"), 0, "{st}");
-        let per_call: f64 = s(&st, "tx_pkts_per_call")
-            .parse()
-            .expect("a decimal string");
-        assert!((1.0..=16.0).contains(&per_call), "{st}");
-        assert_eq!(
-            per_call,
-            (u(&st, "tx_pkts") as f64 / u(&st, "tx_calls") as f64 * 100.0).round() / 100.0,
-            "tx_pkts_per_call is the 2-decimal mean: {st}"
-        );
-        // hardware counters of the NIC itself: nothing lost
-        let hw = run.query("/nic/hw_first_loss,0");
-        assert_eq!(s(&hw, "hw_first_loss_reason"), "Clean", "{hw}");
+        for (d, input) in in_frames.iter().enumerate() {
+            let n = input.len() as u64;
+            let st = run.query(&format!("/dpds/stats,{d}"));
+            assert_eq!(u(&st, "rx_pkts"), n, "dir {d}: {st}");
+            assert_eq!(u(&st, "pops"), n, "dir {d}: {st}");
+            assert_eq!(u(&st, "tx_pkts"), n, "dir {d}: {st}");
+            assert_eq!(u(&st, "tx_sent"), n, "dir {d}: {st}");
+            assert_eq!(u(&st, "dpds_rejects"), 0, "dir {d}: {st}");
+            assert_eq!(u(&st, "tx_drops"), 0, "dir {d}: {st}");
+            assert_eq!(u(&st, "tx_short_calls"), 0, "dir {d}: {st}");
+            if n > 0 {
+                assert!(
+                    u(&st, "tx_calls") >= 1 && u(&st, "tx_calls") <= n,
+                    "dir {d}: {st}"
+                );
+                assert!(
+                    u(&st, "tx_batch_max") >= 1 && u(&st, "tx_batch_max") <= BURST_SIZE,
+                    "dir {d}: {st}"
+                );
+                let per_call: f64 = s(&st, "tx_pkts_per_call")
+                    .parse()
+                    .expect("a decimal string");
+                assert!((1.0..=BURST_SIZE as f64).contains(&per_call), "{st}");
+                assert_eq!(
+                    per_call,
+                    (u(&st, "tx_pkts") as f64 / u(&st, "tx_calls") as f64 * 100.0).round() / 100.0,
+                    "tx_pkts_per_call is the 2-decimal mean: {st}"
+                );
+            } else {
+                assert_eq!(u(&st, "tx_calls"), 0, "dir {d}: {st}");
+                assert_eq!(u(&st, "tx_batch_max"), 0, "dir {d}: {st}");
+                assert_eq!(s(&st, "tx_pkts_per_call"), "0.00", "dir {d}: {st}");
+            }
+            assert!(u(&st, "polls") >= 1, "dir {d}: {st}");
+            assert!(u(&st, "uptime_ns") > 0, "dir {d}: {st}");
+            // Sampled after the pop: never more than what was received.
+            assert!(u(&st, "buffer_len_max") <= n, "dir {d}: {st}");
+            assert_eq!(s(&st, "first_loss_reason"), "Clean", "dir {d}: {st}");
+            assert_eq!(s(&st, "first_loss_detail"), "", "dir {d}: {st}");
+            assert_eq!(u(&st, "first_loss_relative_ns"), 0, "dir {d}: {st}");
+        }
+        // hardware counters of the NICs themselves: nothing lost
+        for p in 0..ports {
+            let hw = run.query(&format!("/nic/hw_first_loss,{p}"));
+            assert_eq!(s(&hw, "hw_first_loss_reason"), "Clean", "{hw}");
+        }
     }
 
     run.signal(libc::SIGINT);
@@ -796,16 +872,224 @@ fn pcap_two_ports() {
 
 #[test]
 fn pcap_one_port_input_around_the_burst_size() {
-    // Boundary sizes around MAX_BURST_SIZE = 16: 1, 15, 16, 17 frames.
-    for n in [1u32, 15, 16, 17] {
+    // Boundary sizes around BURST_SIZE = 32 (RX burst and pop budget).
+    for n in [1u32, 31, 32, 33, 64, 65] {
         exact_count(&[frames(0, n)]);
     }
+}
+
+#[test]
+fn pcap_two_ports_input_around_the_burst_size() {
+    exact_count(&[frames(0, 32), frames(1, 33)]);
+    exact_count(&[frames(0, 65), frames(1, 31)]);
 }
 
 #[test]
 fn pcap_two_ports_one_input_empty() {
     // Port 1 has nothing to send; everything from port 0 must leave on port 1.
     exact_count(&[frames(0, 300), Vec::new()]);
+    exact_count(&[Vec::new(), frames(1, 300)]);
+}
+
+// ---------------------------------------------------------------------------
+// per-direction configs (two net_pcap ports, `-l 0-2`)
+// ---------------------------------------------------------------------------
+
+/// Two pcap ports; `c0`/`c1` are passed as `--config0`/`--config1` when given,
+/// `base` is the plain `--config`.
+fn dir_env(
+    base: &str,
+    c0: Option<&str>,
+    c1: Option<&str>,
+    in0: &[Vec<u8>],
+    in1: &[Vec<u8>],
+) -> Env {
+    let mut env = Env::two_ports(base);
+    add_pcap_port(&mut env, 0, in0);
+    add_pcap_port(&mut env, 1, in1);
+    for (flag, name, c) in [
+        ("--config0", "cfg0.json", c0),
+        ("--config1", "cfg1.json", c1),
+    ] {
+        if let Some(c) = c {
+            let p = env.write_config(name, c);
+            env.extra_app_args
+                .extend([flag.to_string(), p.display().to_string()]);
+        }
+    }
+    env
+}
+
+#[test]
+fn dir0_loses_everything_dir1_is_lossless() {
+    const N0: u32 = 300;
+    const N1: u32 = 500;
+    require_cpus(3);
+    let _g = serial();
+    let env = dir_env(
+        &config_json(0, 0.0),
+        Some(&config_json(0, 1.0)),
+        Some(&config_json(0, 0.0)),
+        &frames(0, N0),
+        &frames(1, N1),
+    );
+    let (out0, out1) = (env.path("out0.pcap"), env.path("out1.pcap"));
+    let mut run = env.spawn();
+
+    // direction 1 (rx port 1) leaves on port 0
+    wait_frames(&mut run, &out0, N1 as usize);
+    wait_rx(&mut run, 0, N0 as u64);
+    thread::sleep(Duration::from_millis(700));
+
+    #[cfg(feature = "telemetry")]
+    {
+        let d0 = run.query("/dpds/stats,0");
+        assert_eq!(u(&d0, "rx_pkts"), N0 as u64, "{d0}");
+        assert_eq!(u(&d0, "dpds_rejects"), N0 as u64, "{d0}");
+        assert_eq!(u(&d0, "pops"), 0, "{d0}");
+        assert_eq!(u(&d0, "tx_sent"), 0, "{d0}");
+        assert_eq!(u(&d0, "tx_calls"), 0, "{d0}");
+        assert_eq!(s(&d0, "first_loss_reason"), "DpdsReject", "{d0}");
+        let d1 = run.query("/dpds/stats,1");
+        assert_eq!(u(&d1, "rx_pkts"), N1 as u64, "{d1}");
+        assert_eq!(u(&d1, "dpds_rejects"), 0, "{d1}");
+        assert_eq!(u(&d1, "tx_sent"), N1 as u64, "{d1}");
+        assert_eq!(u(&d1, "tx_pkts"), N1 as u64, "{d1}");
+        assert_eq!(s(&d1, "first_loss_reason"), "Clean", "{d1}");
+    }
+
+    run.signal(libc::SIGINT);
+    assert_clean_exit(run.wait_exit(), &run);
+    assert_eq!(
+        read_pcap(&out1).len(),
+        0,
+        "direction 0 loses everything: nothing leaves on port 1\n{}",
+        run.output()
+    );
+    assert!(
+        read_pcap(&out0) == frames(1, N1),
+        "port 0 carries exactly direction 1's frames, in order"
+    );
+}
+
+#[test]
+fn config_d_overrides_config_per_direction_and_the_other_direction_uses_config() {
+    const N0: u32 = 200;
+    const N1: u32 = 350;
+    require_cpus(3);
+    let _g = serial();
+    // --config = 100 % loss for everybody, --config0 = lossless for dir 0 only.
+    let env = dir_env(
+        &config_json(0, 1.0),
+        Some(&config_json(0, 0.0)),
+        None,
+        &frames(0, N0),
+        &frames(1, N1),
+    );
+    let (out0, out1) = (env.path("out0.pcap"), env.path("out1.pcap"));
+    let mut run = env.spawn();
+    wait_frames(&mut run, &out1, N0 as usize);
+    wait_rx(&mut run, 1, N1 as u64);
+    thread::sleep(Duration::from_millis(700));
+
+    #[cfg(feature = "telemetry")]
+    {
+        let d1 = run.query("/dpds/stats,1");
+        assert_eq!(u(&d1, "dpds_rejects"), N1 as u64, "{d1}");
+        let d0 = run.query("/dpds/stats,0");
+        assert_eq!(u(&d0, "tx_sent"), N0 as u64, "{d0}");
+    }
+
+    run.signal(libc::SIGINT);
+    assert_clean_exit(run.wait_exit(), &run);
+    assert!(read_pcap(&out1) == frames(0, N0), "direction 0 is lossless");
+    assert_eq!(
+        read_pcap(&out0).len(),
+        0,
+        "direction 1 uses --config (loss)"
+    );
+}
+
+#[test]
+fn each_direction_has_its_own_delay_and_drains_it_at_sigint() {
+    const N0: u32 = 200;
+    const N1: u32 = 300;
+    require_cpus(3);
+    let _g = serial();
+    // dir 0 passes through, dir 1 holds everything for 10 s: 4x the
+    // telemetry-off grace period of `wait_rx` (2.5 s), so a loaded host has 7.5 s
+    // of slack before anything of dir 1 is due. Not longer: the SIGINT drain
+    // still honours the delay (a 60 s delay overran EXIT_TIMEOUT, 30 s).
+    let env = dir_env(
+        &config_json(0, 0.0),
+        Some(&config_json(0, 0.0)),
+        Some(&config_json(10_000_000_000, 0.0)),
+        &frames(0, N0),
+        &frames(1, N1),
+    );
+    let (out0, out1) = (env.path("out0.pcap"), env.path("out1.pcap"));
+    let mut run = env.spawn();
+    wait_frames(&mut run, &out1, N0 as usize);
+    wait_rx(&mut run, 1, N1 as u64);
+    assert_eq!(
+        read_pcap(&out0).len(),
+        0,
+        "direction 1's packets left before their 10 s delay elapsed"
+    );
+    #[cfg(feature = "telemetry")]
+    {
+        let d1 = run.query("/dpds/stats,1");
+        assert_eq!(u(&d1, "tx_sent"), 0, "{d1}");
+        assert_eq!(u(&d1, "buffer_len_max"), N1 as u64, "{d1}");
+        let d0 = run.query("/dpds/stats,0");
+        assert_eq!(u(&d0, "tx_sent"), N0 as u64, "{d0}");
+        assert_eq!(u(&d0, "buffer_len_max"), 0, "{d0}");
+    }
+    run.signal(libc::SIGINT);
+    assert_clean_exit(run.wait_exit(), &run);
+    assert!(
+        read_pcap(&out0) == frames(1, N1),
+        "shutdown lost or reordered the delayed packets of direction 1"
+    );
+    assert!(read_pcap(&out1) == frames(0, N0));
+}
+
+#[test]
+fn reordering_mode_with_a_constant_delay_keeps_the_frame_order() {
+    // Frames are numbered in their payload (bytes 14..18). Direction 0 runs
+    // in reordering mode, direction 1 in FIFO mode.
+    const N0: u32 = 2000;
+    const N1: u32 = 1500;
+    require_cpus(3);
+    let _g = serial();
+    let env = dir_env(
+        &config_json(0, 0.0),
+        Some(&config_reordering(1_000_000)),
+        Some(&config_json(1_000_000, 0.0)),
+        &frames(0, N0),
+        &frames(1, N1),
+    );
+    let (out0, out1) = (env.path("out0.pcap"), env.path("out1.pcap"));
+    let mut run = env.spawn();
+    wait_frames(&mut run, &out1, N0 as usize);
+    wait_frames(&mut run, &out0, N1 as usize);
+    thread::sleep(Duration::from_millis(700));
+    run.signal(libc::SIGINT);
+    assert_clean_exit(run.wait_exit(), &run);
+
+    let got = read_pcap(&out1);
+    assert_eq!(got.len(), N0 as usize, "reordering direction: exact count");
+    let seqs: Vec<u32> = got
+        .iter()
+        .map(|f| u32::from_be_bytes(f[14..18].try_into().unwrap()))
+        .collect();
+    assert_eq!(
+        seqs,
+        (0..N0).collect::<Vec<_>>(),
+        "reordering mode with a constant delay must keep the entry order"
+    );
+    assert!(got == frames(0, N0), "and the frames are intact");
+    assert!(read_pcap(&out0) == frames(1, N1));
 }
 
 // ---------------------------------------------------------------------------
@@ -813,7 +1097,7 @@ fn pcap_two_ports_one_input_empty() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn full_loss_transmits_nothing_and_counts_emulator_rejects() {
+fn full_loss_transmits_nothing_and_counts_dpds_rejects() {
     const N: u32 = 500;
     require_cpus(2);
     let _g = serial();
@@ -821,17 +1105,17 @@ fn full_loss_transmits_nothing_and_counts_emulator_rejects() {
     add_pcap_port(&mut env, 0, &frames(0, N));
     let mut run = env.spawn();
 
-    wait_rx(&mut run, N as u64);
+    wait_rx(&mut run, 0, N as u64);
 
     #[cfg(feature = "telemetry")]
     {
-        let st = run.query("/dpds/stats");
+        let st = run.query("/dpds/stats,0");
         assert_eq!(u(&st, "rx_pkts"), N as u64, "{st}");
-        assert_eq!(u(&st, "emulator_rejects"), N as u64, "{st}");
+        assert_eq!(u(&st, "dpds_rejects"), N as u64, "{st}");
         assert_eq!(u(&st, "pops"), 0, "{st}");
         assert_eq!(u(&st, "tx_sent"), 0, "{st}");
         assert_eq!(u(&st, "tx_calls"), 0, "{st}");
-        assert_eq!(s(&st, "first_loss_reason"), "EmulatorReject", "{st}");
+        assert_eq!(s(&st, "first_loss_reason"), "DpdsReject", "{st}");
         assert_eq!(s(&st, "first_loss_detail"), "from=dpds", "{st}");
         assert!(u(&st, "first_loss_relative_ns") > 0, "{st}");
         assert_eq!(s(&st, "tx_pkts_per_call"), "0.00", "{st}");
@@ -857,7 +1141,7 @@ fn sigint_drains_packets_still_held_in_the_delay_buffer() {
     add_pcap_port(&mut env, 0, &frames(0, N));
     let mut run = env.spawn();
 
-    wait_rx(&mut run, N as u64);
+    wait_rx(&mut run, 0, N as u64);
     assert_eq!(
         read_pcap(&env.path("out0.pcap")).len(),
         0,
@@ -865,9 +1149,9 @@ fn sigint_drains_packets_still_held_in_the_delay_buffer() {
     );
     #[cfg(feature = "telemetry")]
     {
-        let st = run.query("/dpds/stats");
+        let st = run.query("/dpds/stats,0");
         assert_eq!(u(&st, "tx_sent"), 0, "{st}");
-        assert_eq!(u(&st, "emulator_rejects"), 0, "{st}");
+        assert_eq!(u(&st, "dpds_rejects"), 0, "{st}");
         assert_eq!(
             u(&st, "buffer_len_max"),
             N as u64,
@@ -886,30 +1170,56 @@ fn sigint_drains_packets_still_held_in_the_delay_buffer() {
     );
 }
 
+#[test]
+fn sigterm_drains_like_sigint() {
+    const N: u32 = 100;
+    require_cpus(3);
+    let _g = serial();
+    let env = dir_env(
+        &config_json(2_000_000_000, 0.0),
+        None,
+        None,
+        &frames(0, N),
+        &frames(1, N),
+    );
+    let (out0, out1) = (env.path("out0.pcap"), env.path("out1.pcap"));
+    let mut run = env.spawn();
+    wait_rx(&mut run, 0, N as u64);
+    wait_rx(&mut run, 1, N as u64);
+    run.signal(libc::SIGTERM);
+    assert_clean_exit(run.wait_exit(), &run);
+    assert!(read_pcap(&out1) == frames(0, N));
+    assert!(read_pcap(&out0) == frames(1, N));
+}
+
 // ---------------------------------------------------------------------------
 // net_null smoke tests (line-rate packet source, packets are just freed)
 // ---------------------------------------------------------------------------
 
 fn null_smoke(ports: usize, sig: i32) {
-    require_cpus(2);
+    require_cpus(ports + 1);
     let _g = serial();
-    let mut env = Env::new(&config_json(0, 0.0));
+    let cfg = config_json(0, 0.0);
+    let mut env = if ports == 2 {
+        Env::two_ports(&cfg)
+    } else {
+        Env::new(&cfg)
+    };
     for p in 0..ports {
         env.vdevs.push(format!("net_null{p}"));
     }
     let mut run = env.spawn();
 
     #[cfg(feature = "telemetry")]
-    {
-        // Traffic is flowing and keeps growing.
+    for d in 0..ports {
+        // Traffic is flowing and keeps growing in every direction.
+        let cmd = format!("/dpds/stats,{d}");
         run.wait_until("rx traffic", START_TIMEOUT, |r| {
-            r.try_query("/dpds/stats")
-                .is_some_and(|v| u(&v, "rx_pkts") > 0)
+            r.try_query(&cmd).is_some_and(|v| u(&v, "rx_pkts") > 0)
         });
-        let first = u(&run.query("/dpds/stats"), "rx_pkts");
+        let first = u(&run.query(&cmd), "rx_pkts");
         run.wait_until("rx_pkts to keep growing", START_TIMEOUT, |r| {
-            r.try_query("/dpds/stats")
-                .is_some_and(|v| u(&v, "rx_pkts") > first)
+            r.try_query(&cmd).is_some_and(|v| u(&v, "rx_pkts") > first)
         });
     }
     #[cfg(not(feature = "telemetry"))]
@@ -982,6 +1292,28 @@ fn without_the_feature_nothing_is_registered() {
 mod with_telemetry {
     use super::*;
 
+    /// A query that must not produce a valid reply: no reply at all, or a
+    /// reply without `key` (an empty dict), like `/nic/epochs,<bad port>`.
+    fn assert_error_reply(run: &Run, command: &str, key: &str) {
+        assert!(
+            run.try_query(command).is_none_or(|v| v.get(key).is_none()),
+            "{command} must be an error reply"
+        );
+    }
+
+    /// The pool size derived for direction `dir` of a `/dpds/ports`
+    /// reply: `buffer_capacity + rx ring of the RX port + tx ring of the TX
+    /// port + 512 * 3 / 2 + 2 * 32` (applied ring sizes as reported).
+    fn expected_pool(p: &Value, dir: usize, buffer_capacity: u64) -> u64 {
+        let rx_port = u(p, &format!("dir{dir}_rx_port"));
+        let tx_port = u(p, &format!("dir{dir}_tx_port"));
+        buffer_capacity
+            + u(p, &format!("port{rx_port}_rx_ring"))
+            + u(p, &format!("port{tx_port}_tx_ring"))
+            + 768
+            + 64
+    }
+
     #[test]
     fn the_commands_are_registered_next_to_dpdks_own() {
         require_cpus(2);
@@ -989,8 +1321,8 @@ mod with_telemetry {
         let mut env = Env::new(&config_json(0, 0.0));
         env.vdevs.push("net_null0".into());
         let mut run = env.spawn();
-        // registered at startup, before the worker is launched
-        run.query("/dpds/stats");
+        // registered at startup, before the workers are launched
+        run.query("/dpds/stats,0");
         let list = run.command_list();
         for c in [
             "/dpds/stats",
@@ -1007,12 +1339,20 @@ mod with_telemetry {
     }
 
     #[test]
-    fn ports_reports_names_and_applied_vs_requested_ring_sizes() {
-        require_cpus(2);
+    fn ports_reports_names_ring_sizes_and_the_directions_of_two_ports() {
+        require_cpus(3);
         let _g = serial();
-        let mut env = Env::new(&config_json(0, 0.0));
+        let mut env = Env::two_ports(&config_json(0, 0.0));
         add_pcap_port(&mut env, 0, &frames(0, 4));
         add_pcap_port(&mut env, 1, &frames(1, 4));
+        let cfg0 = env.write_config("cfg0.json", &config_json(0, 0.0));
+        let cfg1 = env.write_config("cfg1.json", &config_json(0, 0.0));
+        env.extra_app_args = vec![
+            "--config0".into(),
+            cfg0.display().to_string(),
+            "--config1".into(),
+            cfg1.display().to_string(),
+        ];
         let mut run = env.spawn();
         let p = run.query("/dpds/ports");
         assert_eq!(u(&p, "num_ports"), 2, "{p}");
@@ -1025,18 +1365,89 @@ mod with_telemetry {
             let rx = u(&p, &format!("port{i}_rx_ring"));
             let tx = u(&p, &format!("port{i}_tx_ring"));
             assert!(rx >= 1 && tx >= 1, "applied sizes: {p}");
-            assert_eq!(u(&p, &format!("port{i}_rx_ring_requested")), 65535, "{p}");
-            assert_eq!(u(&p, &format!("port{i}_tx_ring_requested")), 65535, "{p}");
+            assert_eq!(u(&p, &format!("port{i}_rx_ring_requested")), 4096, "{p}");
+            assert_eq!(u(&p, &format!("port{i}_tx_ring_requested")), 4096, "{p}");
             assert!(
-                rx <= 65535 && tx <= 65535,
+                rx <= 4096 && tx <= 4096,
                 "applied never exceeds requested: {p}"
             );
         }
         assert!(p.get("port2_name").is_none(), "{p}");
+
+        assert_eq!(u(&p, "num_directions"), 2, "{p}");
+        // direction d receives on port d and leaves on port d ^ 1
+        assert_eq!(u(&p, "dir0_rx_port"), 0, "{p}");
+        assert_eq!(u(&p, "dir0_tx_port"), 1, "{p}");
+        assert_eq!(u(&p, "dir1_rx_port"), 1, "{p}");
+        assert_eq!(u(&p, "dir1_tx_port"), 0, "{p}");
+        // the i-th EAL worker lcore runs direction i: `-l 0-2` -> 1, 2
+        assert_eq!(u(&p, "dir0_lcore"), 1, "{p}");
+        assert_eq!(u(&p, "dir1_lcore"), 2, "{p}");
+        assert_eq!(s(&p, "dir0_config"), cfg0.display().to_string(), "{p}");
+        assert_eq!(s(&p, "dir1_config"), cfg1.display().to_string(), "{p}");
+        // both configs have buffer_capacity 4096: the derived pool size
+        assert_eq!(u(&p, "dir0_pool_size"), expected_pool(&p, 0, 4096), "{p}");
+        assert_eq!(u(&p, "dir1_pool_size"), expected_pool(&p, 1, 4096), "{p}");
+        // net_pcap has no MBUF_FAST_FREE offload: pktmbuf bulk free
+        assert_eq!(u(&p, "dir0_raw_free"), 0, "{p}");
+        assert_eq!(u(&p, "dir1_raw_free"), 0, "{p}");
+        assert!(p.get("dir2_rx_port").is_none(), "{p}");
         run.signal(libc::SIGINT);
         assert_clean_exit(run.wait_exit(), &run);
+    }
 
-        // one port
+    #[test]
+    fn each_directions_pool_is_derived_from_its_own_capacity_and_rings() {
+        require_cpus(3);
+        let _g = serial();
+        let mut env = Env::two_ports(&config_json_cap(0, 0.0, 1000));
+        env.vdevs.push("net_null0".into());
+        env.vdevs.push("net_null1".into());
+        let cfg0 = env.write_config("cfg0.json", &config_json_cap(0, 0.0, 1000));
+        let cfg1 = env.write_config("cfg1.json", &config_json_cap(0, 0.0, 3000));
+        env.extra_app_args = vec![
+            "--config0".into(),
+            cfg0.display().to_string(),
+            "--config1".into(),
+            cfg1.display().to_string(),
+        ];
+        let mut run = env.spawn();
+        let p = run.query("/dpds/ports");
+        let pool0 = u(&p, "dir0_pool_size");
+        let pool1 = u(&p, "dir1_pool_size");
+        assert_eq!(pool0, expected_pool(&p, 0, 1000), "{p}");
+        assert_eq!(pool1, expected_pool(&p, 1, 3000), "{p}");
+        // different buffer_capacity, same rings: the pools differ by exactly 2000
+        assert_eq!(pool1 - pool0, 2000, "{p}");
+        // net_null accepts the requested 4096 descriptors unchanged
+        assert_eq!(pool0, 1000 + 4096 + 4096 + 768 + 64, "{p}");
+        assert_eq!(pool1, 3000 + 4096 + 4096 + 768 + 64, "{p}");
+        run.signal(libc::SIGINT);
+        assert_clean_exit(run.wait_exit(), &run);
+    }
+
+    #[test]
+    fn the_pool_size_does_not_depend_on_the_other_directions_config() {
+        // Same rings, swapped capacities: each direction follows its own.
+        require_cpus(3);
+        let _g = serial();
+        let mut env = Env::two_ports(&config_json_cap(0, 0.0, 3000));
+        env.vdevs.push("net_null0".into());
+        env.vdevs.push("net_null1".into());
+        let cfg1 = env.write_config("cfg1.json", &config_json_cap(0, 0.0, 500));
+        env.extra_app_args = vec!["--config1".into(), cfg1.display().to_string()];
+        let mut run = env.spawn();
+        let p = run.query("/dpds/ports");
+        assert_eq!(u(&p, "dir0_pool_size"), expected_pool(&p, 0, 3000), "{p}");
+        assert_eq!(u(&p, "dir1_pool_size"), expected_pool(&p, 1, 500), "{p}");
+        run.signal(libc::SIGINT);
+        assert_clean_exit(run.wait_exit(), &run);
+    }
+
+    #[test]
+    fn ports_reports_the_single_direction_of_one_port() {
+        require_cpus(2);
+        let _g = serial();
         let mut env = Env::new(&config_json(0, 0.0));
         env.vdevs.push("net_null0".into());
         let mut run = env.spawn();
@@ -1044,6 +1455,102 @@ mod with_telemetry {
         assert_eq!(u(&p, "num_ports"), 1, "{p}");
         assert_eq!(s(&p, "port0_name"), "net_null0", "{p}");
         assert!(p.get("port1_name").is_none(), "{p}");
+        assert_eq!(u(&p, "num_directions"), 1, "{p}");
+        assert_eq!(u(&p, "dir0_rx_port"), 0, "{p}");
+        assert_eq!(u(&p, "dir0_tx_port"), 0, "one port: loopback {p}");
+        assert_eq!(u(&p, "dir0_lcore"), 1, "{p}");
+        assert_eq!(
+            s(&p, "dir0_config"),
+            env.config.display().to_string(),
+            "{p}"
+        );
+        // one port: RX and TX ring of port 0, buffer_capacity 4096
+        assert_eq!(u(&p, "dir0_pool_size"), expected_pool(&p, 0, 4096), "{p}");
+        assert!(u(&p, "dir0_raw_free") <= 1, "{p}");
+        assert!(p.get("dir1_rx_port").is_none(), "{p}");
+        run.signal(libc::SIGINT);
+        assert_clean_exit(run.wait_exit(), &run);
+    }
+
+    #[test]
+    fn stats_and_epochs_take_a_direction_parameter_and_reject_bad_ones() {
+        const N0: u32 = 250;
+        const N1: u32 = 400;
+        require_cpus(3);
+        let _g = serial();
+        let env = dir_env(
+            &config_json(1_000_000, 0.0),
+            None,
+            None,
+            &frames(0, N0),
+            &frames(1, N1),
+        );
+        let mut run = env.spawn();
+        wait_rx(&mut run, 0, N0 as u64);
+        wait_rx(&mut run, 1, N1 as u64);
+
+        // each direction has its own stats ...
+        let d0 = run.query("/dpds/stats,0");
+        let d1 = run.query("/dpds/stats,1");
+        assert_eq!(u(&d0, "rx_pkts"), N0 as u64, "{d0}");
+        assert_eq!(u(&d1, "rx_pkts"), N1 as u64, "{d1}");
+        for st in [&d0, &d1] {
+            for k in [
+                "uptime_ns",
+                "polls",
+                "rx_pkts",
+                "rx_full_bursts",
+                "dpds_rejects",
+                "pops",
+                "tx_calls",
+                "tx_pkts",
+                "tx_sent",
+                "tx_drops",
+                "tx_short_calls",
+                "tx_batch_max",
+                "tx_pkts_per_call",
+                "buffer_len_max",
+                "first_loss_reason",
+                "first_loss_detail",
+                "first_loss_relative_ns",
+            ] {
+                assert!(st.get(k).is_some(), "{k} missing: {st}");
+            }
+        }
+
+        // ... and its own epochs (an idle gap > 500 ms after traffic closes one)
+        for (d, n) in [(0, N0), (1, N1)] {
+            let cmd = format!("/dpds/epochs,{d}");
+            run.wait_until("one closed epoch", START_TIMEOUT, |r| {
+                r.try_query(&cmd)
+                    .is_some_and(|v| u(&v, "epochs_closed") >= 1)
+            });
+            let ep = run.query(&cmd);
+            assert_eq!(arr_u(&ep, "rx_pkts").iter().sum::<u64>(), n as u64, "{ep}");
+            assert_eq!(arr_u(&ep, "tx_sent").iter().sum::<u64>(), n as u64, "{ep}");
+        }
+
+        // missing or invalid direction: an error reply
+        for bad in ["", ",2", ",x", ",-1", ",", ",0,1", ",01x"] {
+            assert_error_reply(&run, &format!("/dpds/stats{bad}"), "rx_pkts");
+            assert_error_reply(&run, &format!("/dpds/epochs{bad}"), "epochs_closed");
+        }
+        run.signal(libc::SIGINT);
+        assert_clean_exit(run.wait_exit(), &run);
+    }
+
+    #[test]
+    fn with_one_port_only_direction_0_exists() {
+        require_cpus(2);
+        let _g = serial();
+        let mut env = Env::new(&config_json(0, 0.0));
+        add_pcap_port(&mut env, 0, &frames(0, 10));
+        let mut run = env.spawn();
+        run.query("/dpds/stats,0");
+        run.query("/dpds/epochs,0");
+        assert_error_reply(&run, "/dpds/stats,1", "rx_pkts");
+        assert_error_reply(&run, "/dpds/epochs,1", "epochs_closed");
+        assert_error_reply(&run, "/dpds/stats", "rx_pkts");
         run.signal(libc::SIGINT);
         assert_clean_exit(run.wait_exit(), &run);
     }
@@ -1057,15 +1564,15 @@ mod with_telemetry {
         add_pcap_port(&mut env, 0, &frames(0, N));
         let mut run = env.spawn();
 
-        wait_rx(&mut run, N as u64);
+        wait_rx(&mut run, 0, N as u64);
         // pcap EOF = no more arrivals; > 500 ms later the epoch is closed
         run.wait_until("one closed epoch", START_TIMEOUT, |r| {
-            r.try_query("/dpds/epochs")
+            r.try_query("/dpds/epochs,0")
                 .is_some_and(|v| u(&v, "epochs_closed") >= 1)
         });
         // ... and stays at one: idle ticks after a close emit no empty epochs
         thread::sleep(Duration::from_millis(1500));
-        let ep = run.query("/dpds/epochs");
+        let ep = run.query("/dpds/epochs,0");
 
         assert_eq!(u(&ep, "epochs_closed"), 1, "{ep}");
         assert_eq!(u(&ep, "epochs_dropped"), 0, "{ep}");
@@ -1076,7 +1583,7 @@ mod with_telemetry {
             "polls",
             "rx_pkts",
             "rx_full_bursts",
-            "emulator_rejects",
+            "dpds_rejects",
             "pops",
             "tx_calls",
             "tx_pkts",
@@ -1094,7 +1601,7 @@ mod with_telemetry {
         assert_eq!(arr_u(&ep, "pops"), [N as u64], "{ep}");
         assert_eq!(arr_u(&ep, "tx_pkts"), [N as u64], "{ep}");
         assert_eq!(arr_u(&ep, "tx_sent"), [N as u64], "{ep}");
-        assert_eq!(arr_u(&ep, "emulator_rejects"), [0], "{ep}");
+        assert_eq!(arr_u(&ep, "dpds_rejects"), [0], "{ep}");
         assert!(arr_u(&ep, "polls")[0] >= 1, "{ep}");
         assert!(arr_u(&ep, "buffer_len_max")[0] <= N as u64, "{ep}");
         let (start, end) = (
@@ -1108,7 +1615,7 @@ mod with_telemetry {
         );
 
         // the whole-process stats agree with the epoch
-        let st = run.query("/dpds/stats");
+        let st = run.query("/dpds/stats,0");
         assert_eq!(u(&st, "tx_sent"), N as u64, "{st}");
         assert!(u(&st, "uptime_ns") >= end, "{st}");
 
@@ -1123,16 +1630,16 @@ mod with_telemetry {
         let mut env = Env::new(&config_json(0, 0.0));
         add_pcap_port(&mut env, 0, &[]);
         let mut run = env.spawn();
-        run.query("/dpds/epochs");
+        run.query("/dpds/epochs,0");
         thread::sleep(Duration::from_millis(1800));
-        let ep = run.query("/dpds/epochs");
+        let ep = run.query("/dpds/epochs,0");
         assert_eq!(
             u(&ep, "epochs_closed"),
             0,
             "an idle start must not emit empty epochs: {ep}"
         );
         assert_eq!(arr_u(&ep, "rx_pkts"), Vec::<u64>::new(), "{ep}");
-        let st = run.query("/dpds/stats");
+        let st = run.query("/dpds/stats,0");
         assert_eq!(u(&st, "rx_pkts"), 0, "{st}");
         assert!(u(&st, "polls") > 0, "the loop is spinning: {st}");
         run.signal(libc::SIGINT);
@@ -1147,7 +1654,7 @@ mod with_telemetry {
         let mut env = Env::new(&config_json(0, 0.0));
         add_pcap_port(&mut env, 0, &frames(0, N));
         let mut run = env.spawn();
-        wait_rx(&mut run, N as u64);
+        wait_rx(&mut run, 0, N as u64);
 
         // /nic/epochs,0 is driven by the port's own ipackets from the 250 ms
         // poll loop: it closes an epoch once the arrivals have stopped for
@@ -1206,65 +1713,109 @@ mod with_telemetry {
         assert_clean_exit(run.wait_exit(), &run);
     }
 
-    // ── mbuf leaks: a tiny pool must not run dry ─────────────────────
+    // ── mbuf leaks: the derived pool is small, it must not run dry ──────
 
-    /// net_null produces packets as fast as it is polled. With a pool of
-    /// 4096 mbufs the loop only keeps running if every mbuf is returned:
-    /// `rx_pkts` far beyond the pool size and `rx_nombuf == 0`.
-    fn no_leak(config: String, expect_rejects: bool) {
-        require_cpus(2);
+    /// net_null produces packets as fast as it is polled. The pool of each
+    /// direction is derived from its (small) `buffer_capacity`, so the loop
+    /// only keeps running if every mbuf is returned: `rx_pkts` far beyond the
+    /// pool size and `rx_nombuf == 0`. `configs` = the config of each
+    /// direction (`--config<d>`), one net_null port per config.
+    fn no_leak(configs: &[String], expect_rejects: bool) {
+        let ports = configs.len();
+        require_cpus(ports + 1);
         let _g = serial();
-        let mut env = Env::new(&config);
-        env.vdevs.push("net_null0".into());
-        env.extra_app_args = vec![]; // NUM_MBUFS is replaced below
-        let mut args = env.eal_args();
-        args.push("--".into());
-        args.extend(["--config".into(), env.config.display().to_string()]);
-        args.extend(["--num-mbufs".into(), "4096".into()]);
-        let mut run = Run::spawn_in(&args, Some(env.xdg.path()), Some(env.socket_path()), None);
+        let mut env = if ports == 2 {
+            Env::two_ports(&configs[0])
+        } else {
+            Env::new(&configs[0])
+        };
+        for p in 0..ports {
+            env.vdevs.push(format!("net_null{p}"));
+        }
+        for (d, c) in configs.iter().enumerate() {
+            let path = env.write_config(&format!("cfg{d}.json"), c);
+            env.extra_app_args
+                .extend([format!("--config{d}"), path.display().to_string()]);
+        }
+        let mut run = env.spawn();
 
-        run.wait_until("rx_pkts far above the pool size", START_TIMEOUT, |r| {
-            r.try_query("/dpds/stats")
-                .is_some_and(|v| u(&v, "rx_pkts") > 20 * 4096)
-        });
+        // The derived pool size of each direction (all configs here use a
+        // buffer_capacity of at most 4096, so a pool is at most ~13k mbufs).
+        let ports_reply = run.query("/dpds/ports");
+        let pools: Vec<u64> = (0..ports)
+            .map(|d| u(&ports_reply, &format!("dir{d}_pool_size")))
+            .collect();
+        for (d, pool) in pools.iter().enumerate() {
+            assert!(
+                (1..=20_000).contains(pool),
+                "dir {d}: the derived pool must be small, got {pool}: {ports_reply}"
+            );
+        }
+
+        for (d, pool) in pools.iter().enumerate() {
+            let cmd = format!("/dpds/stats,{d}");
+            run.wait_until("rx_pkts far above the pool size", START_TIMEOUT, |r| {
+                r.try_query(&cmd)
+                    .is_some_and(|v| u(&v, "rx_pkts") > 20 * pool)
+            });
+        }
         // run for a few seconds
         thread::sleep(Duration::from_secs(3));
-        let st = run.query("/dpds/stats");
-        assert!(u(&st, "rx_pkts") > 100 * 4096, "{st}");
-        if expect_rejects {
-            assert!(
-                u(&st, "emulator_rejects") > 0,
-                "the tiny buffer must overflow: {st}"
+        for (d, pool) in pools.iter().enumerate() {
+            let st = run.query(&format!("/dpds/stats,{d}"));
+            assert!(u(&st, "rx_pkts") > 40 * pool, "dir {d}: {st}");
+            if expect_rejects {
+                assert!(
+                    u(&st, "dpds_rejects") > 0,
+                    "dir {d}: the loss/buffer must reject: {st}"
+                );
+                assert_eq!(s(&st, "first_loss_reason"), "DpdsReject", "{st}");
+            }
+            let eth = run.query(&format!("/ethdev/stats,{d}"));
+            assert_eq!(
+                u(&eth, "rx_nombuf"),
+                0,
+                "an mbuf leak starves the pool: {eth}"
             );
-            assert_eq!(s(&st, "first_loss_reason"), "EmulatorReject", "{st}");
+            let hw = run.query(&format!("/nic/hw_first_loss,{d}"));
+            assert_ne!(s(&hw, "hw_first_loss_reason"), "RX_NoMbuf", "{hw}");
         }
-        let eth = run.query("/ethdev/stats,0");
-        assert_eq!(
-            u(&eth, "rx_nombuf"),
-            0,
-            "an mbuf leak starves the pool: {eth}"
-        );
-        let hw = run.query("/nic/hw_first_loss,0");
-        assert_ne!(s(&hw, "hw_first_loss_reason"), "RX_NoMbuf", "{hw}");
-
         run.signal(libc::SIGINT);
         assert_clean_exit(run.wait_exit(), &run);
     }
 
     #[test]
-    fn full_loss_on_a_tiny_pool_does_not_leak_mbufs() {
-        no_leak(config_json(0, 1.0), true);
+    fn full_loss_on_a_small_pool_does_not_leak_mbufs() {
+        // capacity 4096: pool 4096 + 4096 + 4096 + 768 + 64 = 13120
+        no_leak(&[config_json(0, 1.0)], true);
     }
 
     #[test]
     fn delay_with_a_tiny_buffer_does_not_leak_mbufs() {
-        // buffer-full rejects are freed too
-        no_leak(config_json_cap(1_000_000, 0.0, 64), true);
+        // buffer-full rejects are freed too (capacity 64: pool 9088)
+        no_leak(&[config_json_cap(1_000_000, 0.0, 64)], true);
     }
 
     #[test]
-    fn plain_forwarding_on_a_tiny_pool_does_not_leak_mbufs() {
-        no_leak(config_json(0, 0.0), false);
+    fn plain_forwarding_on_a_small_pool_does_not_leak_mbufs() {
+        no_leak(&[config_json(0, 0.0)], false);
+    }
+
+    #[test]
+    fn the_derived_pool_never_runs_dry_with_a_full_buffer() {
+        // A 10 ms delay at line rate keeps the buffer (4096) full with rejects:
+        // the worst case for a pool that is exactly 4096 + rings + slack.
+        no_leak(&[config_json(10_000_000, 0.0)], true);
+    }
+
+    #[test]
+    fn two_directions_with_different_configs_do_not_leak_mbufs() {
+        // dir 0: everything lost (rejects freed in bulk), dir 1: delay with a
+        // small buffer (rejects and a full TX path), one pool each.
+        no_leak(
+            &[config_json(0, 1.0), config_json_cap(1_000_000, 0.0, 64)],
+            true,
+        );
     }
 
     #[test]
@@ -1275,14 +1826,14 @@ mod with_telemetry {
         env.vdevs.push("net_null0".into());
         let mut run = env.spawn();
         run.wait_until("traffic", START_TIMEOUT, |r| {
-            r.try_query("/dpds/stats")
+            r.try_query("/dpds/stats,0")
                 .is_some_and(|v| u(&v, "rx_pkts") > 100_000)
         });
-        let st = run.query("/dpds/stats");
+        let st = run.query("/dpds/stats,0");
         // read at slightly different moments by the telemetry thread, so only
         // inequalities that hold at any moment: nothing sent that was not received
         assert!(
-            u(&st, "pops") + u(&st, "emulator_rejects") <= u(&st, "rx_pkts") + 16,
+            u(&st, "pops") + u(&st, "dpds_rejects") <= u(&st, "rx_pkts") + BURST_SIZE,
             "{st}"
         );
         assert!(u(&st, "tx_sent") <= u(&st, "tx_pkts"), "{st}");
@@ -1292,7 +1843,7 @@ mod with_telemetry {
             "{st}"
         );
         assert!(u(&st, "rx_full_bursts") <= u(&st, "polls"), "{st}");
-        assert!(u(&st, "emulator_rejects") > 0, "50 % loss: {st}");
+        assert!(u(&st, "dpds_rejects") > 0, "50 % loss: {st}");
         run.signal(libc::SIGINT);
         assert_clean_exit(run.wait_exit(), &run);
     }
@@ -1322,6 +1873,11 @@ fn expect_failure_args(args: Vec<String>, xdg: &Path) -> String {
         .code()
         .unwrap_or_else(|| panic!("killed by a signal ({st}), expected an error exit\n{out}"));
     assert_ne!(code, 0, "expected non-zero exit\n{out}");
+    assert_ne!(code, 101, "a Rust panic is not a clean error exit\n{out}");
+    assert!(
+        !out.contains("panicked at"),
+        "a panic is not a clean error exit\n{out}"
+    );
     out
 }
 
@@ -1330,35 +1886,60 @@ fn expect_failure(env: &Env) -> String {
 }
 
 #[test]
-fn one_lcore_is_rejected_and_the_message_names_the_count() {
+fn one_port_with_one_lcore_is_rejected_naming_the_requirement() {
     require_cpus(2);
     let _g = serial();
     let mut env = Env::with_lcores("0", &config_json(0, 0.0));
     env.vdevs.push("net_null0".into());
     let out = expect_failure(&env);
     assert!(
-        out.contains('1') && out.contains('2'),
-        "count and requirement named\n{out}"
+        out.contains("1 port needs 2 lcores, e.g. -l 0-1"),
+        "the requirement is named\n{out}"
     );
 }
 
 #[test]
-fn three_lcores_are_rejected_there_is_exactly_one_worker() {
+fn one_port_with_three_lcores_is_rejected_there_is_one_worker_per_port() {
     require_cpus(3);
     let _g = serial();
     let mut env = Env::with_lcores("0-2", &config_json(0, 0.0));
     env.vdevs.push("net_null0".into());
     let out = expect_failure(&env);
-    assert!(out.contains('3'), "the lcore count must be named\n{out}");
+    assert!(
+        out.contains("1 port needs 2 lcores, e.g. -l 0-1"),
+        "the requirement is named\n{out}"
+    );
+    assert!(out.contains('3'), "the lcore count found is named\n{out}");
 }
 
 #[test]
-fn four_lcores_are_rejected_too() {
+fn two_ports_with_two_lcores_are_rejected_naming_the_requirement() {
+    require_cpus(2);
+    let _g = serial();
+    let mut env = Env::with_lcores("0-1", &config_json(0, 0.0));
+    env.vdevs.push("net_null0".into());
+    env.vdevs.push("net_null1".into());
+    let out = expect_failure(&env);
+    assert!(
+        out.contains("2 ports need 3 lcores, e.g. -l 0-2"),
+        "the requirement is named\n{out}"
+    );
+    assert!(out.contains('2'), "the lcore count found is named\n{out}");
+}
+
+#[test]
+fn two_ports_with_four_lcores_are_rejected_too() {
     require_cpus(4);
     let _g = serial();
     let mut env = Env::with_lcores("0-3", &config_json(0, 0.0));
     env.vdevs.push("net_null0".into());
-    expect_failure(&env);
+    env.vdevs.push("net_null1".into());
+    let out = expect_failure(&env);
+    assert!(
+        out.contains("2 ports need 3 lcores, e.g. -l 0-2"),
+        "the requirement is named\n{out}"
+    );
+    assert!(out.contains('4'), "the lcore count found is named\n{out}");
 }
 
 #[test]
@@ -1389,6 +1970,30 @@ fn unknown_app_argument_is_rejected_with_usage() {
     env.extra_app_args = vec!["--bogus".into()];
     let out = expect_failure(&env);
     assert!(out.contains("Usage"), "usage message expected\n{out}");
+}
+
+#[test]
+fn a_flag_given_twice_is_rejected_with_usage() {
+    require_cpus(2);
+    let _g = serial();
+    let mut env = Env::new(&config_json(0, 0.0));
+    env.vdevs.push("net_null0".into());
+    // the harness already passes --config
+    env.extra_app_args = vec!["--config".into(), env.config.display().to_string()];
+    let out = expect_failure(&env);
+    assert!(out.contains("Usage"), "usage message expected\n{out}");
+    assert!(out.contains("--config"), "{out}");
+}
+
+#[test]
+fn config1_with_one_port_is_rejected() {
+    require_cpus(2);
+    let _g = serial();
+    let mut env = Env::new(&config_json(0, 0.0));
+    env.vdevs.push("net_null0".into());
+    env.extra_app_args = vec!["--config1".into(), env.config.display().to_string()];
+    let out = expect_failure(&env);
+    assert!(out.contains("--config1"), "{out}");
 }
 
 #[test]
@@ -1424,15 +2029,188 @@ fn malformed_config_file_is_an_error_exit_not_a_crash() {
 }
 
 #[test]
+fn invalid_distribution_parameters_are_a_clean_error_naming_the_parameter() {
+    require_cpus(2);
+    let _g = serial();
+    let mut env = Env::new(&config_bad_params());
+    env.vdevs.push("net_null0".into());
+    let out = expect_failure(&env);
+    assert_names_bad_params(&out);
+}
+
+#[test]
+fn a_bad_config_of_direction_1_fails_startup() {
+    require_cpus(3);
+    let _g = serial();
+    let mut env = Env::two_ports(&config_json(0, 0.0));
+    env.vdevs.push("net_null0".into());
+    env.vdevs.push("net_null1".into());
+    let bad = env.write_config("cfg1.json", &config_bad_params());
+    env.extra_app_args = vec!["--config1".into(), bad.display().to_string()];
+    let out = expect_failure(&env);
+    assert_names_bad_params(&out);
+}
+
+#[test]
+fn a_missing_config_file_of_direction_1_fails_startup() {
+    require_cpus(3);
+    let _g = serial();
+    let mut env = Env::two_ports(&config_json(0, 0.0));
+    env.vdevs.push("net_null0".into());
+    env.vdevs.push("net_null1".into());
+    let missing = env.path("does-not-exist.json");
+    env.extra_app_args = vec!["--config1".into(), missing.display().to_string()];
+    let out = expect_failure(&env);
+    assert!(out.contains("does-not-exist.json"), "{out}");
+}
+
+// ── pool size (N): derived, no --num-mbufs ────────────────────────────
+
+#[test]
+fn num_mbufs_is_an_unknown_flag_and_a_usage_error() {
+    require_cpus(2);
+    let _g = serial();
+    for value in [Some("16384"), Some("100"), None] {
+        let mut env = Env::new(&config_json(0, 0.0));
+        env.vdevs.push("net_null0".into());
+        env.extra_app_args = std::iter::once("--num-mbufs".to_string())
+            .chain(value.map(String::from))
+            .collect();
+        let out = expect_failure(&env);
+        assert!(
+            out.contains("--num-mbufs"),
+            "{value:?}: names the flag\n{out}"
+        );
+        assert!(out.contains("Usage"), "{value:?}: prints the usage\n{out}");
+        assert!(
+            out.contains("unknown"),
+            "{value:?}: it is an unknown argument\n{out}"
+        );
+        // the usage text does not advertise the removed option any more
+        let usage = out.lines().find(|l| l.contains("Usage")).unwrap();
+        assert!(!usage.contains("num-mbufs"), "{usage}");
+    }
+}
+
+#[test]
+fn the_startup_log_shows_the_derived_pool_size_of_a_direction() {
+    require_cpus(2);
+    let _g = serial();
+    // net_null applies the requested 4096 descriptors:
+    // 1000 + 4096 + 4096 + 768 + 64 = 10024 mbufs
+    let mut env = Env::new(&config_json_cap(0, 0.0, 1000));
+    env.vdevs.push("net_null0".into());
+    let mut run = env.spawn();
+    run.wait_until("the direction 0 startup line", START_TIMEOUT, |r| {
+        r.output().lines().any(|l| l.contains("Direction 0"))
+    });
+    let out = run.output();
+    let line = out.lines().find(|l| l.contains("Direction 0")).unwrap();
+    assert!(line.contains("10024"), "derived size missing: {line}");
+    assert!(line.contains("dpds_pool_0"), "{line}");
+    assert!(!out.contains("too small"), "{out}");
+    run.signal(libc::SIGINT);
+    assert_clean_exit(run.wait_exit(), &run);
+}
+
+#[test]
+fn the_startup_log_shows_each_directions_own_pool_size() {
+    require_cpus(3);
+    let _g = serial();
+    let mut env = Env::two_ports(&config_json_cap(0, 0.0, 1000));
+    env.vdevs.push("net_null0".into());
+    env.vdevs.push("net_null1".into());
+    let cfg1 = env.write_config("cfg1.json", &config_json_cap(0, 0.0, 3000));
+    env.extra_app_args = vec!["--config1".into(), cfg1.display().to_string()];
+    let mut run = env.spawn();
+    run.wait_until("both direction startup lines", START_TIMEOUT, |r| {
+        let o = r.output();
+        o.lines().any(|l| l.contains("Direction 0")) && o.lines().any(|l| l.contains("Direction 1"))
+    });
+    let out = run.output();
+    let line = |d: usize| {
+        out.lines()
+            .find(|l| l.contains(&format!("Direction {d}")))
+            .unwrap()
+            .to_string()
+    };
+    assert!(line(0).contains("10024"), "{}", line(0)); // 1000 + 8192 + 832
+    assert!(line(1).contains("12024"), "{}", line(1)); // 3000 + 8192 + 832
+    assert!(line(0).contains("dpds_pool_0"), "{}", line(0));
+    assert!(line(1).contains("dpds_pool_1"), "{}", line(1));
+    run.signal(libc::SIGINT);
+    assert_clean_exit(run.wait_exit(), &run);
+}
+
+#[test]
+fn a_small_buffer_capacity_gives_a_small_pool_that_starts_fine() {
+    // The old way to get a small pool was `--num-mbufs`; now buffer_capacity 0
+    // (everything is rejected) derives 0 + 4096 + 4096 + 768 + 64 = 9024.
+    require_cpus(2);
+    let _g = serial();
+    let mut env = Env::new(&config_json_cap(0, 0.0, 0));
+    env.vdevs.push("net_null0".into());
+    let mut run = env.spawn();
+    run.wait_until("the direction 0 startup line", START_TIMEOUT, |r| {
+        r.output().lines().any(|l| l.contains("Direction 0"))
+    });
+    thread::sleep(Duration::from_millis(1500));
+    assert!(run.poll_exit().is_none(), "{}", run.output());
+    assert!(run.output().contains("9024"), "{}", run.output());
+    run.signal(libc::SIGINT);
+    assert_clean_exit(run.wait_exit(), &run);
+}
+
+/// A pool that cannot be created (here: a buffer_capacity whose mbufs exceed
+/// the 256 MB of `-m 256`) is a clean error naming the direction and the size
+/// that was tried. There is no "too small" message any more.
+fn assert_pool_creation_error(out: &str, direction: usize, size: u64) {
+    assert!(
+        out.to_lowercase()
+            .contains(&format!("direction {direction}")),
+        "the failing direction {direction} is not named\n{out}"
+    );
+    assert!(
+        out.contains(&size.to_string()),
+        "the size that was tried ({size}) is not named\n{out}"
+    );
+    assert!(!out.contains("too small"), "{out}");
+    assert!(!out.contains("--num-mbufs"), "{out}");
+}
+
+#[test]
+fn a_pool_that_cannot_be_created_names_the_direction_and_the_size_tried() {
+    require_cpus(2);
+    let _g = serial();
+    // 5_000_000 + 4096 + 4096 + 768 + 64 = 5_009_024 mbufs of ~2 KB each
+    let mut env = Env::new(&config_json_cap(0, 0.0, 5_000_000));
+    env.vdevs.push("net_null0".into());
+    let out = expect_failure(&env);
+    assert_pool_creation_error(&out, 0, 5_009_024);
+}
+
+#[test]
+fn the_failing_direction_is_named_when_only_direction_1_is_too_big() {
+    require_cpus(3);
+    let _g = serial();
+    let mut env = Env::two_ports(&config_json_cap(0, 0.0, 1000));
+    env.vdevs.push("net_null0".into());
+    env.vdevs.push("net_null1".into());
+    let big = env.write_config("cfg1.json", &config_json_cap(0, 0.0, 5_000_000));
+    env.extra_app_args = vec!["--config1".into(), big.display().to_string()];
+    let out = expect_failure(&env);
+    assert_pool_creation_error(&out, 1, 5_009_024);
+}
+
+#[test]
 fn default_config_path_is_config_json_in_the_working_directory() {
     require_cpus(2);
     let _g = serial();
     let mut env = Env::new(&config_json(0, 0.0));
     env.vdevs.push("net_null0".into());
-    // No : dpds must pick up ./config.json from its cwd.
+    // No --config: dpds must pick up ./config.json from its cwd.
     let mut args = env.eal_args();
     args.push("--".into());
-    args.extend(["--num-mbufs".into(), NUM_MBUFS.into()]);
 
     let mut run = Run::spawn_in(
         &args,
@@ -1442,7 +2220,7 @@ fn default_config_path_is_config_json_in_the_working_directory() {
     );
     #[cfg(feature = "telemetry")]
     run.wait_until("traffic", START_TIMEOUT, |r| {
-        r.try_query("/dpds/stats")
+        r.try_query("/dpds/stats,0")
             .is_some_and(|v| u(&v, "rx_pkts") > 0)
     });
     #[cfg(not(feature = "telemetry"))]
@@ -1452,4 +2230,137 @@ fn default_config_path_is_config_json_in_the_working_directory() {
     }
     run.signal(libc::SIGINT);
     assert_clean_exit(run.wait_exit(), &run);
+}
+
+// ---------------------------------------------------------------------------
+// README: the "Without hardware" examples run as written
+// ---------------------------------------------------------------------------
+
+/// The `./target/release/dpds ...` commands of the first fenced block under
+/// "### Without hardware" in README.md, backslash continuations joined,
+/// split on whitespace (the examples use no quoting).
+fn readme_without_hardware_commands() -> Vec<Vec<String>> {
+    let readme = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../README.md"))
+        .expect("README.md");
+    let section = readme
+        .split("### Without hardware")
+        .nth(1)
+        .expect("README has a 'Without hardware' section");
+    let block = section
+        .split("```")
+        .nth(1)
+        .expect("a fenced block in that section");
+    let mut commands = Vec::new();
+    let mut cur = String::new();
+    for line in block.lines().skip(1) {
+        // skip(1): the info string (```bash)
+        let line = line.trim();
+        if cur.is_empty() && (line.is_empty() || line.starts_with('#')) {
+            continue;
+        }
+        if let Some(head) = line.strip_suffix('\\') {
+            cur.push_str(head);
+            cur.push(' ');
+        } else {
+            cur.push_str(line);
+            commands.push(
+                std::mem::take(&mut cur)
+                    .split_whitespace()
+                    .map(String::from)
+                    .collect(),
+            );
+        }
+    }
+    assert!(
+        cur.is_empty(),
+        "dangling line continuation in the README block"
+    );
+    commands
+}
+
+/// The EAL `--file-prefix` of a command (`--file-prefix x` or
+/// `--file-prefix=x`, EAL part only), DPDK's default `rte` when absent.
+fn file_prefix(cmd: &[String]) -> String {
+    let eal = cmd.split(|a| a == "--").next().unwrap();
+    for (i, a) in eal.iter().enumerate() {
+        if a == "--file-prefix" {
+            return eal.get(i + 1).expect("--file-prefix needs a value").clone();
+        }
+        if let Some(v) = a.strip_prefix("--file-prefix=") {
+            return v.to_string();
+        }
+    }
+    "rte".to_string()
+}
+
+#[test]
+fn the_file_prefix_of_a_command_is_parsed_with_dpdks_default() {
+    let c = |s: &str| s.split_whitespace().map(String::from).collect::<Vec<_>>();
+    assert_eq!(file_prefix(&c("dpds -l 0-1 -- --config a.json")), "rte");
+    assert_eq!(file_prefix(&c("dpds --file-prefix foo -l 0-1")), "foo");
+    assert_eq!(file_prefix(&c("dpds --file-prefix=bar -l 0-1 --")), "bar");
+    // an app argument of the same name is not the EAL's
+    assert_eq!(file_prefix(&c("dpds -l 0-1 -- --file-prefix x")), "rte");
+}
+
+#[test]
+fn the_readme_without_hardware_examples_start_cleanly_and_stop_with_sigint() {
+    require_cpus(2);
+    let _g = serial();
+    let commands = readme_without_hardware_commands();
+    assert!(
+        commands.len() >= 2,
+        "expected the net_null and the net_pcap example, found {commands:?}"
+    );
+    for cmd in commands {
+        assert_eq!(
+            cmd[0], "./target/release/dpds",
+            "README example does not start with the binary: {cmd:?}"
+        );
+        // A scratch working directory that looks like a checkout root (the
+        // top-level files, e.g. config.json and any config.vdev.json, are
+        // symlinked) and holds the input pcap the example names.
+        let cwd = tempfile::tempdir().unwrap();
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for entry in fs::read_dir(&root).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                std::os::unix::fs::symlink(&path, cwd.path().join(entry.file_name())).unwrap();
+            }
+        }
+        for arg in &cmd {
+            for part in arg.split(',') {
+                if let Some(rx) = part.strip_prefix("rx_pcap=") {
+                    let p = cwd.path().join(rx);
+                    let _ = fs::remove_file(&p);
+                    write_pcap(&p, &frames(0, 64));
+                }
+            }
+        }
+        let xdg = tempfile::Builder::new()
+            .prefix("dpds-x")
+            .tempdir_in("/tmp")
+            .unwrap();
+        // DPDK's default --file-prefix is `rte` (not the program name); use
+        // the prefix the command names, if it names one.
+        let socket = xdg
+            .path()
+            .join("dpdk")
+            .join(file_prefix(&cmd))
+            .join("dpdk_telemetry.v2");
+        let mut run = Run::spawn_in(&cmd[1..], Some(xdg.path()), Some(socket), Some(cwd.path()));
+        run.command_list(); // fails fast, with the output, if it exits early
+        thread::sleep(Duration::from_millis(1500));
+        assert!(
+            run.poll_exit().is_none(),
+            "README example {cmd:?} exited on its own\n{}",
+            run.output()
+        );
+        run.signal(libc::SIGINT);
+        let st = run.wait_exit();
+        assert_clean_exit(st, &run);
+        let out = run.output();
+        assert!(!out.contains("too small"), "{cmd:?}\n{out}");
+        assert!(!out.contains("panicked"), "{cmd:?}\n{out}");
+    }
 }

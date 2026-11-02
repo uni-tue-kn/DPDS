@@ -1,11 +1,11 @@
-//! Telemetry glue: the shared [`Stats`], the worker's [`Telemetry`] handle,
+//! Telemetry glue: the per-direction [`Stats`], the worker's [`Telemetry`] handle,
 //! the reply builders behind `/dpds/stats`, `/dpds/epochs`, `/dpds/ports`,
 //! `/nic/hw_first_loss` and `/nic/epochs`, their registration on DPDK's
 //! telemetry socket, and the main lcore's [`NicPoller`] (port of preof's
 //! `stats.rs` plus the NIC pieces of its `main.rs`).
 //!
 //! Registration is a no-op without the `telemetry` feature; see
-//! `TELEMETRY.md` for the wire semantics.
+//! `docs/TELEMETRY.md` for the wire semantics.
 
 use crate::counters::{
     epochs_reply, DpdsCounters, DpdsEpochLog, EpochDriver, EpochFirstLoss, NicEpochLog,
@@ -46,7 +46,7 @@ impl Stats {
             uint("polls", c.polls.get()),
             uint("rx_pkts", c.rx_pkts.get()),
             uint("rx_full_bursts", c.rx_full_bursts.get()),
-            uint("emulator_rejects", c.emulator_rejects.get()),
+            uint("dpds_rejects", c.dpds_rejects.get()),
             uint("pops", c.pops.get()),
             uint("tx_calls", c.tx_calls.get()),
             uint("tx_pkts", tx_pkts),
@@ -79,31 +79,75 @@ impl Stats {
             &DpdsCounters::EPOCH_GAUGE_NAMES,
         )
     }
+}
+
+/// The [`Stats`] of every direction, indexed by direction (= RX port).
+pub struct DirectionStats {
+    pub stats: Vec<Stats>,
+}
+
+/// The direction index a `,<param>` query names: a plain decimal number.
+/// Also the port index of the `/nic/*` commands.
+fn index_param(param: &str) -> Option<usize> {
+    if param.is_empty() || !param.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    param.parse().ok()
+}
+
+impl DirectionStats {
+    pub fn new(num_directions: usize) -> DirectionStats {
+        DirectionStats {
+            stats: (0..num_directions).map(|_| Stats::default()).collect(),
+        }
+    }
+
+    /// `/dpds/stats,<param>`: the stats reply of that direction. `None` for a
+    /// param that is not the decimal index of an existing direction.
+    pub fn stats_reply(&self, param: &str, uptime_ns: u64) -> Option<Reply> {
+        Some(self.stats.get(index_param(param)?)?.stats_reply(uptime_ns))
+    }
+
+    /// `/dpds/epochs,<param>`: the epochs reply of that direction. `None` for
+    /// a bad param.
+    pub fn epochs_reply(&self, param: &str) -> Option<Reply> {
+        Some(self.stats.get(index_param(param)?)?.epochs_reply())
+    }
 
     /// Registers `/dpds/stats` and `/dpds/epochs` (no-op without the
-    /// feature). `start_ns` is the shared `now_ns()` zero point.
+    /// feature). `start_ns` is the shared `now_ns()` zero point. A bad param
+    /// yields an empty dict, like `/nic/epochs`.
     #[cfg(not(feature = "telemetry"))]
     pub fn register_telemetry(
-        _stats: &'static Stats,
+        _stats: &'static DirectionStats,
         _start_ns: f64,
     ) -> Result<(), dpdk::DpdkError> {
         Ok(())
     }
 
     #[cfg(feature = "telemetry")]
-    pub fn register_telemetry(stats: &'static Stats, start_ns: f64) -> Result<(), dpdk::DpdkError> {
+    pub fn register_telemetry(
+        stats: &'static DirectionStats,
+        start_ns: f64,
+    ) -> Result<(), dpdk::DpdkError> {
         dpdk::telemetry::register_command(
             "/dpds/stats",
-            "DPDS packet counters (cumulative) + first-loss result",
-            move |_param, d| {
+            "DPDS counters + first loss of one direction, cumulative (query with ,0 / ,1)",
+            move |param, d| {
                 let uptime = (dpdk::now_ns() - start_ns).max(0.0) as u64;
-                fill(d, stats.stats_reply(uptime));
+                if let Some(reply) = stats.stats_reply(param, uptime) {
+                    fill(d, reply);
+                }
             },
         )?;
         dpdk::telemetry::register_command(
             "/dpds/epochs",
-            "DPDS per-epoch (idle-gap-segmented) counter/gauge history",
-            move |_param, d| fill(d, stats.epochs_reply()),
+            "DPDS per-epoch counter/gauge history of one direction (query with ,0 / ,1)",
+            move |param, d| {
+                if let Some(reply) = stats.epochs_reply(param) {
+                    fill(d, reply);
+                }
+            },
         )
     }
 }
@@ -198,10 +242,28 @@ pub struct PortInfo {
     pub tx_ring_requested: u16,
 }
 
+/// Static info of one direction for `/dpds/ports`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectionInfo {
+    pub rx_port: u16,
+    pub tx_port: u16,
+    /// EAL lcore of the direction's worker.
+    pub lcore: u32,
+    /// Path of the direction's config file.
+    pub config: String,
+    /// Mbufs in the direction's mempool.
+    pub pool_size: u32,
+    /// Whether the direction frees mbufs with the raw bulk free.
+    pub raw_free: bool,
+}
+
 /// The `/dpds/ports` reply: `num_ports`, then per port index `i`
 /// `port<i>_name` (string), `port<i>_rx_ring`, `port<i>_tx_ring`,
-/// `port<i>_rx_ring_requested`, `port<i>_tx_ring_requested`.
-pub fn ports_reply(ports: &[PortInfo]) -> Reply {
+/// `port<i>_rx_ring_requested`, `port<i>_tx_ring_requested`; then
+/// `num_directions` and per direction `d` `dir<d>_rx_port`, `dir<d>_tx_port`,
+/// `dir<d>_lcore`, `dir<d>_config` (string), `dir<d>_pool_size`,
+/// `dir<d>_raw_free` (0 or 1).
+pub fn ports_reply(ports: &[PortInfo], directions: &[DirectionInfo]) -> Reply {
     let mut reply = vec![uint("num_ports", ports.len() as u64)];
     for (i, p) in ports.iter().enumerate() {
         reply.push(string(&format!("port{i}_name"), p.name.as_str()));
@@ -216,22 +278,37 @@ pub fn ports_reply(ports: &[PortInfo]) -> Reply {
             p.tx_ring_requested as u64,
         ));
     }
+    reply.push(uint("num_directions", directions.len() as u64));
+    for (d, dir) in directions.iter().enumerate() {
+        reply.push(uint(&format!("dir{d}_rx_port"), dir.rx_port as u64));
+        reply.push(uint(&format!("dir{d}_tx_port"), dir.tx_port as u64));
+        reply.push(uint(&format!("dir{d}_lcore"), dir.lcore as u64));
+        reply.push(string(&format!("dir{d}_config"), dir.config.as_str()));
+        reply.push(uint(&format!("dir{d}_pool_size"), dir.pool_size as u64));
+        reply.push(uint(&format!("dir{d}_raw_free"), dir.raw_free as u64));
+    }
     reply
 }
 
 /// Registers `/dpds/ports` (no-op without the feature). The values are
 /// static, so the feature gate only keeps a plain build off the socket.
 #[cfg(not(feature = "telemetry"))]
-pub fn register_port_telemetry(_ports: Vec<PortInfo>) -> Result<(), dpdk::DpdkError> {
+pub fn register_port_telemetry(
+    _ports: Vec<PortInfo>,
+    _directions: Vec<DirectionInfo>,
+) -> Result<(), dpdk::DpdkError> {
     Ok(())
 }
 
 #[cfg(feature = "telemetry")]
-pub fn register_port_telemetry(ports: Vec<PortInfo>) -> Result<(), dpdk::DpdkError> {
+pub fn register_port_telemetry(
+    ports: Vec<PortInfo>,
+    directions: Vec<DirectionInfo>,
+) -> Result<(), dpdk::DpdkError> {
     dpdk::telemetry::register_command(
         "/dpds/ports",
-        "DPDS port device names, applied vs requested descriptor ring sizes",
-        move |_param, d| fill(d, ports_reply(&ports)),
+        "DPDS ports (names, applied/requested rings) and per-direction layout",
+        move |_param, d| fill(d, ports_reply(&ports, &directions)),
     )
 }
 
@@ -240,14 +317,6 @@ pub fn register_port_telemetry(ports: Vec<PortInfo>) -> Result<(), dpdk::DpdkErr
 pub struct NicHwStats {
     pub first_loss: Vec<StageLossTracker>,
     pub epochs: Vec<NicEpochLog>,
-}
-
-/// The port index a `,<param>` query names: a plain decimal number.
-fn port_index(param: &str) -> Option<usize> {
-    if param.is_empty() || !param.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    param.parse().ok()
 }
 
 impl NicHwStats {
@@ -262,7 +331,7 @@ impl NicHwStats {
     /// `hw_first_loss_detail`, `hw_first_loss_relative_ns`. `None` for a
     /// param that is not the decimal index of a polled port.
     pub fn hw_first_loss_reply(&self, param: &str) -> Option<Reply> {
-        let tracker = self.first_loss.get(port_index(param)?)?;
+        let tracker = self.first_loss.get(index_param(param)?)?;
         let fields = format_first_loss(tracker.current());
         Some(vec![
             string("hw_first_loss_reason", fields.reason),
@@ -274,7 +343,7 @@ impl NicHwStats {
     /// `/nic/epochs,<param>`: `epochs_reply` with `rx_packets`, `imissed`,
     /// `rx_port_discards`. `None` for a bad param.
     pub fn epochs_reply(&self, param: &str) -> Option<Reply> {
-        let log = self.epochs.get(port_index(param)?)?;
+        let log = self.epochs.get(index_param(param)?)?;
         Some(epochs_reply(
             log,
             &NicEpochLog::EPOCH_COUNTER_NAMES,

@@ -1,21 +1,23 @@
-//! Command line: `dpds <EAL args...> -- [--config <path>] [--num-mbufs <N>]`
+//! Command line: `dpds <EAL args...> -- [--config <path>] [--config0 <path>]
+//! [--config1 <path>]`
 
 use std::fmt;
 use std::path::PathBuf;
 
-use crate::consts::DEFAULT_NUM_MBUFS;
-
-const USAGE: &str = "Usage: dpds <EAL args...> -- [--config <path>] [--num-mbufs <N>]";
+const USAGE: &str = "Usage: dpds <EAL args...> -- [--config <path>] [--config0 <path>] \
+                     [--config1 <path>]";
 
 /// Parsed command line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cli {
     /// Everything before the first `--` (argv[0] included), for `Eal::new`.
     pub eal_args: Vec<String>,
-    /// Emulator config file (default `config.json`).
-    pub config: PathBuf,
-    /// Mbufs per port; the pool holds this times the number of ports.
-    pub num_mbufs: u32,
+    /// `--config`: DPDS config of every direction without its own flag.
+    pub config: Option<PathBuf>,
+    /// `--config0`: DPDS config of direction 0 (traffic received on port 0).
+    pub config0: Option<PathBuf>,
+    /// `--config1`: DPDS config of direction 1 (needs two ports).
+    pub config1: Option<PathBuf>,
 }
 
 /// A bad application argument; the message includes the usage text.
@@ -34,6 +36,14 @@ fn error(problem: impl fmt::Display) -> CliError {
     CliError(format!("{problem}\n{USAGE}"))
 }
 
+/// Stores `value` in `slot`, refusing a second occurrence of `flag`.
+fn set<T>(slot: &mut Option<T>, flag: &str, value: T) -> Result<(), CliError> {
+    if slot.replace(value).is_some() {
+        return Err(error(format_args!("{flag} given more than once")));
+    }
+    Ok(())
+}
+
 /// Parses the full argv (including argv[0]). Everything before the first
 /// `--` belongs to the EAL, everything after it to the application.
 pub fn parse_args(args: &[String]) -> Result<Cli, CliError> {
@@ -44,8 +54,9 @@ pub fn parse_args(args: &[String]) -> Result<Cli, CliError> {
 
     let mut cli = Cli {
         eal_args: eal_args.to_vec(),
-        config: PathBuf::from("config.json"),
-        num_mbufs: DEFAULT_NUM_MBUFS,
+        config: None,
+        config0: None,
+        config1: None,
     };
 
     let mut it = app_args.iter();
@@ -55,15 +66,30 @@ pub fn parse_args(args: &[String]) -> Result<Cli, CliError> {
                 .ok_or_else(|| error(format_args!("missing value for {arg}")))
         };
         match arg.as_str() {
-            "--config" => cli.config = PathBuf::from(value()?),
-            "--num-mbufs" => {
-                let v = value()?;
-                cli.num_mbufs = v
-                    .parse()
-                    .map_err(|_| error(format_args!("invalid --num-mbufs value '{v}'")))?;
-            }
+            "--config" => set(&mut cli.config, arg, PathBuf::from(value()?))?,
+            "--config0" => set(&mut cli.config0, arg, PathBuf::from(value()?))?,
+            "--config1" => set(&mut cli.config1, arg, PathBuf::from(value()?))?,
             other => return Err(error(format_args!("unknown argument '{other}'"))),
         }
     }
     Ok(cli)
+}
+
+impl Cli {
+    /// The config file of every direction (one per port): `--config<d>`, else
+    /// `--config`, else `config.json`. `--config1` is an error with one port.
+    pub fn direction_configs(&self, num_ports: usize) -> Result<Vec<PathBuf>, CliError> {
+        if num_ports < 2 && self.config1.is_some() {
+            return Err(error("--config1 needs two ports, found one"));
+        }
+        let fallback = self
+            .config
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("config.json"));
+        Ok([&self.config0, &self.config1]
+            .into_iter()
+            .take(num_ports)
+            .map(|c| c.clone().unwrap_or_else(|| fallback.clone()))
+            .collect())
+    }
 }

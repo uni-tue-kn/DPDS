@@ -1,11 +1,13 @@
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 use rand_distr::{Distribution, Gamma, LogNormal, Normal, Uniform};
-use serde::{Deserialize, Serialize};
+
+use crate::BuildError;
 
 const SQRT_3: f64 = 1.7320508075688772;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum RVDistribution {
     DeterministicDistribution,
     LogNormalDistribution,
@@ -31,7 +33,7 @@ struct HalfLifePeriodCounter {
 impl HalfLifePeriodCounter {
     fn new() -> HalfLifePeriodCounter {
         HalfLifePeriodCounter {
-            update_period_ns: 10_000_000., // Update every 10ms
+            update_period_ns: 1_000_000., // Update every 1ms
             last_update_ns: 0.,
             tracked_packets: 0,
         }
@@ -84,39 +86,57 @@ impl Delayer {
         (((1f64 + correlation_weight) / (1f64 - correlation_weight)) * std_ns * std_ns).sqrt()
     }
 
-    fn initialize_rv(mean_ns: f64, std_ns: f64, rv_distribution: RVDistribution) -> RV {
-        match rv_distribution {
+    fn initialize_rv(
+        mean_ns: f64,
+        std_ns: f64,
+        rv_distribution: RVDistribution,
+    ) -> Result<RV, BuildError> {
+        let invalid = |reason: String| BuildError::Distribution {
+            distribution: rv_distribution,
+            mean_ns,
+            std_ns,
+            reason,
+        };
+        Ok(match rv_distribution {
             RVDistribution::DeterministicDistribution => RV::Deterministic(mean_ns),
             RVDistribution::NormalDistribution => {
-                RV::Normal(Normal::new(mean_ns, std_ns).unwrap_or_else(|_| {
-                    panic!("No Normal distribution with mean {mean_ns} and std {std_ns} possible!")
-                }))
+                RV::Normal(Normal::new(mean_ns, std_ns).map_err(|e| invalid(e.to_string()))?)
             }
             RVDistribution::LogNormalDistribution => RV::LogNormal(
-                LogNormal::from_mean_cv(mean_ns, std_ns / mean_ns).unwrap_or_else(|_| {
-                    panic!(
-                        "No LogNormal distribution with mean {mean_ns} and cvar {} possible!",
+                LogNormal::from_mean_cv(mean_ns, std_ns / mean_ns).map_err(|e| {
+                    invalid(format!(
+                        "coefficient of variation std_ns / mean_ns = {}: {e}",
                         std_ns / mean_ns
-                    )
-                }),
+                    ))
+                })?,
             ),
             RVDistribution::GammaDistribution => {
                 let alpha = (mean_ns / std_ns) * (mean_ns / std_ns);
                 let beta = (std_ns * std_ns) / mean_ns;
-                RV::Gamma(Gamma::new(alpha, beta).unwrap_or_else(|_| {
-                    panic!("No Gamma distribution with alpha {alpha} and beta {beta} possible!")
-                }))
+                RV::Gamma(
+                    Gamma::new(alpha, beta)
+                        .map_err(|e| invalid(format!("alpha = {alpha}, beta = {beta}: {e}")))?,
+                )
             }
             RVDistribution::UniformDistribution => {
                 let low = mean_ns - SQRT_3 * std_ns;
                 let high = mean_ns + SQRT_3 * std_ns;
-                RV::Uniform(Uniform::new(low, high).unwrap_or_else(|_| {
-                    panic!("No Uniform distribution with low {low} and high {high} possible!")
-                }))
+                RV::Uniform(
+                    Uniform::new(low, high)
+                        .map_err(|e| invalid(format!("low = {low}, high = {high}: {e}")))?,
+                )
             }
-        }
+        })
     }
 
+    /// Creates a delayer seeded from the OS entropy source.
+    ///
+    /// # Panics
+    ///
+    /// If the distribution rejects `mean_ns` / `std_ns`, or `half_life_period_ns`
+    /// is negative, NaN or infinite, or with correlation so long that its
+    /// weight is not below 1; use
+    /// [`Delayer::try_new`] to get an error instead.
     pub fn new(
         rv_distribution: RVDistribution,
         mean_ns: f64,
@@ -125,8 +145,78 @@ impl Delayer {
         half_life_period_ns: f64,
         initialization_rate_pps: f64,
     ) -> Self {
-        let rng = SmallRng::from_rng(&mut rand::rng());
+        Self::try_new(
+            rv_distribution,
+            mean_ns,
+            std_ns,
+            activate_correlation,
+            half_life_period_ns,
+            initialization_rate_pps,
+        )
+        .unwrap_or_else(|e| panic!("{e}"))
+    }
 
+    /// Like [`Delayer::new`], but returns an error for invalid distribution
+    /// parameters or a `half_life_period_ns` that is negative, NaN or infinite
+    /// (0 is valid) instead of panicking. With `activate_correlation`, a
+    /// half-life so long that the smoothing weight at
+    /// `initialization_rate_pps` is not below 1 is an error as well. Only the
+    /// initial parameters are validated, see [`Delayer::delayer_sample_ns`].
+    pub fn try_new(
+        rv_distribution: RVDistribution,
+        mean_ns: f64,
+        std_ns: f64,
+        activate_correlation: bool,
+        half_life_period_ns: f64,
+        initialization_rate_pps: f64,
+    ) -> Result<Self, BuildError> {
+        Self::build(
+            rv_distribution,
+            mean_ns,
+            std_ns,
+            activate_correlation,
+            half_life_period_ns,
+            initialization_rate_pps,
+            SmallRng::from_rng(&mut rand::rng()),
+        )
+    }
+
+    /// Like [`Delayer::try_new`], but with a deterministic RNG: the same seed
+    /// gives the same samples for the same sequence of calls.
+    pub fn try_new_seeded(
+        rv_distribution: RVDistribution,
+        mean_ns: f64,
+        std_ns: f64,
+        activate_correlation: bool,
+        half_life_period_ns: f64,
+        initialization_rate_pps: f64,
+        seed: u64,
+    ) -> Result<Self, BuildError> {
+        Self::build(
+            rv_distribution,
+            mean_ns,
+            std_ns,
+            activate_correlation,
+            half_life_period_ns,
+            initialization_rate_pps,
+            SmallRng::seed_from_u64(seed),
+        )
+    }
+
+    fn build(
+        rv_distribution: RVDistribution,
+        mean_ns: f64,
+        std_ns: f64,
+        activate_correlation: bool,
+        half_life_period_ns: f64,
+        initialization_rate_pps: f64,
+        rng: SmallRng,
+    ) -> Result<Self, BuildError> {
+        if !half_life_period_ns.is_finite() || half_life_period_ns < 0. {
+            return Err(BuildError::HalfLifePeriod {
+                half_life_period_ns,
+            });
+        }
         let configured_mean_ns = mean_ns;
         let configured_std_ns = std_ns;
         let mut std_ns = std_ns;
@@ -135,16 +225,23 @@ impl Delayer {
         let initialization_rate_ppns = initialization_rate_pps / 1e9;
 
         if activate_correlation {
-            std_ns = Delayer::calculate_correlated_std_ns(configured_std_ns, weight);
             weight = Delayer::calculate_correlation_weight(
                 half_life_period_ns,
                 initialization_rate_ppns,
             );
+            // A weight of 1 (a half-life so long that 2^(-1/k) rounds to 1)
+            // has no finite innovation std and would freeze the delay.
+            if weight.is_nan() || weight >= 1. {
+                return Err(BuildError::HalfLifePeriod {
+                    half_life_period_ns,
+                });
+            }
+            std_ns = Delayer::calculate_correlated_std_ns(configured_std_ns, weight);
         }
 
-        let distribution = Delayer::initialize_rv(configured_mean_ns, std_ns, rv_distribution);
+        let distribution = Delayer::initialize_rv(configured_mean_ns, std_ns, rv_distribution)?;
 
-        Delayer {
+        Ok(Delayer {
             rng,
             rv_distribution,
             configured_mean_ns,
@@ -155,14 +252,20 @@ impl Delayer {
             correlation_weight: weight,
             x_im1_ns: configured_mean_ns,
             half_life_period_counter: HalfLifePeriodCounter::new(),
-        }
+        })
     }
 
     /// Samples a delay (in ns) for a packet arriving at `current_time_ns`.
     ///
-    /// When correlation is active, the rate estimate is refreshed once per
-    /// half-life update period and the sampled delay is smoothed against the
-    /// previous one (EMA). Negative samples are clamped to zero.
+    /// When correlation is active, the rate estimate is refreshed every 1 ms
+    /// and the sampled delay is smoothed against the previous one (EMA).
+    /// Negative samples are clamped to zero.
+    ///
+    /// # Panics
+    ///
+    /// With correlation, if the distribution rejects the parameters derived
+    /// from a refreshed rate estimate (a huge finite half-life combined with a
+    /// much higher measured rate than the initialisation rate can overflow).
     pub fn delayer_sample_ns(&mut self, current_time_ns: f64) -> f64 {
         if self.activate_correlation {
             if let Some(rate_ppns) = self
@@ -184,7 +287,8 @@ impl Delayer {
                     self.configured_mean_ns,
                     new_std_ns,
                     self.rv_distribution,
-                );
+                )
+                .unwrap_or_else(|e| panic!("{e}"));
             }
         }
 

@@ -140,9 +140,9 @@ pub fn mean_2dp(total: u64, count: u64) -> String {
 pub struct DpdsCounters {
     pub polls: Counter,
     pub rx_pkts: Counter,
-    /// `rx_burst` returned a full `MAX_BURST_SIZE` batch: intake-limited.
+    /// `rx_burst` returned a full `BURST_SIZE` batch: intake-limited.
     pub rx_full_bursts: Counter,
-    pub emulator_rejects: Counter,
+    pub dpds_rejects: Counter,
     pub pops: Counter,
     pub tx_calls: Counter,
     pub tx_pkts: Counter,
@@ -158,7 +158,7 @@ impl DpdsCounters {
         "polls",
         "rx_pkts",
         "rx_full_bursts",
-        "emulator_rejects",
+        "dpds_rejects",
         "pops",
         "tx_calls",
         "tx_pkts",
@@ -174,7 +174,7 @@ impl DpdsCounters {
             self.polls.get(),
             self.rx_pkts.get(),
             self.rx_full_bursts.get(),
-            self.emulator_rejects.get(),
+            self.dpds_rejects.get(),
             self.pops.get(),
             self.tx_calls.get(),
             self.tx_pkts.get(),

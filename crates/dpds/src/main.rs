@@ -1,24 +1,30 @@
 //! DPDS: DPDK-based network-link emulator. See the README for usage.
 //!
-//! Single data-plane core, like preof's `baseline`: the EAL main lcore
-//! handles signals and polls the NIC hardware counters; one worker lcore
-//! runs RX -> emulator -> TX (`dpds::forward::run`).
+//! One worker lcore per direction (direction `d` = traffic received on port
+//! `d`, each with its own config, buffer and mempool): the EAL main lcore
+//! handles signals and polls the NIC hardware counters; every worker lcore
+//! runs RX -> DPDS -> TX (`dpds::forward::run`).
 
 use std::error::Error;
+use std::path::PathBuf;
 use std::process::ExitCode;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use dpdk::eal::{self, foreach_worker, lcore_count};
-use dpdk::port::{self, foreach_dev, shutdown_port};
-use dpdk::{now_ns, Eal, Mempool, Port, PortDiscardXstats};
-use dpds::cli::{parse_args, Cli};
+use dpdk::mempool::{mbuf_buf_size_for_frame, MbufFreer};
+use dpdk::port::{self, adjust_nb_rx_tx_desc, foreach_dev, shutdown_port};
+use dpdk::{now_ns, Clock, Eal, Mempool, Port, PortDiscardXstats, RxQueue, TxQueue};
+use dpds::cli::parse_args;
 use dpds::consts::{HW_STATS_POLL_INTERVAL_MS, MBUF_CACHE_SIZE, MTU, NIC_DESCRIPTORS};
 use dpds::forward;
-use dpds::io::{NicRx, NicTx, PktmbufFree};
+use dpds::io::{NicRx, NicTx, PktmbufFree, RawFree};
 use dpds::quit::QUIT;
-use dpds::setup::{validate_lcore_count, validate_port_count};
-use dpds::stats::{register_port_telemetry, NicHwStats, NicPoller, PortInfo, Stats, Telemetry};
+use dpds::setup::{egress_port, required_mbufs, validate_lcore_count, validate_port_count};
+use dpds::stats::{
+    register_port_telemetry, DirectionInfo, DirectionStats, NicHwStats, NicPoller, PortInfo,
+    Telemetry,
+};
 use dpds::worker::Worker;
 use dpds_core::buffer::Buffer;
 use dpds_core::Config;
@@ -36,8 +42,8 @@ fn main() -> ExitCode {
 }
 
 // ── Signals ──────────────────────────────────────────────────────────────────
-// SIGINT/SIGTERM set the quit flag: the worker stops receiving, drains the
-// delay buffer, flushes TX and returns; the main lcore then shuts down.
+// SIGINT/SIGTERM set the quit flag: every worker stops receiving, drains its
+// delay buffer and returns; the main lcore then shuts down.
 
 extern "C" fn on_signal(_signum: i32) {
     QUIT.request();
@@ -62,58 +68,56 @@ fn install_signal_handlers() -> Result<()> {
 
 // ── Setup ────────────────────────────────────────────────────────────────────
 
-/// The queue handles of all ports, split per direction and indexed by port id.
-struct Nics {
-    rx: NicRx,
-    tx: NicTx,
-    infos: Vec<PortInfo>,
+/// Data room of every mbuf: the largest frame (MTU + Ethernet header + FCS)
+/// plus headroom, instead of DPDK's generic 2176-byte default.
+const MBUF_DATA_ROOM: u16 = mbuf_buf_size_for_frame((MTU + 14 + 4) as u16);
+
+/// A direction as set up before its worker starts.
+struct Direction {
+    worker: Worker,
+    config: PathBuf,
+    lcore: u32,
+    freer: MbufFreer,
+    raw_free: bool,
 }
 
-/// Initialises and starts every port (one RX and one TX queue each) and
-/// leaks it: `remote_launch` needs `'static` queue handles, and `Port::queues`
-/// only hands out `'static` ones for a `'static` port. The ports are stopped
-/// explicitly with `shutdown_port` at the end.
-fn init_ports(ids: &[u16], pool: &'static Mempool) -> Result<Nics> {
-    let mut ports = Vec::new();
-    for &id in ids {
-        // On an early return the already started ports are dropped, which stops them.
-        let port = Port::init(id, pool, NIC_DESCRIPTORS, NIC_DESCRIPTORS, 1, MTU)
-            .map_err(|e| format!("failed to initialize port {id}: {e}"))?;
-        if !port.link_up()? {
-            return Err(format!("link is down on port {id}").into());
-        }
-        println!(
-            "Port {id} ({}): RX ring {} (requested {}), TX ring {} (requested {})",
-            port.device_name(),
-            port.rx_ring_size(),
-            port.rx_ring_size_requested(),
-            port.tx_ring_size(),
-            port.tx_ring_size_requested()
-        );
-        ports.push(port);
-    }
+/// Loads and builds the buffer of every direction from its config file.
+fn load_buffers(configs: &[PathBuf]) -> Result<Vec<Buffer>> {
+    configs
+        .iter()
+        .map(|path| {
+            let config = Config::from_file(path)?;
+            Buffer::try_new(config).map_err(|e| format!("{}: {e}", path.display()).into())
+        })
+        .collect()
+}
 
-    let mut infos = Vec::new();
-    let mut rx = Vec::new();
-    let mut tx = Vec::new();
-    for port in ports {
-        infos.push(PortInfo {
-            name: port.device_name().to_string(),
-            rx_ring: port.rx_ring_size(),
-            tx_ring: port.tx_ring_size(),
-            rx_ring_requested: port.rx_ring_size_requested(),
-            tx_ring_requested: port.tx_ring_size_requested(),
-        });
-        let port: &'static mut Port<'static> = Box::leak(Box::new(port));
-        let (mut r, mut t) = port.queues();
-        rx.extend(r.drain(..1));
-        tx.extend(t.drain(..1));
-    }
-    Ok(Nics {
-        rx: NicRx(rx),
-        tx: NicTx(tx),
-        infos,
-    })
+/// One mempool of `num_mbufs` per direction on the socket of its RX port (the
+/// socket of the calling lcore if the port reports none). Leaked: the ports'
+/// queue handles and the workers need `'static` access.
+fn create_pool(direction: usize, num_mbufs: u64) -> Result<(&'static Mempool, String, u32)> {
+    let name = format!("dpds_pool_{direction}");
+    let failed = |why: &dyn std::fmt::Display| {
+        format!(
+            "direction {direction}: cannot create mbuf pool {name} with {num_mbufs} mbufs: {why}"
+        )
+    };
+    let count = u32::try_from(num_mbufs).map_err(|_| failed(&"more than u32::MAX mbufs"))?;
+    let port_socket = port::rte_eth_dev_socket_id(direction as u16);
+    let socket = u32::try_from(port_socket).unwrap_or_else(|_| port::rte_socket_id());
+    let pool = Mempool::create(&name, count, MBUF_CACHE_SIZE, MBUF_DATA_ROOM, socket)
+        .map_err(|e| failed(&e))?;
+    Ok((Box::leak(Box::new(pool)), name, socket))
+}
+
+fn burst_mode(mode: Option<String>) -> String {
+    mode.unwrap_or_else(|| "unknown".into())
+}
+
+/// The ports' RX/TX queue 0 handles, taken once by the directions.
+struct Queues {
+    rx: Vec<Option<RxQueue<'static>>>,
+    tx: Vec<Option<TxQueue<'static>>>,
 }
 
 // ── Main lcore: NIC hardware counters ────────────────────────────────────────
@@ -147,13 +151,15 @@ fn nic_pollers(ids: &[u16], start_ns: f64) -> Vec<(u16, NicPoller, Option<PortDi
 }
 
 /// Polls every port's hardware counters every `HW_STATS_POLL_INTERVAL_MS`
-/// until the worker is done. Writes only into `hw`, never into worker state.
+/// until all `workers` are done. Writes only into `hw`, never into worker
+/// state.
 fn poll_nics(
     pollers: &mut [(u16, NicPoller, Option<PortDiscardXstats>)],
     hw: &NicHwStats,
-    worker_done: &AtomicBool,
+    workers_done: &AtomicUsize,
+    workers: usize,
 ) {
-    while !worker_done.load(Ordering::Acquire) {
+    while workers_done.load(Ordering::Acquire) < workers {
         std::thread::sleep(Duration::from_millis(HW_STATS_POLL_INTERVAL_MS));
         for (id, poller, discards) in pollers.iter_mut() {
             // A transient failure just skips this port's tick.
@@ -170,44 +176,140 @@ fn poll_nics(
 
 fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    let Cli {
-        eal_args,
-        config,
-        num_mbufs,
-    } = parse_args(&args)?;
+    let cli = parse_args(&args)?;
 
     // Dropped last: cleans up the EAL after everything else is gone.
-    let _eal = Eal::new(&eal_args).map_err(|e| format!("EAL initialization failed: {e}"))?;
+    let _eal = Eal::new(&cli.eal_args).map_err(|e| format!("EAL initialization failed: {e}"))?;
 
     // Everything that can fail without side effects comes before the ports start.
-    validate_lcore_count(lcore_count())?;
-    let worker_lcore = foreach_worker().next().ok_or("no worker lcore available")?;
     let port_ids: Vec<u16> = foreach_dev().collect();
     validate_port_count(port_ids.len())?;
     if port_ids.iter().copied().ne(0..port_ids.len() as u16) {
         return Err(format!("expected port ids 0..{}, got {port_ids:?}", port_ids.len()).into());
     }
-    let num_ports = port_ids.len() as u16;
-    let config = Config::from_file(&config)?;
-    let worker = Worker::new(Buffer::new(config), num_ports);
+    let num_ports = port_ids.len();
+    validate_lcore_count(lcore_count(), num_ports)?;
+    let lcores: Vec<u32> = foreach_worker().collect();
+    let configs = cli.direction_configs(num_ports)?;
+    let buffers = load_buffers(&configs)?;
 
-    let pool_size = num_mbufs
-        .checked_mul(num_ports as u32)
-        .ok_or("--num-mbufs too large")?;
-    // Leaked: the ports' queue handles must be `'static` (see `init_ports`).
-    let pool: &'static Mempool = Box::leak(Box::new(
-        Mempool::create(
-            "mbuf_pool",
-            pool_size,
-            MBUF_CACHE_SIZE,
-            Mempool::DEFAULT_BUF_SIZE,
-            port::rte_socket_id(),
+    // The pool size of a direction is derived: its delay buffer plus the RX
+    // ring it fills and the TX ring it feeds. The drivers' applied ring sizes
+    // come from `rte_eth_dev_adjust_nb_rx_tx_desc`, which works on a port that
+    // is not configured yet, so the pools exist before the ports are set up.
+    let applied: Vec<(u16, u16)> = port_ids
+        .iter()
+        .map(|&id| {
+            adjust_nb_rx_tx_desc(id, NIC_DESCRIPTORS, NIC_DESCRIPTORS)
+                .map_err(|e| format!("cannot query the descriptor limits of port {id}: {e}"))
+        })
+        .collect::<std::result::Result<_, _>>()?;
+
+    // One pool per direction, then every port with the pool of the direction
+    // that receives on it.
+    let mut pools = Vec::new();
+    let mut pool_sizes = Vec::new();
+    for (d, buffer) in buffers.iter().enumerate() {
+        let tx_port = egress_port(d as u16, num_ports) as usize;
+        let size = required_mbufs(buffer.capacity(), applied[d].0, applied[tx_port].1);
+        pools.push(create_pool(d, size)?);
+        pool_sizes.push(size as u32);
+    }
+    // On an early return the already started ports are dropped, which stops them.
+    let mut ports = Vec::new();
+    for &id in &port_ids {
+        let port = Port::init(
+            id,
+            pools[id as usize].0,
+            NIC_DESCRIPTORS,
+            NIC_DESCRIPTORS,
+            1,
+            MTU,
         )
-        .map_err(|e| format!("failed to initialize mbuf pool: {e}"))?,
-    ));
-    let nics = init_ports(&port_ids, pool)?;
+        .map_err(|e| format!("failed to initialize port {id}: {e}"))?;
+        if !port.link_up()? {
+            return Err(format!("link is down on port {id}").into());
+        }
+        let socket = port::rte_eth_dev_socket_id(id);
+        println!(
+            "Port {id} ({}): socket {socket}, RX ring {} (requested {}), TX ring {} (requested {}), \
+             RX burst: {}, TX burst: {}, link {}",
+            port.device_name(),
+            port.rx_ring_size(),
+            port.rx_ring_size_requested(),
+            port.tx_ring_size(),
+            port.tx_ring_size_requested(),
+            burst_mode(port.rx_burst_mode()),
+            burst_mode(port.tx_burst_mode()),
+            port.link_speed().unwrap_or_else(|e| format!("unknown ({e})")),
+        );
+        ports.push(port);
+    }
 
-    let result = serve(&port_ids, worker, worker_lcore, nics);
+    let mut directions = Vec::new();
+    for (d, (buffer, (&lcore, config))) in buffers
+        .into_iter()
+        .zip(lcores.iter().zip(configs))
+        .enumerate()
+    {
+        let rx_port = d as u16;
+        let tx_port = egress_port(rx_port, num_ports);
+        let (pool, pool_name, pool_socket) = pools[d].clone();
+        let lcore_socket = unsafe { dpdk_sys::rte_lcore_to_socket_id(lcore) };
+        if port::rte_eth_dev_socket_id(rx_port) >= 0 && lcore_socket != pool_socket {
+            eprintln!(
+                "dpds: warning: worker lcore {lcore} of direction {d} is on socket {lcore_socket} \
+                 but port {rx_port} is on socket {pool_socket}"
+            );
+        }
+        let raw_free =
+            ports[rx_port as usize].mbuf_fast_free() && ports[tx_port as usize].mbuf_fast_free();
+        println!(
+            "Direction {d}: lcore {lcore}, port {rx_port} -> port {tx_port}, config {}, \
+             pool {pool_name} with {} mbufs on socket {pool_socket}, free: {}",
+            config.display(),
+            pool_sizes[d],
+            if raw_free {
+                "raw bulk (MBUF_FAST_FREE on both ports)"
+            } else {
+                "pktmbuf bulk (MBUF_FAST_FREE not active on both ports)"
+            }
+        );
+        directions.push(Direction {
+            worker: Worker::new(buffer, rx_port, tx_port),
+            config,
+            lcore,
+            freer: pool.freer(),
+            raw_free,
+        });
+    }
+
+    let port_infos: Vec<PortInfo> = ports
+        .iter()
+        .map(|p| PortInfo {
+            name: p.device_name().to_string(),
+            rx_ring: p.rx_ring_size(),
+            tx_ring: p.tx_ring_size(),
+            rx_ring_requested: p.rx_ring_size_requested(),
+            tx_ring_requested: p.tx_ring_size_requested(),
+        })
+        .collect();
+
+    // Leaked: `remote_launch` needs `'static` queue handles and `Port::queues`
+    // only hands out `'static` ones for a `'static` port. The ports are
+    // stopped explicitly with `shutdown_port` at the end.
+    let mut queues = Queues {
+        rx: Vec::new(),
+        tx: Vec::new(),
+    };
+    for port in ports {
+        let port: &'static mut Port<'static> = Box::leak(Box::new(port));
+        let (mut r, mut t) = port.queues();
+        queues.rx.push(r.drain(..1).next());
+        queues.tx.push(t.drain(..1).next());
+    }
+
+    let result = serve(&port_ids, directions, queues, port_infos, &pool_sizes);
 
     // The ports were leaked (no `Drop`), stop and close them by id.
     for id in port_ids {
@@ -216,56 +318,130 @@ fn run() -> Result<()> {
     result
 }
 
-/// Registers telemetry, launches the worker and runs the main lcore's poll
-/// loop until the worker has finished.
-fn serve(port_ids: &[u16], worker: Worker, worker_lcore: u32, nics: Nics) -> Result<()> {
+/// Registers telemetry, launches one worker per direction and runs the main
+/// lcore's poll loop until all of them have finished.
+fn serve(
+    port_ids: &[u16],
+    directions: Vec<Direction>,
+    mut queues: Queues,
+    port_infos: Vec<PortInfo>,
+    pool_sizes: &[u32],
+) -> Result<()> {
+    let clock = Clock::new();
     // The shared zero point of every `uptime_ns` / `relative_ns` / epoch time.
-    let start_ns = now_ns();
-    let stats: &'static Stats = Box::leak(Box::default());
+    let start_ns = clock.now_ns();
+    let stats: &'static DirectionStats = Box::leak(Box::new(DirectionStats::new(directions.len())));
     let hw: &'static NicHwStats = Box::leak(Box::new(NicHwStats::new(port_ids.len())));
     let register = |e: dpdk::DpdkError| format!("cannot register telemetry command: {e}");
-    Stats::register_telemetry(stats, start_ns).map_err(register)?;
+    DirectionStats::register_telemetry(stats, start_ns).map_err(register)?;
     NicHwStats::register_telemetry(hw).map_err(register)?;
-    register_port_telemetry(nics.infos.clone()).map_err(register)?;
+    let direction_infos = directions
+        .iter()
+        .zip(pool_sizes)
+        .map(|(d, &pool_size)| DirectionInfo {
+            rx_port: d.worker.rx_port(),
+            tx_port: d.worker.tx_port(),
+            lcore: d.lcore,
+            config: d.config.display().to_string(),
+            pool_size,
+            raw_free: d.raw_free,
+        })
+        .collect();
+    register_port_telemetry(port_infos, direction_infos).map_err(register)?;
     let mut pollers = nic_pollers(port_ids, start_ns);
 
     install_signal_handlers()?;
 
-    static WORKER_DONE: AtomicBool = AtomicBool::new(false);
-    let Nics {
-        rx: mut rx_nic,
-        tx: mut tx_nic,
-        ..
-    } = nics;
-    eal::remote_launch(
-        move || {
-            let mut telemetry = Telemetry::new(stats, start_ns);
-            // SAFETY: `rx_nic` hands out valid mbufs we own, `tx_nic` and
-            // `PktmbufFree` take them over.
-            unsafe {
-                forward::run(
-                    worker,
-                    &mut rx_nic,
-                    &mut tx_nic,
-                    &mut PktmbufFree,
-                    &mut telemetry,
-                    &QUIT,
-                    now_ns,
-                )
-            };
-            WORKER_DONE.store(true, Ordering::Release);
-        },
-        worker_lcore,
-    )
-    .map_err(|e| format!("failed to launch lcore {worker_lcore}: {e}"))?;
+    static WORKERS_DONE: AtomicUsize = AtomicUsize::new(0);
+    let num_directions = directions.len();
+
+    // Every direction's queue handles first, so that a failure here cannot
+    // leave already launched workers running. Each queue belongs to exactly
+    // one direction; with a single port its RX and TX queue are both port 0's.
+    let mut handles = Vec::new();
+    for dir in &directions {
+        let rx_queue = queues.rx[dir.worker.rx_port() as usize]
+            .take()
+            .ok_or("RX queue already in use")?;
+        let tx_queue = queues.tx[dir.worker.tx_port() as usize]
+            .take()
+            .ok_or("TX queue already in use")?;
+        handles.push((rx_queue, tx_queue));
+    }
+
+    let mut launched = Vec::new();
+    for (d, (dir, (rx_queue, tx_queue))) in directions.into_iter().zip(handles).enumerate() {
+        let Direction {
+            worker,
+            lcore,
+            freer,
+            raw_free,
+            ..
+        } = dir;
+        let rx_port = worker.rx_port();
+        let tx_port = worker.tx_port();
+        let launch = eal::remote_launch(
+            move || {
+                let mut rx_nic = NicRx::new(rx_port, rx_queue);
+                let mut tx_nic = NicTx::new(tx_port, tx_queue);
+                let mut telemetry = Telemetry::new(&stats.stats[d], start_ns);
+                let now = move || clock.now_ns();
+                // SAFETY: `rx_nic` hands out valid mbufs we own, `tx_nic` and
+                // the free implementation take them over. `RawFree` is only
+                // chosen when both ports of the direction use MBUF_FAST_FREE.
+                // The TX port's flag covers the mbufs it did not accept
+                // (direct, refcount 1, from the direction's pool). The
+                // rejected RX mbufs are single-segment because RX scatter is
+                // off and the data room fits the largest frame; they are
+                // direct with refcount 1 as received from the direction's pool.
+                unsafe {
+                    if raw_free {
+                        let mut free = RawFree(freer);
+                        forward::run(
+                            worker,
+                            &mut rx_nic,
+                            &mut tx_nic,
+                            &mut free,
+                            &mut telemetry,
+                            &QUIT,
+                            now,
+                        );
+                    } else {
+                        forward::run(
+                            worker,
+                            &mut rx_nic,
+                            &mut tx_nic,
+                            &mut PktmbufFree,
+                            &mut telemetry,
+                            &QUIT,
+                            now,
+                        );
+                    }
+                }
+                WORKERS_DONE.fetch_add(1, Ordering::Release);
+            },
+            lcore,
+        );
+        if let Err(e) = launch {
+            // Stop the workers that already run before reporting.
+            QUIT.request();
+            for &l in &launched {
+                let _ = eal::wait_lcore(l);
+            }
+            return Err(format!("failed to launch lcore {lcore}: {e}").into());
+        }
+        launched.push(lcore);
+    }
     println!(
-        "DPDS running on lcore {worker_lcore} with {} port(s). Ctrl+C to stop.",
+        "DPDS running on lcore(s) {launched:?} with {} port(s). Ctrl+C to stop.",
         port_ids.len()
     );
 
-    poll_nics(&mut pollers, hw, &WORKER_DONE);
+    poll_nics(&mut pollers, hw, &WORKERS_DONE, num_directions);
     println!("Shutting down...");
-    eal::wait_lcore(worker_lcore)
-        .map_err(|e| format!("lcore {worker_lcore} did not shut down cleanly: {e}"))?;
+    for lcore in launched {
+        eal::wait_lcore(lcore)
+            .map_err(|e| format!("lcore {lcore} did not shut down cleanly: {e}"))?;
+    }
     Ok(())
 }

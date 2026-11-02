@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 pub enum FirstLossReason {
     /// `Buffer::push` returned false (loss model, buffer full or limiter,
     /// undifferentiated).
-    EmulatorReject,
+    DpdsReject,
     /// A partial `tx_burst` (the NIC's TX descriptor ring was full).
     DescriptorFull,
     /// NIC hardware: `imissed` rose (wire spelling `IMissed`).
@@ -29,7 +29,7 @@ impl FirstLossReason {
     #[cfg(feature = "telemetry")]
     fn from_u8(v: u8) -> Self {
         match v {
-            0 => FirstLossReason::EmulatorReject,
+            0 => FirstLossReason::DpdsReject,
             1 => FirstLossReason::DescriptorFull,
             2 => FirstLossReason::RxMissed,
             3 => FirstLossReason::RxNoMbuf,
@@ -47,7 +47,7 @@ impl FirstLossReason {
 impl fmt::Display for FirstLossReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            FirstLossReason::EmulatorReject => "EmulatorReject",
+            FirstLossReason::DpdsReject => "DpdsReject",
             FirstLossReason::DescriptorFull => "DescriptorFull",
             FirstLossReason::RxMissed => "IMissed",
             FirstLossReason::RxNoMbuf => "RX_NoMbuf",
@@ -91,7 +91,7 @@ impl fmt::Display for Stage {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StageLossDetail {
-    /// `EmulatorReject`: `from=<stage>`.
+    /// `DpdsReject`: `from=<stage>`.
     Single { from: Stage },
     /// `DescriptorFull`: `from=<stage>,to=<stage>` (`to` is `Stage::Nic`).
     RingFull { from: Stage, to: Stage },

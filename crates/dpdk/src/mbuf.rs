@@ -9,18 +9,27 @@ use std::ptr::NonNull;
 
 use crate::port::RawMbuf;
 
-/// Issues an L1 prefetch (`_MM_HINT_T0`) for the cache line containing
-/// `addr`. The one place the `x86_64`-only intrinsic lives -- every other
-/// prefetch helper in this module goes through here, so the `target_arch` cfg
-/// split exists exactly once. A prefetch hint never faults, even for a
-/// null or otherwise invalid `addr`, so this never dereferences it.
+/// Issues an L1 prefetch for the cache line containing `addr`: `prfm
+/// pldl1keep` on aarch64, `_mm_prefetch(_MM_HINT_T0)` on x86_64, nothing
+/// elsewhere. The one place the architecture-specific instructions live --
+/// every other prefetch helper in this module goes through here, so the
+/// `target_arch` cfg split exists exactly once. A prefetch hint never faults,
+/// even for a null or otherwise invalid `addr`, so this never dereferences it.
 #[inline(always)]
 fn prefetch_t0(addr: *const i8) {
     #[cfg(target_arch = "x86_64")]
     unsafe {
         std::arch::x86_64::_mm_prefetch(addr, std::arch::x86_64::_MM_HINT_T0);
     }
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        std::arch::asm!(
+            "prfm pldl1keep, [{0}]",
+            in(reg) addr,
+            options(readonly, nostack, preserves_flags)
+        );
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     let _ = addr;
 }
 

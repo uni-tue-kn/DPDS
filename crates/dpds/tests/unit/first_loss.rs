@@ -2,7 +2,7 @@
 //! `peof/tests/hardware_drop.rs` and the `first_loss.rs` unit tests, reduced
 //! to the DPDS reasons/stages/shapes:
 //!
-//! - `FirstLossReason`: `EmulatorReject`, `DescriptorFull`, and the NIC-level
+//! - `FirstLossReason`: `DpdsReject`, `DescriptorFull`, and the NIC-level
 //!   `RxMissed`/`RxNoMbuf`/`RxError`/`TxError` (wire spelling `IMissed`,
 //!   `RX_NoMbuf`, `IErrors`, `OErrors`); `Stage`: `Dpds` ("dpds"), `Nic` ("nic").
 //! - `StageLossDetail`: `Single{from}` ("from=dpds"), `RingFull{from,to}`
@@ -31,13 +31,13 @@ fn format_first_loss_of_none_is_the_clean_default() {
 }
 
 #[test]
-fn format_first_loss_emulator_reject() {
+fn format_first_loss_dpds_reject() {
     let f = format_first_loss(Some(StageLossEvent {
-        reason: FirstLossReason::EmulatorReject,
+        reason: FirstLossReason::DpdsReject,
         detail: StageLossDetail::Single { from: Stage::Dpds },
         relative_ns: 4200.0,
     }));
-    assert_eq!(f.reason, "EmulatorReject");
+    assert_eq!(f.reason, "DpdsReject");
     assert_eq!(f.detail, "from=dpds");
     assert_eq!(f.relative_ns, 4200);
 }
@@ -99,10 +99,7 @@ fn format_first_loss_hardware_drop_count_zero_is_not_dropped_from_the_string() {
 
 #[test]
 fn software_reason_and_stage_display_spellings_are_pinned() {
-    assert_eq!(
-        FirstLossReason::EmulatorReject.to_string(),
-        "EmulatorReject"
-    );
+    assert_eq!(FirstLossReason::DpdsReject.to_string(), "DpdsReject");
     assert_eq!(
         FirstLossReason::DescriptorFull.to_string(),
         "DescriptorFull"
@@ -267,14 +264,14 @@ mod tracker {
     fn try_record_on_a_fresh_tracker_succeeds_and_current_reflects_it() {
         let tracker = StageLossTracker::new();
         assert!(tracker.try_record(
-            FirstLossReason::EmulatorReject,
+            FirstLossReason::DpdsReject,
             StageLossDetail::Single { from: Stage::Dpds },
             123.5,
         ));
         assert_eq!(
             tracker.current(),
             Some(StageLossEvent {
-                reason: FirstLossReason::EmulatorReject,
+                reason: FirstLossReason::DpdsReject,
                 detail: StageLossDetail::Single { from: Stage::Dpds },
                 relative_ns: 123.5,
             })
@@ -348,7 +345,7 @@ mod tracker {
     fn every_detail_shape_and_reason_round_trips_exactly() {
         let cases = [
             (
-                FirstLossReason::EmulatorReject,
+                FirstLossReason::DpdsReject,
                 StageLossDetail::Single { from: Stage::Dpds },
             ),
             (
@@ -402,7 +399,7 @@ mod tracker {
         for v in [0.0_f64, 21_500_000_000.0, 987_654_321.123_456_7] {
             let tracker = StageLossTracker::new();
             assert!(tracker.try_record(
-                FirstLossReason::EmulatorReject,
+                FirstLossReason::DpdsReject,
                 StageLossDetail::Single { from: Stage::Dpds },
                 v
             ));

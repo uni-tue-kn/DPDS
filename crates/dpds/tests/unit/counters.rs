@@ -71,7 +71,7 @@ mod shape {
                 "polls",
                 "rx_pkts",
                 "rx_full_bursts",
-                "emulator_rejects",
+                "dpds_rejects",
                 "pops",
                 "tx_calls",
                 "tx_pkts",
@@ -229,7 +229,7 @@ mod zero_cost {
         );
         assert_eq!(efl.take(), None);
         assert!(!tracker.try_record(
-            FirstLossReason::EmulatorReject,
+            FirstLossReason::DpdsReject,
             StageLossDetail::Single { from: Stage::Dpds },
             1.0
         ));
@@ -265,7 +265,7 @@ mod telemetry_tests {
         c.polls.add(1);
         c.rx_pkts.add(2);
         c.rx_full_bursts.add(3);
-        c.emulator_rejects.add(4);
+        c.dpds_rejects.add(4);
         c.pops.add(5);
         c.tx_calls.add(6);
         c.tx_pkts.add(7);
@@ -279,7 +279,7 @@ mod telemetry_tests {
                 "polls" => 1,
                 "rx_pkts" => 2,
                 "rx_full_bursts" => 3,
-                "emulator_rejects" => 4,
+                "dpds_rejects" => 4,
                 "pops" => 5,
                 "tx_calls" => 6,
                 "tx_pkts" => 7,
@@ -1489,7 +1489,7 @@ mod telemetry_tests {
         // it carries a real event, that event must not survive anywhere.
         let dropped_start = (EPOCH_CAPACITY as u64) * 1_000;
         let dropped_event = StageLossEvent {
-            reason: FirstLossReason::EmulatorReject,
+            reason: FirstLossReason::DpdsReject,
             detail: StageLossDetail::Single { from: Stage::Dpds },
             relative_ns: 999.0,
         };
@@ -1603,7 +1603,7 @@ mod nic_epoch_tracker_tests {
 
     #[test]
     fn nic_epoch_record_derives_debug_clone_copy_partial_eq_default() {
-        // Pins the derive list the spec requires -- a struct missing any
+        // Pins the required derive list -- a struct missing any
         // of these would fail to compile this test.
         let a = NicEpochRecord::default();
         let b = a; // Copy, not a move -- `a` must still be usable below.

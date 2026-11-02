@@ -10,6 +10,8 @@
 //! Packet pointers are opaque here (never dereferenced), so small integers
 //! cast to pointers serve as fake packets.
 //!
+//! `Config::seed` is `None` here: entropy seeding, nothing below is stochastic.
+//!
 //! Delay is `DeterministicDistribution` with a fixed mean and no correlation,
 //! so the scheduled send time of a packet pushed at `now` is exactly
 //! `(now + mean) as u64`.
@@ -40,6 +42,7 @@ fn config(capacity: usize, reordering: bool, delay_ns: f64) -> Config {
             limit_bit: 1e9,
         },
         loss_model: LossModel::Random(0.0),
+        seed: None,
     }
 }
 

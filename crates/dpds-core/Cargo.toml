@@ -2,16 +2,47 @@
 name = "dpds-core"
 version = "0.1.0"
 edition = "2021"
+# The toolchain this crate is developed and tested with (rustc 1.99.1); older
+# versions are not checked.
+rust-version = "1.99"
 authors = ["Etienne Zink <etienne.zink@uni-tuebingen.de>"]
 description = "Core of the DPDS network-link emulator: delay, rate limiting, packet loss."
 readme = "README.md"
 license = "Apache-2.0"
+repository = "https://github.com/uni-tue-kn/DPDS"
+keywords = ["network", "emulator", "delay", "packet-loss", "rate-limiting"]
+categories = ["network-programming", "simulation"]
+# tests/metadata.rs and tests/config.rs read files outside the crate (the
+# workspace manifests, LICENSE and config.json), so they cannot pass from the
+# unpacked package; they stay in the repository.
+include = [
+    "src/**",
+    "benches/**",
+    "tests/**",
+    "!tests/metadata.rs",
+    "!tests/config.rs",
+    "config.example.json",
+    "README.md",
+    "LICENSE",
+    "Cargo.toml",
+]
+
+[features]
+default = ["json"]
+# Serde derives for `Config` and the types it contains.
+serde = ["dep:serde"]
+# `Config::from_file` / `ConfigError` (JSON config files).
+json = ["serde", "dep:serde_json"]
 
 [dependencies]
 rand = "0.10.1"
 rand_distr = "0.6.0"
-serde = { version = "1.0.219", features = ["derive"] }
-serde_json = "1.0.150"
+serde = { version = "1.0.219", features = ["derive"], optional = true }
+serde_json = { version = "1.0.150", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
+
+[[bench]]
+name = "hot_path"
+harness = false

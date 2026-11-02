@@ -24,6 +24,47 @@ pub fn now_ns() -> f64 {
     cycles_to_ns(cycles, ns_per_cycle())
 }
 
+/// A copy of the TSC scale factor, for hot loops: [`Clock::now_ns`] is one
+/// `rdtsc` and one multiply, without the `OnceLock` check [`now_ns`] makes on
+/// every call. Reads the same counter with the same scale factor as
+/// [`now_ns`], so both return the same timeline.
+///
+/// Create it once after the EAL is up (the TSC frequency comes from DPDK) and
+/// copy it into each worker.
+#[derive(Clone, Copy, Debug)]
+pub struct Clock {
+    ns_per_cycle: f64,
+}
+
+impl Clock {
+    /// Reads the TSC frequency from the initialised EAL.
+    ///
+    /// # Panics
+    ///
+    /// If the EAL is not initialised yet (`rte_get_tsc_hz()` is 0). Nothing is
+    /// cached in that case.
+    pub fn new() -> Self {
+        let hz = unsafe { dpdk_sys::rte_get_tsc_hz() };
+        assert!(hz != 0, "Clock::new() called before the EAL is initialised");
+        Clock {
+            ns_per_cycle: 1e9 / (hz as f64),
+        }
+    }
+
+    /// Current time in nanoseconds, same timeline as the free [`now_ns`].
+    #[inline(always)]
+    pub fn now_ns(&self) -> f64 {
+        let cycles = unsafe { dpdk_sys::rte_rdtsc() };
+        cycles_to_ns(cycles, self.ns_per_cycle)
+    }
+}
+
+impl Default for Clock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Converts a raw TSC cycle count to nanoseconds given a precomputed
 /// `ns_per_cycle` scale factor (`1e9 / tsc_hz()`), so callers can cache
 /// the division once instead of redividing by `tsc_hz()` on every call.

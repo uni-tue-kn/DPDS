@@ -6,6 +6,8 @@
 //! - `dpds_core::ConfigError: std::error::Error` (Display must be non-empty)
 //! - `Config`/`DelayerConfig`/`LimiterConfig` keep their `pub` fields and serde format.
 
+#![cfg(feature = "json")]
+
 use std::path::{Path, PathBuf};
 
 use dpds_core::delayer::RVDistribution;

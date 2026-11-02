@@ -7,7 +7,7 @@ pub mod port;
 pub mod ring;
 pub mod telemetry;
 
-pub use clock::now_ns;
+pub use clock::{now_ns, Clock};
 pub use eal::Eal;
 pub use error::DpdkError;
 pub use mempool::Mempool;

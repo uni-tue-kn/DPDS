@@ -9,22 +9,23 @@
 //! covered by the e2e test. Wire semantics follow preof's TELEMETRY.md.
 //!
 //! Builders and tests are telemetry-feature only (they need real counters),
-//! except what must exist in both builds: `Stats`, `Telemetry`, `NicHwStats`,
-//! `NicPoller`, `PortInfo` and the `register_*` fns (no-ops without the
+//! except what must exist in both builds: `Stats`, `DirectionStats`,
+//! `Telemetry`, `NicHwStats`, `NicPoller`, `PortInfo`, `DirectionInfo` and the
+//! `register_*` fns (no-ops without the
 //! feature: they must return `Ok` and touch no DPDK state).
 
-use dpds::stats::{NicHwStats, NicPoller, Stats, Telemetry};
+use dpds::stats::{DirectionStats, NicHwStats, NicPoller, Stats, Telemetry};
 
 #[test]
 fn registration_without_the_feature_registers_nothing_and_succeeds() {
     if cfg!(feature = "telemetry") {
         return; // with the feature this needs an EAL; the e2e test covers it
     }
-    let stats: &'static Stats = Box::leak(Box::default());
-    assert!(Stats::register_telemetry(stats, 0.0).is_ok());
+    let dirs: &'static DirectionStats = Box::leak(Box::new(DirectionStats::new(2)));
+    assert!(DirectionStats::register_telemetry(dirs, 0.0).is_ok());
     let hw: &'static NicHwStats = Box::leak(Box::new(NicHwStats::new(2)));
     assert!(NicHwStats::register_telemetry(hw).is_ok());
-    assert!(dpds::stats::register_port_telemetry(vec![]).is_ok());
+    assert!(dpds::stats::register_port_telemetry(vec![], vec![]).is_ok());
 }
 
 #[test]
@@ -50,7 +51,7 @@ fn telemetry_is_usable_in_every_build() {
     let stats: &'static Stats = Box::leak(Box::default());
     let mut t = Telemetry::new(stats, 5.0);
     t.record_loss(
-        dpds::first_loss::FirstLossReason::EmulatorReject,
+        dpds::first_loss::FirstLossReason::DpdsReject,
         dpds::first_loss::StageLossDetail::Single {
             from: dpds::first_loss::Stage::Dpds,
         },
@@ -68,7 +69,7 @@ mod with_feature {
     use dpds::counters::{mean_2dp, DpdsCounters, EPOCH_CAPACITY, EPOCH_IDLE_GAP_NS};
     use dpds::first_loss::{FirstLossReason, Stage, StageLossDetail};
     use dpds::reply::{Reply, Value};
-    use dpds::stats::{ports_reply, PortInfo};
+    use dpds::stats::{ports_reply, DirectionInfo, PortInfo};
 
     use super::*;
 
@@ -121,7 +122,7 @@ mod with_feature {
         let stats: &'static Stats = Box::leak(Box::default());
         let mut t = Telemetry::new(stats, 1_000.0);
         t.record_loss(
-            FirstLossReason::EmulatorReject,
+            FirstLossReason::DpdsReject,
             StageLossDetail::Single { from: Stage::Dpds },
             5_000.0,
         );
@@ -134,7 +135,7 @@ mod with_feature {
             9_000.0,
         );
         let ev = stats.first_loss.current().unwrap();
-        assert_eq!(ev.reason, FirstLossReason::EmulatorReject, "first one wins");
+        assert_eq!(ev.reason, FirstLossReason::DpdsReject, "first one wins");
         assert_eq!(ev.relative_ns, 4_000.0);
     }
 
@@ -161,7 +162,7 @@ mod with_feature {
         c.tx_batch_max.observe(5);
         c.buffer_len_max.observe(9);
         t.record_loss(
-            FirstLossReason::EmulatorReject,
+            FirstLossReason::DpdsReject,
             StageLossDetail::Single { from: Stage::Dpds },
             2_000.0,
         );
@@ -182,7 +183,7 @@ mod with_feature {
             .first_loss(0)
             .unwrap()
             .expect("epoch had a loss");
-        assert_eq!(loss.reason, FirstLossReason::EmulatorReject);
+        assert_eq!(loss.reason, FirstLossReason::DpdsReject);
         assert_eq!(loss.relative_ns, 1_000.0);
 
         // gauges were taken (reset); the whole-process latch is untouched
@@ -199,7 +200,7 @@ mod with_feature {
 
         c.rx_pkts.add(4);
         t.record_loss(
-            FirstLossReason::EmulatorReject,
+            FirstLossReason::DpdsReject,
             StageLossDetail::Single { from: Stage::Dpds },
             50.0,
         );
@@ -255,7 +256,7 @@ mod with_feature {
         "polls",
         "rx_pkts",
         "rx_full_bursts",
-        "emulator_rejects",
+        "dpds_rejects",
         "pops",
         "tx_calls",
         "tx_pkts",
@@ -307,7 +308,7 @@ mod with_feature {
         c.polls.add(1_000);
         c.rx_pkts.add(500);
         c.rx_full_bursts.add(11);
-        c.emulator_rejects.add(12);
+        c.dpds_rejects.add(12);
         c.pops.add(488);
         c.tx_calls.add(4);
         c.tx_pkts.add(10);
@@ -317,7 +318,7 @@ mod with_feature {
         assert_eq!(uint(&r, "polls"), 1_000);
         assert_eq!(uint(&r, "rx_pkts"), 500);
         assert_eq!(uint(&r, "rx_full_bursts"), 11);
-        assert_eq!(uint(&r, "emulator_rejects"), 12);
+        assert_eq!(uint(&r, "dpds_rejects"), 12);
         assert_eq!(uint(&r, "pops"), 488);
         assert_eq!(uint(&r, "tx_calls"), 4);
         assert_eq!(uint(&r, "tx_pkts"), 10);
@@ -398,7 +399,7 @@ mod with_feature {
         );
         // later events and a closed clean epoch do not change it
         stats.first_loss.try_record(
-            FirstLossReason::EmulatorReject,
+            FirstLossReason::DpdsReject,
             StageLossDetail::Single { from: Stage::Dpds },
             1.0,
         );
@@ -410,15 +411,15 @@ mod with_feature {
     }
 
     #[test]
-    fn stats_reply_of_an_emulator_reject() {
+    fn stats_reply_of_a_dpds_reject() {
         let stats = Stats::default();
         stats.first_loss.try_record(
-            FirstLossReason::EmulatorReject,
+            FirstLossReason::DpdsReject,
             StageLossDetail::Single { from: Stage::Dpds },
             7.0,
         );
         let r = stats.stats_reply(0);
-        assert_eq!(string(&r, "first_loss_reason"), "EmulatorReject");
+        assert_eq!(string(&r, "first_loss_reason"), "DpdsReject");
         assert_eq!(string(&r, "first_loss_detail"), "from=dpds");
     }
 
@@ -436,7 +437,7 @@ mod with_feature {
         "polls",
         "rx_pkts",
         "rx_full_bursts",
-        "emulator_rejects",
+        "dpds_rejects",
         "pops",
         "tx_calls",
         "tx_pkts",
@@ -482,7 +483,7 @@ mod with_feature {
             1_000,
             2_000,
             Some(StageLossEvent {
-                reason: FirstLossReason::EmulatorReject,
+                reason: FirstLossReason::DpdsReject,
                 detail: StageLossDetail::Single { from: Stage::Dpds },
                 relative_ns: 1_500.7,
             }),
@@ -496,17 +497,14 @@ mod with_feature {
         assert_eq!(uint(&r, "epochs_dropped"), 0);
         assert_eq!(uints(&r, "epoch_start_uptime_ns"), [1_000, 2_000]);
         assert_eq!(uints(&r, "epoch_end_uptime_ns"), [2_000, 3_500]);
-        assert_eq!(
-            strings(&r, "first_loss_reason"),
-            ["EmulatorReject", "Clean"]
-        );
+        assert_eq!(strings(&r, "first_loss_reason"), ["DpdsReject", "Clean"]);
         assert_eq!(strings(&r, "first_loss_detail"), ["from=dpds", ""]);
         assert_eq!(uints(&r, "first_loss_relative_ns"), [1_500, 0]);
         // counters are per-epoch DELTAS, named by EPOCH_COUNTER_NAMES order
         assert_eq!(uints(&r, "polls"), [10, 15]);
         assert_eq!(uints(&r, "rx_pkts"), [4, 5]);
         assert_eq!(uints(&r, "rx_full_bursts"), [0, 0]);
-        assert_eq!(uints(&r, "emulator_rejects"), [4, 0]);
+        assert_eq!(uints(&r, "dpds_rejects"), [4, 0]);
         assert_eq!(uints(&r, "pops"), [0, 0]);
         assert_eq!(uints(&r, "tx_calls"), [0, 5]);
         assert_eq!(uints(&r, "tx_pkts"), [0, 0]);
@@ -543,6 +541,75 @@ mod with_feature {
         );
     }
 
+    // ── /dpds/stats,<dir> and /dpds/epochs,<dir> ────────────────────
+
+    #[test]
+    fn direction_stats_has_one_independent_stats_per_direction() {
+        let ds = DirectionStats::new(2);
+        assert_eq!(ds.stats.len(), 2);
+        assert_eq!(DirectionStats::new(1).stats.len(), 1);
+        ds.stats[1].counters.rx_pkts.add(7);
+        assert_eq!(ds.stats[0].counters.rx_pkts.get(), 0);
+        assert_eq!(ds.stats[1].counters.rx_pkts.get(), 7);
+    }
+
+    #[test]
+    fn the_stats_reply_of_a_direction_is_that_directions_stats_reply() {
+        let ds = DirectionStats::new(2);
+        ds.stats[0].counters.rx_pkts.add(3);
+        ds.stats[1].counters.rx_pkts.add(11);
+        ds.stats[1].counters.tx_sent.add(5);
+        for (param, rx, sent) in [("0", 3, 0), ("1", 11, 5)] {
+            let r = ds.stats_reply(param, 99).unwrap();
+            assert_eq!(uint(&r, "rx_pkts"), rx, "dir {param}");
+            assert_eq!(uint(&r, "tx_sent"), sent, "dir {param}");
+            assert_eq!(uint(&r, "uptime_ns"), 99);
+            // same 17 keys as the per-direction Stats builder
+            let direct = ds.stats[param.parse::<usize>().unwrap()].stats_reply(99);
+            assert_eq!(r, direct);
+            assert_eq!(r.len(), 17);
+        }
+    }
+
+    #[test]
+    fn the_epochs_reply_of_a_direction_is_that_directions_epochs_reply() {
+        let ds = DirectionStats::new(2);
+        ds.stats[1].epochs.close([1; 9], [4, 5], 10, 20, None);
+        let r1 = ds.epochs_reply("1").unwrap();
+        assert_eq!(r1, ds.stats[1].epochs_reply());
+        assert_eq!(uint(&r1, "epochs_closed"), 1);
+        let r0 = ds.epochs_reply("0").unwrap();
+        assert_eq!(uint(&r0, "epochs_closed"), 0, "directions are independent");
+    }
+
+    #[test]
+    fn direction_replies_reject_a_missing_or_invalid_direction() {
+        let ds = DirectionStats::new(2);
+        for bad in [
+            "2",
+            "",
+            "x",
+            "-1",
+            "+1",
+            "0,1",
+            " 0",
+            "1 ",
+            "0x1",
+            "99999999999999999999",
+        ] {
+            assert!(ds.stats_reply(bad, 0).is_none(), "{bad:?}");
+            assert!(ds.epochs_reply(bad).is_none(), "{bad:?}");
+        }
+        let one = DirectionStats::new(1);
+        assert!(one.stats_reply("0", 0).is_some());
+        assert!(one.epochs_reply("0").is_some());
+        assert!(
+            one.stats_reply("1", 0).is_none(),
+            "only one direction exists"
+        );
+        assert!(one.epochs_reply("1").is_none());
+    }
+
     // ── /dpds/ports ──────────────────────────────────────────────────
 
     fn port(name: &str, rx: u16, tx: u16, rxr: u16, txr: u16) -> PortInfo {
@@ -555,44 +622,123 @@ mod with_feature {
         }
     }
 
+    fn dir(rx: u16, tx: u16, lcore: u32, config: &str, pool: u32, raw: bool) -> DirectionInfo {
+        DirectionInfo {
+            rx_port: rx,
+            tx_port: tx,
+            lcore,
+            config: config.to_string(),
+            pool_size: pool,
+            raw_free: raw,
+        }
+    }
+
     #[test]
-    fn ports_reply_for_two_ports() {
-        let r = ports_reply(&[
-            port("0000:65:00.1", 8192, 4096, 65535, 65535),
-            port("net_pcap1", 1024, 512, 65535, 65534),
-        ]);
+    fn ports_reply_for_two_ports_and_two_directions() {
+        let r = ports_reply(
+            &[
+                port("0000:65:00.1", 8192, 4096, 4096, 4096),
+                port("net_pcap1", 1024, 512, 4096, 4095),
+            ],
+            &[
+                dir(0, 1, 1, "/etc/d0.json", 1_048_575, true),
+                dir(1, 0, 2, "d1.json", 2_000, false),
+            ],
+        );
         assert_eq!(uint(&r, "num_ports"), 2);
         assert_eq!(string(&r, "port0_name"), "0000:65:00.1");
         assert_eq!(uint(&r, "port0_rx_ring"), 8192);
         assert_eq!(uint(&r, "port0_tx_ring"), 4096);
-        assert_eq!(uint(&r, "port0_rx_ring_requested"), 65535);
-        assert_eq!(uint(&r, "port0_tx_ring_requested"), 65535);
+        assert_eq!(uint(&r, "port0_rx_ring_requested"), 4096);
+        assert_eq!(uint(&r, "port0_tx_ring_requested"), 4096);
         assert_eq!(string(&r, "port1_name"), "net_pcap1");
         assert_eq!(uint(&r, "port1_rx_ring"), 1024);
         assert_eq!(uint(&r, "port1_tx_ring"), 512);
-        assert_eq!(uint(&r, "port1_rx_ring_requested"), 65535);
-        assert_eq!(uint(&r, "port1_tx_ring_requested"), 65534);
+        assert_eq!(uint(&r, "port1_rx_ring_requested"), 4096);
+        assert_eq!(uint(&r, "port1_tx_ring_requested"), 4095);
+
+        assert_eq!(uint(&r, "num_directions"), 2);
+        assert_eq!(uint(&r, "dir0_rx_port"), 0);
+        assert_eq!(uint(&r, "dir0_tx_port"), 1);
+        assert_eq!(uint(&r, "dir0_lcore"), 1);
+        assert_eq!(string(&r, "dir0_config"), "/etc/d0.json");
+        assert_eq!(uint(&r, "dir0_pool_size"), 1_048_575);
+        assert_eq!(uint(&r, "dir0_raw_free"), 1);
+        assert_eq!(uint(&r, "dir1_rx_port"), 1);
+        assert_eq!(uint(&r, "dir1_tx_port"), 0);
+        assert_eq!(uint(&r, "dir1_lcore"), 2);
+        assert_eq!(string(&r, "dir1_config"), "d1.json");
+        assert_eq!(uint(&r, "dir1_pool_size"), 2_000);
+        assert_eq!(uint(&r, "dir1_raw_free"), 0);
         assert_eq!(
             r.len(),
-            1 + 2 * 5,
-            "num_ports + five fields per port, nothing else"
+            1 + 2 * 5 + 1 + 2 * 6,
+            "num_ports + five fields per port + num_directions + six per direction"
         );
     }
 
     #[test]
-    fn ports_reply_for_one_port_has_no_port1_fields() {
-        let r = ports_reply(&[port("net_null0", 256, 256, 65535, 65535)]);
+    fn ports_reply_keys_come_in_the_documented_order() {
+        let r = ports_reply(
+            &[port("a", 1, 1, 1, 1)],
+            &[dir(0, 0, 1, "c.json", 9, false)],
+        );
+        let order: Vec<&str> = r.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(
+            order,
+            [
+                "num_ports",
+                "port0_name",
+                "port0_rx_ring",
+                "port0_tx_ring",
+                "port0_rx_ring_requested",
+                "port0_tx_ring_requested",
+                "num_directions",
+                "dir0_rx_port",
+                "dir0_tx_port",
+                "dir0_lcore",
+                "dir0_config",
+                "dir0_pool_size",
+                "dir0_raw_free",
+            ]
+        );
+    }
+
+    #[test]
+    fn ports_reply_for_one_port_has_no_port1_or_dir1_fields() {
+        let r = ports_reply(
+            &[port("net_null0", 256, 256, 4096, 4096)],
+            &[dir(0, 0, 1, "config.json", 64, false)],
+        );
         assert_eq!(uint(&r, "num_ports"), 1);
         assert_eq!(string(&r, "port0_name"), "net_null0");
-        assert!(keys(&r).iter().all(|k| !k.starts_with("port1_")));
-        assert_eq!(r.len(), 1 + 5);
+        assert_eq!(uint(&r, "num_directions"), 1);
+        assert_eq!(uint(&r, "dir0_rx_port"), 0);
+        assert_eq!(uint(&r, "dir0_tx_port"), 0, "one port: loopback");
+        assert!(keys(&r)
+            .iter()
+            .all(|k| !k.starts_with("port1_") && !k.starts_with("dir1_")));
+        assert_eq!(r.len(), 1 + 5 + 1 + 6);
     }
 
     #[test]
     fn ports_reply_keys_are_short_enough_for_dpdk() {
         // rte_tel_data dict keys are limited to RTE_TEL_MAX_STRING_LEN (64)
-        let r = ports_reply(&[port("x", 1, 1, 1, 1), port("y", 1, 1, 1, 1)]);
+        let r = ports_reply(
+            &[port("x", 1, 1, 1, 1), port("y", 1, 1, 1, 1)],
+            &[dir(0, 1, 1, "a", 1, true), dir(1, 0, 2, "b", 1, true)],
+        );
         assert!(r.iter().all(|(k, _)| k.len() < 64));
+    }
+
+    #[test]
+    fn a_long_config_path_stays_a_single_string_value() {
+        // RTE_TEL_MAX_STRING_LEN is 128 (rte_telemetry.h): what the dict does
+        // with a longer string is not specified here; the reply builder
+        // itself passes the path through unchanged.
+        let path = "/some/long/directory/name/for/the/dpds/configs/direction-zero.json";
+        let r = ports_reply(&[port("x", 1, 1, 1, 1)], &[dir(0, 0, 1, path, 1, false)]);
+        assert_eq!(string(&r, "dir0_config"), path);
     }
 
     // ── /nic/hw_first_loss and /nic/epochs ──────────────────────────

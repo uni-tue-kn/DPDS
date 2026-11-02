@@ -1,9 +1,9 @@
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 use rand_distr::{Distribution, Uniform};
-use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum LossModel {
     // Random model parameter:
     // p = probability of packet loss
@@ -24,8 +24,18 @@ pub struct Dropper {
 }
 
 impl Dropper {
-    pub(crate) fn new(mut loss_model: LossModel) -> Self {
-        let rng = SmallRng::from_rng(&mut rand::rng());
+    /// Creates a dropper seeded from the OS entropy source.
+    pub fn new(loss_model: LossModel) -> Self {
+        Self::with_rng(loss_model, SmallRng::from_rng(&mut rand::rng()))
+    }
+
+    /// Creates a dropper with a deterministic RNG: the same seed gives the
+    /// same drop decisions for the same sequence of calls.
+    pub fn with_seed(loss_model: LossModel, seed: u64) -> Self {
+        Self::with_rng(loss_model, SmallRng::seed_from_u64(seed))
+    }
+
+    fn with_rng(mut loss_model: LossModel, rng: SmallRng) -> Self {
         let uniform = Uniform::new(0.0f64, 1.0f64).unwrap();
 
         // Ensure GilbertElliot always starts in the Good state
@@ -42,6 +52,7 @@ impl Dropper {
 
     /// Returns true if the current packet should be dropped according to the
     /// configured loss model.
+    #[inline]
     pub fn dropper_drop(&mut self) -> bool {
         match &mut self.loss_model {
             LossModel::Random(p) => {

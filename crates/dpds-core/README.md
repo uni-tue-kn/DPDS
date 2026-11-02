@@ -27,53 +27,115 @@ time. With `reordering = false` it is a FIFO `VecDeque`; with `reordering = true
 it is a min-heap keyed on send time, allowing packets whose sampled delays
 reorder them to be emitted in send-time order.
 
+### Ordering rule for equal send times
+
+In reordering mode, packets that enter at the same instant keep their entry
+order. There is no sequence number; instead every packet gets a tiny time offset
+so that it sorts the way it entered. The heap key is the send time in fixed
+point with 1/64 ns resolution:
+
+```text
+key = floor(t * 64) + tie
+```
+
+where `t` is the send time in ns (now + delay + limiter offset, before
+truncation) and `tie` counts the packets accepted since the last push whose
+`now_ns` differed (0 for the first packet of an instant, 1 for the next one with
+the same `now_ns`, ...). Each packet entering at the same instant therefore
+sorts 1/64 ns after the previous one. Rejected pushes do not advance `tie`, and
+the key saturates instead of overflowing. `front_time()` and `pop_due()` use
+`key >> 6`, i.e. whole nanoseconds, so the offsets are invisible to the host.
+Packets entering at *different* instants whose keys happen to be exactly equal
+may leave in either order. FIFO mode is unaffected: it keeps push order and truncates the send time
+to whole ns.
+
+Caveat across instants: a burst of `n` packets pushed at one instant shifts its
+last keys by up to `(n - 1)/64` ns, so a packet pushed at a later instant that is
+less than that apart can sort between them. With the 32-packet burst of `dpds`
+that is at most about 0.5 ns; a library user pushing large batches at one
+instant sees correspondingly more.
+
 ### Delay correlation
 
 When `activate_correlation` is enabled, the delayer smooths successive samples
 with a rate adaptive exponential moving average (EMA). The smoothing weight
 is derived from the configured `half_life_period_ns` and the measured packet
 rate, so the *effective* correlation half-life stays constant in wall-clock time
-regardless of how fast packets arrive.
+regardless of how fast packets arrive. The rate is re-estimated every 1 ms. The
+smoothed delay starts at `mean_ns`, and the delay spread uses the weight of the
+15 Mpps initialisation rate from the first packet on.
 
-## Building
+`try_new` validates the initial parameters: `half_life_period_ns` must be
+finite and not negative, and with correlation active it must not be so long
+that the weight at the initialisation rate reaches 1. A huge finite half-life
+combined with a measured rate far above the initialisation rate can still make
+a later rate update fail, which panics in `delayer_sample_ns`.
 
-Requires a stable Rust toolchain. Add it as a dependency and build with Cargo:
+## Building and features
+
+Requires a recent stable Rust toolchain (`rust-version = "1.99"`, the version
+the crate is developed and tested with). The crate is not on crates.io; add it
+as a git dependency (Cargo finds the package inside the workspace by name):
 
 ```toml
-dpds-core = { path = "crates/dpds-core" }
+dpds-core = { git = "https://github.com/uni-tue-kn/DPDS", branch = "nightly" }
 ```
+
+or, inside this workspace, `dpds-core = { path = "../dpds-core" }`.
+
+| Feature            | Default | Enables                                                                                      |
+| ------------------ | ------- | -------------------------------------------------------------------------------------------- |
+| `json`             | yes     | `Config::from_file` and `ConfigError` (implies `serde`, pulls in `serde_json`).              |
+| `serde`            | via `json` | `Serialize`/`Deserialize` for `Config`, `DelayerConfig`, `LimiterConfig`, `LossModel`, ... |
+
+Without any feature (`--no-default-features`) the crate depends only on `rand`
+and `rand_distr`; construct `Config` in code. With
+`--no-default-features --features serde` you get the derives but no file
+loading. `crates/dpds` uses the default features.
 
 ## Using the API
 
-The host loads a configuration, creates a buffer, then pushes and pops packets.
-Everything is in `dpds_core::buffer` and the crate root:
+The host loads (or builds) a configuration, creates a buffer, then pushes and
+pops packets. Everything is in `dpds_core::buffer` and the crate root:
 
 | Item                                                                  | Purpose                                                                          |
 | --------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| `Config::from_file(path) -> Result<Config, ConfigError>`              | Parse a JSON config file (see below). I/O and parse errors are distinct variants. |
-| `Buffer::new(config) -> Buffer`                                       | Create a buffer for the given config.                                            |
+| `Config::from_file(path) -> Result<Config, ConfigError>` (`json`)     | Parse a JSON config file (see below). I/O and parse errors are distinct variants. |
+| `Buffer::new(config) -> Buffer`                                       | Create a buffer for the given config; panics on invalid parameters.              |
+| `Buffer::try_new(config) -> Result<Buffer, BuildError>`               | Same, but invalid delay distribution parameters, a negative/NaN/infinite (or, with correlation, absurdly long) `half_life_period_ns` or an unallocatable `buffer_capacity` are an error naming the parameter. |
 | `Buffer::push(&mut self, pkt: *mut c_void, len_byte: u32, now_ns: f64) -> bool` | Offer a packet. Returns `false` if it was dropped or the buffer was full.  |
+| `Buffer::pop_due(&mut self, now_ns: f64) -> Option<*mut c_void>`      | Pop the head packet iff its send time (as `front_time` reports it) is `<= now_ns`. |
+| `Buffer::peek_nth(&self, n: usize) -> Option<*mut c_void>`            | The packet that would be popped `n`-th from now, without popping (e.g. to prefetch). FIFO mode: the `n`-th queued entry. Reordering mode: only `n == 0` (the head) is answered, `n > 0` is `None`. |
 | `Buffer::front_time(&self) -> Option<f64>`                            | Send time (ns) of the head packet, `None` if empty.                              |
 | `Buffer::pop(&mut self) -> Option<*mut c_void>`                       | Remove and return the head packet pointer, `None` if empty.                      |
 | `Buffer::is_empty(&self)`, `len(&self)`, `capacity(&self)`            | Occupancy and configured capacity.                                               |
+| `Delayer::try_new(..)`, `Delayer::try_new_seeded(.., seed)`, `Dropper::new(loss_model)`, `Dropper::with_seed(loss_model, seed)` | The individual stages, usable on their own. |
 
-A typical host loop pushes arriving packets with the current timestamp, then
-forwards a packet whenever `front_time` has passed:
+`BuildError` implements `std::error::Error`; its message names the offending
+parameter (`mean_ns`, `std_ns`, `half_life_period_ns`, `buffer_capacity`).
+`BuildError` gained the `HalfLifePeriod` variant (API change for code that
+matches it exhaustively).
+
+A typical host loop reads the clock once per iteration, pushes the arriving
+packets with that timestamp, then forwards everything that is due:
 
 ```rust
 use dpds_core::{buffer::Buffer, Config};
 
 let config = Config::from_file("config.json")?;
-let mut buf = Buffer::new(config);
+let mut buf = Buffer::try_new(config)?;
+
+// per iteration: one clock read
+let now_ns = clock_ns();
 
 // on packet arrival:
 if !buf.push(pkt, pkt_len, now_ns) {
     // packet was dropped or buffer full -- free it
 }
 
-// in the forwarding loop:
-while buf.front_time().is_some_and(|t| t <= now_ns) {
-    let pkt = buf.pop().unwrap();
+// forward everything that is due (bounded by a burst budget):
+for _ in 0..32 {
+    let Some(pkt) = buf.pop_due(now_ns) else { break };
     // transmit pkt
 }
 ```
@@ -83,9 +145,33 @@ while buf.front_time().is_some_and(|t| t <= now_ns) {
 > popped. `Buffer` is not `Send` because of those pointers; a host that moves
 > it to another thread must vouch that it owns the packets.
 
+## Seeding
+
+**API change:** `Config.seed` is a new public field and `Config` is not
+`#[non_exhaustive]`, so every `Config { .. }` struct literal needs `seed: None`
+(JSON files need no change).
+
+`Config.seed` is an optional `u64` (`"seed": 42` in JSON; absent or `null` means
+`None`). With `None` the delay and loss random number generators are seeded from
+the OS entropy source, as before. With `Some(s)` both are seeded
+deterministically and differently from each other (`SmallRng::seed_from_u64(s)`
+for the delayer and `seed_from_u64(s ^ 0x9E37_79B9_7F4A_7C15)` for the dropper),
+so the same seed and the same sequence of `push` calls give identical results
+and send times. This is meant for tests and reproducible experiments. Seeded
+streams are reproducible only for the same `rand` version and the same target
+word size (`SmallRng` is not portable across them).
+
+## Benchmark
+
+`cargo bench -p dpds-core` runs a small hot-path microbenchmark
+(`benches/hot_path.rs`: 32-packet bursts, push then `pop_due`, per delay, limiter,
+loss and ordering variant) and prints the median ns per packet. Plain
+`cargo test --all-targets` only runs a tiny smoke pass of it. The file documents
+how to profile it with callgrind.
+
 ## Configuration
 
-`Config::from_file` parses a JSON file into the `Config` struct. A full example lives
+`Config::from_file` (feature `json`) parses a JSON file into the `Config` struct. A full example lives
 in [`config.example.json`](config.example.json):
 
 ```json
@@ -118,7 +204,8 @@ in [`config.example.json`](config.example.json):
 | Field             | Type    | Meaning                                                                 |
 | ----------------- | ------- | ----------------------------------------------------------------------- |
 | `buffer_capacity` | integer | Maximum number of packets held at once; pushes beyond this are dropped. |
-| `reordering`      | bool    | `false` = FIFO; `true` = emit in send-time order (min-heap).            |
+| `reordering`      | bool    | `false` = FIFO; `true` = emit in send-time order (min-heap), equal send times keep entry order (see above). |
+| `seed`            | integer or `null` | Optional. Seeds the delay and loss RNGs deterministically; absent = entropy (see Seeding). |
 
 **`delayer`**
 
@@ -128,7 +215,7 @@ in [`config.example.json`](config.example.json):
 | `mean_ns`              | float  | Mean delay in nanoseconds.                                                                                                     |
 | `std_ns`               | float  | Standard deviation of the delay in nanoseconds (ignored for `DeterministicDistribution`).                                      |
 | `activate_correlation` | bool   | Enable UTEMA autocorrelation of successive delays.                                                                             |
-| `half_life_period_ns`  | float  | Correlation half-life in nanoseconds (only used when correlation is active).                                                   |
+| `half_life_period_ns`  | float  | Correlation half-life in nanoseconds (only used when correlation is active). Must be finite and not negative (0 is valid), whether or not correlation is active. With correlation, a half-life so long that its smoothing weight is not below 1 is rejected. |
 
 **`limiter`**
 

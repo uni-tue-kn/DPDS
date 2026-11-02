@@ -1,20 +1,18 @@
 //! Static settings (C `common/config.h`).
 
-/// Largest burst handled by every stage.
-pub const MAX_BURST_SIZE: usize = 16;
+/// RX burst size and per-iteration pop budget of every worker (preof's
+/// `net_config::BURST_SIZE`).
+pub const BURST_SIZE: usize = 32;
 
 /// RX/TX descriptors requested per NIC queue (the driver clamps to what it
 /// supports via `rte_eth_dev_adjust_nb_rx_tx_desc`).
-pub const NIC_DESCRIPTORS: u16 = 65535;
+pub const NIC_DESCRIPTORS: u16 = 4096;
 
-/// Per-lcore mbuf cache size of the mempool.
+/// Per-lcore mbuf cache size of each mempool.
 pub const MBUF_CACHE_SIZE: u32 = 512;
 
 /// MTU requested from every port.
 pub const MTU: u32 = 1500;
-
-/// Default number of mbufs per port (the pool holds this times the number of ports).
-pub const DEFAULT_NUM_MBUFS: u32 = 1024 * 1024 - 1;
 
 /// Main lcore's poll interval for the NIC hardware counters
 /// (`eth_stats_get`) and for noticing the quit flag.

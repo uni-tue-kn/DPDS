@@ -2,6 +2,7 @@
 name = "dpds"
 version = "0.1.0"
 edition = "2021"
+publish = false
 authors = ["Etienne Zink <etienne.zink@uni-tuebingen.de>"]
 description = "DPDS: DPDK-based network-link emulator (delay, rate limiting, loss)."
 license = "Apache-2.0"

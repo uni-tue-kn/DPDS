@@ -124,6 +124,24 @@ impl Drop for Mempool {
 // ownership on the Rust side through the non-Copy Mempool struct.
 unsafe impl Send for Mempool {}
 
+/// Mbuf data-room size for a deployment whose largest real frame is
+/// `max_frame_len` bytes, instead of [`Mempool::DEFAULT_BUF_SIZE`]
+/// (DPDK's generic default, sized for a standard 1518-byte frame with
+/// room to spare). `RTE_PKTMBUF_HEADROOM` (128 B) plus `max_frame_len`
+/// rounded up to the next multiple of 64 -- the 64-byte rounding isn't
+/// required by any DPDK API, it's just a cache-line-friendly size for the
+/// allocation, mirroring how `RTE_MBUF_DEFAULT_BUF_SIZE` itself rounds
+/// `RTE_MBUF_DEFAULT_DATAROOM` (2048) to a round number past the
+/// standard frame. Sizing the pool's mbufs against this deployment's own
+/// `net_config::MAX_FRAME_LEN` instead of the generic default shrinks
+/// each mbuf (2176 -> 1664 B), which matters at this pipeline's
+/// multi-million-mbuf pool sizes.
+pub const fn mbuf_buf_size_for_frame(max_frame_len: u16) -> u16 {
+    const STRIDE: u16 = 64;
+    let rounded = max_frame_len.div_ceil(STRIDE) * STRIDE;
+    dpdk_sys::RTE_PKTMBUF_HEADROOM as u16 + rounded
+}
+
 // ── `MbufFreer` ─────────────────────────────────────────────────────────────
 //
 // `Mempool::freer` returns a small `Copy` handle (`Send`, so it can be moved

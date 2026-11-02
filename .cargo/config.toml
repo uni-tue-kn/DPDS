@@ -11,11 +11,20 @@
 # Requirements: clang with the SAME LLVM major as rustc (a mismatch does
 # not fail the build — lld silently links the fat objects' machine code
 # instead of inlining their bitcode; see README).  On a host without
-# clang/lld, opt out by overriding the flags:
-#   RUSTFLAGS='-Ctarget-cpu=native' cargo build --release
+# clang/lld, opt out by overriding the flags (RUSTDOCFLAGS too, for doctests):
+#   RUSTFLAGS='-Ctarget-cpu=native' RUSTDOCFLAGS='' cargo build --release
 [build]
 rustflags = [
     "-C", "target-cpu=native",
+    "-C", "linker-plugin-lto",
+    "-C", "link-arg=-fuse-ld=lld",
+    "-C", "link-arg=-Wl,--fat-lto-objects",
+]
+
+# Doctests (dpds-core has some) are compiled and linked by rustdoc, which does
+# not read `rustflags` above: without the same LTO/linker flags it fails to
+# link against the bitcode rlibs ("file format not recognized").
+rustdocflags = [
     "-C", "linker-plugin-lto",
     "-C", "link-arg=-fuse-ld=lld",
     "-C", "link-arg=-Wl,--fat-lto-objects",

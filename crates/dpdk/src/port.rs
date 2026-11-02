@@ -77,6 +77,17 @@ pub fn tx_offloads_for(tx_offload_capa: u64) -> u64 {
     tx_offload_capa & dpdk_sys::RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE
 }
 
+/// The RX and TX descriptor ring sizes the driver of `port` would apply for the
+/// requested ones (`rte_eth_dev_adjust_nb_rx_tx_desc`: clamped to the device's
+/// limits and alignment). [`Port::init`] uses exactly this, so calling it
+/// before the pool exists tells what the ring sizes will be. Needs only a
+/// valid port, not a configured one.
+pub fn adjust_nb_rx_tx_desc(port: u16, nb_rxd: u16, nb_txd: u16) -> Result<(u16, u16), DpdkError> {
+    let (mut rxd, mut txd) = (nb_rxd, nb_txd);
+    check(unsafe { dpdk_sys::rte_eth_dev_adjust_nb_rx_tx_desc(port, &mut rxd, &mut txd) })?;
+    Ok((rxd, txd))
+}
+
 // ── Port handle ──────────────────────────────────────────────────────────────
 
 /// A configured and started Ethernet port — the **control-plane** handle.
@@ -186,11 +197,7 @@ impl<'pool> Port<'pool> {
 
         let requested_rxd = nb_rxd;
         let requested_txd = nb_txd;
-        let mut nb_rxd = nb_rxd;
-        let mut nb_txd = nb_txd;
-        check(unsafe {
-            dpdk_sys::rte_eth_dev_adjust_nb_rx_tx_desc(port, &mut nb_rxd, &mut nb_txd)
-        })?;
+        let (nb_rxd, nb_txd) = adjust_nb_rx_tx_desc(port, nb_rxd, nb_txd)?;
 
         // ── 3. RX queues ──────────────────────────────────────────────────────
         for q in 0..nb_queues {
@@ -294,6 +301,24 @@ impl<'pool> Port<'pool> {
     #[inline(always)]
     pub fn mbuf_fast_free(&self) -> bool {
         self.mbuf_fast_free
+    }
+
+    /// The RX burst function the driver uses on queue 0, as reported by
+    /// `rte_eth_rx_burst_mode_get` (e.g. `"Vector AVX2"`), or `None` if the
+    /// driver does not report one. For a startup log line.
+    pub fn rx_burst_mode(&self) -> Option<String> {
+        let mut mode: dpdk_sys::rte_eth_burst_mode = unsafe { mem::zeroed() };
+        (unsafe { dpdk_sys::rte_eth_rx_burst_mode_get(self.id, 0, &mut mode) } == 0)
+            .then(|| burst_mode_info(&mode))
+    }
+
+    /// The TX burst function the driver uses on queue 0, as reported by
+    /// `rte_eth_tx_burst_mode_get`, or `None` if the driver does not report
+    /// one. For a startup log line.
+    pub fn tx_burst_mode(&self) -> Option<String> {
+        let mut mode: dpdk_sys::rte_eth_burst_mode = unsafe { mem::zeroed() };
+        (unsafe { dpdk_sys::rte_eth_tx_burst_mode_get(self.id, 0, &mut mode) } == 0)
+            .then(|| burst_mode_info(&mode))
     }
 
     /// The port's current negotiated link speed (e.g. `"100 Gbps"`), via
@@ -585,6 +610,13 @@ impl PortDiscardXstats {
     }
 }
 
+/// The NUL-terminated `info` text of a burst mode as a `String`.
+fn burst_mode_info(mode: &dpdk_sys::rte_eth_burst_mode) -> String {
+    unsafe { CStr::from_ptr(mode.info.as_ptr()) }
+        .to_string_lossy()
+        .into_owned()
+}
+
 // ── NUMA / lcore helpers ─────────────────────────────────────────────────────
 
 /// NUMA socket ID of a port, or -1 if unknown.
@@ -620,6 +652,23 @@ pub type RawMbuf = *mut dpdk_sys::rte_mbuf;
 #[inline(always)]
 pub unsafe fn rte_pktmbuf_free(pkt: RawMbuf) {
     dpdk_sys::rte_pktmbuf_free(pkt);
+}
+
+/// Frees every mbuf in `mbufs` with `rte_pktmbuf_free_bulk`: each is returned
+/// to its own originating pool, chained segments included, and entries may be
+/// NULL. Unlike [`crate::mempool::MbufFreer::free_bulk`] this reads each mbuf
+/// (refcount, `next`, `pool`), so it is correct for any mbuf, e.g. when the
+/// port does not use `MBUF_FAST_FREE`. An empty slice does nothing.
+///
+/// # Safety
+/// Every non-NULL entry must be a valid mbuf that is not used anywhere else
+/// afterwards.
+#[inline(always)]
+pub unsafe fn rte_pktmbuf_free_bulk(mbufs: &mut [RawMbuf]) {
+    if mbufs.is_empty() {
+        return;
+    }
+    dpdk_sys::rte_pktmbuf_free_bulk(mbufs.as_mut_ptr(), mbufs.len() as u32);
 }
 
 // ── `tx_offloads_for` ───────────────────────────────────────────────────────

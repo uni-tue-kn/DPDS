@@ -1,14 +1,55 @@
-//! Shared test doubles: fake mbufs and mock NIC/free implementations.
+//! Shared test doubles: fake mbufs, mock NIC/free implementations, clocks and
+//! an ordered event log.
 //!
 //! A "fake mbuf" is a heap-allocated, zeroed `dpdk_sys::rte_mbuf` with `port`
 //! and `pkt_len` set. It is only ever handed to code that must not call DPDK
-//! on it (the mock `MbufFree` never dereferences it).
+//! on it (the mock `MbufFree` never dereferences it; the loop may prefetch
+//! the header line, which is harmless on a valid heap address).
+//!
+//! The optional [`Log`] records every observable interaction of one loop run
+//! in order (`Clock`, `Rx`, `Tx`, `Free`, `Quit`), so a test can assert the
+//! exact per-iteration sequence: clock, RX, rejects freed,
+//! TX, unsent freed.
 
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
+use std::rc::Rc;
 
 use dpdk::RawMbuf;
 use dpds::io::{MbufFree, RxBurst, TxBurst};
-use dpds::stats::{Stats, Telemetry};
+use dpds_core::Config;
+
+/// One observable interaction of the loop with its environment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ev {
+    /// One read of the clock closure.
+    Clock,
+    /// `rx_burst(port, bufs)` with `bufs.len()`.
+    Rx { port: u16, slots: usize },
+    /// `tx_burst(port, bufs)` with `bufs.len()`.
+    Tx { port: u16, n: usize },
+    /// `free_bulk(mbufs)` with `mbufs.len()`.
+    Free { n: usize },
+    /// The test requested quit (pushed by the test's own hook).
+    Quit,
+}
+
+pub type Log = Rc<RefCell<Vec<Ev>>>;
+
+pub fn new_log() -> Log {
+    Rc::new(RefCell::new(Vec::new()))
+}
+
+fn log_ev(log: &Option<Log>, ev: Ev) {
+    if let Some(l) = log {
+        l.borrow_mut().push(ev);
+    }
+}
+
+/// Number of `Clock` events in the log.
+pub fn clock_reads(log: &Log) -> usize {
+    log.borrow().iter().filter(|e| **e == Ev::Clock).count()
+}
 
 pub struct FakeMbufs {
     mbufs: Box<[dpdk_sys::rte_mbuf]>,
@@ -53,20 +94,20 @@ pub fn port_of(m: RawMbuf) -> u16 {
 /// Mock RX: every `rx_burst` call pops the next scripted batch (an empty
 /// script means "no packets"). Records `(port, bufs.len())` of every call.
 /// `on_call(n)` (if set) runs at the start of the n-th call (1-based), so a
-/// test can request quit or advance a fake clock from "inside the NIC".
+/// test can request quit from "inside the NIC".
 #[derive(Default)]
 pub struct MockRx<'a> {
     pub script: VecDeque<Vec<RawMbuf>>,
     pub calls: Vec<(u16, usize)>,
     pub on_call: Option<Box<dyn FnMut(usize) + 'a>>,
+    pub log: Option<Log>,
 }
 
 impl<'a> MockRx<'a> {
     pub fn with_script(script: Vec<Vec<RawMbuf>>) -> MockRx<'a> {
         MockRx {
             script: script.into(),
-            calls: Vec::new(),
-            on_call: None,
+            ..Default::default()
         }
     }
 }
@@ -74,6 +115,13 @@ impl<'a> MockRx<'a> {
 impl RxBurst for MockRx<'_> {
     fn rx_burst(&mut self, port: u16, bufs: &mut [RawMbuf]) -> u16 {
         self.calls.push((port, bufs.len()));
+        log_ev(
+            &self.log,
+            Ev::Rx {
+                port,
+                slots: bufs.len(),
+            },
+        );
         let n = self.calls.len();
         if let Some(f) = self.on_call.as_mut() {
             f(n);
@@ -92,6 +140,7 @@ impl RxBurst for MockRx<'_> {
 pub struct MockTx {
     pub accept_limit: usize,
     pub calls: Vec<(u16, Vec<RawMbuf>)>,
+    pub log: Option<Log>,
 }
 
 impl Default for MockTx {
@@ -99,36 +148,134 @@ impl Default for MockTx {
         MockTx {
             accept_limit: usize::MAX,
             calls: Vec::new(),
+            log: None,
         }
     }
 }
 
 impl TxBurst for MockTx {
     fn tx_burst(&mut self, port: u16, bufs: &mut [RawMbuf]) -> u16 {
+        log_ev(
+            &self.log,
+            Ev::Tx {
+                port,
+                n: bufs.len(),
+            },
+        );
         self.calls.push((port, bufs.to_vec()));
         bufs.len().min(self.accept_limit) as u16
     }
 }
 
-/// Mock free: records freed mbufs in call order.
-#[derive(Default)]
-pub struct MockFree {
-    pub freed: Vec<RawMbuf>,
-}
-
-impl MbufFree for MockFree {
-    unsafe fn free(&mut self, mbuf: RawMbuf) {
-        self.freed.push(mbuf);
+impl MockTx {
+    /// Every mbuf offered to the NIC, in call order.
+    pub fn offered(&self) -> Vec<RawMbuf> {
+        self.calls.iter().flat_map(|c| c.1.clone()).collect()
     }
 }
 
-/// A clock that always returns `t` (stage-start-relative tests use 0.0 start).
-pub fn fixed_clock(t: f64) -> impl FnMut() -> f64 {
-    move || t
+/// Mock free: records every `free_bulk` call (the slice it was given).
+#[derive(Default)]
+pub struct MockFree {
+    pub bulk_calls: Vec<Vec<RawMbuf>>,
+    pub log: Option<Log>,
 }
 
-/// A `Telemetry` over a fresh leaked `Stats` (tests only; the leak is tiny).
-pub fn telemetry(start_ns: f64) -> (&'static Stats, Telemetry<'static>) {
-    let stats: &'static Stats = Box::leak(Box::default());
-    (stats, Telemetry::new(stats, start_ns))
+impl MbufFree for MockFree {
+    unsafe fn free_bulk(&mut self, mbufs: &mut [RawMbuf]) {
+        log_ev(&self.log, Ev::Free { n: mbufs.len() });
+        self.bulk_calls.push(mbufs.to_vec());
+    }
+}
+
+impl MockFree {
+    /// Every freed mbuf, in call order.
+    pub fn freed(&self) -> Vec<RawMbuf> {
+        self.bulk_calls.iter().flatten().copied().collect()
+    }
+}
+
+/// A clock returning `times[0]`, `times[1]`, ... (one value per read) and
+/// then the last value forever. Counts its reads in the returned cell and
+/// pushes `Ev::Clock` into `log` if given. Panics after an absurd number of
+/// reads, so a loop that never terminates fails instead of hanging the suite.
+pub fn scripted_clock(times: &[f64], log: Option<&Log>) -> (impl FnMut() -> f64, Rc<Cell<u64>>) {
+    let reads = Rc::new(Cell::new(0u64));
+    let r = reads.clone();
+    let times = times.to_vec();
+    let log = log.cloned();
+    (
+        move || {
+            let i = r.get();
+            r.set(i + 1);
+            assert!(i < 200_000, "the loop does not terminate");
+            log_ev(&log, Ev::Clock);
+            times[(i as usize).min(times.len() - 1)]
+        },
+        reads,
+    )
+}
+
+/// A clock starting at `start` that advances by `step` ns on every read
+/// (the n-th read, 0-based, returns `start + n * step`).
+pub fn ticking_clock(
+    start: f64,
+    step: f64,
+    log: Option<&Log>,
+) -> (impl FnMut() -> f64, Rc<Cell<u64>>) {
+    let reads = Rc::new(Cell::new(0u64));
+    let r = reads.clone();
+    let log = log.cloned();
+    (
+        move || {
+            let i = r.get();
+            r.set(i + 1);
+            assert!(i < 200_000, "the loop does not terminate");
+            log_ev(&log, Ev::Clock);
+            start + i as f64 * step
+        },
+        reads,
+    )
+}
+
+// ── configs ─────────────────────────────────────────────────────────
+
+/// A deterministic-delay config built from JSON (so the tests do not depend
+/// on the exact field list of `Config`): no limiter, `Random(loss)` loss.
+pub fn config(capacity: usize, delay_ns: f64, loss: f64) -> Config {
+    config_full(capacity, false, delay_ns, loss, None)
+}
+
+/// As [`config`], with a `reordering` switch and an optional active Spacer
+/// limiter `(rate_bps, limit_bit)`.
+pub fn config_full(
+    capacity: usize,
+    reordering: bool,
+    delay_ns: f64,
+    loss: f64,
+    limiter: Option<(f64, f64)>,
+) -> Config {
+    let (activate, rate_bps, limit_bit) = match limiter {
+        Some((r, l)) => (true, r, l),
+        None => (false, 1e9, 1e9),
+    };
+    serde_json::from_value(serde_json::json!({
+        "buffer_capacity": capacity,
+        "reordering": reordering,
+        "delayer": {
+            "distribution": "DeterministicDistribution",
+            "mean_ns": delay_ns,
+            "std_ns": 0.0,
+            "activate_correlation": false,
+            "half_life_period_ns": 1.0
+        },
+        "limiter": {
+            "mode": "Spacer",
+            "activate": activate,
+            "rate_bps": rate_bps,
+            "limit_bit": limit_bit
+        },
+        "loss_model": { "Random": loss }
+    }))
+    .expect("test config must deserialize")
 }

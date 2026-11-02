@@ -1,8 +1,7 @@
-use serde::{Deserialize, Serialize};
-
 const L1_OVERHEAD: u32 = 7 + 1 + 12; // Preamble + SFD + IPG
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum LimiterMode {
     Spacer,
     TokenBucketFilter,
@@ -40,6 +39,7 @@ impl Limiter {
     /// Returns the additional send offset (in ns) for a packet of the given
     /// size, or `None` if the packet exceeds the configured rate limit and
     /// should be dropped.
+    #[inline]
     pub fn limiter_calculate_offset_ns(
         &mut self,
         time_to_sent_ns: f64,

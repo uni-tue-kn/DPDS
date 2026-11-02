@@ -2,6 +2,7 @@
 name = "dpdk-sys"
 version = "0.1.0"
 edition = "2021"
+publish = false
 links = "dpdk"
 
 [build-dependencies]
