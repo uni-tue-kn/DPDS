@@ -1,5 +1,5 @@
-/* Single entry-point header for bindgen.  Includes every DPDK header needed
- * by basicfwd; wrap_static_fns in build.rs handles the static-inline
+/* Single entry-point header for bindgen.  Includes every DPDK header the
+ * `dpdk` crate needs; wrap_static_fns in build.rs handles the static-inline
  * functions automatically so no manual helper declarations are required. */
 
 #include <stdint.h>
@@ -12,9 +12,7 @@
 #include <rte_mbuf.h>
 #include <rte_mbuf_dyn.h>
 #include <rte_mempool.h>
-#include <rte_mpls.h>
 #include <rte_ring.h>
-#include <rte_telemetry.h>
 
 /* rte_errno is a macro expanding to a per-lcore TLS variable, so bindgen
  * cannot expose it directly.  Wrap it in a static-inline accessor that

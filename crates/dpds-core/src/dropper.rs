@@ -3,7 +3,6 @@ use rand::SeedableRng;
 use rand_distr::{Distribution, Uniform};
 use serde::{Deserialize, Serialize};
 
-#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum LossModel {
     // Random model parameter:

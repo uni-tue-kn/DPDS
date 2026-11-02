@@ -25,13 +25,7 @@ pub struct Eal {
 impl Eal {
     /// Initialise the EAL from the process's command-line arguments,
     /// unmodified -- callers are responsible for including any EAL flags
-    /// they need. `--in-memory` and `--mbuf-pool-ops-name=stack` used to
-    /// be injected unconditionally here, independent of whatever the
-    /// caller passed; moved to `dpdk-peof/Makefile`'s `FORCED_EAL_ARGS`
-    /// (mirrored in `preof-eval`'s own `FORCED_EAL_ARGS` constant for its
-    /// SSH-launched commands) so every EAL argument lives in one place
-    /// instead of being split between Rust code and the Makefile. See
-    /// that variable's own comment for what each flag does and why.
+    /// they need (the first entry is the program name, as in `argv`).
     pub fn new(args: &[String]) -> Result<Self, DpdkError> {
         if EAL_TAKEN.swap(true, Ordering::SeqCst) {
             return Err(DpdkError(-114)); // -EALREADY
@@ -67,13 +61,10 @@ impl Drop for Eal {
 
 // ── Multi-core launch ────────────────────────────────────────────────────────
 //
-// Each pipeline stage (DPDS1/DPDS2/PEOF1/PEOF2/DPDS3) is launched as an
-// ordinary Rust closure on its own worker lcore. `rte_eal_remote_launch`
-// itself only knows `extern "C" fn(*mut c_void) -> i32`, so a boxed
-// trait-object closure is smuggled through the `arg` pointer and unpacked
-// by a single trampoline — the same "closure behind a C callback" idiom
-// `telemetry::register_command` already uses for its own C-callback
-// boundary.
+// Each pipeline stage is launched as an ordinary Rust closure on its own
+// worker lcore. `rte_eal_remote_launch` itself only knows
+// `extern "C" fn(*mut c_void) -> i32`, so a boxed trait-object closure is
+// smuggled through the `arg` pointer and unpacked by a single trampoline.
 
 extern "C" fn launch_trampoline(arg: *mut c_void) -> i32 {
     // Safety: `arg` is always a pointer produced by `remote_launch` below,
@@ -109,6 +100,11 @@ pub fn wait_lcore(lcore_id: u32) -> Result<(), DpdkError> {
     } else {
         Ok(())
     }
+}
+
+/// Number of enabled lcores, the main lcore included (`rte_lcore_count`).
+pub fn lcore_count() -> usize {
+    unsafe { dpdk_sys::rte_lcore_count() as usize }
 }
 
 /// Iterator over every enabled worker lcore (i.e. every lcore except the

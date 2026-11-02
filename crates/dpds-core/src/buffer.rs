@@ -46,14 +46,50 @@ pub struct Buffer {
 }
 
 impl Buffer {
+    /// Creates an empty buffer (and its delayer, limiter and dropper) from `config`.
+    pub fn new(config: Config) -> Buffer {
+        // ~15 Mpps is current max rate of the emulator
+        let initialization_rate_pps = 15_000_000.;
+
+        let inner = if config.reordering {
+            InnerBuffer::Heap(BinaryHeap::with_capacity(config.buffer_capacity))
+        } else {
+            InnerBuffer::Queue(VecDeque::with_capacity(config.buffer_capacity))
+        };
+
+        let delayer = Delayer::new(
+            config.delayer.distribution,
+            config.delayer.mean_ns,
+            config.delayer.std_ns,
+            config.delayer.activate_correlation,
+            config.delayer.half_life_period_ns,
+            initialization_rate_pps,
+        );
+
+        let limiter = Limiter::new(
+            config.limiter.mode,
+            config.limiter.activate,
+            config.limiter.rate_bps,
+            config.limiter.limit_bit,
+        );
+
+        let dropper = Dropper::new(config.loss_model);
+
+        Buffer {
+            inner,
+            capacity: config.buffer_capacity,
+            delayer,
+            limiter,
+            dropper,
+        }
+    }
+
     /// Pushes a packet into the buffer, applying the delayer, limiter and
     /// dropper. Returns `false` if the packet was dropped or the buffer is full.
     ///
-    /// # Safety
-    /// `self` must be a valid `Buffer` pointer returned from `buffer_new`, and
-    /// `packet_ptr` must remain valid until the packet is popped.
-    #[no_mangle]
-    pub extern "C" fn buffer_push(
+    /// The buffer does not own `packet_ptr` and never dereferences it; the
+    /// caller must keep it valid until it is popped.
+    pub fn push(
         &mut self,
         packet_ptr: *mut c_void,
         packet_length_byte: u32,
@@ -100,69 +136,30 @@ impl Buffer {
         true
     }
 
-    /// Removes and returns the head packet pointer.
-    ///
-    /// # Safety
-    /// `self` must be a valid `Buffer` pointer returned from `buffer_new`, and
-    /// the caller must ensure the buffer is non-empty.
-    #[no_mangle]
-    pub extern "C" fn buffer_pop(&mut self) -> *mut c_void {
+    /// Removes and returns the head packet pointer, or `None` if the buffer is empty.
+    pub fn pop(&mut self) -> Option<*mut c_void> {
         match &mut self.inner {
-            InnerBuffer::Queue(q) => {
-                q.pop_front()
-                    .expect("buffer_pop called on empty buffer")
-                    .packet_ptr
-            }
-            InnerBuffer::Heap(h) => {
-                h.pop()
-                    .expect("buffer_pop called on empty buffer")
-                    .0
-                    .packet_ptr
-            }
+            InnerBuffer::Queue(q) => q.pop_front().map(|t| t.packet_ptr),
+            InnerBuffer::Heap(h) => h.pop().map(|t| t.0.packet_ptr),
         }
     }
 
-    /// Returns the send time (in ns) of the head packet.
-    ///
-    /// # Safety
-    /// `self` must be a valid `Buffer` pointer returned from `buffer_new`, and
-    /// the caller must ensure the buffer is non-empty.
-    #[no_mangle]
-    pub extern "C" fn buffer_front_time(&self) -> f64 {
+    /// Returns the send time (in ns) of the head packet, or `None` if the buffer is empty.
+    pub fn front_time(&self) -> Option<f64> {
         let ns: u64 = match &self.inner {
-            InnerBuffer::Queue(q) => {
-                q.front()
-                    .expect("buffer_front_time called on empty buffer")
-                    .time_to_send_ns
-            }
-            InnerBuffer::Heap(h) => {
-                h.peek()
-                    .expect("buffer_front_time called on empty buffer")
-                    .0
-                    .time_to_send_ns
-            }
+            InnerBuffer::Queue(q) => q.front()?.time_to_send_ns,
+            InnerBuffer::Heap(h) => h.peek()?.0.time_to_send_ns,
         };
-        ns as f64
+        Some(ns as f64)
     }
 
     /// Returns `true` if the buffer holds no packets.
-    ///
-    /// # Safety
-    /// `self` must be a valid `Buffer` pointer returned from `buffer_new`.
-    #[no_mangle]
-    pub extern "C" fn buffer_is_empty(&self) -> bool {
-        match &self.inner {
-            InnerBuffer::Queue(q) => q.is_empty(),
-            InnerBuffer::Heap(h) => h.is_empty(),
-        }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// Returns the number of packets currently in the buffer.
-    ///
-    /// # Safety
-    /// `self` must be a valid `Buffer` pointer returned from `buffer_new`.
-    #[no_mangle]
-    pub extern "C" fn buffer_len(&self) -> usize {
+    pub fn len(&self) -> usize {
         match &self.inner {
             InnerBuffer::Queue(q) => q.len(),
             InnerBuffer::Heap(h) => h.len(),
@@ -170,58 +167,7 @@ impl Buffer {
     }
 
     /// Returns the maximum number of packets the buffer can hold.
-    ///
-    /// # Safety
-    /// `self` must be a valid `Buffer` pointer returned from `buffer_new`.
-    #[no_mangle]
-    pub extern "C" fn buffer_capacity(&self) -> usize {
+    pub fn capacity(&self) -> usize {
         self.capacity
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn buffer_new(config: Config) -> *mut Buffer {
-    // ~15 Mpps is current max rate of the emulator
-    let initialization_rate_pps = 15_000_000.;
-
-    let inner = if config.reordering {
-        InnerBuffer::Heap(BinaryHeap::with_capacity(config.buffer_capacity))
-    } else {
-        InnerBuffer::Queue(VecDeque::with_capacity(config.buffer_capacity))
-    };
-
-    let delayer = Delayer::new(
-        config.delayer.distribution,
-        config.delayer.mean_ns,
-        config.delayer.std_ns,
-        config.delayer.activate_correlation,
-        config.delayer.half_life_period_ns,
-        initialization_rate_pps,
-    );
-
-    let limiter = Limiter::new(
-        config.limiter.mode,
-        config.limiter.activate,
-        config.limiter.rate_bps,
-        config.limiter.limit_bit,
-    );
-
-    let dropper = Dropper::new(config.loss_model);
-
-    Box::into_raw(Box::new(Buffer {
-        inner,
-        capacity: config.buffer_capacity,
-        delayer,
-        limiter,
-        dropper,
-    }))
-}
-
-/// # Safety
-/// `ptr` must be a pointer returned from `buffer_new` and must not be used afterwards.
-#[no_mangle]
-pub unsafe extern "C" fn buffer_destroy(ptr: *mut Buffer) {
-    if !ptr.is_null() {
-        drop(Box::from_raw(ptr));
     }
 }

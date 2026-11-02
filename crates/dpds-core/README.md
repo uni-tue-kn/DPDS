@@ -2,10 +2,10 @@
 
 `dpds-core` is the core of **DPDS**, a software **network-link emulator**. It
 models the three effects a real network link imposes on packets — **delay**,
-**rate limiting**, and **packet loss** — and exposes them through a small **C
-FFI**. It is built as a `cdylib` so it can be linked into a packet-processing
-data plane — DPDS runs on [DPDK](https://www.dpdk.org/) — which owns the packets
-and calls into this library to decide *when* (or *whether*) each packet should be
+**rate limiting**, and **packet loss** — and exposes them through a small **Rust
+API**. It is used by the packet-processing data plane (the `dpds` crate, which
+runs on [DPDK](https://www.dpdk.org/)); the data plane owns the packets and
+calls into this library to decide *when* (or *whether*) each packet should be
 forwarded.
 
 The library never copies or interprets packet payloads. It only stores an opaque
@@ -37,64 +37,55 @@ regardless of how fast packets arrive.
 
 ## Building
 
-Requires a stable Rust toolchain.
+Requires a stable Rust toolchain. Add it as a dependency and build with Cargo:
 
-```sh
-cargo build --release
+```toml
+dpds-core = { path = "crates/dpds-core" }
 ```
 
-This produces:
+## Using the API
 
-- `target/release/libdpds_core.{so,dylib,dll}` — the shared library to link against, and
-- `target/libdpds_core.h` — a C header generated at build time by [`cbindgen`](https://github.com/mozilla/cbindgen) (see `build.rs` / `cbindgen.toml`).
+The host loads a configuration, creates a buffer, then pushes and pops packets.
+Everything is in `dpds_core::buffer` and the crate root:
 
-## Using the FFI
-
-The host first loads a configuration, creates a buffer, then pushes and pops
-packets. The exported functions are:
-
-| Function                                                                                                | Purpose                                                                   |
-| ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| `Config read_config(const char *path)`                                                                  | Parse a JSON config file (see below).                                     |
-| `Buffer *buffer_new(Config config)`                                                                     | Allocate a buffer for the given config.                                   |
-| `bool buffer_push(Buffer *self, void *packet_ptr, uint32_t packet_length_byte, double current_time_ns)` | Offer a packet. Returns `false` if it was dropped or the buffer was full. |
-| `double buffer_front_time(const Buffer *self)`                                                          | Send time (ns) of the head packet.                                        |
-| `void *buffer_pop(Buffer *self)`                                                                        | Remove and return the head packet pointer.                                |
-| `bool buffer_is_empty(const Buffer *self)`                                                              | Whether the buffer is empty.                                              |
-| `uintptr_t buffer_len(const Buffer *self)`                                                              | Number of buffered packets.                                               |
-| `uintptr_t buffer_capacity(const Buffer *self)`                                                         | Configured capacity.                                                      |
-| `void buffer_destroy(Buffer *ptr)`                                                                      | Free a buffer created by `buffer_new`.                                    |
+| Item                                                                  | Purpose                                                                          |
+| --------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `Config::from_file(path) -> Result<Config, ConfigError>`              | Parse a JSON config file (see below). I/O and parse errors are distinct variants. |
+| `Buffer::new(config) -> Buffer`                                       | Create a buffer for the given config.                                            |
+| `Buffer::push(&mut self, pkt: *mut c_void, len_byte: u32, now_ns: f64) -> bool` | Offer a packet. Returns `false` if it was dropped or the buffer was full.  |
+| `Buffer::front_time(&self) -> Option<f64>`                            | Send time (ns) of the head packet, `None` if empty.                              |
+| `Buffer::pop(&mut self) -> Option<*mut c_void>`                       | Remove and return the head packet pointer, `None` if empty.                      |
+| `Buffer::is_empty(&self)`, `len(&self)`, `capacity(&self)`            | Occupancy and configured capacity.                                               |
 
 A typical host loop pushes arriving packets with the current timestamp, then
-forwards a packet whenever `buffer_front_time` has passed and the buffer is
-non-empty:
+forwards a packet whenever `front_time` has passed:
 
-```c
-Config cfg = read_config("config.json");
-Buffer *buf = buffer_new(cfg);
+```rust
+use dpds_core::{buffer::Buffer, Config};
+
+let config = Config::from_file("config.json")?;
+let mut buf = Buffer::new(config);
 
 // on packet arrival:
-if (!buffer_push(buf, pkt, pkt_len, now_ns)) {
-    /* packet was dropped or buffer full — free it */
+if !buf.push(pkt, pkt_len, now_ns) {
+    // packet was dropped or buffer full -- free it
 }
 
 // in the forwarding loop:
-while (!buffer_is_empty(buf) && buffer_front_time(buf) <= now_ns) {
-    void *pkt = buffer_pop(buf);
-    /* transmit pkt */
+while buf.front_time().is_some_and(|t| t <= now_ns) {
+    let pkt = buf.pop().unwrap();
+    // transmit pkt
 }
-
-buffer_destroy(buf);
 ```
 
-> **Safety:** the buffer stores raw packet pointers and does not own them. The
-> caller must keep each pushed pointer valid until it is popped, must not pop or
-> read the head of an empty buffer, and must use a `Buffer*` only with the
-> functions above. See the `# Safety` notes on each function in the source.
+> **Safety:** the buffer stores raw packet pointers and does not own or
+> dereference them. The caller must keep each pushed pointer valid until it is
+> popped. `Buffer` is not `Send` because of those pointers; a host that moves
+> it to another thread must vouch that it owns the packets.
 
 ## Configuration
 
-`read_config` parses a JSON file into the `Config` struct. A full example lives
+`Config::from_file` parses a JSON file into the `Config` struct. A full example lives
 in [`config.example.json`](config.example.json):
 
 ```json

@@ -100,9 +100,7 @@ pub struct Port<'pool> {
     /// RX/TX descriptor ring sizes as actually applied by the driver
     /// (post-`rte_eth_dev_adjust_nb_rx_tx_desc`) — may silently differ
     /// from what was requested (see `requested_rxd`/`requested_txd`
-    /// below), e.g. a driver clamping 65,535 down to its own max (mlx5:
-    /// possibly 8,192 — unverified without hardware, see
-    /// `optimisations.md`'s "NIC descriptor ring size" item).
+    /// below), e.g. a driver clamping 65,535 down to its own max.
     nb_rxd: u16,
     nb_txd: u16,
     /// RX/TX descriptor ring sizes as requested by the caller, before any
@@ -139,9 +137,9 @@ impl<'pool> Port<'pool> {
     /// `mtu` is the requested MTU (`rte_eth_rxmode::mtu`: the max L3 payload
     /// size, excluding the 14-byte Ethernet header and 4-byte FCS) --
     /// callers whose frames carry extra header overhead beyond plain
-    /// Ethernet+IP (e.g. this pipeline's inbound MPLS S-Label + DetNet d-CW)
-    /// must pad it in accordingly, or oversized frames get dropped at the
-    /// NIC before ever reaching DPDK.
+    /// Ethernet+IP (e.g. tunnel or VLAN encapsulation) must pad it in
+    /// accordingly, or oversized frames get dropped at the NIC before ever
+    /// reaching DPDK.
     pub fn init(
         port: u16,
         pool: &'pool Mempool,
@@ -308,6 +306,16 @@ impl<'pool> Port<'pool> {
         let link_speed = unsafe { link.__bindgen_anon_1.__bindgen_anon_1.link_speed };
         let speed = unsafe { CStr::from_ptr(dpdk_sys::rte_eth_link_speed_to_str(link_speed)) };
         Ok(speed.to_string_lossy().into_owned())
+    }
+
+    /// Whether the port's link is currently up, via `rte_eth_link_get_nowait`
+    /// (reports the current state without waiting for autonegotiation to
+    /// finish). Only meaningful once the device is started (see
+    /// [`Port::init`]'s step 5).
+    pub fn link_up(&self) -> Result<bool, DpdkError> {
+        let mut link: dpdk_sys::rte_eth_link = unsafe { mem::zeroed() };
+        check(unsafe { dpdk_sys::rte_eth_link_get_nowait(self.id, &mut link) })?;
+        Ok(unsafe { link.__bindgen_anon_1.__bindgen_anon_1.link_status() } != 0)
     }
 
     /// Split the port into its per-queue **data-plane** handles.
@@ -479,103 +487,6 @@ pub fn eth_stats_get(port: u16) -> Result<PortStats, DpdkError> {
         oerrors: s.oerrors,
         rx_nombuf: s.rx_nombuf,
     })
-}
-
-// ── Port-buffer discard xstats (by id) ──────────────────────────────────────
-
-/// The 16 xstat names this pipeline's NIC RX-overflow telemetry cares
-/// about: a per-priority (0-7) port-buffer discard count (the lossy RX
-/// buffer running out of room) and congestion-management discard count
-/// (the mlx5 PMD's own `rx_prio<n>_buf_discard_packets`/
-/// `rx_prio<n>_cong_discard_packets` xstats, see `dpdk-peof/optimisations.md`
-/// item on NIC port-buffer discards). Not every port exposes all 16 --
-/// [`PortDiscardXstats::resolve`] skips whichever ones don't exist.
-fn candidate_discard_xstat_names() -> impl Iterator<Item = String> {
-    (0..8).flat_map(|prio| {
-        [
-            format!("rx_prio{prio}_buf_discard_packets"),
-            format!("rx_prio{prio}_cong_discard_packets"),
-        ]
-    })
-}
-
-/// A port's own resolved set of port-buffer-discard xstat ids, cached so a
-/// repeat read (`read`) only ever needs one `rte_eth_xstats_get_by_id`
-/// call -- no per-read name lookup (`rte_eth_xstats_get_id_by_name` does a
-/// string search, documented as unsuitable for a fast path).
-pub struct PortDiscardXstats {
-    port: u16,
-    ids: Vec<u64>,
-}
-
-impl PortDiscardXstats {
-    /// Resolves which of [`candidate_discard_xstat_names`] actually exist
-    /// on `port`, once, by fetching every xstat name the port exposes
-    /// (`rte_eth_xstats_get_names_by_id` with `ids = NULL`, first called
-    /// with a zero-length buffer to learn the count, per that function's
-    /// own doc comment) and matching by name -- the matching xstat's array
-    /// index doubles as its id (`rte_eth_xstats_get_names_by_id`'s own doc
-    /// comment: "the array index is same with id field of `rte_eth_xstat`").
-    pub fn resolve(port: u16) -> Result<Self, DpdkError> {
-        let count = check(unsafe {
-            dpdk_sys::rte_eth_xstats_get_names_by_id(
-                port,
-                std::ptr::null_mut(),
-                0,
-                std::ptr::null_mut(),
-            )
-        })? as usize;
-
-        let mut names: Vec<dpdk_sys::rte_eth_xstat_name> = vec![unsafe { mem::zeroed() }; count];
-        let filled = check(unsafe {
-            dpdk_sys::rte_eth_xstats_get_names_by_id(
-                port,
-                names.as_mut_ptr(),
-                count as u32,
-                std::ptr::null_mut(),
-            )
-        })? as usize;
-        names.truncate(filled);
-
-        let wanted: Vec<String> = candidate_discard_xstat_names().collect();
-        let ids = names
-            .iter()
-            .enumerate()
-            .filter_map(|(id, n)| {
-                let name = unsafe { CStr::from_ptr(n.name.as_ptr()) }.to_string_lossy();
-                wanted
-                    .iter()
-                    .any(|w| w == name.as_ref())
-                    .then_some(id as u64)
-            })
-            .collect();
-
-        Ok(PortDiscardXstats { port, ids })
-    }
-
-    /// Sums the current value of every resolved id with a single
-    /// `rte_eth_xstats_get_by_id` call. `None` if [`resolve`](Self::resolve)
-    /// found none of the candidate names on this port at all (not a read
-    /// failure -- some PMDs/port configurations simply don't expose this
-    /// counter); a read error on an otherwise-resolved id set is also
-    /// reported as `None` rather than panicking, since this feeds a
-    /// best-effort telemetry poll, not the data path.
-    pub fn read(&self) -> Option<u64> {
-        if self.ids.is_empty() {
-            return None;
-        }
-        let mut values = vec![0u64; self.ids.len()];
-        let filled = check(unsafe {
-            dpdk_sys::rte_eth_xstats_get_by_id(
-                self.port,
-                self.ids.as_ptr(),
-                values.as_mut_ptr(),
-                self.ids.len() as u32,
-            )
-        })
-        .ok()? as usize;
-        Some(values[..filled].iter().sum())
-    }
 }
 
 // ── NUMA / lcore helpers ─────────────────────────────────────────────────────

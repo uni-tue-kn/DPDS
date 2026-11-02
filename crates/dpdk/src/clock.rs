@@ -1,6 +1,6 @@
 //! Wall-clock-agnostic nanosecond timestamps from the CPU's timestamp
-//! counter, matching the `f64`-nanosecond `Timestamp` convention both
-//! `peof-core` and `dpds-core` use.
+//! counter, matching the `f64`-nanosecond timestamp convention of
+//! `dpds-core`.
 
 use std::sync::OnceLock;
 
@@ -17,7 +17,7 @@ fn ns_per_cycle() -> f64 {
 
 /// Current time in nanoseconds, derived from `rte_rdtsc()`. Not tied to
 /// any wall-clock epoch — only differences between calls are meaningful,
-/// which is all `peof-core`/`dpds-core` deadline arithmetic needs.
+/// which is all `dpds-core`'s deadline arithmetic needs.
 #[inline(always)]
 pub fn now_ns() -> f64 {
     let cycles = unsafe { dpdk_sys::rte_rdtsc() };

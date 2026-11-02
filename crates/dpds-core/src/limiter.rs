@@ -2,14 +2,12 @@ use serde::{Deserialize, Serialize};
 
 const L1_OVERHEAD: u32 = 7 + 1 + 12; // Preamble + SFD + IPG
 
-#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum LimiterMode {
     Spacer,
     TokenBucketFilter,
 }
 
-#[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct Limiter {
     pub mode: LimiterMode,

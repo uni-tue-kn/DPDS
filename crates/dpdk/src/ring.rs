@@ -107,10 +107,9 @@ impl<T: Copy> Ring<T> {
     /// that were actually waiting in the ring just before this dequeue, i.e.
     /// the dequeued count plus `rte_ring_sc_dequeue_burst_elem`'s own
     /// `available` out-param (how many entries were still left in the ring
-    /// after this call drained up to `objs.len()` of them). Used to sample a
-    /// per-epoch high-water mark of a consumer's lag behind its producer (see
-    /// `peof::counters::PeofCounters`'s `input_depth_max_primary`/
-    /// `input_depth_max_backup`) without a second, separate call.
+    /// after this call drained up to `objs.len()` of them). Used to sample
+    /// the high-water mark of a consumer's lag behind its producer without a
+    /// second, separate call.
     #[inline(always)]
     pub fn dequeue_burst_with_depth(&self, objs: &mut [T]) -> (u16, u32) {
         let n = objs.len().min(u16::MAX as usize) as u16;
@@ -178,8 +177,7 @@ mod elem_tests {
 
     use super::{checked_ring_esize, ring_esize, Ring, RingElem};
 
-    /// Stand-in for `peof::pipeline::PeofInput` (this crate can't see it):
-    /// pointer + two 8-byte words.
+    /// A pointer plus two 8-byte words of per-packet metadata.
     #[derive(Clone, Copy)]
     #[allow(dead_code)]
     struct Elem24 {
@@ -188,8 +186,8 @@ mod elem_tests {
         b: f64,
     }
 
-    // SAFETY: same handover as `PeofInput`: the pointer moves with
-    // ownership of what it points at; the two words are plain data.
+    // SAFETY: the pointer moves with ownership of what it points at; the
+    // two words are plain data.
     unsafe impl RingElem for Elem24 {}
 
     /// Same shape as `Elem24`, but not marked `RingElem`.
@@ -257,7 +255,7 @@ mod elem_tests {
     }
 
     /// `Ring` without a type argument still means the pointer ring, so
-    /// existing `Arc<Ring>` call sites (the PEOF -> DPDS3 rings) keep compiling.
+    /// `Arc<Ring>` call sites keep compiling.
     #[test]
     fn ring_defaults_to_a_pointer_ring() {
         let none: Option<&Ring> = None;

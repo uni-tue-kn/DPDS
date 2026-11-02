@@ -97,7 +97,7 @@ fn main() {
     cc_build.include(&manifest_dir);
     // Cross-language LTO: when clang is available, compile the wrappers to
     // LLVM bitcode so rust-lld can inline rte_eth_rx/tx_burst into the Rust
-    // forwarding loop (see README.md).  clang's LLVM major must match
+    // forwarding loop (see the repository README.md).  clang's LLVM major must match
     // rustc's — with an older clang, lld silently uses the machine-code
     // half of the fat objects and nothing is inlined.  -ffat-lto-objects
     // keeps machine code alongside the bitcode so the archive links with
@@ -122,7 +122,7 @@ fn main() {
         cc_build.include(path);
     }
     // DPDK's x86 build adds -mrtm unconditionally (config/x86/meson.build),
-    // even on CPUs without TSX such as zink-dpdk-1's AMD EPYC. A wrapper
+    // even on CPUs without TSX (e.g. AMD EPYC). A wrapper
     // compiled with rtm has a target feature its -Ctarget-cpu=native Rust
     // callers lack, so LLVM refuses to inline it ("conflicting target
     // features") and every burst becomes an out-of-line call. The

@@ -1,6 +1,5 @@
-//! Read-only access to packet bytes, needed by the pipeline's header
-//! parser (Ethernet/MPLS S-Label/d-CW) and by DPDS3's length read, plus
-//! the prefetch helpers for those reads. Everything else in this workspace
+//! Read-only access to packet bytes and mbuf header fields, plus the
+//! prefetch helpers for those reads. Everything else in this workspace
 //! only ever moves `RawMbuf` pointers around without looking inside them;
 //! this module is the one place that does, and it never writes to an mbuf
 //! (no dynamic fields are registered).
@@ -12,8 +11,7 @@ use crate::port::RawMbuf;
 
 /// Issues an L1 prefetch (`_MM_HINT_T0`) for the cache line containing
 /// `addr`. The one place the `x86_64`-only intrinsic lives -- every other
-/// prefetch helper in this module (and, previously, `peof::pipeline`'s own
-/// now-removed `prefetch3`) goes through here, so the `target_arch` cfg
+/// prefetch helper in this module goes through here, so the `target_arch` cfg
 /// split exists exactly once. A prefetch hint never faults, even for a
 /// null or otherwise invalid `addr`, so this never dereferences it.
 #[inline(always)]
@@ -48,9 +46,8 @@ fn data_addr(m: *const dpdk_sys::rte_mbuf) -> *const u8 {
 /// Unlike every other prefetch helper in this module, `m` need not point
 /// to a live mbuf: the address being prefetched IS `m`, so nothing here
 /// ever dereferences it. This is what makes it safe to use on a whole
-/// batch in a pass ahead of the loop that reads it, e.g. `dpds3_stage`'s
-/// `pkt_len()` reads of mbufs released from PEOF's buffer, whose line 0
-/// may have been cold since RX.
+/// batch in a pass ahead of the loop that reads it, e.g. for
+/// `pkt_len` reads of mbufs whose line 0 may have been cold since RX.
 #[inline(always)]
 pub fn prefetch_header(m: *const dpdk_sys::rte_mbuf) {
     prefetch_t0(m as *const i8);
@@ -58,7 +55,7 @@ pub fn prefetch_header(m: *const dpdk_sys::rte_mbuf) {
 
 /// Prefetches the cache line holding mbuf `m`'s first segment's packet
 /// data (via [`data_addr`]) into L1 -- the bytes the header parser
-/// ([`Packet::data`]/`peof::header::parse`) is about to read.
+/// ([`Packet::data`]) is about to read.
 ///
 /// `m` must point to a live mbuf: unlike [`prefetch_header`], this
 /// dereferences `m` (through [`data_addr`]) to compute which address to
@@ -70,12 +67,38 @@ pub fn prefetch_data(m: *const dpdk_sys::rte_mbuf) {
     prefetch_t0(data_addr(m) as *const i8);
 }
 
+/// The port id stored in `m` (`rte_mbuf::port`).
+///
+/// # Safety
+/// `m` must point to a live mbuf.
+#[inline(always)]
+pub unsafe fn port(m: RawMbuf) -> u16 {
+    (*m).__bindgen_anon_1.__bindgen_anon_1.port
+}
+
+/// Overwrites the port id stored in `m` (`rte_mbuf::port`).
+///
+/// # Safety
+/// `m` must point to a live mbuf that nothing else is accessing.
+#[inline(always)]
+pub unsafe fn set_port(m: RawMbuf, port: u16) {
+    (*m).__bindgen_anon_1.__bindgen_anon_1.port = port;
+}
+
+/// Total packet length of `m` in bytes (`rte_mbuf::pkt_len`).
+///
+/// # Safety
+/// `m` must point to a live mbuf.
+#[inline(always)]
+pub unsafe fn pkt_len(m: RawMbuf) -> u32 {
+    (*m).__bindgen_anon_2.__bindgen_anon_1.pkt_len
+}
+
 /// A borrowed, read-only view of one mbuf's packet data.
 ///
-/// Read-only by design: this pipeline never writes to an mbuf. Per-packet
-/// metadata (the parsed header, the arrival timestamp) travels next to the
-/// pointer in the pipeline's own structs instead (`dpds::TaggedEmulator`,
-/// `peof::pipeline::PeofInput`).
+/// Read-only by design: packet bytes are never written through this view.
+/// Per-packet metadata (a parsed header, an arrival timestamp) should travel
+/// next to the pointer in the caller's own structs rather than in the mbuf.
 ///
 /// Stores a raw pointer plus `PhantomData<&'a rte_mbuf>`, which enforces
 /// the borrow-checker lifetime contract that the `Packet` must not outlive

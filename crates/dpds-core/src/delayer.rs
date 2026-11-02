@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 
 const SQRT_3: f64 = 1.7320508075688772;
 
-#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum RVDistribution {
     DeterministicDistribution,
