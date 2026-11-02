@@ -1,8 +1,9 @@
 # Telemetry
 
 Everything DPDS exposes over DPDK's telemetry socket. It follows preof's
-telemetry design (same counters, epochs, first-loss reasons, wire shapes), scoped
-to DPDS's single data-plane worker. The source of truth for the exact wire format
+telemetry design (same counters, epochs, first-loss reasons, wire shapes), kept
+per traffic direction: every direction has its own worker lcore and its own
+counter set. The source of truth for the exact wire format
 is `crates/dpds/src/counters.rs`, `first_loss.rs` and `stats.rs`; this file
 explains what each field means.
 
@@ -19,20 +20,20 @@ socket. Use the client that ships with DPDK:
 
 ```bash
 dpdk-telemetry.py -f <file-prefix>        # interactive prompt, then e.g.:
---> /dpds/stats
+--> /dpds/stats,0
 --> /nic/epochs,0
 ```
 
 or non-interactively:
 
 ```bash
-echo '/dpds/stats' | dpdk-telemetry.py -f <file-prefix>
+echo '/dpds/stats,0' | dpdk-telemetry.py -f <file-prefix>
 ```
 
 - `-f` / `--file-prefix` must equal the `--file-prefix` EAL argument DPDS was
   started with (DPDK's default prefix is `rte`, so `-f` can be omitted then).
   `dpdk-telemetry.py -l` lists the prefixes it can see.
-- A command with a parameter is written `/cmd,<param>`, e.g. `/nic/hw_first_loss,1`.
+- A command with a parameter is written `/cmd,<param>`, e.g. `/dpds/stats,1` or `/nic/hw_first_loss,1`.
   The reply is keyed by the command **without** its `,<param>`.
 - The socket is `$XDG_RUNTIME_DIR/dpdk/<file-prefix>/dpdk_telemetry.v2` (as
   non-root; `/tmp/dpdk/<file-prefix>/...` if `XDG_RUNTIME_DIR` is unset; root
@@ -43,7 +44,7 @@ echo '/dpds/stats' | dpdk-telemetry.py -f <file-prefix>
   makes `rte_eal_init` fail with `TELEMETRY: Error with socket binding, path too
   long`, so DPDS exits with status 1. Point `XDG_RUNTIME_DIR` at a short
   directory (e.g. `/tmp/dpds-x1`) or use a short `--file-prefix`.
-- Replies are limited to 16384 bytes. `/dpds/epochs` stays far below that (at most
+- Replies are limited to 16384 bytes. `/dpds/epochs,<dir>` stays far below that (at most
   32 epochs).
 - DPDK's own `/ethdev/stats,<port>`, `/ethdev/xstats,<port>` and `/` (list all
   commands) are available next to these.
@@ -52,50 +53,53 @@ echo '/dpds/stats' | dpdk-telemetry.py -f <file-prefix>
 
 | command | what |
 | --- | --- |
-| `/dpds/stats` | Worker counters, cumulative since start, plus the whole-run first-loss result. |
-| `/dpds/epochs` | The same counters per epoch (deltas) and gauges per epoch (maxima), plus per-epoch first loss. |
-| `/dpds/ports` | Static: device name and descriptor ring sizes of each port. |
+| `/dpds/stats,<dir>` | Counters of direction `<dir>` (0 or 1), cumulative since start, plus that direction's whole-run first-loss result. |
+| `/dpds/epochs,<dir>` | The same counters per epoch (deltas) and gauges per epoch (maxima), plus per-epoch first loss, for direction `<dir>`. |
+| `/dpds/ports` | Static: device name and descriptor ring sizes of each port, and the layout of each direction. |
 | `/nic/hw_first_loss,<port>` | First NIC hardware drop seen by the main lcore on port `<port>` (`0` or `1`). |
 | `/nic/epochs,<port>` | Per-epoch NIC `rx_packets` / `imissed` / `rx_port_discards` of port `<port>`. |
 
-A `<port>` that is not the index of an existing port returns an empty reply.
+Direction `d` is the traffic received on port `d`; its egress port is `d ^ 1`
+with two ports and port 0 with one port (see `/dpds/ports`). `<dir>` must be the
+index of an existing direction (`0`, or `0` and `1`). A missing, non-numeric or
+out-of-range `<dir>` or `<port>` returns an empty reply.
 
-## `/dpds/stats` and epochs
+## `/dpds/stats,<dir>` and epochs
 
-The single worker lcore owns one counter set. Every counter has exactly one
-writer (the worker) and is read by the telemetry thread without locks (relaxed
+Each direction's worker lcore owns one counter set. Every counter has exactly one
+writer (that worker) and is read by the telemetry thread without locks (relaxed
 atomics, cache-line aligned).
 
 | field | meaning |
 | --- | --- |
 | `uptime_ns` | Nanoseconds since DPDS started its telemetry (the shared zero point of every time in these replies). Computed when the reply is built. |
-| `polls` | Loop iterations of the worker. Compare with `rx_pkts`: many polls and few packets means the lcore is spinning idle. |
-| `rx_pkts` | Packets received via `rx_burst`, all ports. |
-| `rx_full_bursts` | `rx_burst` calls that returned a full `MAX_BURST_SIZE` (16) batch: the NIC had at least that much waiting, so intake was the binding constraint. |
-| `emulator_rejects` | Packets the `dpds-core` buffer refused: the configured loss model, the rate limiter's `limit_bit`, or the buffer being full (`buffer_capacity`). Undifferentiated by design. They are freed, never sent. |
-| `pops` | Packets that left the emulator buffer (their send time had arrived) and went on to TX. |
-| `tx_calls` | `tx_burst` calls with at least one packet. TX collects per-port tables of up to 16 packets, so one call is one table flush; `tx_pkts / tx_calls` is the mean batch size. |
+| `polls` | Loop iterations of this direction's worker. Compare with `rx_pkts`: many polls and few packets means the lcore is spinning idle. |
+| `rx_pkts` | Packets received via `rx_burst` on this direction's RX port. |
+| `rx_full_bursts` | `rx_burst` calls that returned a full `BURST_SIZE` (32) batch: the NIC had at least that much waiting, so intake was the binding constraint. |
+| `dpds_rejects` | Packets the `dpds-core` buffer refused: the configured loss model, the rate limiter's `limit_bit`, or the buffer being full (`buffer_capacity`). Undifferentiated by design. They are freed, never sent. |
+| `pops` | Packets that left the DPDS buffer (their send time had arrived) and went on to TX. |
+| `tx_calls` | `tx_burst` calls with at least one packet. A worker transmits what it popped in the same loop iteration (at most `BURST_SIZE` = 32 packets), so there is at most one call per iteration; `tx_pkts / tx_calls` is the mean batch size. |
 | `tx_pkts` | Packets handed to `tx_burst`. |
 | `tx_sent` | Packets the NIC accepted. |
 | `tx_drops` | `tx_pkts - tx_sent`, derived when the reply is built (not a counter). Real loss at the NIC's TX descriptor ring. |
 | `tx_short_calls` | `tx_burst` calls that accepted fewer packets than offered: the TX descriptor ring was momentarily full. The unsent tail is freed. |
-| `tx_batch_max` (gauge) | Largest single `tx_burst` call (at most 16). |
+| `tx_batch_max` (gauge) | Largest single `tx_burst` call (at most 32). |
 | `tx_pkts_per_call` | `tx_pkts / tx_calls` with two decimals, as a string (telemetry dicts have no float type); `"0.00"` with no calls. |
-| `buffer_len_max` (gauge) | The emulator buffer's depth, sampled once per loop iteration after the pop (as in preof), so a zero-delay pass-through reads about 0. At steady state roughly `arrival_rate x delay`. Pinned at `buffer_capacity` means the buffer is the bottleneck. |
+| `buffer_len_max` (gauge) | The DPDS buffer's depth, sampled once per loop iteration after the pop (as in preof), so a zero-delay pass-through reads about 0. At steady state roughly `arrival_rate x delay`. Pinned at `buffer_capacity` means the buffer is the bottleneck. |
 | `first_loss_reason` / `first_loss_detail` / `first_loss_relative_ns` | The first loss of the whole run (see below); `"Clean"` / `""` / `0` if none yet. |
 
 A packet that is neither delayed nor lost satisfies
-`rx_pkts = emulator_rejects + pops + (in buffer)` and `pops = tx_pkts` once TX
-has flushed, which makes `tx_sent == N` and `emulator_rejects == 0` a good
-exactness check for a run of `N` packets.
+`rx_pkts = dpds_rejects + pops + (in buffer)` and `pops = tx_pkts` (a popped
+packet is handed to `tx_burst` in the same loop iteration), which makes `tx_sent == N` and `dpds_rejects == 0` a good
+exactness check for a run of `N` packets through one direction.
 
-Gauges in `/dpds/stats` are the maximum over all epochs of the run, including
+Gauges in `/dpds/stats,<dir>` are the maximum over all epochs of the run, including
 the open one.
 
 ### Epochs
 
-The cumulative counters blend a whole run together. `/dpds/epochs` segments it
-into **epochs**, one per burst of traffic. The worker detects boundaries itself
+The cumulative counters blend a whole run together. `/dpds/epochs,<dir>` segments it
+into **epochs**, one per burst of traffic. Each worker detects boundaries itself
 from its own arrival pattern: an iteration with no arrivals, more than 500 ms
 (`EPOCH_IDLE_GAP_NS`, strictly greater) after the last one, closes the current
 epoch, provided it saw at least one arrival. Idle time before the first packet
@@ -113,11 +117,11 @@ epoch, oldest first.
 | `epochs_dropped` | Closes beyond the 32nd. The log keeps the **oldest** 32 and drops later ones (it never overwrites). Treat counters past epoch 32 as missing, not zero. |
 | `epoch_start_uptime_ns` / `epoch_end_uptime_ns` | Array. Epoch window in nanoseconds since start, the same clock as `uptime_ns` and `first_loss_relative_ns`. |
 | `first_loss_reason` / `first_loss_detail` / `first_loss_relative_ns` | Arrays. The first loss **within that epoch** (`"Clean"` / `""` / `0` if none). |
-| `polls`, `rx_pkts`, `rx_full_bursts`, `emulator_rejects`, `pops`, `tx_calls`, `tx_pkts`, `tx_sent`, `tx_short_calls` | Arrays of per-epoch counter deltas. |
+| `polls`, `rx_pkts`, `rx_full_bursts`, `dpds_rejects`, `pops`, `tx_calls`, `tx_pkts`, `tx_sent`, `tx_short_calls` | Arrays of per-epoch counter deltas. |
 | `tx_batch_max`, `buffer_len_max` | Arrays of per-epoch gauge maxima. |
 
 A gauge peak of an epoch dropped past capacity is not lost: it is folded into
-a persistent high-water mark that `/dpds/stats` still reflects. There is no
+a persistent high-water mark that `/dpds/stats,<dir>` still reflects. There is no
 such survivor for counters or first-loss reasons.
 
 Every field is an instantaneous read of a relaxed atomic, not a consistent
@@ -133,10 +137,10 @@ approximate while traffic flows; they are exact once the worker is idle.
 
 | reason | detail | meaning |
 | --- | --- | --- |
-| `EmulatorReject` | `from=dpds` | `Buffer::push` returned false: loss model, limiter or buffer full (not distinguished). |
+| `DpdsReject` | `from=dpds` | `Buffer::push` returned false: loss model, limiter or buffer full (not distinguished). |
 | `DescriptorFull` | `from=dpds,to=nic` | A partial `tx_burst`: the NIC's TX descriptor ring was full. |
 | `IMissed` | `from=dpds,count=<n>` | NIC hardware: `imissed` rose, i.e. the NIC's RX ring had no room and dropped packets before software saw them. |
-| `RX_NoMbuf` | `from=dpds,count=<n>` | NIC hardware: `rx_nombuf` rose, no free mbuf in the pool (`--num-mbufs` too small, or an mbuf leak). |
+| `RX_NoMbuf` | `from=dpds,count=<n>` | NIC hardware: `rx_nombuf` rose, no free mbuf in the pool (pool exhausted, which the derived pool size rules out unless mbufs leak). |
 | `IErrors` | `from=dpds,count=<n>` | NIC hardware: `ierrors` rose. |
 | `OErrors` | `from=dpds,count=<n>` | NIC hardware: `oerrors` rose. |
 
@@ -147,12 +151,23 @@ ones answer "which traffic burst broke first".
 
 ## `/dpds/ports`
 
-Static, read once at startup (also printed once to stdout at startup):
+Static, read once at startup (also printed once to stdout at startup). Port keys:
 `num_ports` (1 or 2), then per port index `i`: `port<i>_name` (device name, e.g.
 a PCI address or `net_pcap0`), `port<i>_rx_ring` and `port<i>_tx_ring` (descriptor
 ring sizes the driver **applied**), `port<i>_rx_ring_requested` and
-`port<i>_tx_ring_requested` (what DPDS asked for, 65535; the driver may clamp it
+`port<i>_tx_ring_requested` (what DPDS asked for, 4096; the driver may clamp it
 or round it down, so compare the two). Port indices are DPDK's port ids.
+
+Direction keys: `num_directions` (equal to `num_ports`), then per direction `d`:
+
+| key | meaning |
+| --- | --- |
+| `dir<d>_rx_port` | Port the direction receives on (`d`). |
+| `dir<d>_tx_port` | Port it transmits on (`d ^ 1` with two ports, `0` with one). |
+| `dir<d>_lcore` | EAL lcore id of the direction's worker. |
+| `dir<d>_config` | Path of the config file the direction uses (string). |
+| `dir<d>_pool_size` | Mbufs in the direction's pool, derived from `buffer_capacity` and the applied RX/TX descriptor counts. |
+| `dir<d>_raw_free` | `1` if the worker frees with `rte_mbuf_raw_free_bulk` (both ports report `MBUF_FAST_FREE`), `0` if with `rte_pktmbuf_free_bulk`. |
 
 ## `/nic/hw_first_loss,<port>`
 
@@ -162,7 +177,7 @@ Not tied to the worker. The **main lcore** polls every port's hardware counters
 in one poll). Fields: `hw_first_loss_reason`, `hw_first_loss_detail`,
 `hw_first_loss_relative_ns`, same format as above (`"Clean"` / `""` / `0` if
 nothing yet). The main lcore writes only its own state, never the worker's, which
-is why this is separate from `/dpds/stats`. A poll can lag the event by up to
+is why this is separate from `/dpds/stats,<dir>`. A poll can lag the event by up to
 250 ms. `/ethdev/stats,<port>` gives the raw cumulative NIC counters.
 
 ## `/nic/epochs,<port>`
