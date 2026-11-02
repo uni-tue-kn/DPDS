@@ -1,14 +1,12 @@
-//! TX stage: per-port accumulation tables in front of `tx_burst`.
-
-use std::sync::atomic::Ordering::Acquire;
+//! TX step: per-port accumulation tables in front of `tx_burst`.
 
 use dpdk::mbuf::{port, prefetch_header};
-use dpdk::{RawMbuf, Ring};
+use dpdk::RawMbuf;
 
 use crate::consts::MAX_BURST_SIZE;
-use crate::io::{dequeue_burst, MbufFree, TxBurst};
-use crate::quit::Quit;
-use crate::stats::{add, burst_bucket, TxStats};
+use crate::first_loss::{FirstLossReason, Stage, StageLossDetail};
+use crate::io::{MbufFree, TxBurst};
+use crate::stats::Telemetry;
 
 /// The application supports one or two ports.
 const MAX_PORTS: usize = 2;
@@ -34,55 +32,89 @@ impl Tx {
         self.lens[port as usize]
     }
 
-    /// Sends `port`'s table to the NIC; frees and counts what it refuses.
+    /// Sends `port`'s table to the NIC (one `tx_burst`); frees what it
+    /// refuses and records the first loss, reading the clock only then.
+    ///
+    /// # Safety
+    ///
+    /// The mbufs in `port`'s table are valid and owned by us (see `step`).
     #[inline(always)]
-    fn flush(
+    unsafe fn flush(
         &mut self,
         port: usize,
         nic: &mut impl TxBurst,
         free: &mut impl MbufFree,
-        stats: &TxStats,
+        t: &mut Telemetry<'_>,
+        now_ns: &mut impl FnMut() -> f64,
     ) {
         let n = self.lens[port];
         let table = &mut self.tables[port][..n];
-        add(&stats.burst_hist[burst_bucket(n)], 1);
         let sent = nic.tx_burst(port as u16, table) as usize;
-        add(&stats.transmitted, sent as u64);
+        let c = &t.stats.counters;
+        c.tx_calls.inc();
+        c.tx_pkts.add(n as u64);
+        c.tx_batch_max.observe(n as u64);
+        c.tx_sent.add(sent as u64);
         if sent < n {
-            add(&stats.tx_drops, (n - sent) as u64);
+            c.tx_short_calls.inc();
+            t.record_loss(
+                FirstLossReason::DescriptorFull,
+                StageLossDetail::RingFull {
+                    from: Stage::Dpds,
+                    to: Stage::Nic,
+                },
+                now_ns(),
+            );
             for &m in &table[sent..] {
-                free.free(m);
+                // SAFETY: the NIC did not take this mbuf, we still own it.
+                unsafe { free.free(m) };
             }
         }
         self.lens[port] = 0;
     }
 
-    fn flush_pending(&mut self, nic: &mut impl TxBurst, free: &mut impl MbufFree, stats: &TxStats) {
+    /// # Safety
+    ///
+    /// The mbufs in the tables are valid and owned by us (see `step`).
+    unsafe fn flush_pending(
+        &mut self,
+        nic: &mut impl TxBurst,
+        free: &mut impl MbufFree,
+        t: &mut Telemetry<'_>,
+        now_ns: &mut impl FnMut() -> f64,
+    ) {
         for port in 0..self.num_ports as usize {
             if self.lens[port] > 0 {
-                self.flush(port, nic, free, stats);
+                // SAFETY: as above.
+                unsafe { self.flush(port, nic, free, t, now_ns) };
             }
         }
     }
 
-    /// Flushes everything still waiting from earlier steps (so a packet
-    /// waits at most one step), then sorts `batch` into the per-port tables,
-    /// sending a table as soon as it holds `MAX_BURST_SIZE` mbufs.
+    /// Flushes every non-empty table (ascending port id), so a packet waits
+    /// at most one step, then sorts `batch` into the per-port tables,
+    /// flushing a table as soon as it holds `MAX_BURST_SIZE`. A flush is one
+    /// `tx_burst` call: counts `tx_calls`, `tx_pkts`, `tx_batch_max`,
+    /// `tx_sent`; on a partial send counts `tx_short_calls`, records a
+    /// `DescriptorFull` first loss (clock read lazily, only then) and frees
+    /// the unsent tail in order.
     ///
-    /// All mbufs must be valid and owned by the caller.
+    /// # Safety
+    ///
+    /// Every mbuf in `batch` must be valid and owned by the caller;
+    /// ownership passes to the `Tx` (sent, freed, or pending in a table).
     #[inline(always)]
-    pub fn step(
+    pub unsafe fn step(
         &mut self,
         nic: &mut impl TxBurst,
         free: &mut impl MbufFree,
-        stats: &TxStats,
+        t: &mut Telemetry<'_>,
+        mut now_ns: impl FnMut() -> f64,
         batch: &[RawMbuf],
     ) {
-        self.flush_pending(nic, free, stats);
-        if batch.is_empty() {
-            return;
-        }
-        add(&stats.received, batch.len() as u64);
+        // SAFETY: tables only ever hold mbufs handed to `step`, which the
+        // caller guarantees valid and owned.
+        unsafe { self.flush_pending(nic, free, t, &mut now_ns) };
         for (i, &m) in batch.iter().enumerate() {
             if let Some(&ahead) = batch.get(i + 3) {
                 prefetch_header(ahead);
@@ -92,37 +124,21 @@ impl Tx {
             self.tables[p][self.lens[p]] = m;
             self.lens[p] += 1;
             if self.lens[p] == MAX_BURST_SIZE {
-                self.flush(p, nic, free, stats);
+                // SAFETY: as above.
+                unsafe { self.flush(p, nic, free, t, &mut now_ns) };
             }
         }
     }
 
-    /// Flushes the remaining tables at shutdown.
-    pub fn cleanup(&mut self, nic: &mut impl TxBurst, free: &mut impl MbufFree, stats: &TxStats) {
-        self.flush_pending(nic, free, stats);
+    /// Flushes the remaining tables at shutdown (same flush as `step`).
+    pub fn cleanup(
+        &mut self,
+        nic: &mut impl TxBurst,
+        free: &mut impl MbufFree,
+        t: &mut Telemetry<'_>,
+        mut now_ns: impl FnMut() -> f64,
+    ) {
+        // SAFETY: the tables hold mbufs `step` took ownership of.
+        unsafe { self.flush_pending(nic, free, t, &mut now_ns) };
     }
-}
-
-/// Standalone TX lcore: ring in, NIC out. Runs until told to quit and the
-/// ring is empty, then flushes.
-pub fn run(
-    num_ports: u16,
-    input: &Ring,
-    nic: &mut impl TxBurst,
-    free: &mut impl MbufFree,
-    stats: &TxStats,
-    quit: &Quit,
-) {
-    let mut tx = Tx::new(num_ports);
-    let mut batch = [std::ptr::null_mut(); MAX_BURST_SIZE];
-    loop {
-        // Read before dequeuing, see `quit`.
-        let quit_requested = quit.transmit.load(Acquire);
-        let n = dequeue_burst(input, &mut batch) as usize;
-        tx.step(nic, free, stats, &batch[..n]);
-        if quit_requested && n == 0 {
-            break;
-        }
-    }
-    tx.cleanup(nic, free, stats);
 }

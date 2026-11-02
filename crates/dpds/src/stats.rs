@@ -1,284 +1,393 @@
-//! Per-stage counters, their snapshots, and the dashboard / CSV text formats.
+//! Telemetry glue: the shared [`Stats`], the worker's [`Telemetry`] handle,
+//! the reply builders behind `/dpds/stats`, `/dpds/epochs`, `/dpds/ports`,
+//! `/nic/hw_first_loss` and `/nic/epochs`, their registration on DPDK's
+//! telemetry socket, and the main lcore's [`NicPoller`] (port of preof's
+//! `stats.rs` plus the NIC pieces of its `main.rs`).
 //!
-//! Each stage's counters are written by exactly one lcore and read by the
-//! main lcore, so they are plain `Relaxed` atomics (written with
-//! load-then-store, see [`add`], which avoids a locked read-modify-write on
-//! the hot path) and each stage struct sits on its own cache lines.
+//! Registration is a no-op without the `telemetry` feature; see
+//! `TELEMETRY.md` for the wire semantics.
 
-use std::fmt::Write;
-use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use crate::counters::{
+    epochs_reply, DpdsCounters, DpdsEpochLog, EpochDriver, EpochFirstLoss, NicEpochLog,
+    NicEpochTracker,
+};
+use crate::first_loss::{
+    detect_hardware_drop, format_first_loss, FirstLossReason, Stage, StageLossDetail,
+    StageLossTracker,
+};
+use crate::reply::{Reply, Value};
 
-use crate::consts::{BURST_HIST_BUCKETS, MAX_BURST_SIZE};
-
-/// Adds `n` to a counter that only the calling lcore ever writes.
-#[inline(always)]
-pub fn add(counter: &AtomicU64, n: u64) {
-    counter.store(counter.load(Relaxed) + n, Relaxed);
-}
-
-/// Histogram bucket of a burst of `n > 0` packets: `floor(log2(n))`.
-#[inline(always)]
-pub fn burst_bucket(n: usize) -> usize {
-    n.ilog2() as usize
-}
-
+/// Everything the worker lcore writes and the telemetry thread reads.
 #[derive(Default)]
-#[repr(align(64))]
-pub struct RxStats {
-    pub received: AtomicU64,
-    pub enqueued: AtomicU64,
-    pub rx_ring_drops: AtomicU64,
-    pub burst_hist: [AtomicU64; BURST_HIST_BUCKETS],
+pub struct Stats {
+    pub first_loss: StageLossTracker,
+    pub counters: DpdsCounters,
+    pub epochs: DpdsEpochLog,
 }
 
-#[derive(Default)]
-#[repr(align(64))]
-pub struct WorkerStats {
-    pub received: AtomicU64,
-    pub sent: AtomicU64,
-    pub emulator_drops: AtomicU64,
-    pub tx_ring_drops: AtomicU64,
+fn uint(key: &str, v: u64) -> (String, Value) {
+    (key.to_string(), Value::Uint(v))
 }
 
-#[derive(Default)]
-#[repr(align(64))]
-pub struct TxStats {
-    pub received: AtomicU64,
-    pub transmitted: AtomicU64,
-    pub tx_drops: AtomicU64,
-    pub burst_hist: [AtomicU64; BURST_HIST_BUCKETS],
+fn string(key: &str, v: impl Into<String>) -> (String, Value) {
+    (key.to_string(), Value::Str(v.into()))
 }
 
-#[derive(Default)]
-pub struct PipelineStats {
-    pub rx: RxStats,
-    pub worker: WorkerStats,
-    pub tx: TxStats,
-}
+impl Stats {
+    /// The `/dpds/stats` reply: cumulative since start. Gauges are the max
+    /// over closed epochs and the live (open) epoch.
+    pub fn stats_reply(&self, uptime_ns: u64) -> Reply {
+        let c = &self.counters;
+        let tx_pkts = c.tx_pkts.get();
+        let tx_sent = c.tx_sent.get();
+        let fields = format_first_loss(self.first_loss.current());
+        vec![
+            uint("uptime_ns", uptime_ns),
+            uint("polls", c.polls.get()),
+            uint("rx_pkts", c.rx_pkts.get()),
+            uint("rx_full_bursts", c.rx_full_bursts.get()),
+            uint("emulator_rejects", c.emulator_rejects.get()),
+            uint("pops", c.pops.get()),
+            uint("tx_calls", c.tx_calls.get()),
+            uint("tx_pkts", tx_pkts),
+            uint("tx_sent", tx_sent),
+            uint("tx_drops", tx_pkts.saturating_sub(tx_sent)),
+            uint("tx_short_calls", c.tx_short_calls.get()),
+            uint(
+                "tx_batch_max",
+                self.epochs.aggregate_gauge_max(0, c.tx_batch_max.get()),
+            ),
+            string(
+                "tx_pkts_per_call",
+                crate::counters::mean_2dp(tx_pkts, c.tx_calls.get()),
+            ),
+            uint(
+                "buffer_len_max",
+                self.epochs.aggregate_gauge_max(1, c.buffer_len_max.get()),
+            ),
+            string("first_loss_reason", fields.reason),
+            string("first_loss_detail", fields.detail),
+            uint("first_loss_relative_ns", fields.relative_ns),
+        ]
+    }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct RxSnapshot {
-    pub received: u64,
-    pub enqueued: u64,
-    pub rx_ring_drops: u64,
-    pub burst_hist: [u64; BURST_HIST_BUCKETS],
-}
+    /// The `/dpds/epochs` reply.
+    pub fn epochs_reply(&self) -> Reply {
+        epochs_reply(
+            &self.epochs,
+            &DpdsCounters::EPOCH_COUNTER_NAMES,
+            &DpdsCounters::EPOCH_GAUGE_NAMES,
+        )
+    }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct WorkerSnapshot {
-    pub received: u64,
-    pub sent: u64,
-    pub emulator_drops: u64,
-    pub tx_ring_drops: u64,
-}
+    /// Registers `/dpds/stats` and `/dpds/epochs` (no-op without the
+    /// feature). `start_ns` is the shared `now_ns()` zero point.
+    #[cfg(not(feature = "telemetry"))]
+    pub fn register_telemetry(
+        _stats: &'static Stats,
+        _start_ns: f64,
+    ) -> Result<(), dpdk::DpdkError> {
+        Ok(())
+    }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct TxSnapshot {
-    pub received: u64,
-    pub transmitted: u64,
-    pub tx_drops: u64,
-    pub burst_hist: [u64; BURST_HIST_BUCKETS],
-}
-
-/// Plain-value copy of [`PipelineStats`] at one point in time.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct StatsSnapshot {
-    pub rx: RxSnapshot,
-    pub worker: WorkerSnapshot,
-    pub tx: TxSnapshot,
-}
-
-fn load_hist(hist: &[AtomicU64; BURST_HIST_BUCKETS]) -> [u64; BURST_HIST_BUCKETS] {
-    std::array::from_fn(|i| hist[i].load(Relaxed))
-}
-
-impl PipelineStats {
-    pub fn snapshot(&self) -> StatsSnapshot {
-        StatsSnapshot {
-            rx: RxSnapshot {
-                received: self.rx.received.load(Relaxed),
-                enqueued: self.rx.enqueued.load(Relaxed),
-                rx_ring_drops: self.rx.rx_ring_drops.load(Relaxed),
-                burst_hist: load_hist(&self.rx.burst_hist),
+    #[cfg(feature = "telemetry")]
+    pub fn register_telemetry(stats: &'static Stats, start_ns: f64) -> Result<(), dpdk::DpdkError> {
+        dpdk::telemetry::register_command(
+            "/dpds/stats",
+            "DPDS packet counters (cumulative) + first-loss result",
+            move |_param, d| {
+                let uptime = (dpdk::now_ns() - start_ns).max(0.0) as u64;
+                fill(d, stats.stats_reply(uptime));
             },
-            worker: WorkerSnapshot {
-                received: self.worker.received.load(Relaxed),
-                sent: self.worker.sent.load(Relaxed),
-                emulator_drops: self.worker.emulator_drops.load(Relaxed),
-                tx_ring_drops: self.worker.tx_ring_drops.load(Relaxed),
-            },
-            tx: TxSnapshot {
-                received: self.tx.received.load(Relaxed),
-                transmitted: self.tx.transmitted.load(Relaxed),
-                tx_drops: self.tx.tx_drops.load(Relaxed),
-                burst_hist: load_hist(&self.tx.burst_hist),
-            },
+        )?;
+        dpdk::telemetry::register_command(
+            "/dpds/epochs",
+            "DPDS per-epoch (idle-gap-segmented) counter/gauge history",
+            move |_param, d| fill(d, stats.epochs_reply()),
+        )
+    }
+}
+
+/// Copies a [`Reply`] into the telemetry thread's dict, entry by entry.
+#[cfg(feature = "telemetry")]
+fn fill(d: &mut dpdk::telemetry::Dict, reply: Reply) {
+    use dpdk::telemetry::Container;
+    for (key, value) in reply {
+        match value {
+            Value::Uint(v) => d.add(&key, v),
+            Value::Str(v) => d.add_str(&key, &v),
+            Value::UintArray(vs) => {
+                let mut c = Container::new_uint_array();
+                for v in vs {
+                    c.add_uint(v);
+                }
+                d.add_array_container(&key, c);
+            }
+            Value::StrArray(vs) => {
+                let mut c = Container::new_string_array();
+                for v in &vs {
+                    c.add_string(v);
+                }
+                d.add_array_container(&key, c);
+            }
         }
     }
 }
 
-/// The NIC hardware counters shown per port.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct NicStats {
-    pub imissed: u64,
-    pub ierrors: u64,
-    pub oerrors: u64,
-    pub rx_nombuf: u64,
+/// The worker's handle on its telemetry: the shared [`Stats`] plus the
+/// worker-owned (non-atomic) epoch state. Zero-cost without the feature:
+/// the driver and scratch are unit structs and everything below compiles
+/// to nothing but the (no-op) counter calls.
+pub struct Telemetry<'a> {
+    pub stats: &'a Stats,
+    start_ns: f64,
+    driver: EpochDriver,
+    epoch_first_loss: EpochFirstLoss,
 }
 
-/// Fixed dashboard lines: header, RX, RX histogram, Worker, TX, TX histogram.
-const DASHBOARD_FIXED_LINES: usize = 6;
-
-/// Clears to end of line, so shrinking numbers leave no artifacts.
-const CLEAR_EOL: &str = "\x1b[K";
-
-/// Inclusive burst-size range `(lo, hi)` of histogram bucket `i`.
-fn bucket_range(i: usize) -> (usize, usize) {
-    let lo = 1usize << i;
-    let hi = if i == BURST_HIST_BUCKETS - 1 {
-        lo
-    } else {
-        (lo << 1) - 1
-    };
-    debug_assert!(hi <= MAX_BURST_SIZE);
-    (lo, hi)
-}
-
-/// One histogram line from the delta of two histograms, e.g.
-/// `  RX burst/s: [1]:5 [2-3]:10 ... | avg: 4.8`. The average (`delta_pkts`
-/// over the number of bursts) is only printed when there were bursts.
-pub fn format_burst_hist(
-    label: &str,
-    cur: &[u64; BURST_HIST_BUCKETS],
-    prev: &[u64; BURST_HIST_BUCKETS],
-    delta_pkts: u64,
-) -> String {
-    let mut out = format!("  {label} burst/s:");
-    let mut total_bursts = 0u64;
-    for i in 0..BURST_HIST_BUCKETS {
-        let (lo, hi) = bucket_range(i);
-        let delta = cur[i].saturating_sub(prev[i]);
-        total_bursts += delta;
-        if lo == hi {
-            write!(out, " [{lo}]:{delta}").unwrap();
-        } else {
-            write!(out, " [{lo}-{hi}]:{delta}").unwrap();
+impl<'a> Telemetry<'a> {
+    pub fn new(stats: &'a Stats, start_ns: f64) -> Telemetry<'a> {
+        Telemetry {
+            stats,
+            start_ns,
+            // The driver runs in uptime (relative to `start_ns`), so the
+            // first epoch starts at 0 and `epoch_*_uptime_ns` compare with
+            // `uptime_ns` and `first_loss_relative_ns`.
+            driver: EpochDriver::new(0.0),
+            epoch_first_loss: EpochFirstLoss::new(),
         }
     }
-    if total_bursts > 0 {
-        write!(
-            out,
-            " | avg: {:.1}",
-            delta_pkts as f64 / total_bursts as f64
-        )
-        .unwrap();
-    }
-    writeln!(out, "{CLEAR_EOL}").unwrap();
-    out
-}
 
-/// The in-place dashboard. Per-second values are `cur - prev`; with
-/// `overwrite` the cursor is first moved up over the previous print.
-pub fn format_dashboard(
-    cur: &StatsSnapshot,
-    prev: &StatsSnapshot,
-    nics: &[(u16, NicStats)],
-    overwrite: bool,
-) -> String {
-    let rx_pps = cur.rx.received.saturating_sub(prev.rx.received);
-    let tx_pps = cur.tx.transmitted.saturating_sub(prev.tx.transmitted);
-
-    let mut out = String::new();
-    if overwrite {
-        write!(out, "\x1b[{}A", DASHBOARD_FIXED_LINES + nics.len()).unwrap();
+    /// Records a loss: the whole-process first-loss latch plus this epoch's.
+    pub fn record_loss(&mut self, reason: FirstLossReason, detail: StageLossDetail, now_ns: f64) {
+        self.epoch_first_loss.record(
+            &self.stats.first_loss,
+            reason,
+            detail,
+            now_ns - self.start_ns,
+        );
     }
-    writeln!(out, "--- Emulator Stats (1s interval) ---{CLEAR_EOL}").unwrap();
-    writeln!(
-        out,
-        "RX:     {rx_pps} pkt/s | Total: {} | Ring drops: {}{CLEAR_EOL}",
-        cur.rx.received, cur.rx.rx_ring_drops
-    )
-    .unwrap();
-    out += &format_burst_hist("RX", &cur.rx.burst_hist, &prev.rx.burst_hist, rx_pps);
-    writeln!(
-        out,
-        "Worker: recv {} | sent {} | emulator drops: {} | TX ring drops: {}{CLEAR_EOL}",
-        cur.worker.received, cur.worker.sent, cur.worker.emulator_drops, cur.worker.tx_ring_drops
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "TX:     {tx_pps} pkt/s | Total: {} | TX drops: {}{CLEAR_EOL}",
-        cur.tx.transmitted, cur.tx.tx_drops
-    )
-    .unwrap();
-    out += &format_burst_hist("TX", &cur.tx.burst_hist, &prev.tx.burst_hist, tx_pps);
-    for (id, n) in nics {
-        writeln!(
-            out,
-            "NIC {id}:  imissed={} ierr={} oerr={} rx_nombuf={}{CLEAR_EOL}",
-            n.imissed, n.ierrors, n.oerrors, n.rx_nombuf
-        )
-        .unwrap();
-    }
-    out
-}
 
-/// Column-name suffixes of the histogram buckets: `1`, `2_3`, `4_7`, `8_15`, `16`.
-fn bucket_columns(prefix: &str) -> String {
-    let mut out = String::new();
-    for i in 0..BURST_HIST_BUCKETS {
-        let (lo, hi) = bucket_range(i);
-        if lo == hi {
-            write!(out, ",{prefix}_burst_{lo}").unwrap();
-        } else {
-            write!(out, ",{prefix}_burst_{lo}_{hi}").unwrap();
+    /// One loop iteration (`arrivals` = packets received in it): advances the
+    /// epoch state machine and, on a boundary, closes an epoch into
+    /// `stats.epochs` with the cumulative counters, this epoch's gauge
+    /// maxima (resetting the gauges) and its first loss.
+    pub fn tick(&mut self, now_ns: f64, arrivals: u64) {
+        if let Some(boundary) = self.driver.tick(now_ns - self.start_ns, arrivals) {
+            let c = &self.stats.counters;
+            self.stats.epochs.close(
+                c.cumulative_snapshot(),
+                [c.tx_batch_max.take(), c.buffer_len_max.take()],
+                boundary.start_uptime_ns as u64,
+                boundary.end_uptime_ns as u64,
+                self.epoch_first_loss.take(),
+            );
         }
     }
-    out
 }
 
-/// The stats CSV: a header line and one values line.
-pub fn format_csv(stats: &StatsSnapshot, nics: &[(u16, NicStats)]) -> String {
-    let mut out = String::from("rx_received,rx_ring_drops");
-    out += &bucket_columns("rx");
-    out += ",worker_received,worker_sent,worker_emulator_drops,worker_tx_ring_drops";
-    out += ",tx_transmitted,tx_drops";
-    out += &bucket_columns("tx");
-    for (id, _) in nics {
-        write!(
-            out,
-            ",nic_{id}_imissed,nic_{id}_ierrors,nic_{id}_oerrors,nic_{id}_rx_nombuf"
-        )
-        .unwrap();
-    }
-    out.push('\n');
+/// Static info of one port for `/dpds/ports`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PortInfo {
+    pub name: String,
+    /// Descriptor ring sizes as applied by the driver.
+    pub rx_ring: u16,
+    pub tx_ring: u16,
+    /// Descriptor ring sizes as requested before the driver clamped them.
+    pub rx_ring_requested: u16,
+    pub tx_ring_requested: u16,
+}
 
-    write!(out, "{},{}", stats.rx.received, stats.rx.rx_ring_drops).unwrap();
-    for h in stats.rx.burst_hist {
-        write!(out, ",{h}").unwrap();
+/// The `/dpds/ports` reply: `num_ports`, then per port index `i`
+/// `port<i>_name` (string), `port<i>_rx_ring`, `port<i>_tx_ring`,
+/// `port<i>_rx_ring_requested`, `port<i>_tx_ring_requested`.
+pub fn ports_reply(ports: &[PortInfo]) -> Reply {
+    let mut reply = vec![uint("num_ports", ports.len() as u64)];
+    for (i, p) in ports.iter().enumerate() {
+        reply.push(string(&format!("port{i}_name"), p.name.as_str()));
+        reply.push(uint(&format!("port{i}_rx_ring"), p.rx_ring as u64));
+        reply.push(uint(&format!("port{i}_tx_ring"), p.tx_ring as u64));
+        reply.push(uint(
+            &format!("port{i}_rx_ring_requested"),
+            p.rx_ring_requested as u64,
+        ));
+        reply.push(uint(
+            &format!("port{i}_tx_ring_requested"),
+            p.tx_ring_requested as u64,
+        ));
     }
-    write!(
-        out,
-        ",{},{},{},{}",
-        stats.worker.received,
-        stats.worker.sent,
-        stats.worker.emulator_drops,
-        stats.worker.tx_ring_drops
+    reply
+}
+
+/// Registers `/dpds/ports` (no-op without the feature). The values are
+/// static, so the feature gate only keeps a plain build off the socket.
+#[cfg(not(feature = "telemetry"))]
+pub fn register_port_telemetry(_ports: Vec<PortInfo>) -> Result<(), dpdk::DpdkError> {
+    Ok(())
+}
+
+#[cfg(feature = "telemetry")]
+pub fn register_port_telemetry(ports: Vec<PortInfo>) -> Result<(), dpdk::DpdkError> {
+    dpdk::telemetry::register_command(
+        "/dpds/ports",
+        "DPDS port device names, applied vs requested descriptor ring sizes",
+        move |_param, d| fill(d, ports_reply(&ports)),
     )
-    .unwrap();
-    write!(out, ",{},{}", stats.tx.transmitted, stats.tx.tx_drops).unwrap();
-    for h in stats.tx.burst_hist {
-        write!(out, ",{h}").unwrap();
+}
+
+/// The main lcore's own per-port state. Separate from [`Stats`] so the main
+/// lcore never writes into state the worker owns.
+pub struct NicHwStats {
+    pub first_loss: Vec<StageLossTracker>,
+    pub epochs: Vec<NicEpochLog>,
+}
+
+/// The port index a `,<param>` query names: a plain decimal number.
+fn port_index(param: &str) -> Option<usize> {
+    if param.is_empty() || !param.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
     }
-    for (_, n) in nics {
-        write!(
-            out,
-            ",{},{},{},{}",
-            n.imissed, n.ierrors, n.oerrors, n.rx_nombuf
+    param.parse().ok()
+}
+
+impl NicHwStats {
+    pub fn new(num_ports: usize) -> NicHwStats {
+        NicHwStats {
+            first_loss: (0..num_ports).map(|_| StageLossTracker::new()).collect(),
+            epochs: (0..num_ports).map(|_| NicEpochLog::new()).collect(),
+        }
+    }
+
+    /// `/nic/hw_first_loss,<param>`: `hw_first_loss_reason`,
+    /// `hw_first_loss_detail`, `hw_first_loss_relative_ns`. `None` for a
+    /// param that is not the decimal index of a polled port.
+    pub fn hw_first_loss_reply(&self, param: &str) -> Option<Reply> {
+        let tracker = self.first_loss.get(port_index(param)?)?;
+        let fields = format_first_loss(tracker.current());
+        Some(vec![
+            string("hw_first_loss_reason", fields.reason),
+            string("hw_first_loss_detail", fields.detail),
+            uint("hw_first_loss_relative_ns", fields.relative_ns),
+        ])
+    }
+
+    /// `/nic/epochs,<param>`: `epochs_reply` with `rx_packets`, `imissed`,
+    /// `rx_port_discards`. `None` for a bad param.
+    pub fn epochs_reply(&self, param: &str) -> Option<Reply> {
+        let log = self.epochs.get(port_index(param)?)?;
+        Some(epochs_reply(
+            log,
+            &NicEpochLog::EPOCH_COUNTER_NAMES,
+            &NicEpochLog::EPOCH_GAUGE_NAMES,
+        ))
+    }
+
+    /// Registers `/nic/hw_first_loss` and `/nic/epochs` (no-op without the
+    /// feature). A bad param yields an empty dict.
+    #[cfg(not(feature = "telemetry"))]
+    pub fn register_telemetry(_stats: &'static NicHwStats) -> Result<(), dpdk::DpdkError> {
+        Ok(())
+    }
+
+    #[cfg(feature = "telemetry")]
+    pub fn register_telemetry(stats: &'static NicHwStats) -> Result<(), dpdk::DpdkError> {
+        dpdk::telemetry::register_command(
+            "/nic/hw_first_loss",
+            "Polled NIC-hardware first-loss result by port (query with ,0 / ,1)",
+            move |param, d| {
+                if let Some(reply) = stats.hw_first_loss_reply(param) {
+                    fill(d, reply);
+                }
+            },
+        )?;
+        dpdk::telemetry::register_command(
+            "/nic/epochs",
+            "Per-epoch NIC rx_packets/imissed/rx_port_discards by port (query with ,0 / ,1)",
+            move |param, d| {
+                if let Some(reply) = stats.epochs_reply(param) {
+                    fill(d, reply);
+                }
+            },
         )
-        .unwrap();
     }
-    out.push('\n');
-    out
+}
+
+/// The main lcore's poll state of one port.
+pub struct NicPoller {
+    port: usize,
+    start_ns: f64,
+    prev: dpdk::port::PortStats,
+    tracker: NicEpochTracker,
+    // `EpochLog::close` wants running totals and diffs them itself, but the
+    // tracker hands back each closed epoch's delta: keep a running sum of the
+    // deltas, which the log's own diff turns back into the same delta.
+    cumulative_rx_packets: u64,
+    cumulative_imissed: u64,
+    cumulative_rx_port_discards: u64,
+}
+
+impl NicPoller {
+    /// `port` indexes `NicHwStats`; `initial` / `initial_discards` seed the
+    /// baselines.
+    pub fn new(
+        port: usize,
+        start_ns: f64,
+        initial: &dpdk::port::PortStats,
+        initial_discards: u64,
+    ) -> NicPoller {
+        NicPoller {
+            port,
+            start_ns,
+            prev: *initial,
+            tracker: NicEpochTracker::new(0.0, initial.ipackets, initial.imissed, initial_discards),
+            cumulative_rx_packets: 0,
+            cumulative_imissed: 0,
+            cumulative_rx_port_discards: 0,
+        }
+    }
+
+    /// One 250 ms poll. (1) A rise in a hardware drop counter is recorded in
+    /// `hw.first_loss[port]` (first one wins); (2) the epoch tracker runs and
+    /// a closed epoch goes into `hw.epochs[port]` (`read_port_discards`, a
+    /// firmware query, is only called when an epoch closes); (3) `curr`
+    /// becomes the new baseline. All times are uptime (`now_ns - start_ns`).
+    pub fn poll(
+        &mut self,
+        now_ns: f64,
+        curr: &dpdk::port::PortStats,
+        hw: &NicHwStats,
+        read_port_discards: impl FnOnce() -> Option<u64>,
+    ) {
+        let uptime = now_ns - self.start_ns;
+        if let Some((reason, count)) = detect_hardware_drop(&self.prev, curr) {
+            hw.first_loss[self.port].try_record(
+                reason,
+                StageLossDetail::HardwareDrop {
+                    from: Stage::Dpds,
+                    count,
+                },
+                uptime,
+            );
+        }
+        if let Some(record) =
+            self.tracker
+                .poll(uptime, curr.ipackets, curr.imissed, read_port_discards)
+        {
+            self.cumulative_rx_packets += record.rx_packets;
+            self.cumulative_imissed += record.imissed;
+            self.cumulative_rx_port_discards += record.rx_port_discards;
+            hw.epochs[self.port].close(
+                [
+                    self.cumulative_rx_packets,
+                    self.cumulative_imissed,
+                    self.cumulative_rx_port_discards,
+                ],
+                [],
+                record.start_uptime_ns as u64,
+                record.end_uptime_ns as u64,
+                None,
+            );
+        }
+        self.prev = *curr;
+    }
 }

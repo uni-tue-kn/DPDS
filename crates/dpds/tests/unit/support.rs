@@ -1,4 +1,4 @@
-//! Shared test doubles: fake mbufs and mock NIC/ring/free implementations.
+//! Shared test doubles: fake mbufs and mock NIC/free implementations.
 //!
 //! A "fake mbuf" is a heap-allocated, zeroed `dpdk_sys::rte_mbuf` with `port`
 //! and `pkt_len` set. It is only ever handed to code that must not call DPDK
@@ -7,7 +7,8 @@
 use std::collections::VecDeque;
 
 use dpdk::RawMbuf;
-use dpds::io::{Enqueue, MbufFree, RxBurst, TxBurst};
+use dpds::io::{MbufFree, RxBurst, TxBurst};
+use dpds::stats::{Stats, Telemetry};
 
 pub struct FakeMbufs {
     mbufs: Box<[dpdk_sys::rte_mbuf]>,
@@ -51,24 +52,32 @@ pub fn port_of(m: RawMbuf) -> u16 {
 
 /// Mock RX: every `rx_burst` call pops the next scripted batch (an empty
 /// script means "no packets"). Records `(port, bufs.len())` of every call.
+/// `on_call(n)` (if set) runs at the start of the n-th call (1-based), so a
+/// test can request quit or advance a fake clock from "inside the NIC".
 #[derive(Default)]
-pub struct MockRx {
+pub struct MockRx<'a> {
     pub script: VecDeque<Vec<RawMbuf>>,
     pub calls: Vec<(u16, usize)>,
+    pub on_call: Option<Box<dyn FnMut(usize) + 'a>>,
 }
 
-impl MockRx {
-    pub fn with_script(script: Vec<Vec<RawMbuf>>) -> MockRx {
+impl<'a> MockRx<'a> {
+    pub fn with_script(script: Vec<Vec<RawMbuf>>) -> MockRx<'a> {
         MockRx {
             script: script.into(),
             calls: Vec::new(),
+            on_call: None,
         }
     }
 }
 
-impl RxBurst for MockRx {
+impl RxBurst for MockRx<'_> {
     fn rx_burst(&mut self, port: u16, bufs: &mut [RawMbuf]) -> u16 {
         self.calls.push((port, bufs.len()));
+        let n = self.calls.len();
+        if let Some(f) = self.on_call.as_mut() {
+            f(n);
+        }
         let Some(next) = self.script.pop_front() else {
             return 0;
         };
@@ -108,32 +117,18 @@ pub struct MockFree {
 }
 
 impl MbufFree for MockFree {
-    fn free(&mut self, mbuf: RawMbuf) {
+    unsafe fn free(&mut self, mbuf: RawMbuf) {
         self.freed.push(mbuf);
     }
 }
 
-/// Mock ring with a fixed number of free slots; enqueue is all-or-prefix
-/// (like `rte_ring_enqueue_burst`: as many as fit, in order).
-pub struct MockRing {
-    pub free_slots: usize,
-    pub enqueued: Vec<RawMbuf>,
+/// A clock that always returns `t` (stage-start-relative tests use 0.0 start).
+pub fn fixed_clock(t: f64) -> impl FnMut() -> f64 {
+    move || t
 }
 
-impl MockRing {
-    pub fn with_space(free_slots: usize) -> MockRing {
-        MockRing {
-            free_slots,
-            enqueued: Vec::new(),
-        }
-    }
-}
-
-impl Enqueue for MockRing {
-    fn enqueue_burst(&mut self, bufs: &[RawMbuf]) -> u16 {
-        let n = bufs.len().min(self.free_slots);
-        self.enqueued.extend_from_slice(&bufs[..n]);
-        self.free_slots -= n;
-        n as u16
-    }
+/// A `Telemetry` over a fresh leaked `Stats` (tests only; the leak is tiny).
+pub fn telemetry(start_ns: f64) -> (&'static Stats, Telemetry<'static>) {
+    let stats: &'static Stats = Box::leak(Box::default());
+    (stats, Telemetry::new(stats, start_ns))
 }

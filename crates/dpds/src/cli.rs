@@ -1,12 +1,11 @@
-//! Command line: `dpds <EAL args...> -- [--config <path>] [-o <stats.csv>] [--num-mbufs <N>]`
+//! Command line: `dpds <EAL args...> -- [--config <path>] [--num-mbufs <N>]`
 
 use std::fmt;
 use std::path::PathBuf;
 
 use crate::consts::DEFAULT_NUM_MBUFS;
 
-const USAGE: &str =
-    "Usage: dpds <EAL args...> -- [--config <path>] [-o <stats.csv>] [--num-mbufs <N>]";
+const USAGE: &str = "Usage: dpds <EAL args...> -- [--config <path>] [--num-mbufs <N>]";
 
 /// Parsed command line.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,8 +14,6 @@ pub struct Cli {
     pub eal_args: Vec<String>,
     /// Emulator config file (default `config.json`).
     pub config: PathBuf,
-    /// CSV file the final stats are written to, if any.
-    pub stats_file: Option<PathBuf>,
     /// Mbufs per port; the pool holds this times the number of ports.
     pub num_mbufs: u32,
 }
@@ -48,7 +45,6 @@ pub fn parse_args(args: &[String]) -> Result<Cli, CliError> {
     let mut cli = Cli {
         eal_args: eal_args.to_vec(),
         config: PathBuf::from("config.json"),
-        stats_file: None,
         num_mbufs: DEFAULT_NUM_MBUFS,
     };
 
@@ -60,7 +56,6 @@ pub fn parse_args(args: &[String]) -> Result<Cli, CliError> {
         };
         match arg.as_str() {
             "--config" => cli.config = PathBuf::from(value()?),
-            "-o" => cli.stats_file = Some(PathBuf::from(value()?)),
             "--num-mbufs" => {
                 let v = value()?;
                 cli.num_mbufs = v

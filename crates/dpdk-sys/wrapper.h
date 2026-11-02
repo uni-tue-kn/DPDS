@@ -13,6 +13,7 @@
 #include <rte_mbuf_dyn.h>
 #include <rte_mempool.h>
 #include <rte_ring.h>
+#include <rte_telemetry.h>
 
 /* rte_errno is a macro expanding to a per-lcore TLS variable, so bindgen
  * cannot expose it directly.  Wrap it in a static-inline accessor that

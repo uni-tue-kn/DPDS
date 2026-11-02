@@ -140,6 +140,7 @@ dependencies = [
  "dpdk-sys",
  "dpds-core",
  "libc",
+ "serde_json",
  "tempfile",
 ]
 

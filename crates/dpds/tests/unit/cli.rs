@@ -1,10 +1,11 @@
-//! Argument parsing: `dpds <EAL args...> -- [--config <path>] [-o <stats.csv>] [--num-mbufs <N>]`
+//! Argument parsing: `dpds <EAL args...> -- [--config <path>] [--num-mbufs <N>]`
+//! (the `-o <stats.csv>` option is gone together with the CSV export)
 //!
 //! `parse_args(args)` takes the full argv including argv[0].
 //! - Everything before the FIRST `--` (argv[0] included, the `--` itself
 //!   excluded) is `Cli::eal_args`; everything after it is app args.
 //! - No `--` means no app args (all defaults).
-//! - Defaults: `config = "config.json"`, `stats_file = None`,
+//! - Defaults: `config = "config.json"`,
 //!   `num_mbufs = DEFAULT_NUM_MBUFS` (1_048_575, per port).
 //! - Unknown app arg, missing option value, non-numeric `--num-mbufs`, or a
 //!   second `--` => `Err(CliError)` whose Display contains "Usage".
@@ -24,7 +25,6 @@ fn defaults_when_no_double_dash_is_present() {
     let cli = parse_args(&args(&["dpds", "-l", "0-1", "--no-huge"])).unwrap();
     assert_eq!(cli.eal_args, args(&["dpds", "-l", "0-1", "--no-huge"]));
     assert_eq!(cli.config, PathBuf::from("config.json"));
-    assert_eq!(cli.stats_file, None);
     assert_eq!(cli.num_mbufs, DEFAULT_NUM_MBUFS);
     assert_eq!(cli.num_mbufs, 1_048_575);
 }
@@ -41,7 +41,6 @@ fn trailing_double_dash_means_no_app_args() {
     let cli = parse_args(&args(&["dpds", "-l", "0-3", "--"])).unwrap();
     assert_eq!(cli.eal_args, args(&["dpds", "-l", "0-3"]));
     assert_eq!(cli.config, PathBuf::from("config.json"));
-    assert_eq!(cli.stats_file, None);
     assert_eq!(cli.num_mbufs, DEFAULT_NUM_MBUFS);
 }
 
@@ -56,8 +55,6 @@ fn all_app_options_are_parsed_and_eal_args_are_split_off() {
         "--",
         "--config",
         "/etc/dpds.json",
-        "-o",
-        "out.csv",
         "--num-mbufs",
         "4096",
     ]))
@@ -67,7 +64,6 @@ fn all_app_options_are_parsed_and_eal_args_are_split_off() {
         args(&["dpds", "-l", "0-2", "-a", "0000:65:00.0"])
     );
     assert_eq!(cli.config, PathBuf::from("/etc/dpds.json"));
-    assert_eq!(cli.stats_file, Some(PathBuf::from("out.csv")));
     assert_eq!(cli.num_mbufs, 4096);
 }
 
@@ -78,28 +74,19 @@ fn app_options_are_order_independent() {
         "--",
         "--num-mbufs",
         "77",
-        "-o",
-        "s.csv",
         "--config",
         "c.json",
     ]))
     .unwrap();
     assert_eq!(cli.eal_args, args(&["dpds"]));
     assert_eq!(cli.config, PathBuf::from("c.json"));
-    assert_eq!(cli.stats_file, Some(PathBuf::from("s.csv")));
     assert_eq!(cli.num_mbufs, 77);
 }
 
 #[test]
 fn each_option_alone_leaves_the_others_at_their_defaults() {
-    let cli = parse_args(&args(&["dpds", "--", "-o", "x.csv"])).unwrap();
-    assert_eq!(cli.stats_file, Some(PathBuf::from("x.csv")));
-    assert_eq!(cli.config, PathBuf::from("config.json"));
-    assert_eq!(cli.num_mbufs, DEFAULT_NUM_MBUFS);
-
     let cli = parse_args(&args(&["dpds", "--", "--config", "y.json"])).unwrap();
     assert_eq!(cli.config, PathBuf::from("y.json"));
-    assert_eq!(cli.stats_file, None);
 
     let cli = parse_args(&args(&["dpds", "--", "--num-mbufs", "10"])).unwrap();
     assert_eq!(cli.num_mbufs, 10);
@@ -109,26 +96,50 @@ fn each_option_alone_leaves_the_others_at_their_defaults() {
 #[test]
 fn split_happens_at_the_first_double_dash_only() {
     // A second `--` is an app argument, and an unknown one.
-    let err = parse_args(&args(&["dpds", "--", "-o", "a.csv", "--", "--config", "b"])).unwrap_err();
+    let err = parse_args(&args(&[
+        "dpds",
+        "--",
+        "--num-mbufs",
+        "5",
+        "--",
+        "--config",
+        "b",
+    ]))
+    .unwrap_err();
     assert!(err.to_string().contains("Usage"), "{err}");
 }
 
 #[test]
 fn eal_flags_that_look_like_app_flags_stay_with_eal() {
-    // `-o`/`--config` before the `--` are EAL args, not ours.
+    // `--config` before the `--` is an EAL arg, not ours.
     let cli = parse_args(&args(&["dpds", "-o", "eal-thing", "--config", "eal", "--"])).unwrap();
     assert_eq!(
         cli.eal_args,
         args(&["dpds", "-o", "eal-thing", "--config", "eal"])
     );
-    assert_eq!(cli.stats_file, None);
     assert_eq!(cli.config, PathBuf::from("config.json"));
 }
 
 #[test]
 fn last_occurrence_of_an_option_wins() {
-    let cli = parse_args(&args(&["dpds", "--", "-o", "a.csv", "-o", "b.csv"])).unwrap();
-    assert_eq!(cli.stats_file, Some(PathBuf::from("b.csv")));
+    let cli = parse_args(&args(&[
+        "dpds", "--", "--config", "a.json", "--config", "b.json",
+    ]))
+    .unwrap();
+    assert_eq!(cli.config, PathBuf::from("b.json"));
+}
+
+#[test]
+fn the_csv_output_option_is_gone() {
+    // `-o <stats.csv>` was removed with the CSV export: now an unknown arg.
+    let err = parse_args(&args(&["dpds", "--", "-o", "out.csv"])).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("Usage"), "{msg}");
+    assert!(msg.contains("-o"), "the message names the bad arg: {msg}");
+    // ... and the usage text no longer advertises it or the CSV.
+    let usage = msg.lines().find(|l| l.contains("Usage")).unwrap();
+    assert!(!usage.contains("-o"), "{usage}");
+    assert!(!usage.contains("csv"), "{usage}");
 }
 
 #[test]
@@ -142,7 +153,6 @@ fn unknown_app_arg_is_an_error_with_usage() {
     );
     // The usage text lists every supported option.
     assert!(msg.contains("--config"), "{msg}");
-    assert!(msg.contains("-o"), "{msg}");
     assert!(msg.contains("--num-mbufs"), "{msg}");
 }
 
@@ -153,7 +163,7 @@ fn stray_positional_app_arg_is_an_error() {
 
 #[test]
 fn option_without_value_is_an_error() {
-    for opt in ["--config", "-o", "--num-mbufs"] {
+    for opt in ["--config", "--num-mbufs"] {
         let err = parse_args(&args(&["dpds", "--", opt])).unwrap_err();
         assert!(err.to_string().contains("Usage"), "{opt}: {err}");
     }
