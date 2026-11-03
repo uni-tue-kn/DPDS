@@ -1,16 +1,21 @@
-import { Col, Form, Row } from 'react-bootstrap';
-import { DISTRIBUTIONS, LIMITER_MODES } from './linkForm';
+import { Button, Col, Form, Row } from 'react-bootstrap';
+import { configToForm, DISTRIBUTIONS, LIMITER_MODES } from './linkForm';
 import type { ConfigForm } from './linkForm';
+import type { Preset } from '../api/types';
 
 interface Props {
   index: number;
   title: string;
   value: ConfigForm;
   onChange: (next: ConfigForm) => void;
+  /** Given: an "Apply preset" select copies the chosen preset's config into this form. */
+  presets?: Preset[];
+  /** Given: a "Save as preset" button. */
+  onSaveAsPreset?: () => void;
 }
 
 /** One `<fieldset>` per direction; ids are prefixed with the direction so labels stay unique on the page. */
-export default function DirectionForm({ index, title, value, onChange }: Props) {
+export default function DirectionForm({ index, title, value, onChange, presets, onSaveAsPreset }: Props) {
   const id = (name: string) => `d${index}-${name}`;
   const set = <K extends keyof ConfigForm>(key: K, v: ConfigForm[K]) => onChange({ ...value, [key]: v });
 
@@ -46,6 +51,31 @@ export default function DirectionForm({ index, title, value, onChange }: Props) 
   return (
     <fieldset className="direction">
       <legend>{title}</legend>
+      {(presets || onSaveAsPreset) && (
+        <Row className="align-items-end">
+          {presets && (
+            <Form.Group as={Col} md={4} className="mb-3" controlId={id('apply-preset')}>
+              <Form.Label>Apply preset</Form.Label>
+              {/* Always shows the placeholder: choosing copies the config, it does not link to the preset. */}
+              <Form.Select
+                value=""
+                onChange={(e) => {
+                  const p = presets.find((x) => String(x.id) === e.target.value);
+                  if (p) onChange(configToForm(p.config));
+                }}
+              >
+                <option value="">Select a preset...</option>
+                {presets.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </Form.Select>
+            </Form.Group>
+          )}
+          {onSaveAsPreset && (
+            <Col md={4} className="mb-3">
+              <Button type="button" variant="outline-secondary" onClick={onSaveAsPreset}>Save as preset</Button>
+            </Col>
+          )}
+        </Row>
+      )}
       <Row>
         {select('distribution', 'Delay distribution', DISTRIBUTIONS)}
         {text('mean_ns', 'Mean delay (ns)')}

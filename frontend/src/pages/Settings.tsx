@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
-import type { FormEvent } from 'react';
-import { Button, Card, Form, InputGroup } from 'react-bootstrap';
+import type { ChangeEvent, FormEvent } from 'react';
+import { Button, Card, Form, InputGroup, Modal } from 'react-bootstrap';
 import * as api from '../api/client';
 import ErrorAlert from '../components/ErrorAlert';
 import { errorMessage } from '../common/format';
-import type { Settings as SettingsDto } from '../api/types';
+import { useLoad } from '../common/useLoad';
+import type { ExportDocument, Settings as SettingsDto } from '../api/types';
 
 interface FormState {
   main_lcore: string;
@@ -36,11 +37,40 @@ function toDto(f: FormState): SettingsDto {
   };
 }
 
+function readText(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result));
+    r.onerror = () => reject(r.error ?? new Error('Cannot read the file'));
+    r.readAsText(file);
+  });
+}
+
+/** Downloads the controller's export document as `dpds-setup-<date>.json`. */
+async function downloadSetup() {
+  const doc = await api.exportSetup();
+  const url = URL.createObjectURL(new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `dpds-setup-${new Date().toISOString().slice(0, 10)}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
 export default function Settings() {
   const [form, setForm] = useState<FormState | null>(null);
   const [error, setError] = useState<string>();
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
+  const emulation = useLoad(api.getEmulation);
+  /** Bumped after an import so the form shows the imported settings. */
+  const [round, setRound] = useState(0);
+  const [pendingImport, setPendingImport] = useState<ExportDocument>();
+  const [importing, setImporting] = useState(false);
+  const [imported, setImported] = useState<string>();
+  const stopped = emulation.data?.state === 'stopped';
 
   useEffect(() => {
     let alive = true;
@@ -51,7 +81,7 @@ export default function Settings() {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [round]);
 
   const edit = (patch: Partial<FormState>) => {
     setForm((f) => (f ? { ...f, ...patch } : f));
@@ -74,10 +104,52 @@ export default function Settings() {
     }
   };
 
+  const exportSetup = async () => {
+    setError(undefined);
+    try {
+      await downloadSetup();
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  };
+
+  const chooseFile = async (ev: ChangeEvent<HTMLInputElement>) => {
+    const file = ev.target.files?.[0];
+    ev.target.value = ''; // the same file can be chosen again
+    if (!file) return;
+    setError(undefined);
+    setImported(undefined);
+    try {
+      const doc: unknown = JSON.parse(await readText(file));
+      if (typeof doc !== 'object' || doc === null || Array.isArray(doc)) throw new Error('the top level must be an object');
+      setPendingImport(doc as ExportDocument);
+    } catch (e) {
+      setError(`"${file.name}" is not a valid JSON setup file: ${errorMessage(e)}`);
+    }
+  };
+
+  const confirmImport = async () => {
+    if (!pendingImport || importing) return;
+    setImporting(true);
+    try {
+      const n = await api.importSetup(pendingImport);
+      setSaved(false);
+      setImported(`Setup imported: ${n.links} links and ${n.presets} presets. Settings were replaced as well.`);
+      setRound((r) => r + 1);
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setImporting(false);
+      setPendingImport(undefined);
+      emulation.reload();
+    }
+  };
+
   return (
     <>
       <h1 className="mb-3">Settings</h1>
       <ErrorAlert message={error} />
+      {imported && <div role="status" className="alert alert-success">{imported}</div>}
       {saved && <div role="status" className="alert alert-success">Settings saved. They apply at the next start.</div>}
       {form && (
         <Card style={{ maxWidth: '40rem' }}>
@@ -126,6 +198,32 @@ export default function Settings() {
           </Card.Body>
         </Card>
       )}
+      <Card className="mt-3" style={{ maxWidth: '40rem' }}>
+        <Card.Body>
+          <h2 className="h5">Backup</h2>
+          <p className="mb-2">Export settings, links and presets as a JSON file, or restore them from one.</p>
+          <Button variant="outline-secondary" className="mb-3" onClick={exportSetup}>Export setup</Button>
+          <Form.Group controlId="import-file">
+            <Form.Label>Import setup file</Form.Label>
+            <Form.Control type="file" accept=".json,application/json" disabled={!stopped} onChange={chooseFile} />
+            {emulation.data && !stopped && (
+              <Form.Text data-testid="import-hint" className="d-block">
+                Stop the emulation to import a setup.
+              </Form.Text>
+            )}
+          </Form.Group>
+        </Card.Body>
+      </Card>
+      <Modal show={pendingImport !== undefined} onHide={() => setPendingImport(undefined)} animation={false} centered>
+        <Modal.Header closeButton><Modal.Title>Import setup</Modal.Title></Modal.Header>
+        <Modal.Body>
+          Importing will replace all existing links, settings and presets with the contents of the file. This cannot be undone.
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="secondary" onClick={() => setPendingImport(undefined)}>Cancel</Button>
+          <Button variant="danger" disabled={importing} onClick={confirmImport}>Confirm import</Button>
+        </Modal.Footer>
+      </Modal>
     </>
   );
 }

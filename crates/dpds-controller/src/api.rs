@@ -7,7 +7,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use axum::extract::{DefaultBodyLimit, FromRequest, FromRequestParts, Path, Request, State};
+use axum::extract::{
+    DefaultBodyLimit, FromRequest, FromRequestParts, Path, RawQuery, Request, State,
+};
 use axum::http::request::Parts;
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
@@ -30,10 +32,10 @@ use crate::eal::{drain_timeout, eal_argv, links_file_json, EalInput, EalPort};
 use crate::hints::{compute_hints, Hint, Level};
 use crate::host::HostRoots;
 use crate::lcores::{assign_lcores, DirectionPlan};
-use crate::model::{Link, Settings, StoredState};
+use crate::model::{Link, Preset, Settings, StoredState};
 use crate::stats::{
-    compute_stats, delay_histogram, delay_stats_on, Counters, DirectionStats, HistogramView,
-    PortStats, StatsView,
+    compute_stats, delay_histogram, delay_stats_on, uptime_ms, Clamped, Counters, DirectionStats,
+    ExpectedModel, HistogramView, Percentiles, PortStats, StatsView,
 };
 use crate::store::{self, StoreError};
 use crate::supervisor::{LaunchPlan, State as RunState, Supervisor};
@@ -64,6 +66,9 @@ struct App {
     pending_restart: AtomicBool,
     /// Directions and main lcore of the last launch.
     last_plan: Mutex<Option<(u32, Vec<DirectionPlan>)>>,
+    /// The per-direction configs of the last launch (the histogram's expected counts
+    /// follow what is running, not what was edited since).
+    launched_configs: Mutex<Vec<ConfigDto>>,
     /// Serialises start and stop: the state check and the launch are one step.
     lifecycle: AsyncMutex<()>,
 }
@@ -90,6 +95,11 @@ impl ApiError {
     }
     fn internal(m: impl Into<String>) -> ApiError {
         ApiError(StatusCode::INTERNAL_SERVER_ERROR, m.into())
+    }
+    /// A part of an import document is wrong: 400 (also for what the single
+    /// endpoints answer with 409), with the part named.
+    fn in_document(self, part: &str) -> ApiError {
+        ApiError(StatusCode::BAD_REQUEST, format!("{part}: {}", self.1))
     }
 }
 
@@ -224,6 +234,70 @@ pub struct LinkInput {
     workers: Option<Vec<u32>>,
 }
 
+/// Body of `POST /api/presets` and `PUT /api/presets/{id}`.
+#[derive(Deserialize, ToSchema)]
+pub struct PresetInput {
+    /// 1 to 64 characters, unique.
+    name: String,
+    description: Option<String>,
+    config: ConfigDto,
+}
+
+/// `settings` of an export document (the fields of [`Settings`], unknown keys refused).
+#[derive(Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ExportSettings {
+    main_lcore: Option<u32>,
+    mlx5_devargs: String,
+    eal_extra_args: Vec<String>,
+    poll_interval_ms: u64,
+}
+
+/// A link of an export document: [`LinkInput`] without ids, unknown keys refused.
+#[derive(Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ExportLink {
+    name: String,
+    ports: Vec<String>,
+    configs: Vec<ConfigDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    workers: Option<Vec<u32>>,
+}
+
+/// A preset of an export document: [`PresetInput`], unknown keys refused.
+#[derive(Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ExportPreset {
+    name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    config: ConfigDto,
+}
+
+/// `GET /api/export` and the body of `POST /api/import`: the stored setup without
+/// ids and runtime state.
+#[derive(Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ExportDoc {
+    /// Always `dpds-controller-export`.
+    format: String,
+    /// Always 1.
+    version: u32,
+    settings: ExportSettings,
+    links: Vec<ExportLink>,
+    presets: Vec<ExportPreset>,
+}
+
+/// What an import stored.
+#[derive(Serialize, ToSchema)]
+pub struct ImportSummary {
+    links: usize,
+    presets: usize,
+}
+
+const EXPORT_FORMAT: &str = "dpds-controller-export";
+const MAX_PRESET_NAME_CHARS: usize = 64;
+
 // ---- helpers -----------------------------------------------------------------
 
 fn valid_name(n: &str) -> bool {
@@ -284,9 +358,61 @@ fn validate_link(input: &LinkInput, others: &[&Link]) -> Result<Vec<String>, Api
     Ok(ports)
 }
 
-fn parse_id(s: &str) -> Result<u32, ApiError> {
+fn parse_id(kind: &str, s: &str) -> Result<u32, ApiError> {
     s.parse()
-        .map_err(|_| ApiError::not_found(format!("no link {s}")))
+        .map_err(|_| ApiError::not_found(format!("no {kind} {s}")))
+}
+
+/// Validates a preset against the others: name 1 to 64 characters and unique, the
+/// config like a link direction.
+fn validate_preset(name: &str, config: &ConfigDto, others: &[&Preset]) -> Result<(), ApiError> {
+    if name.trim().is_empty() {
+        return Err(ApiError::bad("preset name must not be empty"));
+    }
+    if name.chars().count() > MAX_PRESET_NAME_CHARS {
+        return Err(ApiError::bad(format!(
+            "preset name must be at most {MAX_PRESET_NAME_CHARS} characters"
+        )));
+    }
+    config
+        .to_core()
+        .map_err(|e| ApiError::bad(format!("config: {e}")))?;
+    if others.iter().any(|o| o.name == name) {
+        return Err(ApiError::conflict(format!(
+            "a preset named {name} already exists"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_settings(settings: &Settings) -> Result<(), ApiError> {
+    if settings.poll_interval_ms == 0 {
+        return Err(ApiError::bad("poll_interval_ms must be at least 1"));
+    }
+    validate::mlx5_devargs(&settings.mlx5_devargs).map_err(ApiError::bad)?;
+    validate::eal_extra_args(&settings.eal_extra_args).map_err(ApiError::bad)
+}
+
+/// The value of `key` in a raw query string (an empty one for `key` without `=`).
+fn query_param<'a>(query: Option<&'a str>, key: &str) -> Option<&'a str> {
+    query?
+        .split('&')
+        .map(|kv| kv.split_once('=').unwrap_or((kv, "")))
+        .find(|(k, _)| *k == key)
+        .map(|(_, v)| v)
+}
+
+/// `window_s`: 0 (absent) for since start, or 10, 60, 300 seconds.
+fn parse_window(query: Option<&str>) -> Result<u32, ApiError> {
+    let Some(v) = query_param(query, "window_s") else {
+        return Ok(0);
+    };
+    match v.parse::<u32>() {
+        Ok(n) if v.bytes().all(|b| b.is_ascii_digit()) && matches!(n, 0 | 10 | 60 | 300) => Ok(n),
+        _ => Err(ApiError::bad(format!(
+            "window_s = {v:?}: must be 0 (since start), 10, 60 or 300 seconds"
+        ))),
+    }
 }
 
 impl App {
@@ -297,16 +423,21 @@ impl App {
     /// Applies `edit` to a copy of the stored state, saves it, then swaps it in.
     /// Runs on a blocking thread (the save syncs to disk), to completion even if
     /// the request is dropped; readers of `stored` never wait for the disk.
+    ///
+    /// `touches_run`: the edit changes what a running emulation was started with, so
+    /// it sets `pending_restart` (presets do not).
     async fn update<T: Send + 'static>(
         self: &Arc<Self>,
+        touches_run: bool,
         edit: impl FnOnce(&mut StoredState) -> Result<T, ApiError> + Send + 'static,
     ) -> Result<T, ApiError> {
         let app = self.clone();
-        blocking(move || app.update_blocking(edit)).await?
+        blocking(move || app.update_blocking(touches_run, edit)).await?
     }
 
     fn update_blocking<T>(
         &self,
+        touches_run: bool,
         edit: impl FnOnce(&mut StoredState) -> Result<T, ApiError>,
     ) -> Result<T, ApiError> {
         let _serial = lock(&self.edits);
@@ -314,10 +445,12 @@ impl App {
         let out = edit(&mut next)?;
         store::save(&self.deps.state_dir, &next)?;
         *self.stored() = next;
-        if matches!(
-            self.deps.supervisor.status().state,
-            RunState::Starting | RunState::Running
-        ) {
+        if touches_run
+            && matches!(
+                self.deps.supervisor.status().state,
+                RunState::Starting | RunState::Running
+            )
+        {
             self.pending_restart.store(true, Ordering::Relaxed);
         }
         Ok(out)
@@ -350,7 +483,24 @@ impl App {
         }
     }
 
-    fn launch_plan(&self) -> Result<(LaunchPlan, u32), ApiError> {
+    /// The config of global direction `d`: what the running emulation was started
+    /// with, else the stored one.
+    fn direction_config(&self, d: usize) -> Option<ConfigDto> {
+        if self.deps.supervisor.status().state != RunState::Stopped {
+            let launched = lock(&self.launched_configs);
+            if !launched.is_empty() {
+                return launched.get(d).cloned();
+            }
+        }
+        self.stored()
+            .links
+            .iter()
+            .flat_map(|l| &l.configs)
+            .nth(d)
+            .cloned()
+    }
+
+    fn launch_plan(&self) -> Result<(LaunchPlan, u32, Vec<ConfigDto>), ApiError> {
         let stored = self.stored().clone();
         if stored.links.is_empty() {
             return Err(ApiError::bad("no links are configured"));
@@ -411,7 +561,12 @@ impl App {
             main_lcore: assignment.main_lcore,
             drain_timeout: drain_timeout(&configs),
         };
-        Ok((plan, assignment.main_lcore))
+        let dtos = stored
+            .links
+            .iter()
+            .flat_map(|l| l.configs.clone())
+            .collect();
+        Ok((plan, assignment.main_lcore, dtos))
     }
 }
 
@@ -463,7 +618,7 @@ async fn create_link(
     ApiJson(input): ApiJson<LinkInput>,
 ) -> Result<(StatusCode, Json<Link>), ApiError> {
     let link = app
-        .update(move |s| {
+        .update(true, move |s| {
             let ports = validate_link(&input, &s.links.iter().collect::<Vec<_>>())?;
             let link = Link {
                 id: s.next_id,
@@ -485,7 +640,7 @@ async fn create_link(
     responses((status = 200, body = Link), (status = 404, body = ErrorBody))
 )]
 async fn get_link(State(app): Shared, Path(id): Path<String>) -> Result<Json<Link>, ApiError> {
-    let id = parse_id(&id)?;
+    let id = parse_id("link", &id)?;
     let stored = app.stored();
     stored
         .links
@@ -509,9 +664,9 @@ async fn update_link(
     Path(id): Path<String>,
     ApiJson(input): ApiJson<LinkInput>,
 ) -> Result<Json<Link>, ApiError> {
-    let id = parse_id(&id)?;
+    let id = parse_id("link", &id)?;
     let link = app
-        .update(move |s| {
+        .update(true, move |s| {
             if !s.links.iter().any(|l| l.id == id) {
                 return Err(ApiError::not_found(format!("no link {id}")));
             }
@@ -542,8 +697,8 @@ async fn update_link(
     responses((status = 204), (status = 404, body = ErrorBody), (status = 500, body = ErrorBody))
 )]
 async fn delete_link(State(app): Shared, Path(id): Path<String>) -> Result<StatusCode, ApiError> {
-    let id = parse_id(&id)?;
-    app.update(move |s| {
+    let id = parse_id("link", &id)?;
+    app.update(true, move |s| {
         let before = s.links.len();
         s.links.retain(|l| l.id != id);
         if s.links.len() == before {
@@ -571,13 +726,9 @@ async fn put_settings(
     State(app): Shared,
     ApiJson(settings): ApiJson<Settings>,
 ) -> Result<Json<Settings>, ApiError> {
-    if settings.poll_interval_ms == 0 {
-        return Err(ApiError::bad("poll_interval_ms must be at least 1"));
-    }
-    validate::mlx5_devargs(&settings.mlx5_devargs).map_err(ApiError::bad)?;
-    validate::eal_extra_args(&settings.eal_extra_args).map_err(ApiError::bad)?;
+    validate_settings(&settings)?;
     let stored = settings.clone();
-    app.update(move |s| {
+    app.update(true, move |s| {
         s.settings = stored;
         Ok(())
     })
@@ -618,8 +769,9 @@ async fn start(
         )));
     }
     let a = app.clone();
-    let (plan, main_lcore) = blocking(move || a.launch_plan()).await??;
+    let (plan, main_lcore, configs) = blocking(move || a.launch_plan()).await??;
     *lock(&app.last_plan) = Some((main_lcore, plan.directions.clone()));
+    *lock(&app.launched_configs) = configs;
     app.pending_restart.store(false, Ordering::Relaxed);
     app.deps.supervisor.start(plan);
     Ok((
@@ -682,13 +834,19 @@ async fn stats(State(app): Shared) -> Json<StatsView> {
 }
 
 #[utoipa::path(
-    get, path = "/api/stats/{dir}/delay_histogram", params(("dir" = u32, Path, description = "direction")),
-    responses((status = 200, body = HistogramView), (status = 404, body = ErrorBody))
+    get, path = "/api/stats/{dir}/delay_histogram",
+    params(
+        ("dir" = u32, Path, description = "direction"),
+        ("window_s" = Option<u32>, Query, description = "0 (default, since start), 10, 60 or 300: only the samples of the last n seconds")
+    ),
+    responses((status = 200, body = HistogramView), (status = 400, body = ErrorBody), (status = 404, body = ErrorBody))
 )]
 async fn histogram(
     State(app): Shared,
     Path(dir): Path<String>,
+    RawQuery(query): RawQuery,
 ) -> Result<Json<HistogramView>, ApiError> {
+    let window_s = parse_window(query.as_deref())?;
     let missing = || ApiError::not_found(format!("no delay histogram for direction {dir}"));
     let d: usize = dir.parse().map_err(|_| missing())?;
     let p = app.deps.telemetry.latest().ok_or_else(missing)?;
@@ -697,12 +855,286 @@ async fn histogram(
             "delay statistics are off for direction {d}, so it has no delay histogram"
         )));
     }
-    let h = delay_histogram(&p.cur, d).ok_or_else(missing)?;
-    Ok(Json(HistogramView {
-        age_ms: p.age_ms,
-        stale: p.stale,
-        ..h
-    }))
+    // the newest poll, and the newest older one that is at least `window_s` old
+    let ring = if window_s > 0 {
+        app.deps.telemetry.history()
+    } else {
+        Vec::new()
+    };
+    let (cur, base) = match ring.split_last() {
+        Some(((age_now, newest), older)) => (
+            newest,
+            older
+                .iter()
+                .rev()
+                .map(|(age, snap)| (age.saturating_sub(*age_now), snap))
+                .find(|(span, _)| *span >= u64::from(window_s) * 1000),
+        ),
+        None => (&p.cur, None),
+    };
+    let mut h = delay_histogram(cur, d).ok_or_else(missing)?;
+    let windowed_span = base.and_then(|(span, snap)| {
+        let b = delay_histogram(snap, d)?;
+        h.subtract(&b).then_some(span)
+    });
+    h.span_ms = windowed_span
+        .or_else(|| uptime_ms(cur, d))
+        .unwrap_or_default();
+    h.window_s = window_s;
+    h.age_ms = p.age_ms;
+    h.stale = p.stale;
+    h.summarise();
+    if let Some(config) = app.direction_config(d) {
+        h.add_expected(&config);
+    }
+    Ok(Json(h))
+}
+
+// ---- presets -----------------------------------------------------------------
+
+#[utoipa::path(get, path = "/api/presets", responses((status = 200, body = Vec<Preset>)))]
+async fn list_presets(State(app): Shared) -> Json<Vec<Preset>> {
+    Json(app.stored().presets.clone())
+}
+
+#[utoipa::path(
+    post, path = "/api/presets", request_body = PresetInput,
+    responses(
+        (status = 201, body = Preset), (status = 400, body = ErrorBody), (status = 409, body = ErrorBody),
+        (status = 413, body = ErrorBody), (status = 415, body = ErrorBody), (status = 500, body = ErrorBody)
+    )
+)]
+async fn create_preset(
+    State(app): Shared,
+    ApiJson(input): ApiJson<PresetInput>,
+) -> Result<(StatusCode, Json<Preset>), ApiError> {
+    let preset = app
+        .update(false, move |s| {
+            validate_preset(
+                &input.name,
+                &input.config,
+                &s.presets.iter().collect::<Vec<_>>(),
+            )?;
+            let preset = Preset {
+                id: s.next_preset_id,
+                name: input.name,
+                description: input.description,
+                config: input.config,
+            };
+            s.next_preset_id += 1;
+            s.presets.push(preset.clone());
+            Ok(preset)
+        })
+        .await?;
+    Ok((StatusCode::CREATED, Json(preset)))
+}
+
+#[utoipa::path(
+    get, path = "/api/presets/{id}", params(("id" = u32, Path, description = "preset id")),
+    responses((status = 200, body = Preset), (status = 404, body = ErrorBody))
+)]
+async fn get_preset(State(app): Shared, Path(id): Path<String>) -> Result<Json<Preset>, ApiError> {
+    let id = parse_id("preset", &id)?;
+    app.stored()
+        .presets
+        .iter()
+        .find(|p| p.id == id)
+        .cloned()
+        .map(Json)
+        .ok_or_else(|| ApiError::not_found(format!("no preset {id}")))
+}
+
+#[utoipa::path(
+    put, path = "/api/presets/{id}", params(("id" = u32, Path, description = "preset id")), request_body = PresetInput,
+    responses(
+        (status = 200, body = Preset), (status = 400, body = ErrorBody), (status = 404, body = ErrorBody),
+        (status = 409, body = ErrorBody), (status = 413, body = ErrorBody), (status = 415, body = ErrorBody),
+        (status = 500, body = ErrorBody)
+    )
+)]
+async fn update_preset(
+    State(app): Shared,
+    Path(id): Path<String>,
+    ApiJson(input): ApiJson<PresetInput>,
+) -> Result<Json<Preset>, ApiError> {
+    let id = parse_id("preset", &id)?;
+    let preset = app
+        .update(false, move |s| {
+            if !s.presets.iter().any(|p| p.id == id) {
+                return Err(ApiError::not_found(format!("no preset {id}")));
+            }
+            validate_preset(
+                &input.name,
+                &input.config,
+                &s.presets.iter().filter(|p| p.id != id).collect::<Vec<_>>(),
+            )?;
+            let preset = Preset {
+                id,
+                name: input.name,
+                description: input.description,
+                config: input.config,
+            };
+            for p in &mut s.presets {
+                if p.id == id {
+                    *p = preset.clone();
+                }
+            }
+            Ok(preset)
+        })
+        .await?;
+    Ok(Json(preset))
+}
+
+#[utoipa::path(
+    delete, path = "/api/presets/{id}", params(("id" = u32, Path, description = "preset id")),
+    responses((status = 204), (status = 404, body = ErrorBody), (status = 500, body = ErrorBody))
+)]
+async fn delete_preset(State(app): Shared, Path(id): Path<String>) -> Result<StatusCode, ApiError> {
+    let id = parse_id("preset", &id)?;
+    app.update(false, move |s| {
+        let before = s.presets.len();
+        s.presets.retain(|p| p.id != id);
+        if s.presets.len() == before {
+            return Err(ApiError::not_found(format!("no preset {id}")));
+        }
+        Ok(())
+    })
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ---- export / import -----------------------------------------------------------
+
+#[utoipa::path(get, path = "/api/export", responses((status = 200, body = ExportDoc)))]
+async fn export(State(app): Shared) -> Json<ExportDoc> {
+    let s = app.stored();
+    Json(ExportDoc {
+        format: EXPORT_FORMAT.into(),
+        version: 1,
+        settings: ExportSettings {
+            main_lcore: s.settings.main_lcore,
+            mlx5_devargs: s.settings.mlx5_devargs.clone(),
+            eal_extra_args: s.settings.eal_extra_args.clone(),
+            poll_interval_ms: s.settings.poll_interval_ms,
+        },
+        links: s
+            .links
+            .iter()
+            .map(|l| ExportLink {
+                name: l.name.clone(),
+                ports: l.ports.clone(),
+                configs: l.configs.clone(),
+                workers: l.workers.clone(),
+            })
+            .collect(),
+        presets: s
+            .presets
+            .iter()
+            .map(|p| ExportPreset {
+                name: p.name.clone(),
+                description: p.description.clone(),
+                config: p.config.clone(),
+            })
+            .collect(),
+    })
+}
+
+/// Validates the whole document and replaces links, presets and settings of `s` by it,
+/// with new ids from the counters of `s`. On an error `s` is unchanged.
+fn apply_import(s: &mut StoredState, doc: ExportDoc) -> Result<(), ApiError> {
+    if doc.format != EXPORT_FORMAT {
+        return Err(ApiError::bad(format!(
+            "format = {:?}: expected {EXPORT_FORMAT:?}",
+            doc.format
+        )));
+    }
+    if doc.version != 1 {
+        return Err(ApiError::bad(format!(
+            "version = {}: only version 1 is supported",
+            doc.version
+        )));
+    }
+    let settings = Settings {
+        main_lcore: doc.settings.main_lcore,
+        mlx5_devargs: doc.settings.mlx5_devargs,
+        eal_extra_args: doc.settings.eal_extra_args,
+        poll_interval_ms: doc.settings.poll_interval_ms,
+    };
+    validate_settings(&settings).map_err(|e| e.in_document("settings"))?;
+    let mut links: Vec<Link> = Vec::new();
+    for (i, l) in doc.links.into_iter().enumerate() {
+        let input = LinkInput {
+            name: l.name,
+            ports: l.ports,
+            configs: l.configs,
+            workers: l.workers,
+        };
+        let ports = validate_link(&input, &links.iter().collect::<Vec<_>>())
+            .map_err(|e| e.in_document(&format!("links[{i}]")))?;
+        links.push(Link {
+            id: s.next_id + u32::try_from(i).unwrap_or(u32::MAX),
+            name: input.name,
+            ports,
+            configs: input.configs,
+            workers: input.workers,
+        });
+    }
+    let mut presets: Vec<Preset> = Vec::new();
+    for (i, p) in doc.presets.into_iter().enumerate() {
+        validate_preset(&p.name, &p.config, &presets.iter().collect::<Vec<_>>())
+            .map_err(|e| e.in_document(&format!("presets[{i}]")))?;
+        presets.push(Preset {
+            id: s.next_preset_id + u32::try_from(i).unwrap_or(u32::MAX),
+            name: p.name,
+            description: p.description,
+            config: p.config,
+        });
+    }
+    s.next_id += u32::try_from(links.len()).unwrap_or(u32::MAX);
+    s.next_preset_id += u32::try_from(presets.len()).unwrap_or(u32::MAX);
+    s.links = links;
+    s.presets = presets;
+    s.settings = settings;
+    Ok(())
+}
+
+#[utoipa::path(
+    post, path = "/api/import",
+    params(("mode" = Option<String>, Query, description = "`replace` (the default and only mode): links, presets and settings are replaced")),
+    request_body = ExportDoc,
+    responses(
+        (status = 200, body = ImportSummary), (status = 400, body = ErrorBody), (status = 409, body = ErrorBody),
+        (status = 413, body = ErrorBody), (status = 415, body = ErrorBody), (status = 500, body = ErrorBody)
+    )
+)]
+async fn import(
+    State(app): Shared,
+    RawQuery(query): RawQuery,
+    ApiJson(doc): ApiJson<ExportDoc>,
+) -> Result<Json<ImportSummary>, ApiError> {
+    if let Some(mode) = query_param(query.as_deref(), "mode").filter(|m| *m != "replace") {
+        return Err(ApiError::bad(format!(
+            "mode = {mode:?}: only mode=replace is supported"
+        )));
+    }
+    // start and stop hold this lock too: the emulation cannot leave `stopped` during the import
+    let _step = app.lifecycle.lock().await;
+    let state = app.deps.supervisor.status().state;
+    if state != RunState::Stopped {
+        return Err(ApiError::conflict(format!(
+            "cannot import while the emulation is {state:?}; stop it first"
+        )));
+    }
+    let summary = app
+        .update(true, move |s| {
+            apply_import(s, doc)?;
+            Ok(ImportSummary {
+                links: s.links.len(),
+                presets: s.presets.len(),
+            })
+        })
+        .await?;
+    Ok(Json(summary))
 }
 
 // ---- router ------------------------------------------------------------------
@@ -728,7 +1160,14 @@ async fn histogram(
         start,
         stop,
         stats,
-        histogram
+        histogram,
+        list_presets,
+        create_preset,
+        get_preset,
+        update_preset,
+        delete_preset,
+        export,
+        import
     ),
     components(schemas(
         ConfigDto,
@@ -752,7 +1191,17 @@ async fn histogram(
         DirectionStats,
         Counters,
         PortStats,
-        HistogramView
+        HistogramView,
+        Percentiles,
+        Clamped,
+        ExpectedModel,
+        Preset,
+        PresetInput,
+        ExportDoc,
+        ExportSettings,
+        ExportLink,
+        ExportPreset,
+        ImportSummary
     ))
 )]
 struct ApiDoc;
@@ -766,6 +1215,7 @@ pub fn router(deps: Deps) -> Result<Router, StoreError> {
         edits: Mutex::new(()),
         pending_restart: AtomicBool::new(false),
         last_plan: Mutex::new(None),
+        launched_configs: Mutex::new(Vec::new()),
         lifecycle: AsyncMutex::new(()),
     });
     let api = Router::new()
@@ -783,6 +1233,13 @@ pub fn router(deps: Deps) -> Result<Router, StoreError> {
         .route("/api/emulation/stop", post(stop))
         .route("/api/stats", get(stats))
         .route("/api/stats/{dir}/delay_histogram", get(histogram))
+        .route("/api/presets", get(list_presets).post(create_preset))
+        .route(
+            "/api/presets/{id}",
+            get(get_preset).put(update_preset).delete(delete_preset),
+        )
+        .route("/api/export", get(export))
+        .route("/api/import", post(import))
         .with_state(app);
     Ok(api
         .merge(SwaggerUi::new("/api/docs").url("/api/openapi.json", ApiDoc::openapi()))

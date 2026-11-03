@@ -626,6 +626,38 @@ the default; `--stable` only prints that no Rust stable release exists yet.
 - **REST API**: served by the controller on port 8100 (`/api/...`); the frontend proxies it. The
   interactive OpenAPI documentation is at `http://<host>:8100/api/docs`.
 - **Stored state** lives in `/var/lib/dpds-controller` and survives `stop` and `update`.
+- **Presets**: named per-direction configs stored beside the links (`GET|POST /api/presets`,
+  `GET|PUT|DELETE /api/presets/{id}`; body `{name, description?, config}`). The name has 1 to 64
+  characters and is unique (409); the config is validated like a link direction (400 naming the
+  field). Presets are not part of a run, so editing them while `dpds` runs does not set
+  `pending_restart`. Preset ids are never reused.
+- **Export and import**: `GET /api/export` returns the whole setup (`format`
+  `dpds-controller-export`, `version` 1, `settings`, `links`, `presets`; no ids, no runtime state).
+  `POST /api/import` (`?mode=replace`, the only mode) replaces links, presets and settings with such a
+  document. It is refused with 409 unless the emulation is `stopped`, checks the whole document
+  first (format and version, every link, preset and setting by the rules of the single endpoints,
+  unique names, no port shared between links, unknown keys such as `id` are 400) and applies it
+  all or nothing in one state write. New ids continue the counters. The reply is
+  `{"links": n, "presets": m}`.
+- **Delay histogram extras** (`GET /api/stats/{dir}/delay_histogram`): `?window_s=10|60|300` returns
+  only the samples of the last n seconds (difference to the poll that is at least n seconds old;
+  `window_s` absent or 0 and runs younger than n seconds give the counts since start; `span_ms` is
+  the time the counts cover). The controller keeps the polls of the last 300 s for this (at most
+  6000, so a poll interval below 50 ms shortens the window) and drops them when the emulation
+  stops. The reply also has `count` (samples including under- and overflow) and `percentiles`
+  `p50`, `p90`, `p99`, `p999` in ns (linear interpolation inside the bin; a percentile in the
+  under- or overflow is the range edge and its `p..._clamped` says `underflow` or `overflow`;
+  all null without samples). `expected`, `expected_underflow` and `expected_overflow` are the
+  counts a perfect sampler of the direction's configured delay distribution would put in each bin
+  for `count` samples (negative delays are clamped to 0 by `dpds`, so their mass sits in the bin
+  of 0). `expected_model` is `exact`, or `normal_approximation` with `activate_correlation`
+  (the stationary distribution is approximated as Normal(mean, std)). With an active limiter
+  `expected_note` says `excludes limiter queueing delay`: the expectation covers the delay
+  distribution only, the limiter's queueing adds to the measured delay. The CDFs are a small
+  self-contained implementation (regularised incomplete gamma; shapes above 1e5 use the
+  Wilson-Hilferty approximation) with unit tests instead of `statrs`, which would pull in
+  `nalgebra` and `rand`. They are not tuned for extreme parameters: a zero std (or a zero mean
+  for LogNormal/Gamma) is treated as a point mass.
 - **Stopping** the service stops `dpds` cleanly: it drains the delay buffers first, which can
   take as long as the longest configured delay. The unit's `TimeoutStopSec` is 600 s; after
   that systemd kills `dpds` mid-drain. The controller adds a `drain_timeout` hint when a stored

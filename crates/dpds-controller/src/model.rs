@@ -19,6 +19,16 @@ pub struct Link {
     pub workers: Option<Vec<u32>>,
 }
 
+/// A named per-direction config, stored in the controller (K1). Not part of a run.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct Preset {
+    pub id: u32,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub config: ConfigDto,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Settings {
     /// Main lcore; the lowest non-isolated online core when absent.
@@ -48,6 +58,16 @@ pub struct StoredState {
     pub settings: Settings,
     /// Next link id; ids are never reused.
     pub next_id: u32,
+    /// Absent in state files written before presets existed.
+    #[serde(default)]
+    pub presets: Vec<Preset>,
+    /// Next preset id; ids are never reused.
+    #[serde(default = "first_id")]
+    pub next_preset_id: u32,
+}
+
+fn first_id() -> u32 {
+    1
 }
 
 impl Default for StoredState {
@@ -56,6 +76,8 @@ impl Default for StoredState {
             links: Vec::new(),
             settings: Settings::default(),
             next_id: 1,
+            presets: Vec::new(),
+            next_preset_id: 1,
         }
     }
 }

@@ -1,6 +1,7 @@
 //! DPDK telemetry client (B4): a blocking SOCK_SEQPACKET connection, and a
 //! poll thread that caches the latest snapshots for the REST endpoints.
 
+use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -77,6 +78,15 @@ impl Client {
 
 pub trait TelemetrySource: Send + Sync + 'static {
     fn latest(&self) -> Option<Polled>;
+
+    /// Every retained poll of the current run, oldest first, as (age in ms, snapshot);
+    /// the newest entry is the latest poll. Empty without data. A source without a
+    /// ring has just the latest poll.
+    fn history(&self) -> Vec<(u64, Snapshot)> {
+        self.latest()
+            .map(|p| vec![(p.age_ms, p.cur)])
+            .unwrap_or_default()
+    }
 }
 
 /// One full poll: ports, per-direction stats and histogram, per-port NIC stats.
@@ -107,11 +117,27 @@ pub fn poll_once(client: &mut Client) -> io::Result<Snapshot> {
 /// Consecutive failed polls after which the cached data is dropped.
 const MAX_FAILURES: u32 = 5;
 
+/// The longest histogram window (K3) the ring has to cover.
+const RING_SECONDS: u64 = 300;
+
+/// Most snapshots the ring keeps, whatever the poll interval (bounds the memory at
+/// very short intervals; the window is then shorter than 300 s).
+const RING_MAX: usize = 6000;
+
+/// Snapshots needed to cover [`RING_SECONDS`] at `interval_ms`, plus the one that is
+/// just old enough.
+fn ring_capacity(interval_ms: u64) -> usize {
+    let n = (RING_SECONDS * 1000).div_ceil(interval_ms.max(1)) + 2;
+    usize::try_from(n).map_or(RING_MAX, |n| n.min(RING_MAX))
+}
+
 struct Cache {
     polled: Polled,
     at: Instant,
     /// Polls that failed since `polled` was taken.
     failures: u32,
+    /// Every poll of this run, oldest first; dropped with the cache.
+    ring: VecDeque<(Instant, Snapshot)>,
 }
 
 /// Polls the running `dpds` in a background thread and caches the result.
@@ -142,9 +168,17 @@ impl Poller {
         *self.cell() = None;
     }
 
-    fn succeeded(&self, cur: Snapshot) {
+    fn succeeded(&self, cur: Snapshot, capacity: usize) {
         let mut cell = self.cell();
-        let prev = cell.take().map(|c| c.polled.cur);
+        let now = Instant::now();
+        let (prev, mut ring) = match cell.take() {
+            Some(c) => (Some(c.polled.cur), c.ring),
+            None => (None, VecDeque::new()),
+        };
+        ring.push_back((now, cur.clone()));
+        while ring.len() > capacity {
+            ring.pop_front();
+        }
         *cell = Some(Cache {
             polled: Polled {
                 prev,
@@ -152,8 +186,9 @@ impl Poller {
                 age_ms: 0,
                 stale: false,
             },
-            at: Instant::now(),
+            at: now,
             failures: 0,
+            ring,
         });
     }
 
@@ -185,6 +220,8 @@ impl Poller {
             };
             if conn_pid != Some(pid) {
                 conn = None;
+                // a new run starts a new ring
+                self.clear();
             }
             if conn.is_none() {
                 match Client::connect(&socket_path(runtime_dir)) {
@@ -202,7 +239,7 @@ impl Poller {
                 continue;
             };
             match poll_once(client) {
-                Ok(cur) => self.succeeded(cur),
+                Ok(cur) => self.succeeded(cur, ring_capacity(interval)),
                 Err(_) => {
                     conn = None;
                     self.failed();
@@ -213,6 +250,22 @@ impl Poller {
 }
 
 impl TelemetrySource for Poller {
+    fn history(&self) -> Vec<(u64, Snapshot)> {
+        let cell = self.cell();
+        let Some(c) = cell.as_ref() else {
+            return Vec::new();
+        };
+        c.ring
+            .iter()
+            .map(|(at, s)| {
+                (
+                    u64::try_from(at.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    s.clone(),
+                )
+            })
+            .collect()
+    }
+
     fn latest(&self) -> Option<Polled> {
         self.cell().as_ref().map(|c| Polled {
             age_ms: u64::try_from(c.at.elapsed().as_millis()).unwrap_or(u64::MAX),

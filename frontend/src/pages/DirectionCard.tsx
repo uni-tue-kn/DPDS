@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
-import { Badge, Card, Col, Row } from 'react-bootstrap';
+import { Fragment, useEffect, useState } from 'react';
+import type { ChartData, ChartOptions } from 'chart.js';
+import { Badge, Card, Col, Form, Row } from 'react-bootstrap';
 import { Bar, Line } from 'react-chartjs-2';
 import '../components/charts';
 import { startPolling } from '../common/polling';
@@ -7,7 +8,7 @@ import {
   directionLabel, errorMessage, formatBps, formatDuration, formatInt, formatPct, formatPps,
 } from '../common/format';
 import * as api from '../api/client';
-import type { DirectionPlan, DirectionStats, HistogramView } from '../api/types';
+import type { DirectionPlan, DirectionStats, HistogramView, Percentiles as PercentilesDto } from '../api/types';
 
 /** One sample of the rate/drop charts (taken at every stats poll). */
 export interface Sample {
@@ -46,15 +47,47 @@ function ChartBox({ label, children }: { label: string; children: React.ReactNod
   return <div className="chart-box" role="img" aria-label={label}>{children}</div>;
 }
 
+const WINDOWS: [number, string][] = [[0, 'Since start'], [10, '10 s'], [60, '60 s'], [300, '300 s']];
+
+const PERCENTILES: [string, 'p50' | 'p90' | 'p99' | 'p999'][] = [
+  ['p50', 'p50'], ['p90', 'p90'], ['p99', 'p99'], ['p99.9', 'p999'],
+];
+
+/** p50..p99.9; a value that fell into the under/overflow is only a bound of the true percentile. */
+function Percentiles({ p }: { p: PercentilesDto }) {
+  return (
+    <dl className="stat-list mt-2" data-testid="percentiles">
+      {PERCENTILES.map(([label, key]) => {
+        const clamped = p[`${key}_clamped`] ?? undefined;
+        return (
+          <Fragment key={key}>
+            <dt>{label}</dt>
+            <dd
+              data-clamped={clamped}
+              title={clamped && `Outside the histogram range (${clamped}): the real value is ${clamped === 'overflow' ? 'higher' : 'lower'}`}
+            >
+              {clamped === 'underflow' && '≤ '}{clamped === 'overflow' && '≥ '}{formatDuration(p[key])}
+            </dd>
+          </Fragment>
+        );
+      })}
+    </dl>
+  );
+}
+
 function Histogram({ dir }: { dir: number }) {
   const [hist, setHist] = useState<HistogramView | null>(null);
   const [error, setError] = useState<string>();
+  const [windowS, setWindowS] = useState(0);
+  const [logScale, setLogScale] = useState(false);
+  const [showExpected, setShowExpected] = useState(true);
 
+  // A new window restarts the poll, which fetches at once; the old reply of a superseded window is dropped.
   useEffect(() => {
     let alive = true;
     const stop = startPolling(async () => {
       try {
-        const h = await api.getDelayHistogram(dir);
+        const h = await (windowS === 0 ? api.getDelayHistogram(dir) : api.getDelayHistogram(dir, windowS));
         if (!alive) return;
         setHist(h);
         setError(undefined);
@@ -68,26 +101,67 @@ function Histogram({ dir }: { dir: number }) {
       alive = false;
       stop();
     };
-  }, [dir]);
+  }, [dir, windowS]);
+
+  const controls = (
+    <div className="d-flex flex-wrap align-items-center gap-3 mb-2">
+      <Form.Group controlId={`hist-window-${dir}`} className="d-flex align-items-center gap-2">
+        <Form.Label className="mb-0">Histogram window</Form.Label>
+        <Form.Select size="sm" className="w-auto" value={String(windowS)} onChange={(e) => setWindowS(Number(e.target.value))}>
+          {WINDOWS.map(([n, label]) => <option key={n} value={n}>{label}</option>)}
+        </Form.Select>
+      </Form.Group>
+      <Form.Check
+        type="checkbox" id={`hist-log-${dir}`} label="Log scale" checked={logScale}
+        onChange={(e) => setLogScale(e.target.checked)}
+      />
+      <Form.Check
+        type="checkbox" id={`hist-expected-${dir}`} label="Show expected distribution" checked={showExpected}
+        onChange={(e) => setShowExpected(e.target.checked)}
+      />
+    </div>
+  );
 
   if (error) {
-    return <small className="d-block mt-3 text-danger" data-testid="histogram-error">Delay histogram unavailable: {error}</small>;
+    return (
+      <>
+        {controls}
+        <small className="d-block mt-3 text-danger" data-testid="histogram-error">Delay histogram unavailable: {error}</small>
+      </>
+    );
   }
   if (!hist) return null;
   const labels = hist.bins.map((_, i) => formatDuration(hist.edges_ns[i] ?? hist.lo_ns + i * hist.bin_ns));
-  const data = {
-    labels,
-    datasets: [{ label: 'Packets', data: hist.bins, backgroundColor: COLORS[0], barPercentage: 1, categoryPercentage: 1 }],
-  };
+  const overlay = showExpected && hist.expected !== undefined;
+  const expectedLabel = `Expected (${hist.expected_model === 'normal_approximation' ? 'normal approximation' : 'exact'})`
+    + (hist.expected_note ? ` - ${hist.expected_note}` : '');
+  const datasets: unknown[] = [
+    { label: 'Packets', data: hist.bins, backgroundColor: COLORS[0], barPercentage: 1, categoryPercentage: 1 },
+  ];
+  if (overlay) {
+    datasets.push({
+      type: 'line', label: expectedLabel, data: hist.expected, borderColor: COLORS[1], backgroundColor: COLORS[1], borderWidth: 2,
+    });
+  }
+  // The mixed bar + line dataset list is outside what the `Bar` typings allow.
+  const data = { labels, datasets } as unknown as ChartData<'bar'>;
+  const options = {
+    ...chartOptions,
+    scales: { ...chartOptions.scales, y: { type: logScale ? 'logarithmic' : 'linear' } },
+    plugins: { legend: { display: overlay } },
+  } as ChartOptions<'bar'>;
   return (
     <>
       <h3 className="h6 mt-3">Delay histogram</h3>
+      {controls}
       <ChartBox label={`Delay histogram of direction ${dir}`}>
-        <Bar data={data} options={{ ...chartOptions, plugins: { legend: { display: false } } }} />
+        <Bar data={data} options={options} />
       </ChartBox>
       <small className="text-body-secondary">
         Underflow: {hist.underflow} &middot; Overflow: {hist.overflow}
       </small>
+      {' '}
+      {hist.percentiles && <Percentiles p={hist.percentiles} />}
     </>
   );
 }

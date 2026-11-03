@@ -3,6 +3,7 @@
 //! reads sysfs/procfs for interface discovery and tuning hints.
 
 pub mod api;
+pub mod cdf;
 pub mod discovery;
 pub mod dto;
 pub mod eal;

@@ -10,9 +10,14 @@ vi.mock('../api/client', async () => (await import('./mockApi')).clientMock());
 // Chart.js needs a canvas; the stubs expose the chart data as JSON so tests can inspect it.
 //   histogram = <Bar data=...>   -> data-testid="chart-bar"
 //   rate/drop charts = <Line data=...> -> data-testid="chart-line"
+// Both also expose their chart options as JSON in `data-options` (functions are dropped by JSON.stringify).
 vi.mock('react-chartjs-2', () => {
-  const stub = (testid: string) => (props: { data?: unknown }) =>
-    React.createElement('div', { 'data-testid': testid, 'data-chart': JSON.stringify(props.data ?? null) });
+  const stub = (testid: string) => (props: { data?: unknown; options?: unknown }) =>
+    React.createElement('div', {
+      'data-testid': testid,
+      'data-chart': JSON.stringify(props.data ?? null),
+      'data-options': JSON.stringify(props.options ?? null),
+    });
   return { Bar: stub('chart-bar'), Line: stub('chart-line') };
 });
 

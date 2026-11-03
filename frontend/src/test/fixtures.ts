@@ -1,7 +1,7 @@
 // Fixture builders for the API types. Deliberately distinct values so tests can tell fields apart.
 import type {
-  ConfigDto, Counters, DirectionPlan, DirectionStats, EmulationState, EmulationView, Hint, HistogramView,
-  Interface, Link, OnlineView, PortStats, Settings, StatsView,
+  ConfigDto, Counters, DirectionPlan, DirectionStats, EmulationState, EmulationView, ExportDocument, Hint,
+  HistogramView, Interface, Link, OnlineView, PortStats, Preset, Settings, StatsView,
 } from '../api/types';
 
 export function online(over: Partial<OnlineView> = {}): OnlineView {
@@ -39,6 +39,38 @@ export function config2(): ConfigDto {
     seed: 42,
     histogram: { bins: 64, lo_ns: 100, hi_ns: 9000 },
     delay_stats: false,
+  };
+}
+
+/** Third config, different from `config()` and `config2()` in every field (presets). */
+export function config3(): ConfigDto {
+  return {
+    buffer_capacity: 321,
+    reordering: true,
+    delayer: {
+      distribution: 'LogNormalDistribution', mean_ns: 7777, std_ns: 777,
+      activate_correlation: false, half_life_period_ns: 555,
+    },
+    limiter: { mode: 'Spacer', activate: true, rate_bps: 5000000000, limit_bit: 64000 },
+    loss_model: { type: 'Random', p: 0.25 },
+    seed: 7,
+    histogram: { bins: 32, lo_ns: 1000, hi_ns: 50000 },
+    delay_stats: true,
+  };
+}
+
+export function preset(over: Partial<Preset> = {}): Preset {
+  return { id: 1, name: 'wan', description: 'Typical WAN', config: config3(), ...over };
+}
+
+export function exportDoc(over: Partial<ExportDocument> = {}): ExportDocument {
+  return {
+    format: 'dpds-controller-export',
+    version: 1,
+    settings: settings(),
+    links: [{ name: 'a-b', ports: ['0000:65:00.0', '0000:65:00.1'], configs: [config(), config2()], workers: null }],
+    presets: [{ name: 'wan', description: 'Typical WAN', config: config3() }],
+    ...over,
   };
 }
 
@@ -143,10 +175,20 @@ export function stats(directions: DirectionStats[], over: Partial<StatsView> = {
   return { directions, ports: [], age_ms: 120, stale: false, ...over };
 }
 
-/** Histogram with a deliberately non-256 bin count (5). */
+/**
+ * Histogram with a deliberately non-256 bin count (5). Since v8 it carries the K3 extras: percentiles (all distinct,
+ * none clamped), an `expected` curve (exact model, no limiter note) and the window fields (since start).
+ */
 export function histogram(dir: number, over: Partial<HistogramView> = {}): HistogramView {
   return {
     dir, lo_ns: 900000, bin_ns: 100000, bins: [1, 10, 100, 40, 2 + dir], underflow: 3, overflow: 7,
-    edges_ns: [900000, 1000000, 1100000, 1200000, 1300000, 1400000], ...over,
+    edges_ns: [900000, 1000000, 1100000, 1200000, 1300000, 1400000],
+    window_s: 0, span_ms: 5000, count: 163 + dir,
+    percentiles: {
+      p50: 1050000, p90: 1150000, p99: 1250000, p999: 1290000,
+      p50_clamped: null, p90_clamped: null, p99_clamped: null, p999_clamped: null,
+    },
+    expected: [2, 12.5, 90.25, 45, 5.5], expected_underflow: 2.5, expected_overflow: 6.5, expected_model: 'exact',
+    ...over,
   };
 }

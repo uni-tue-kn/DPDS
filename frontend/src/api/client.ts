@@ -3,7 +3,8 @@
 // failure rejects with the plain fetch error. Every non-GET request carries `Content-Type: application/json`
 // (the controller answers 415 otherwise), also the body-less start/stop/delete.
 import type {
-  EmulationView, Hint, HistogramView, Interface, Link, LinkInput, OnlineView, Settings, StatsView,
+  EmulationView, ExportDocument, Hint, HistogramView, ImportSummary, Interface, Link, LinkInput, OnlineView, Preset,
+  PresetInput, Settings, StatsView,
 } from './types';
 
 export class ApiError extends Error {
@@ -51,4 +52,16 @@ export const getEmulation = () => request<EmulationView>('GET', '/emulation');
 export const startEmulation = () => request<EmulationView>('POST', '/emulation/start');
 export const stopEmulation = () => request<EmulationView>('POST', '/emulation/stop');
 export const getStats = () => request<StatsView>('GET', '/stats');
-export const getDelayHistogram = (dir: number) => request<HistogramView>('GET', `/stats/${dir}/delay_histogram`);
+/** `windowS` 10 | 60 | 300 = only the last n seconds; absent = since start. */
+export const getDelayHistogram = (dir: number, windowS?: number) => request<HistogramView>(
+  'GET',
+  `/stats/${dir}/delay_histogram${windowS ? `?window_s=${windowS}` : ''}`,
+);
+export const getPresets = () => request<Preset[]>('GET', '/presets');
+export const getPreset = (id: number) => request<Preset>('GET', `/presets/${id}`);
+export const createPreset = (input: PresetInput) => request<Preset>('POST', '/presets', input);
+export const updatePreset = (id: number, input: PresetInput) => request<Preset>('PUT', `/presets/${id}`, input);
+export const deletePreset = (id: number) => request<void>('DELETE', `/presets/${id}`);
+export const exportSetup = () => request<ExportDocument>('GET', '/export');
+/** Replaces all links, presets and settings (the controller refuses unless the emulation is stopped). */
+export const importSetup = (doc: ExportDocument) => request<ImportSummary>('POST', '/import?mode=replace', doc);

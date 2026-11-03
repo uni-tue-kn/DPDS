@@ -4,6 +4,9 @@ use serde::Serialize;
 use serde_json::Value;
 use utoipa::ToSchema;
 
+use crate::cdf::DelayModel;
+use crate::dto::ConfigDto;
+
 /// One poll of the telemetry socket, kept as the raw replies.
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
@@ -102,6 +105,37 @@ pub struct StatsView {
     pub stale: bool,
 }
 
+/// Where a clamped percentile lies: below or above the histogram range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Clamped {
+    Underflow,
+    Overflow,
+}
+
+/// Percentiles of the returned counts in ns (linear interpolation inside the bin).
+/// A percentile in the underflow or overflow is the respective range edge and its
+/// `*_clamped` field says which; all are null without samples.
+#[derive(Debug, Clone, Default, Serialize, ToSchema)]
+pub struct Percentiles {
+    pub p50: Option<f64>,
+    pub p50_clamped: Option<Clamped>,
+    pub p90: Option<f64>,
+    pub p90_clamped: Option<Clamped>,
+    pub p99: Option<f64>,
+    pub p99_clamped: Option<Clamped>,
+    pub p999: Option<f64>,
+    pub p999_clamped: Option<Clamped>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ExpectedModel {
+    Exact,
+    /// Correlated delays: the stationary distribution is approximated as Normal(mean, std).
+    NormalApproximation,
+}
+
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct HistogramView {
     pub dir: u32,
@@ -116,6 +150,108 @@ pub struct HistogramView {
     pub age_ms: u64,
     /// The last poll(s) failed.
     pub stale: bool,
+    /// The requested window in seconds; 0 = since start.
+    pub window_s: u32,
+    /// Time the counts cover in milliseconds (the run's age for "since start").
+    pub span_ms: u64,
+    /// Samples including underflow and overflow.
+    pub count: u64,
+    pub percentiles: Percentiles,
+    /// Expected count per bin for `count` samples under the configured delay distribution.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected: Option<Vec<f64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected_underflow: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected_overflow: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected_model: Option<ExpectedModel>,
+    /// `excludes limiter queueing delay` when the direction's limiter is active.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected_note: Option<String>,
+}
+
+impl HistogramView {
+    /// `self - base`, the samples recorded between the two snapshots; `false`
+    /// (and `self` unchanged) if the geometry differs or a counter went backwards.
+    pub fn subtract(&mut self, base: &HistogramView) -> bool {
+        let same = self.bins.len() == base.bins.len()
+            && self.lo_ns == base.lo_ns
+            && self.bin_ns == base.bin_ns;
+        let ok = same
+            && self.underflow >= base.underflow
+            && self.overflow >= base.overflow
+            && self.bins.iter().zip(&base.bins).all(|(c, b)| c >= b);
+        if ok {
+            for (c, b) in self.bins.iter_mut().zip(&base.bins) {
+                *c -= b;
+            }
+            self.underflow -= base.underflow;
+            self.overflow -= base.overflow;
+        }
+        ok
+    }
+
+    /// Fills `count` and `percentiles` from the counts.
+    pub fn summarise(&mut self) {
+        self.count = self.underflow + self.overflow + self.bins.iter().sum::<u64>();
+        let (p50, p50_clamped) = self.percentile(0.5);
+        let (p90, p90_clamped) = self.percentile(0.9);
+        let (p99, p99_clamped) = self.percentile(0.99);
+        let (p999, p999_clamped) = self.percentile(0.999);
+        self.percentiles = Percentiles {
+            p50,
+            p50_clamped,
+            p90,
+            p90_clamped,
+            p99,
+            p99_clamped,
+            p999,
+            p999_clamped,
+        };
+    }
+
+    /// Rank `q * count` over underflow, bin 0 .. n-1, overflow: the percentile lies
+    /// in the first bin whose cumulative count reaches the rank.
+    fn percentile(&self, q: f64) -> (Option<f64>, Option<Clamped>) {
+        if self.count == 0 {
+            return (None, None);
+        }
+        let rank = q * self.count as f64;
+        if rank <= self.underflow as f64 {
+            return (Some(self.lo_ns), Some(Clamped::Underflow));
+        }
+        let mut before = self.underflow as f64;
+        for (i, &c) in self.bins.iter().enumerate() {
+            let c = c as f64;
+            if c > 0.0 && rank <= before + c {
+                let value = self.lo_ns + (i as f64 + (rank - before) / c) * self.bin_ns;
+                return (Some(value), None);
+            }
+            before += c;
+        }
+        let upper = self.lo_ns + self.bins.len() as f64 * self.bin_ns;
+        (Some(upper), Some(Clamped::Overflow))
+    }
+
+    /// Fills the `expected*` fields from the direction's delay distribution.
+    pub fn add_expected(&mut self, config: &ConfigDto) {
+        let (model, exact) = DelayModel::from_delayer(&config.delayer);
+        let (bins, under, over) =
+            model.expected_counts(self.lo_ns, self.bin_ns, self.bins.len(), self.count);
+        self.expected = Some(bins);
+        self.expected_underflow = Some(under);
+        self.expected_overflow = Some(over);
+        self.expected_model = Some(if exact {
+            ExpectedModel::Exact
+        } else {
+            ExpectedModel::NormalApproximation
+        });
+        self.expected_note = config
+            .limiter
+            .activate
+            .then(|| "excludes limiter queueing delay".to_string());
+    }
 }
 
 /// Telemetry sends counters as integers and averages as decimal strings.
@@ -289,5 +425,19 @@ pub fn delay_histogram(cur: &Snapshot, dir: usize) -> Option<HistogramView> {
         edges_ns,
         age_ms: 0,
         stale: false,
+        window_s: 0,
+        span_ms: 0,
+        count: 0,
+        percentiles: Percentiles::default(),
+        expected: None,
+        expected_underflow: None,
+        expected_overflow: None,
+        expected_model: None,
+        expected_note: None,
     })
+}
+
+/// Milliseconds the direction has been running (`uptime_ns` of its stats), if reported.
+pub fn uptime_ms(cur: &Snapshot, dir: usize) -> Option<u64> {
+    Some(uint(cur.dirs.get(dir)?, "uptime_ns")? / 1_000_000)
 }

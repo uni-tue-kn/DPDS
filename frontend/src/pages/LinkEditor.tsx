@@ -7,9 +7,10 @@ import ErrorAlert from '../components/ErrorAlert';
 import { directionLabel, errorMessage } from '../common/format';
 import { useLoad } from '../common/useLoad';
 import DirectionForm from './DirectionForm';
+import SavePresetModal from './SavePresetModal';
 import { configToDto, configToForm, defaultConfigForm, parseWorkers, portError } from './linkForm';
 import type { ConfigForm } from './linkForm';
-import type { Interface, Link } from '../api/types';
+import type { Interface, Link, Preset } from '../api/types';
 
 function optionLabel(i: Interface): string {
   const base = i.netdev ? `${i.pci} (${i.netdev})` : i.pci;
@@ -45,7 +46,9 @@ function PortField({ name, id, value, typed, interfaces, onChange, onType }: {
   );
 }
 
-function Editor({ id, link, interfaces }: { id?: number; link?: Link; interfaces: Interface[] }) {
+function Editor({ id, link, interfaces, presets, onPresetSaved }: {
+  id?: number; link?: Link; interfaces: Interface[]; presets: Preset[]; onPresetSaved: () => void;
+}) {
   const navigate = useNavigate();
   const [name, setName] = useState(link?.name ?? '');
   const [portCount, setPortCount] = useState(link ? Math.min(link.ports.length, 2) : 2);
@@ -58,6 +61,9 @@ function Editor({ id, link, interfaces }: { id?: number; link?: Link; interfaces
   const [workers, setWorkers] = useState(link?.workers?.join(', ') ?? '');
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
+  /** Direction whose "Save as preset" dialog is open. */
+  const [presetDir, setPresetDir] = useState<number>();
+  const [presetSaved, setPresetSaved] = useState<string>();
 
   // A typed value wins over the picker.
   const effective = ports.map((p, i) => typed[i].trim() || p);
@@ -105,48 +111,66 @@ function Editor({ id, link, interfaces }: { id?: number; link?: Link; interfaces
     : directionLabel(d, effective[d], effective[1 - d]));
 
   return (
-    <Form onSubmit={submit} noValidate>
-      <ErrorAlert message={error} />
-      <Card className="mb-3">
-        <Card.Body>
-          <Row>
-            <Form.Group as={Col} md={4} className="mb-3" controlId="link-name">
-              <Form.Label>Name</Form.Label>
-              <Form.Control type="text" value={name} onChange={(e) => setName(e.target.value)} />
-            </Form.Group>
-            <Form.Group as={Col} md={4} className="mb-3" controlId="port-count">
-              <Form.Label>Number of ports</Form.Label>
-              <Form.Select value={String(portCount)} onChange={(e) => setPortCount(Number(e.target.value))}>
-                <option value="1">1 (loopback)</option>
-                <option value="2">2</option>
-              </Form.Select>
-            </Form.Group>
-            <Form.Group as={Col} md={4} className="mb-3" controlId="link-workers">
-              <Form.Label>Worker lcores</Form.Label>
-              <Form.Control type="text" value={workers} onChange={(e) => setWorkers(e.target.value)} />
-              <Form.Text>Comma separated, one per direction. Empty: automatic.</Form.Text>
-            </Form.Group>
-          </Row>
-          <Row>
-            <PortField
-              name="Port A" id="port-a" value={ports[0]} typed={typed[0]} interfaces={interfaces}
-              onChange={(v) => setPort(0, v)} onType={(v) => setType(0, v)}
-            />
-            {portCount === 2 && (
+    <>
+      <Form onSubmit={submit} noValidate>
+        <ErrorAlert message={error} />
+        {presetSaved && <div role="status" className="alert alert-success">{presetSaved}</div>}
+        <Card className="mb-3">
+          <Card.Body>
+            <Row>
+              <Form.Group as={Col} md={4} className="mb-3" controlId="link-name">
+                <Form.Label>Name</Form.Label>
+                <Form.Control type="text" value={name} onChange={(e) => setName(e.target.value)} />
+              </Form.Group>
+              <Form.Group as={Col} md={4} className="mb-3" controlId="port-count">
+                <Form.Label>Number of ports</Form.Label>
+                <Form.Select value={String(portCount)} onChange={(e) => setPortCount(Number(e.target.value))}>
+                  <option value="1">1 (loopback)</option>
+                  <option value="2">2</option>
+                </Form.Select>
+              </Form.Group>
+              <Form.Group as={Col} md={4} className="mb-3" controlId="link-workers">
+                <Form.Label>Worker lcores</Form.Label>
+                <Form.Control type="text" value={workers} onChange={(e) => setWorkers(e.target.value)} />
+                <Form.Text>Comma separated, one per direction. Empty: automatic.</Form.Text>
+              </Form.Group>
+            </Row>
+            <Row>
               <PortField
-                name="Port B" id="port-b" value={ports[1]} typed={typed[1]} interfaces={interfaces}
-                onChange={(v) => setPort(1, v)} onType={(v) => setType(1, v)}
+                name="Port A" id="port-a" value={ports[0]} typed={typed[0]} interfaces={interfaces}
+                onChange={(v) => setPort(0, v)} onType={(v) => setType(0, v)}
               />
-            )}
-          </Row>
-        </Card.Body>
-      </Card>
-      {configs.slice(0, portCount).map((c, d) => (
-        <DirectionForm key={d} index={d} title={dirTitle(d)} value={c} onChange={(next) => setConfig(d, next)} />
-      ))}
-      <Button type="submit" variant="primary" className="me-2" disabled={saving}>Save</Button>
-      <RouterLink to="/links" className="btn btn-outline-secondary">Cancel</RouterLink>
-    </Form>
+              {portCount === 2 && (
+                <PortField
+                  name="Port B" id="port-b" value={ports[1]} typed={typed[1]} interfaces={interfaces}
+                  onChange={(v) => setPort(1, v)} onType={(v) => setType(1, v)}
+                />
+              )}
+            </Row>
+          </Card.Body>
+        </Card>
+        {configs.slice(0, portCount).map((c, d) => (
+          <DirectionForm
+            key={d} index={d} title={dirTitle(d)} value={c} onChange={(next) => setConfig(d, next)}
+            presets={presets} onSaveAsPreset={() => { setPresetSaved(undefined); setPresetDir(d); }}
+          />
+        ))}
+        <Button type="submit" variant="primary" className="me-2" disabled={saving}>Save</Button>
+        <RouterLink to="/links" className="btn btn-outline-secondary">Cancel</RouterLink>
+      </Form>
+      {/* Outside the <Form>: React submit events bubble through portals and would submit the link. */}
+      {presetDir !== undefined && (
+        <SavePresetModal
+          getConfig={() => configToDto(configs[presetDir], presetDir)}
+          onClose={() => setPresetDir(undefined)}
+          onSaved={(p) => {
+            setPresetDir(undefined);
+            setPresetSaved(`Preset "${p.name}" saved.`);
+            onPresetSaved();
+          }}
+        />
+      )}
+    </>
   );
 }
 
@@ -154,6 +178,8 @@ export default function LinkEditor() {
   const { id } = useParams();
   const linkId = id === undefined ? undefined : Number(id);
   const interfaces = useLoad(api.getInterfaces);
+  // The editor works without presets: a failed load just leaves the "Apply preset" selects empty.
+  const presets = useLoad(api.getPresets);
   const link = useLoad(() => (linkId === undefined ? Promise.resolve(undefined) : api.getLink(linkId)));
   const ready = interfaces.data !== undefined && (linkId === undefined || link.data !== undefined);
 
@@ -161,7 +187,12 @@ export default function LinkEditor() {
     <>
       <h1 className="mb-3">{linkId === undefined ? 'New link' : 'Edit link'}</h1>
       <ErrorAlert message={interfaces.error ?? link.error} />
-      {ready && <Editor key={linkId ?? 'new'} id={linkId} link={link.data} interfaces={interfaces.data ?? []} />}
+      {ready && (
+        <Editor
+          key={linkId ?? 'new'} id={linkId} link={link.data} interfaces={interfaces.data ?? []}
+          presets={presets.data ?? []} onPresetSaved={presets.reload}
+        />
+      )}
     </>
   );
 }

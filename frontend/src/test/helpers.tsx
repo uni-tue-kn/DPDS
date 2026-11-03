@@ -92,6 +92,73 @@
 // - Buttons "Save" and link "Cancel"; save -> `createLink(input)` / `updateLink(id, input)` then /links.
 //   API error -> `role="alert"` with the message, stays on the page, form values kept.
 //
+// ## v8 (spec8-polish U1-U4): presets, setup export/import, histogram extras
+// ### API types (add to src/api/types.ts; names are the tester's choice, the JSON names are K1-K3 of spec8)
+//   interface Preset { id: number; name: string; description?: string | null; config: ConfigDto }
+//   type PresetInput = Omit<Preset, 'id'>;
+//   interface ExportDocument { format: 'dpds-controller-export'; version: 1; settings: Settings;
+//     links: LinkInput[]; presets: PresetInput[] }          // no ids anywhere
+//   interface ImportSummary { links: number; presets: number }
+//   HistogramView gains (all optional so an old controller still works; the UI must tolerate their absence):
+//     window_s?: number;  span_ms?: number;  count?: number;           // count incl. under/overflow
+//     percentiles?: { p50, p90, p99, p999: number | null;             // ns, null = no samples
+//                     p50_clamped?, p90_clamped?, p99_clamped?, p999_clamped?: 'underflow' | 'overflow' | null };
+//       (spec K3 says only "a flag p99_clamped style field per percentile": the tester fixed it as
+//        `<name>_clamped` INSIDE `percentiles`, absent/null = not clamped; the Rust side must emit the same.)
+//     expected?: number[];  expected_underflow?: number;  expected_overflow?: number;
+//     expected_model?: 'exact' | 'normal_approximation';  expected_note?: string;   // note only when limiter active
+// ### Client (src/api/client.ts; every non-GET carries Content-Type: application/json, see its header)
+//   getPresets(): Preset[]                         GET    /api/presets
+//   getPreset(id): Preset                          GET    /api/presets/{id}
+//   createPreset(input: PresetInput): Preset       POST   /api/presets
+//   updatePreset(id, input: PresetInput): Preset   PUT    /api/presets/{id}
+//   deletePreset(id): void                         DELETE /api/presets/{id}   (204)
+//   exportSetup(): ExportDocument                  GET    /api/export
+//   importSetup(doc: ExportDocument): ImportSummary  POST /api/import?mode=replace   (body = the document untouched)
+//   getDelayHistogram(dir, windowS?): without windowS -> /api/stats/{dir}/delay_histogram (no query string);
+//     with 10 | 60 | 300 -> ...?window_s=<n>. The UI calls getDelayHistogram(dir) (ONE argument) for "Since start"
+//     and getDelayHistogram(dir, n) for a window, so the pre-v8 `toHaveBeenCalledWith(dir)` tests keep passing.
+// ### Presets page (presets.test.tsx)
+//   Sidebar: link "Presets" (/presets) inside the main navigation, placed AFTER the five existing links (the
+//   layout test pins the first five); heading h1 "Presets"; aria-current on /presets.
+//   List: table, one row per preset with name and description; empty -> text /no presets/i; link "New preset"
+//   (-> /presets/new); per row link "Edit <name>" (-> /presets/<id>) and button "Delete <name>" -> modal
+//   role=dialog with "Confirm delete" / "Cancel"; only Confirm calls deletePreset(id) and reloads. API errors -> role=alert.
+//   Editor (routes /presets/new "New preset", /presets/:id "Edit preset"): text inputs "Name" and "Description",
+//   then exactly ONE per-direction config form (same labels as the link editor: "Mean delay (ns)", ...), buttons
+//   "Save" / link "Cancel". Save -> createPreset / updatePreset(id) with {name, description, config} (config built by
+//   the same validation as the link editor; an empty description is sent as null/absent) then navigate to /presets.
+//   Empty name or an invalid config -> role=alert, no request. API error -> role=alert with the message, stays, values kept.
+// ### Link editor additions (presetsInEditor.test.tsx)
+//   Inside each direction's fieldset: a select labelled "Apply preset" (first option = placeholder, then one option per
+//   preset whose text is EXACTLY the preset name; none besides the placeholder when there are no presets). Choosing
+//   a preset copies ALL its fields into that direction's form only. A failing getPresets must not break the editor.
+//   Inside each direction's fieldset: a button "Save as preset" -> modal role=dialog with inputs "Preset name" and
+//   "Description" and buttons "Save preset" / "Cancel"; Save -> createPreset({name, description, config}) with the
+//   CURRENT form values of that direction (validated like Save; invalid -> alert, no request); success closes the
+//   dialog, role=status /saved/i, and the new preset shows up in the "Apply preset" selects; API error (409...) ->
+//   role=alert INSIDE the dialog, dialog stays open. Empty name -> no request.
+// ### Settings additions (settingsSetup.test.tsx)
+//   Button "Export setup": exportSetup() -> Blob (JSON) -> URL.createObjectURL -> an <a download> whose `.click()`
+//   is called (the test spies on HTMLAnchorElement.prototype.click; dispatching a click event instead would not be
+//   seen) -> URL.revokeObjectURL. Filename `dpds-setup-YYYY-MM-DD.json`. Error -> role=alert, no download.
+//   File input labelled "Import setup file" (accept .json). The file is read with FileReader (jsdom has no Blob.text()).
+//   Valid JSON -> modal role=dialog warning (text mentions "replace", "links", "settings" and "presets") with buttons
+//   "Confirm import" / "Cancel"; Confirm -> importSetup(parsedDocument) once; Cancel -> nothing. Success -> role=status
+//   with "<n> links" and "<m> presets" (counts from the reply), settings form reloaded. 400/409 -> the API message in a
+//   role=alert. Not JSON -> role=alert mentioning JSON, no dialog, no request. The input is enabled only while the
+//   emulation is `stopped` (getEmulation); otherwise it is disabled and `data-testid="import-hint"` (text /stop/i) shows.
+// ### Dashboard histogram (histogramExtras.test.tsx), inside each direction card with a histogram
+//   select "Histogram window" (options "Since start" | "10 s" | "60 s" | "300 s", values "0"|"10"|"60"|"300"); a change
+//   refetches immediately and every later poll of that direction keeps the window; other directions are unaffected.
+//   `data-testid="percentiles"` holding <dt>/<dd> pairs "p50", "p90", "p99", "p99.9" (dd = formatDuration, "n/a" for null);
+//   a clamped dd carries `data-clamped="underflow"|"overflow"` and shows "≤" (underflow) / "≥" (overflow).
+//   Checkbox "Log scale" (off by default): chart options scales.y.type is 'logarithmic' when on, 'linear'/absent when off.
+//   Checkbox "Show expected distribution" (on by default, only meaningful when `expected` is present): datasets[1] of the
+//   Bar data = {type: 'line', data: expected, label: 'Expected (<exact|normal approximation>)' + ' - <note>' if any};
+//   the legend (options.plugins.legend.display) is shown while the overlay is. Unchecked / no `expected` -> one dataset only.
+//   setup.ts now also exposes the chart `options` as `data-options` JSON next to `data-chart`.
+//   components/charts.ts must register LineController (mixed bar+line chart).
 // ## Settings (v7 F5): EAL extra arguments are a list, see the header of settings.test.tsx.
 // ## Interfaces / Host hints / Settings: see their test files.
 // ## Static packaging checks (Dockerfile, nginx.conf, docker-compose.yml, F6 leftovers): src/static.test.ts.

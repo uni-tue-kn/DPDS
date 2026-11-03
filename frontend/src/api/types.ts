@@ -199,6 +199,21 @@ export interface StatsView {
   stale: boolean;
 }
 
+export type Clamped = 'underflow' | 'overflow' | null;
+
+/** Percentiles in ns over the returned counts; null = no samples; `*_clamped` = the value is a range edge. */
+export interface Percentiles {
+  p50: number | null;
+  p90: number | null;
+  p99: number | null;
+  p999: number | null;
+  p50_clamped?: Clamped;
+  p90_clamped?: Clamped;
+  p99_clamped?: Clamped;
+  p999_clamped?: Clamped;
+}
+
+/** The fields after `edges_ns` are optional so an older controller still works. */
 export interface HistogramView {
   dir: number;
   lo_ns: number;
@@ -209,6 +224,41 @@ export interface HistogramView {
   overflow: number;
   /** bins.length + 1 edges. */
   edges_ns: number[];
+  /** Requested window in seconds (0 = since start) and the span the counts actually cover. */
+  window_s?: number;
+  span_ms?: number;
+  /** Samples including under/overflow. */
+  count?: number;
+  percentiles?: Percentiles;
+  /** Expected count per bin under the configured delay distribution. */
+  expected?: number[];
+  expected_underflow?: number;
+  expected_overflow?: number;
+  expected_model?: 'exact' | 'normal_approximation';
+  expected_note?: string;
+}
+
+export interface Preset {
+  id: number;
+  name: string;
+  description?: string | null;
+  config: ConfigDto;
+}
+
+export type PresetInput = Omit<Preset, 'id'>;
+
+/** `GET /api/export`: no ids, no runtime state. */
+export interface ExportDocument {
+  format: 'dpds-controller-export';
+  version: 1;
+  settings: Settings;
+  links: LinkInput[];
+  presets: PresetInput[];
+}
+
+export interface ImportSummary {
+  links: number;
+  presets: number;
 }
 
 export interface ErrorBody {
