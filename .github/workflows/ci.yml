@@ -51,13 +51,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # libclang-dev: bindgen. libpcap-dev: libdpdk.pc requires libpcap, and the net_pcap vdev of
+      # libclang-dev: bindgen. libnuma-dev: DPDK refuses to build for several NUMA nodes without
+      # it (platform=generic). libpcap-dev: libdpdk.pc requires libpcap, and the net_pcap vdev of
       # the e2e tests links it. The rest is only needed to build DPDK on a cache miss.
       - name: Install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libclang-dev libpcap-dev pkg-config meson ninja-build python3-pyelftools
+            libclang-dev libnuma-dev libpcap-dev pkg-config meson ninja-build python3-pyelftools
 
       # The Ubuntu 24.04 package is DPDK 23.11 (25.11 on 26.04); dpdk-sys needs >= 25.11 and the
       # project is developed against 26.07, so DPDK is built from the release tarball. The install
