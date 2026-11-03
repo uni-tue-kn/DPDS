@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Navigate, NavLink, Route, Routes } from 'react-router-dom';
+import { Navigate, NavLink, Route, Routes } from 'react-router';
 import * as api from './api/client';
 import Dashboard from './pages/Dashboard';
 import Hints from './pages/Hints';

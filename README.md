@@ -220,7 +220,7 @@ EAL and the process exits with status 0.
   and for real traffic a DPDK-capable NIC (tested on Mellanox ConnectX)
 - **Rust** (stable toolchain)
 - **clang and lld, with the same LLVM major version as `rustc`** (see [Building](#building))
-- **Node 18.18 or newer and npm**, plus network access to the npm registry, to build the web
+- **Node 22.22 or newer and npm**, plus network access to the npm registry, to build the web
   frontend (only for the controller; see [Controller and web frontend](#️-controller-and-web-frontend))
 - Linux; hugepages for real NICs (not needed for the virtual devices below)
 
@@ -645,7 +645,7 @@ Docker and no separate web server.
 
 `dpds.sh` builds and installs both. It needs Rust (stable works; `--nightly` only selects the
 `nightly` git branch), clang and `ld.lld` of the same LLVM major version as `rustc`, DPDK at least 26.07
-(`pkg-config --atleast-version=26.07 libdpdk`), and Node at least 18.18 (the `engines.node` of
+(`pkg-config --atleast-version=26.07 libdpdk`), and Node at least 22.22 (the `engines.node` of
 `frontend/package.json`) with npm. `check`, `install` and `update` verify all of them first, list every
 missing or too old tool at once and never install anything. `update` refuses a working tree with
 uncommitted changes, warns when it switches from another branch, and pulls with `--ff-only`.

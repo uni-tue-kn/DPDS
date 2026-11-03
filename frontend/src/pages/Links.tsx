@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Button, Modal, Table } from 'react-bootstrap';
-import { Link as RouterLink } from 'react-router-dom';
+import { Link as RouterLink } from 'react-router';
 import * as api from '../api/client';
 import ErrorAlert from '../components/ErrorAlert';
 import { errorMessage, formatBps, formatDuration, formatPct, linkLabel } from '../common/format';

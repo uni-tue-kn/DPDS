@@ -25,7 +25,7 @@ DPDS_CONTROLLER=http://10.0.0.5:9000 npm run dev
 
 Use `scheme://host:port` without a path. The controller checks the `Host` header against DNS rebinding, so a
 host name other than an IP address, `localhost` or the machine's host name must be allowed on the controller with
-`--allowed-host` (`DPDS_ALLOWED_HOST`). Node >= 18.18 works; CI builds with Node 22.
+`--allowed-host` (`DPDS_ALLOWED_HOST`). Node >= 22.22 is required (react-router 8 needs it); CI builds with Node 22.
 
 ## Build
 

@@ -59,7 +59,7 @@
 // - Export/import: the export document has `version: 2`; the UI passes documents through untouched (also an old
 //   `version: 1` one: the controller rejects it with 400 and the UI shows that message).
 
-// Toolchain: react-router-dom 6 (v7 needs Node >= 20), react-bootstrap + bootstrap 5, chart.js via
+// Toolchain: react-router 8, react-bootstrap + bootstrap 5, chart.js via
 // react-chartjs-2 (mocked in tests: histogram = `Bar`, rate/drop charts = `Line`), plain CSS (no sass).
 // The API module `src/api/client.ts` (see its header) is mocked globally; fixtures in `fixtures.ts`.
 //
@@ -213,7 +213,7 @@
 import { render, act, screen } from '@testing-library/react';
 import type { UserEvent } from '@testing-library/user-event';
 import { vi } from 'vitest';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter } from 'react-router';
 import App from '../App';
 
 export function renderApp(path = '/') {
