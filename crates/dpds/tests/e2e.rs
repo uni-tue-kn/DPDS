@@ -217,7 +217,8 @@ fn config_full(delay_ns: u64, loss: f64, buffer_capacity: usize, reordering: boo
         "mean_ns": {delay_ns}.0,
         "std_ns": 0.0,
         "activate_correlation": false,
-        "half_life_period_ns": 1000000.0
+        "half_life_period_ns": 1000000.0,
+        "initialization_rate_pps": 15000000.0
     }},
     "limiter": {{
         "mode": "Spacer",
@@ -1928,6 +1929,33 @@ fn expect_failure(env: &Env) -> String {
     expect_failure_args(env.args(), env.xdg.path())
 }
 
+/// The lcore-count error counts LINKS (for `--links` and for the `--config*`
+/// shorthand, one link per port): "<n> link(s) need <n+1> lcores (main + one
+/// worker per link), e.g. -l 0-<n>", plus the lcore count found. The grammatical
+/// number of the head is free ("1 link needs" / "1 link(s) need").
+fn assert_lcore_requirement(out: &str, links: usize, found: usize) {
+    let lcores = links + 1;
+    let heads = [
+        format!("{links} link needs {lcores} lcores"),
+        format!("{links} links need {lcores} lcores"),
+        format!("{links} link(s) need {lcores} lcores"),
+    ];
+    assert!(
+        heads.iter().any(|h| out.contains(h)),
+        "the requirement counts {links} link(s)\n{out}"
+    );
+    let tail = format!("lcores (main + one worker per link), e.g. -l 0-{links}");
+    assert!(out.contains(&tail), "{tail:?} is named\n{out}");
+    assert!(
+        !out.contains(" port needs") && !out.contains(" ports need"),
+        "the requirement no longer counts ports\n{out}"
+    );
+    assert!(
+        out.contains(&found.to_string()),
+        "the lcore count found ({found}) is named\n{out}"
+    );
+}
+
 #[test]
 fn one_port_with_one_lcore_is_rejected_naming_the_requirement() {
     require_cpus(2);
@@ -1935,10 +1963,7 @@ fn one_port_with_one_lcore_is_rejected_naming_the_requirement() {
     let mut env = Env::with_lcores("0", &config_json(0, 0.0));
     env.vdevs.push("net_null0".into());
     let out = expect_failure(&env);
-    assert!(
-        out.contains("1 port needs 2 lcores, e.g. -l 0-1"),
-        "the requirement is named\n{out}"
-    );
+    assert_lcore_requirement(&out, 1, 1);
 }
 
 #[test]
@@ -1948,11 +1973,7 @@ fn one_port_with_three_lcores_is_rejected_there_is_one_worker_per_port() {
     let mut env = Env::with_lcores("0-2", &config_json(0, 0.0));
     env.vdevs.push("net_null0".into());
     let out = expect_failure(&env);
-    assert!(
-        out.contains("1 port needs 2 lcores, e.g. -l 0-1"),
-        "the requirement is named\n{out}"
-    );
-    assert!(out.contains('3'), "the lcore count found is named\n{out}");
+    assert_lcore_requirement(&out, 1, 3);
 }
 
 #[test]
@@ -1963,11 +1984,7 @@ fn two_ports_with_two_lcores_are_rejected_naming_the_requirement() {
     env.vdevs.push("net_null0".into());
     env.vdevs.push("net_null1".into());
     let out = expect_failure(&env);
-    assert!(
-        out.contains("2 ports need 3 lcores, e.g. -l 0-2"),
-        "the requirement is named\n{out}"
-    );
-    assert!(out.contains('2'), "the lcore count found is named\n{out}");
+    assert_lcore_requirement(&out, 2, 2);
 }
 
 #[test]
@@ -1978,11 +1995,7 @@ fn two_ports_with_four_lcores_are_rejected_too() {
     env.vdevs.push("net_null0".into());
     env.vdevs.push("net_null1".into());
     let out = expect_failure(&env);
-    assert!(
-        out.contains("2 ports need 3 lcores, e.g. -l 0-2"),
-        "the requirement is named\n{out}"
-    );
-    assert!(out.contains('4'), "the lcore count found is named\n{out}");
+    assert_lcore_requirement(&out, 2, 4);
 }
 
 #[test]
@@ -2069,6 +2082,60 @@ fn malformed_config_file_is_an_error_exit_not_a_crash() {
     let mut env = Env::new("{ definitely not json");
     env.vdevs.push("net_null0".into());
     expect_failure(&env);
+}
+
+// ── initialization_rate_pps: required in every config, validated at startup ──
+
+const RATE_LINE: &str = r#""initialization_rate_pps": 15000000.0"#;
+
+/// `config_json` without the rate (the field is required, no default).
+fn config_without_rate() -> String {
+    let cfg = config_json(0, 0.0);
+    assert!(cfg.contains(RATE_LINE), "the e2e config carries the rate");
+    let without = cfg.replace(&format!(",\n        {RATE_LINE}"), "");
+    assert!(
+        !without.contains("initialization_rate_pps"),
+        "test setup: rate removed"
+    );
+    without
+}
+
+#[test]
+fn a_config_without_initialization_rate_pps_fails_startup_naming_the_field() {
+    require_cpus(2);
+    let _g = serial();
+    let mut env = Env::new(&config_without_rate());
+    env.vdevs.push("net_null0".into());
+    let out = expect_failure(&env);
+    assert!(out.contains("initialization_rate_pps"), "{out}");
+}
+
+#[test]
+fn a_config_of_direction_1_without_initialization_rate_pps_fails_startup() {
+    require_cpus(3);
+    let _g = serial();
+    let mut env = Env::two_ports(&config_json(0, 0.0));
+    env.vdevs.push("net_null0".into());
+    env.vdevs.push("net_null1".into());
+    let bad = env.write_config("cfg1.json", &config_without_rate());
+    env.extra_app_args = vec!["--config1".into(), bad.display().to_string()];
+    let out = expect_failure(&env);
+    assert!(out.contains("initialization_rate_pps"), "{out}");
+}
+
+#[test]
+fn an_invalid_initialization_rate_fails_startup_naming_the_field() {
+    require_cpus(2);
+    let _g = serial();
+    for bad in ["0.0", "0.5", "-15000000.0"] {
+        let json =
+            config_json(0, 0.0).replace(RATE_LINE, &format!(r#""initialization_rate_pps": {bad}"#));
+        assert!(json.contains(bad), "test setup");
+        let mut env = Env::new(&json);
+        env.vdevs.push("net_null0".into());
+        let out = expect_failure(&env);
+        assert!(out.contains("initialization_rate_pps"), "rate {bad}\n{out}");
+    }
 }
 
 #[test]
@@ -2885,6 +2952,18 @@ fn a_port_used_only_as_egress_works_and_is_never_polled() {
         assert_eq!(s(&p, "dir0_tx_name"), "net_pcap1", "{p}");
         assert!(p.get("dir1_link").is_none(), "{p}");
         assert_eq!(p.as_object().unwrap().len(), 3 + 5 * 2 + 10, "{p}");
+        // The egress-only port still needs an RX pool for `Port::init`, so the
+        // link that transmits on it carries that port's applied RX ring too:
+        // capacity + rx_ring(ingress) + tx_ring(egress) + rx_ring(egress-only)
+        // + 768 + 64.
+        let (rx_port, tx_port) = (u(&p, "dir0_rx_port"), u(&p, "dir0_tx_port"));
+        let plain = 4096
+            + u(&p, &format!("port{rx_port}_rx_ring"))
+            + u(&p, &format!("port{tx_port}_tx_ring"))
+            + 832;
+        let pinned = plain + u(&p, &format!("port{tx_port}_rx_ring"));
+        assert!(pinned > plain, "the egress-only RX ring is not empty: {p}");
+        assert_eq!(u(&p, "dir0_pool_size"), pinned, "{p}");
         let st = run.query("/dpds/stats,0");
         assert_eq!(u(&st, "rx_pkts"), N as u64, "{st}");
         assert_eq!(u(&st, "tx_sent"), N as u64, "{st}");
@@ -3497,7 +3576,7 @@ fn links_with_the_wrong_lcore_count_names_the_requirement() {
     add_pcap_port(&mut env, 0, &frames(0, 1));
     add_pcap_port(&mut env, 1, &frames(1, 1));
     let out = expect_failure(&env);
-    assert!(out.contains("3 lcores, e.g. -l 0-2"), "{out}");
+    assert_lcore_requirement(&out, 2, 2);
 
     // a ring of three links needs `-l 0-3`; `-l 0-2` is too few
     let mut env = links_env(
@@ -3512,7 +3591,7 @@ fn links_with_the_wrong_lcore_count_names_the_requirement() {
         env.vdevs.push(format!("net_null{i}"));
     }
     let out = expect_failure(&env);
-    assert!(out.contains("4 lcores, e.g. -l 0-3"), "{out}");
+    assert_lcore_requirement(&out, 3, 3);
 
     // ... and too many is an error as well (a hairpin is one link)
     let mut env = links_env(
@@ -3526,7 +3605,7 @@ fn links_with_the_wrong_lcore_count_names_the_requirement() {
     );
     env.vdevs.push("net_null0".into());
     let out = expect_failure(&env);
-    assert!(out.contains("2 lcores, e.g. -l 0-1"), "{out}");
+    assert_lcore_requirement(&out, 1, 4);
 }
 
 #[test]
@@ -3658,6 +3737,23 @@ fn links_failure(links: &[String], null_ports: usize, lcores: &str) -> String {
         env.vdevs.push(format!("net_null{i}"));
     }
     expect_failure(&env)
+}
+
+#[test]
+fn a_link_config_without_initialization_rate_pps_is_a_clean_exit_naming_the_field() {
+    require_cpus(2);
+    let _g = serial();
+    let out = links_failure(
+        &[link_json(
+            "l",
+            "net_null0",
+            "net_null0",
+            &config_without_rate(),
+        )],
+        1,
+        "0-1",
+    );
+    assert!(out.contains("initialization_rate_pps"), "{out}");
 }
 
 #[test]
@@ -4048,6 +4144,55 @@ fn delay_stats_off_in_the_links_file_still_forwards_and_counts() {
     assert_clean_exit(run.wait_exit(), &run);
     assert!(read_pcap(&outs[1]) == frames(0, N[0]), "link 0");
     assert!(read_pcap(&outs[0]) == frames(1, N[1]), "link 1");
+}
+
+/// Chain a -> b -> c over net_null ports: port 0 is ingress-only, port 1 both,
+/// port 2 egress-only. Only the link that transmits on the egress-only port
+/// (b-to-c) has a pool above the plain formula, by that port's RX ring; the
+/// link a-to-b (egress port 1 has an ingress link) keeps the plain formula.
+#[cfg(feature = "telemetry")]
+#[test]
+fn the_pool_exceeds_the_plain_formula_only_for_the_link_into_an_egress_only_port() {
+    require_cpus(3);
+    let _g = serial();
+    let mut env = links_env(
+        "0-2",
+        &[
+            link_json(
+                "a-to-b",
+                "net_null0",
+                "net_null1",
+                &config_json_cap(0, 0.0, 1000),
+            ),
+            link_json(
+                "b-to-c",
+                "net_null1",
+                "net_null2",
+                &config_json_cap(0, 0.0, 2000),
+            ),
+        ],
+    );
+    for i in 0..3 {
+        env.vdevs.push(format!("net_null{i}"));
+    }
+    let mut run = env.spawn();
+    let p = run.query("/dpds/ports");
+    let ring = |port: u64, dir: &str| u(&p, &format!("port{port}_{dir}_ring"));
+    let id = |key: &str| u(&p, key);
+    let (a_rx, a_tx) = (id("dir0_rx_port"), id("dir0_tx_port"));
+    let (b_rx, b_tx) = (id("dir1_rx_port"), id("dir1_tx_port"));
+    assert_eq!(
+        u(&p, "dir0_pool_size"),
+        1000 + ring(a_rx, "rx") + ring(a_tx, "tx") + 832,
+        "plain formula for a-to-b: {p}"
+    );
+    assert_eq!(
+        u(&p, "dir1_pool_size"),
+        2000 + ring(b_rx, "rx") + ring(b_tx, "tx") + ring(b_tx, "rx") + 832,
+        "b-to-c adds the RX ring of the egress-only port: {p}"
+    );
+    run.signal(libc::SIGINT);
+    assert_clean_exit(run.wait_exit(), &run);
 }
 
 #[cfg(feature = "telemetry")]

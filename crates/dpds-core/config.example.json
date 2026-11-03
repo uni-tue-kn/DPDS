@@ -6,7 +6,8 @@
     "mean_ns": 5000000.0,
     "std_ns": 500000.0,
     "activate_correlation": true,
-    "half_life_period_ns": 50000000.0
+    "half_life_period_ns": 50000000.0,
+    "initialization_rate_pps": 81000.0
   },
   "limiter": {
     "mode": "TokenBucketFilter",

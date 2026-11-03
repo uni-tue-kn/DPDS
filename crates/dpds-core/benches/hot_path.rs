@@ -143,6 +143,7 @@ impl Case {
                 std_ns: DELAY_STD_NS,
                 activate_correlation: false,
                 half_life_period_ns: 50_000_000.0,
+                initialization_rate_pps: 8_200_000.0,
             },
             // 200 Gb/s: keeps up with the ~100 Gb/s offered load, so the
             // limiter computes offsets but never fills up and drops.

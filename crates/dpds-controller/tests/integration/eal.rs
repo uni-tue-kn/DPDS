@@ -184,6 +184,7 @@ fn special_core() -> Config {
             std_ns: 0.0,
             activate_correlation: false,
             half_life_period_ns: 1.0e6,
+            initialization_rate_pps: 15e6,
         },
         limiter: LimiterConfig {
             mode: LimiterMode::Spacer,
@@ -230,6 +231,33 @@ fn links_file_json_is_v2_one_entry_per_directed_link() {
             { "name": "loop", "ingress": "net_null0", "egress": "net_null0",
               "config": serde_json::to_value(special_core()).unwrap(), "lcore": 3 },
         ]})
+    );
+}
+
+#[test]
+fn links_file_json_carries_each_links_initialization_rate_in_its_config() {
+    let mut a = cfg_json(1.0e6, 1.0e5);
+    a["delayer"]["initialization_rate_pps"] = json!(250_000.0);
+    let mut b = cfg_json(1.0e6, 1.0e5);
+    b["delayer"]["initialization_rate_pps"] = json!(7.5e6);
+    let links = vec![
+        link_cfg(1, "slow", NIC0, NIC1, a),
+        link_cfg(2, "fast", NIC1, NIC0, b),
+    ];
+    let dirs = vec![
+        plan_dir(0, "slow", NIC0, NIC1, 2),
+        plan_dir(1, "fast", NIC1, NIC0, 3),
+    ];
+    let v = links_file_json(&links, &dirs).unwrap();
+    assert_eq!(
+        v["links"][0]["config"]["delayer"]["initialization_rate_pps"],
+        json!(250_000.0),
+        "{v}"
+    );
+    assert_eq!(
+        v["links"][1]["config"]["delayer"]["initialization_rate_pps"],
+        json!(7.5e6),
+        "{v}"
     );
 }
 

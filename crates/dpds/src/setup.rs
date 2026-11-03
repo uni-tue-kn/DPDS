@@ -1,5 +1,4 @@
-//! Startup validation: lcore and port counts, the egress port of a
-//! direction and the mempool size of a link.
+//! Startup validation: lcore and port counts and the mempool size of a link.
 
 use std::fmt;
 
@@ -19,17 +18,16 @@ impl fmt::Display for SetupError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             SetupError::LcoreCount { found, required } => {
-                let ports = required.saturating_sub(1);
-                let (noun, verb) = if ports == 1 {
-                    ("port", "needs")
+                let links = required.saturating_sub(1);
+                let (noun, verb) = if links == 1 {
+                    ("link", "needs")
                 } else {
-                    ("ports", "need")
+                    ("links", "need")
                 };
                 write!(
                     f,
-                    "{ports} {noun} {verb} {required} lcores, e.g. -l 0-{} (the main lcore and \
-                     one worker per link); got {found}",
-                    required.saturating_sub(1)
+                    "{links} {noun} {verb} {required} lcores (main + one worker per link), \
+                     e.g. -l 0-{links}; got {found}"
                 )
             }
             SetupError::PortCount(n) => {
@@ -42,10 +40,9 @@ impl fmt::Display for SetupError {
 impl std::error::Error for SetupError {}
 
 /// Ok only for `1 + num_links` lcores: the main lcore plus one worker per
-/// link. The message counts the links as "ports" for the `--config*` shorthand
-/// (one link per port).
-pub fn validate_lcore_count(lcores: usize, num_ports: usize) -> Result<(), SetupError> {
-    let required = 1 + num_ports;
+/// link.
+pub fn validate_lcore_count(lcores: usize, num_links: usize) -> Result<(), SetupError> {
+    let required = 1 + num_links;
     if lcores == required {
         Ok(())
     } else {
@@ -62,16 +59,6 @@ pub fn validate_port_count(ports: usize) -> Result<(), SetupError> {
         Ok(())
     } else {
         Err(SetupError::PortCount(ports))
-    }
-}
-
-/// The port direction `direction` (traffic received on that port) leaves
-/// through: the other port, or port 0 with a single port.
-pub fn egress_port(direction: u16, num_ports: usize) -> u16 {
-    if num_ports == 1 {
-        0
-    } else {
-        direction ^ 1
     }
 }
 

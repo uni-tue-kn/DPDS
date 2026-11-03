@@ -32,12 +32,10 @@
 //!                    : Debug + Clone + Copy + PartialEq + Eq + Display + Error
 //!                fn validate_lcore_count(lcores: usize, num_ports: usize) -> Result<(), SetupError>
 //!                  Ok iff lcores == 1 + num_ports (lcores counts the main lcore);
-//!                  Err(LcoreCount { found, required: 1 + num_ports }); Display contains
-//!                  "1 port needs 2 lcores, e.g. -l 0-1" resp.
-//!                  "2 ports need 3 lcores, e.g. -l 0-2" and the found count.
+//!                  Err(LcoreCount { found, required: 1 + num_ports }); Display counts
+//!                  links: "<n> link(s) need <n+1> lcores (main + one worker per link),
+//!                  e.g. -l 0-<n>" and contains the found count (see setup.rs).
 //!                fn validate_port_count(ports: usize) -> Result<(), SetupError>  (unchanged: 1, 2)
-//!                fn egress_port(direction: u16, num_ports: usize) -> u16
-//!                  (num_ports == 1 -> 0; num_ports == 2 -> direction ^ 1)
 //!                fn required_mbufs(buffer_capacity: usize, rx_desc: u16, tx_desc: u16) -> u64
 //!                  = buffer_capacity + rx_desc + tx_desc + MBUF_CACHE_SIZE * 3 / 2
 //!                    + 2 * BURST_SIZE   (integer arithmetic, saturating, never panics)

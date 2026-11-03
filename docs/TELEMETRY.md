@@ -57,7 +57,7 @@ echo '/dpds/stats,0' | dpdk-telemetry.py -f <file-prefix>
 | `/dpds/epochs,<dir>` | The same counters per epoch (deltas) and gauges per epoch (maxima), plus per-epoch first loss, for link `<dir>`. |
 | `/dpds/delay_hist,<dir>` | The cumulative histogram of the intended delay of link `<dir>`. |
 | `/dpds/ports` | Static: device name and descriptor ring sizes of each port, the number of links, and the layout of each link. |
-| `/nic/hw_first_loss,<port>` | First NIC hardware drop seen by the main lcore on port `<port>` (`0` or `1`). |
+| `/nic/hw_first_loss,<port>` | First NIC hardware drop seen by the main lcore on port `<port>` (a DPDK port id, any port of the links). |
 | `/nic/epochs,<port>` | Per-epoch NIC `rx_packets` / `imissed` / `rx_port_discards` of port `<port>`. |
 
 `<dir>` is the index of a link, its position in the `--links` file; `/dpds/ports`

@@ -74,4 +74,14 @@ describe('Host hints page', () => {
     renderApp('/hints');
     expect(await screen.findByRole('alert')).toHaveTextContent('procfs unreadable');
   });
+
+  // v12: the page shows no ports of its own; port names in hint texts come from the controller and are printed verbatim.
+  it('prints a port in a hint text verbatim and does not ask for the interfaces', async () => {
+    api.getHostHints.mockResolvedValue([
+      { id: 'numa', level: 'warn', title: 'NUMA mismatch', detail: 'Port 0000:65:00.0 is on node 1.', suggestion: 'Use cores of node 1.' },
+    ]);
+    renderApp('/hints');
+    expect(await screen.findByText('Port 0000:65:00.0 is on node 1.')).toBeInTheDocument();
+    expect(api.getInterfaces).not.toHaveBeenCalled();
+  });
 });

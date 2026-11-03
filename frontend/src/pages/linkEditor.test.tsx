@@ -4,7 +4,7 @@ import type { UserEvent } from '@testing-library/user-event';
 import type { ConfigDto, Link, LinkInput } from '../api/types';
 import { api, ApiError } from '../test/mockApi';
 import * as fx from '../test/fixtures';
-import { renderApp } from '../test/helpers';
+import { renderApp, TEST_RATE, typeRate } from '../test/helpers';
 
 const DISTRIBUTIONS = [
   'DeterministicDistribution', 'LogNormalDistribution', 'NormalDistribution', 'GammaDistribution', 'UniformDistribution',
@@ -34,11 +34,12 @@ async function fillName(user: UserEvent, name: string) {
   await user.type(screen.getByLabelText('Name'), name);
 }
 
-/** Name + the two usable ports, ready to save. */
+/** Name + the two usable ports + the initialization rate (a new form starts without one), ready to save. */
 async function fillValid(user: UserEvent, name = 'my-link') {
   await fillName(user, name);
   await user.selectOptions(select('Ingress'), '0000:65:00.0');
   await user.selectOptions(select('Egress'), '0000:65:00.1');
+  await typeRate(user);
 }
 
 function lastCreate(): LinkInput {
@@ -56,6 +57,9 @@ function expectValidConfig(c: ConfigDto) {
   expect(Number.isFinite(c.delayer.std_ns)).toBe(true);
   expect(typeof c.delayer.activate_correlation).toBe('boolean');
   expect(Number.isFinite(c.delayer.half_life_period_ns)).toBe(true);
+  expect(typeof c.delayer.initialization_rate_pps).toBe('number'); // v12: always sent, finite >= 1
+  expect(Number.isFinite(c.delayer.initialization_rate_pps)).toBe(true);
+  expect(c.delayer.initialization_rate_pps).toBeGreaterThanOrEqual(1);
   expect(['Spacer', 'TokenBucketFilter']).toContain(c.limiter.mode);
   expect(typeof c.limiter.activate).toBe('boolean');
   expect(c.limiter.rate_bps).toBeGreaterThan(0);
@@ -162,6 +166,7 @@ describe('Link editor: ports already used by other links', () => {
   it('a port is only disabled for its own role: the reverse link of an existing link can be created', async () => {
     const user = await openNew([other()]); // other: .0 -> .1
     await fillName(user, 'back');
+    await typeRate(user);
     await user.selectOptions(select('Ingress'), '0000:65:00.1');
     await user.selectOptions(select('Egress'), '0000:65:00.0');
     await user.click(save());
@@ -276,6 +281,7 @@ describe('Link editor: create', () => {
   it('a hairpin link (same port as ingress and egress) can be saved', async () => {
     const user = await openNew();
     await fillName(user, 'loop');
+    await typeRate(user);
     await user.selectOptions(select('Ingress'), '0000:65:00.0');
     await user.selectOptions(select('Egress'), '0000:65:00.0');
     await user.click(save());
@@ -297,6 +303,8 @@ describe('Link editor: create', () => {
     await user.click(input(g, 'Activate correlation'));
     await user.clear(input(g, 'Half-life period (ns)'));
     await user.type(input(g, 'Half-life period (ns)'), '8000000');
+    await user.clear(input(g, 'Initialization rate (pps)'));
+    await user.type(input(g, 'Initialization rate (pps)'), '4000000');
     await user.click(input(g, 'Limiter active'));
     await user.selectOptions(within(g).getByLabelText('Limiter mode'), 'TokenBucketFilter');
     await user.clear(input(g, 'Rate (bit/s)'));
@@ -319,7 +327,7 @@ describe('Link editor: create', () => {
     const c = lastCreate().config;
     expect(c.delayer).toEqual({
       distribution: 'GammaDistribution', mean_ns: 2500000, std_ns: 120000,
-      activate_correlation: true, half_life_period_ns: 8000000,
+      activate_correlation: true, half_life_period_ns: 8000000, initialization_rate_pps: 4000000,
     });
     expect(c.limiter).toEqual({ mode: 'TokenBucketFilter', activate: true, rate_bps: 100000000000, limit_bit: 240000 });
     expect(c.buffer_capacity).toBe(250000);
@@ -512,6 +520,7 @@ describe('Link editor: edit', () => {
     expect(input(g, 'Delay std (ns)')).toHaveValue(10);
     expect(input(g, 'Activate correlation')).not.toBeChecked();
     expect(input(g, 'Half-life period (ns)')).toHaveValue(0);
+    expect(input(g, 'Initialization rate (pps)')).toHaveValue(12500000);
     expect(input(g, 'Limiter active')).not.toBeChecked();
     expect(within(g).getByLabelText('Limiter mode')).toHaveValue('Spacer');
     expect(input(g, 'Rate (bit/s)')).toHaveValue(1e9);
@@ -537,6 +546,7 @@ describe('Link editor: edit', () => {
     expect(input(g, 'Delay std (ns)')).toHaveValue(300);
     expect(input(g, 'Activate correlation')).toBeChecked();
     expect(input(g, 'Half-life period (ns)')).toHaveValue(4000000);
+    expect(input(g, 'Initialization rate (pps)')).toHaveValue(8000000);
     expect(input(g, 'Limiter active')).toBeChecked();
     expect(within(g).getByLabelText('Limiter mode')).toHaveValue('TokenBucketFilter');
     expect(input(g, 'Rate (bit/s)')).toHaveValue(40000000000);
@@ -657,6 +667,7 @@ describe('Link editor: typed ports (F5)', () => {
     async (port) => {
       const user = await openNew();
       await fillName(user, 'typed');
+      await typeRate(user);
       await user.type(typed('Ingress'), port);
       await user.selectOptions(select('Egress'), '0000:65:00.1');
       await user.click(save());
@@ -668,6 +679,7 @@ describe('Link editor: typed ports (F5)', () => {
   it.each(['0000:af:00.0', 'net_null12', 'net_ring1'])('accepts the typed egress %s and sends it unchanged', async (port) => {
     const user = await openNew();
     await fillName(user, 'typed');
+    await typeRate(user);
     await user.selectOptions(select('Ingress'), '0000:65:00.0');
     await user.type(typed('Egress'), port);
     await user.click(save());
@@ -678,6 +690,7 @@ describe('Link editor: typed ports (F5)', () => {
   it('accepts typed values in both fields (vdev pair)', async () => {
     const user = await openNew();
     await fillName(user, 'typed');
+    await typeRate(user);
     await user.type(typed('Ingress'), 'net_null0');
     await user.type(typed('Egress'), 'net_ring1');
     await user.click(save());
@@ -689,6 +702,7 @@ describe('Link editor: typed ports (F5)', () => {
   it('accepts a typed hairpin (same vdev as ingress and egress)', async () => {
     const user = await openNew();
     await fillName(user, 'typed');
+    await typeRate(user);
     await user.type(typed('Ingress'), 'net_null0');
     await user.type(typed('Egress'), 'net_null0');
     await user.click(save());
@@ -745,6 +759,7 @@ describe('Link editor: typed ports (F5)', () => {
   it('rejects an invalid typed egress, accepts it once fixed', async () => {
     const user = await openNew();
     await fillName(user, 'typed');
+    await typeRate(user);
     await user.selectOptions(select('Ingress'), '0000:65:00.0');
     await user.type(typed('Egress'), 'net_pcap0,rx_pcap=/tmp/in.pcap');
     await user.click(save());
@@ -840,5 +855,159 @@ describe('Link editor: labels (v10)', () => {
     for (const l of ['Ingress', 'Egress', 'Ingress (typed)', 'Egress (typed)', 'Worker lcore']) {
       expect(screen.getByLabelText(l)).toBeInTheDocument();
     }
+  });
+});
+
+// v12 (spec12 part B): the correlation initialization rate is a required config field, never a hidden constant.
+describe('Link editor: initialization rate (v12)', () => {
+  const RATE = 'Initialization rate (pps)';
+  const rate = () => input(group(), RATE);
+
+  async function openEdit(link = fx.link()) {
+    api.getLink.mockResolvedValue(link);
+    api.getLinks.mockResolvedValue([link]);
+    const user = userEvent.setup();
+    renderApp(`/links/${link.id}`);
+    await screen.findByRole('heading', { level: 1, name: 'Edit link' });
+    await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue(link.name));
+    return user;
+  }
+
+  it('is a number field inside the single config form of a new link, exactly once', async () => {
+    await openNew();
+    expect(screen.getAllByLabelText(RATE)).toHaveLength(1);
+    expect(rate()).toHaveAttribute('type', 'number');
+    expect(group()).toContainElement(rate());
+  });
+
+  it('sits in the delay section, before the limiter fields', async () => {
+    await openNew();
+    const order = (a: HTMLElement, b: HTMLElement) => a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING;
+    expect(order(within(group()).getByLabelText('Mean delay (ns)'), rate())).toBeTruthy();
+    expect(order(rate(), within(group()).getByLabelText('Limiter active'))).toBeTruthy();
+  });
+
+  it('is shown while "Activate correlation" is off and stays after switching it on (always required)', async () => {
+    const user = await openNew();
+    expect(input(group(), 'Activate correlation')).not.toBeChecked();
+    expect(rate()).toBeInTheDocument();
+    await user.click(input(group(), 'Activate correlation'));
+    expect(rate()).toBeInTheDocument();
+  });
+
+  it('a new link starts with the field EMPTY (no preset value); saving the untouched form is refused', async () => {
+    const user = await openNew();
+    expect(rate()).toHaveValue(null);
+    expect(rate()).toHaveDisplayValue('');
+    await fillName(user, 'untouched');
+    await user.selectOptions(select('Ingress'), '0000:65:00.0');
+    await user.selectOptions(select('Egress'), '0000:65:00.1');
+    await user.click(save()); // everything else valid, only the rate was never entered
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Initialization rate \(pps\)/);
+    expect(api.createLink).not.toHaveBeenCalled();
+  });
+
+  it('the shared helper path: typing a rate into the empty form makes it saveable', async () => {
+    const user = await openNew();
+    await fillValid(user);
+    expect(rate()).toHaveValue(Number(TEST_RATE));
+    await user.click(save());
+    expect(lastCreate().config.delayer.initialization_rate_pps).toBe(Number(TEST_RATE));
+  });
+
+  it('sends the typed value as a number', async () => {
+    const user = await openNew();
+    await fillValid(user);
+    await user.clear(rate());
+    await user.type(rate(), '3000000');
+    await user.click(save());
+    const sent = lastCreate().config.delayer.initialization_rate_pps;
+    expect(sent).toBe(3000000);
+    expect(typeof sent).toBe('number');
+  });
+
+  it.each(['1', '1.5', '20000000'])('accepts %s (finite and >= 1)', async (v) => {
+    const user = await openNew();
+    await fillValid(user);
+    await user.clear(rate());
+    await user.type(rate(), v);
+    await user.click(save());
+    expect(lastCreate().config.delayer.initialization_rate_pps).toBe(Number(v));
+  });
+
+  it.each(['0', '0.5', '0.999', '-1', '-15000000'])('refuses %s (below 1): alert naming the field, no request', async (v) => {
+    const user = await openNew();
+    await fillValid(user);
+    await user.clear(rate());
+    await user.type(rate(), v);
+    await user.click(save());
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Initialization rate \(pps\)/);
+    expect(api.createLink).not.toHaveBeenCalled();
+  });
+
+  it('refuses a field that was filled and then cleared: alert naming the field, no request, no silent default', async () => {
+    const user = await openNew();
+    await fillValid(user);
+    await user.clear(rate());
+    await user.click(save());
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Initialization rate \(pps\)/);
+    expect(api.createLink).not.toHaveBeenCalled();
+  });
+
+  it('refuses the empty field also with correlation off, and accepts the corrected value afterwards', async () => {
+    const user = await openNew();
+    await fillName(user, 'v');
+    await user.selectOptions(select('Ingress'), '0000:65:00.0');
+    await user.selectOptions(select('Egress'), '0000:65:00.1');
+    expect(input(group(), 'Activate correlation')).not.toBeChecked();
+    await user.click(save());
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Initialization rate \(pps\)/);
+    await user.type(rate(), '9000000');
+    await user.click(save());
+    expect(lastCreate().config.delayer.initialization_rate_pps).toBe(9000000);
+  });
+
+  it('the message names the field and does not mention a Direction', async () => {
+    const user = await openNew();
+    await fillValid(user);
+    await user.clear(rate());
+    await user.click(save());
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/Initialization rate/);
+    expect(alert).not.toHaveTextContent(/Direction \d/);
+  });
+
+  it('edit: shows the stored value of the link', async () => {
+    await openEdit(fx.linkRev());
+    expect(rate()).toHaveValue(8000000);
+  });
+
+  it('edit: saving without changes sends the stored value back', async () => {
+    const user = await openEdit(fx.link({ config: fx.config({ delayer: { ...fx.config().delayer, initialization_rate_pps: 6543210 } }) }));
+    expect(rate()).toHaveValue(6543210);
+    await user.click(save());
+    expect(api.updateLink).toHaveBeenCalledTimes(1);
+    expect(api.updateLink.mock.calls[0][1].config.delayer.initialization_rate_pps).toBe(6543210);
+  });
+
+  it('edit: a changed value is sent instead of the stored one', async () => {
+    const user = await openEdit();
+    await user.clear(rate());
+    await user.type(rate(), '7000000');
+    await user.click(save());
+    expect(api.updateLink.mock.calls[0][1].config.delayer.initialization_rate_pps).toBe(7000000);
+  });
+
+  it('edit: clearing the field is refused, nothing is sent', async () => {
+    const user = await openEdit();
+    await user.clear(rate());
+    await user.click(save());
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Initialization rate \(pps\)/);
+    expect(api.updateLink).not.toHaveBeenCalled();
+  });
+
+  it('the value of a hairpin link is populated too', async () => {
+    await openEdit(fx.loopLink({ config: fx.config3() }));
+    expect(rate()).toHaveValue(2500000);
   });
 });

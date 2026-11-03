@@ -13,6 +13,7 @@ export interface ConfigForm {
   std_ns: string;
   activate_correlation: boolean;
   half_life_period_ns: string;
+  initialization_rate_pps: string;
   limiter_activate: boolean;
   limiter_mode: LimiterMode;
   rate_bps: string;
@@ -36,7 +37,7 @@ export interface ConfigForm {
 export function defaultConfigForm(): ConfigForm {
   return {
     distribution: 'NormalDistribution', mean_ns: '1000000', std_ns: '100000',
-    activate_correlation: false, half_life_period_ns: '0',
+    activate_correlation: false, half_life_period_ns: '0', initialization_rate_pps: '',
     limiter_activate: false, limiter_mode: 'Spacer', rate_bps: '10000000000', limit_bit: '12000000',
     loss_type: 'Random', random_p: '0', ge_p: '0.01', ge_r: '0.2', ge_k: '1', ge_h: '0', ge_good: true,
     buffer_capacity: '100000', reordering: false, seed: '', hist_bins: '', hist_lo: '', hist_hi: '',
@@ -54,6 +55,7 @@ export function configToForm(c: ConfigDto): ConfigForm {
     std_ns: String(c.delayer.std_ns),
     activate_correlation: c.delayer.activate_correlation,
     half_life_period_ns: String(c.delayer.half_life_period_ns),
+    initialization_rate_pps: String(c.delayer.initialization_rate_pps),
     limiter_activate: c.limiter.activate,
     limiter_mode: c.limiter.mode,
     rate_bps: String(c.limiter.rate_bps),
@@ -82,6 +84,15 @@ export function configToForm(c: ConfigDto): ConfigForm {
 function num(s: string, label: string): number {
   const n = Number(s);
   if (s.trim() === '' || !Number.isFinite(n)) throw new Error(`${label} must be a number`);
+  return n;
+}
+
+/** No default exists for this rate: the user always chooses it. */
+function initRate(s: string): number {
+  const label = 'Initialization rate (pps)';
+  if (s.trim() === '') throw new Error(`${label} is required`);
+  const n = num(s, label);
+  if (n < 1) throw new Error(`${label} must be at least 1`);
   return n;
 }
 
@@ -140,6 +151,7 @@ export function configToDto(f: ConfigForm): ConfigDto {
       std_ns: num(f.std_ns, 'Delay std (ns)'),
       activate_correlation: f.activate_correlation,
       half_life_period_ns: num(f.half_life_period_ns, 'Half-life period (ns)'),
+      initialization_rate_pps: initRate(f.initialization_rate_pps),
     },
     limiter: {
       mode: f.limiter_mode,

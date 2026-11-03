@@ -58,6 +58,9 @@ pub struct DelayerDto {
     pub std_ns: f64,
     pub activate_correlation: bool,
     pub half_life_period_ns: f64,
+    /// Required, no default: the packet rate (pps) the correlated delay starts
+    /// with. Finite and at least 1.
+    pub initialization_rate_pps: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -266,6 +269,7 @@ impl ConfigDto {
                 std_ns: self.delayer.std_ns,
                 activate_correlation: self.delayer.activate_correlation,
                 half_life_period_ns: self.delayer.half_life_period_ns,
+                initialization_rate_pps: self.delayer.initialization_rate_pps,
             },
             limiter: LimiterConfig {
                 mode: l.mode.into(),
@@ -298,6 +302,7 @@ impl ConfigDto {
                 std_ns: c.delayer.std_ns,
                 activate_correlation: c.delayer.activate_correlation,
                 half_life_period_ns: c.delayer.half_life_period_ns,
+                initialization_rate_pps: c.delayer.initialization_rate_pps,
             },
             limiter: LimiterDto {
                 mode: c.limiter.mode.into(),

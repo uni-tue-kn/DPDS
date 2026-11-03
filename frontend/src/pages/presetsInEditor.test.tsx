@@ -78,6 +78,7 @@ describe('Link editor: Apply preset', () => {
     expect(field(g, 'Delay std (ns)')).toHaveValue(777);
     expect(field(g, 'Activate correlation')).not.toBeChecked();
     expect(field(g, 'Half-life period (ns)')).toHaveValue(555);
+    expect(field(g, 'Initialization rate (pps)')).toHaveValue(2500000); // v12
     expect(field(g, 'Limiter active')).toBeChecked();
     expect(field(g, 'Limiter mode')).toHaveValue('Spacer');
     expect(field(g, 'Rate (bit/s)')).toHaveValue(5000000000);
@@ -105,6 +106,7 @@ describe('Link editor: Apply preset', () => {
     expect(field(g, 'Gilbert-Elliot starts in good state')).not.toBeChecked();
     expect(field(g, 'Delay statistics')).not.toBeChecked();
     expect(field(g, 'Delay distribution')).toHaveValue('GammaDistribution');
+    expect(field(g, 'Initialization rate (pps)')).toHaveValue(8000000); // v12
   });
 
   it('saves exactly the applied config and leaves name, ingress, egress and worker as stored', async () => {
@@ -140,6 +142,7 @@ describe('Link editor: Apply preset', () => {
     const sent = api.updateLink.mock.calls[0][1];
     expect(sent.config.delayer.mean_ns).toBe(9999);
     expect(sent.config.delayer.distribution).toBe('LogNormalDistribution');
+    expect(sent.config.delayer.initialization_rate_pps).toBe(2500000); // v12: copied from the preset
     expect(api.updatePreset).not.toHaveBeenCalled();
   });
 
@@ -150,8 +153,10 @@ describe('Link editor: Apply preset', () => {
     await screen.findByRole('heading', { level: 1, name: 'New link' });
     await waitFor(() => expect(within(applySelect()).getAllByRole('option')).toHaveLength(3));
     expect(field(group(), 'Buffer capacity')).toHaveValue(100000);
+    expect(field(group(), 'Initialization rate (pps)')).toHaveValue(null); // v12: new forms start empty
     await user.selectOptions(applySelect(), 'wan');
     expect(field(group(), 'Buffer capacity')).toHaveValue(321);
+    expect(field(group(), 'Initialization rate (pps)')).toHaveValue(2500000); // applied from the preset
   });
 });
 
@@ -199,6 +204,7 @@ describe('Link editor: Save as preset', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Save preset' }));
     const sent = api.createPreset.mock.calls[0][0];
     expect(sent.config.delayer.mean_ns).toBe(4242);
+    expect(sent.config.delayer.initialization_rate_pps).toBe(12500000); // v12: the link's own value
     expect(sent.config.buffer_capacity).toBe(1000);
     expect(sent.description ?? null).toBeNull();
   });
@@ -259,5 +265,39 @@ describe('Link editor: Save as preset', () => {
     expect(await screen.findAllByRole('alert')).not.toHaveLength(0);
     expect(screen.getAllByRole('alert').some((a) => /seed/i.test(a.textContent ?? ''))).toBe(true);
     expect(api.createPreset).not.toHaveBeenCalled();
+  });
+});
+
+describe('Link editor: initialization rate and presets (v12)', () => {
+  it('"Save as preset" posts an edited initialization rate', async () => {
+    const user = await openEdit();
+    await user.clear(field(group(), 'Initialization rate (pps)'));
+    await user.type(field(group(), 'Initialization rate (pps)'), '3333333');
+    await user.click(within(group()).getByRole('button', { name: 'Save as preset' }));
+    const dialog = await screen.findByRole('dialog');
+    await user.type(within(dialog).getByLabelText('Preset name'), 'rate');
+    await user.click(within(dialog).getByRole('button', { name: 'Save preset' }));
+    expect(api.createPreset.mock.calls[0][0].config.delayer.initialization_rate_pps).toBe(3333333);
+  });
+
+  it('"Save as preset" with an empty initialization rate is refused with an alert naming the field, no request', async () => {
+    const user = await openEdit();
+    await user.clear(field(group(), 'Initialization rate (pps)'));
+    await user.click(within(group()).getByRole('button', { name: 'Save as preset' }));
+    const dialog = await screen.findByRole('dialog');
+    await user.type(within(dialog).getByLabelText('Preset name'), 'bad-rate');
+    await user.click(within(dialog).getByRole('button', { name: 'Save preset' }));
+    expect(api.createPreset).not.toHaveBeenCalled();
+    expect((await screen.findAllByRole('alert')).some((a) => /Initialization rate \(pps\)/.test(a.textContent ?? ''))).toBe(true);
+  });
+
+  it('applying a preset replaces a rate typed before, and the link is saved with the preset\'s rate', async () => {
+    const user = await openEdit();
+    await user.clear(field(group(), 'Initialization rate (pps)'));
+    await user.type(field(group(), 'Initialization rate (pps)'), '999');
+    await user.selectOptions(applySelect(), 'other'); // config2: 8 Mpps
+    expect(field(group(), 'Initialization rate (pps)')).toHaveValue(8000000);
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+    expect(api.updateLink.mock.calls[0][1].config.delayer.initialization_rate_pps).toBe(8000000);
   });
 });

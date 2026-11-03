@@ -22,6 +22,7 @@ fn core_config(loss: LossModel, seed: Option<u64>) -> Config {
             std_ns: 5.0e5,
             activate_correlation: true,
             half_life_period_ns: 5.0e7,
+            initialization_rate_pps: 15e6,
         },
         limiter: LimiterConfig {
             mode: LimiterMode::TokenBucketFilter,
@@ -143,6 +144,75 @@ fn negative_half_life_is_a_validation_error() {
     v["delayer"]["half_life_period_ns"] = json!(-1.0);
     let err = dto_from(v).to_core().unwrap_err().to_string();
     assert!(err.contains("half_life"), "{err}");
+}
+
+// ---- initialization_rate_pps (spec v12 B) -----------------------------------------------
+
+#[test]
+fn the_initialization_rate_is_required_and_has_no_default() {
+    let mut v = cfg_json(1.0e6, 1.0e5);
+    v["delayer"]
+        .as_object_mut()
+        .unwrap()
+        .remove("initialization_rate_pps");
+    let err = serde_json::from_value::<ConfigDto>(v)
+        .expect_err("a config without the rate must not deserialize")
+        .to_string();
+    assert!(err.contains("initialization_rate_pps"), "{err}");
+}
+
+#[test]
+fn the_initialization_rate_reaches_the_core_config_and_comes_back() {
+    let mut v = cfg_json(5.0e6, 5.0e5);
+    v["delayer"]["initialization_rate_pps"] = json!(2.5e6);
+    let dto = dto_from(v);
+    let core = dto.to_core().unwrap();
+    assert_eq!(core.delayer.initialization_rate_pps, 2.5e6);
+    let back = serde_json::to_value(ConfigDto::from_core(&core)).unwrap();
+    assert_eq!(back["delayer"]["initialization_rate_pps"], json!(2.5e6));
+    // an integer JSON number is fine too
+    let mut v = cfg_json(5.0e6, 5.0e5);
+    v["delayer"]["initialization_rate_pps"] = json!(40_000);
+    assert_eq!(
+        dto_from(v)
+            .to_core()
+            .unwrap()
+            .delayer
+            .initialization_rate_pps,
+        40_000.0
+    );
+}
+
+#[test]
+fn an_invalid_initialization_rate_is_a_validation_error_naming_the_field() {
+    for bad in [
+        json!(0.0),
+        json!(0.5),
+        json!(0.999),
+        json!(-1.0),
+        json!(-15.0e6),
+    ] {
+        for correlation in [false, true] {
+            let mut v = cfg_json(1.0e6, 1.0e5);
+            v["delayer"]["initialization_rate_pps"] = bad.clone();
+            v["delayer"]["activate_correlation"] = json!(correlation);
+            let err = dto_from(v)
+                .to_core()
+                .expect_err("an invalid rate must be rejected")
+                .to_string();
+            assert!(
+                err.contains("initialization_rate_pps"),
+                "rate {bad} (correlation {correlation}): {err}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_smallest_valid_initialization_rate_is_one_packet_per_second() {
+    let mut v = cfg_json(1.0e6, 1.0e5);
+    v["delayer"]["initialization_rate_pps"] = json!(1.0);
+    assert!(dto_from(v).to_core().is_ok());
 }
 
 #[test]

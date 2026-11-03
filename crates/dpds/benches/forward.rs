@@ -86,6 +86,7 @@ fn config(distribution: RVDistribution, mean_ns: f64, std_ns: f64, loss: f64) ->
             std_ns,
             activate_correlation: false,
             half_life_period_ns: 1.0,
+            initialization_rate_pps: 8_200_000.0,
         },
         limiter: LimiterConfig {
             mode: LimiterMode::Spacer,

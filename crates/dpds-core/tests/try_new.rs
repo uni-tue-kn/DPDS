@@ -38,6 +38,7 @@ fn config(dist: RVDistribution, mean: f64, std: f64, corr: bool, capacity: usize
             std_ns: std,
             activate_correlation: corr,
             half_life_period_ns: 1000.0,
+            initialization_rate_pps: 15e6,
         },
         limiter: LimiterConfig {
             mode: LimiterMode::Spacer,

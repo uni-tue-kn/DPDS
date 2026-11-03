@@ -81,6 +81,7 @@ export default function ConfigFieldset({ title, value, onChange, presets, onSave
         {text('std_ns', 'Delay std (ns)')}
         {check('activate_correlation', 'Activate correlation')}
         {text('half_life_period_ns', 'Half-life period (ns)')}
+        {text('initialization_rate_pps', 'Initialization rate (pps)', 'number', 'Expected packet rate of this link, e.g. about 8100000 for 100 Gb/s of 1518 B frames (rate / ((frame + 20 B) × 8))')}
       </Row>
       <Row>
         {check('limiter_activate', 'Limiter active')}

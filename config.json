@@ -6,7 +6,8 @@
         "mean_ns": 10000000,
         "std_ns": 3000000,
         "activate_correlation": true,
-        "half_life_period_ns": 30000000
+        "half_life_period_ns": 30000000,
+        "initialization_rate_pps": 8100000
     },
     "limiter": {
         "mode": "Spacer",

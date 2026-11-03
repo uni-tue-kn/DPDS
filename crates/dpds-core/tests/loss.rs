@@ -38,6 +38,7 @@ fn config(loss_model: LossModel, capacity: usize, seed: u64) -> Config {
             std_ns: 0.0,
             activate_correlation: false,
             half_life_period_ns: 1.0,
+            initialization_rate_pps: 15e6,
         },
         limiter: LimiterConfig {
             mode: LimiterMode::Spacer,

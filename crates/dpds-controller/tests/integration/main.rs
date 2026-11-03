@@ -44,4 +44,5 @@ mod store;
 mod supervisor;
 mod supervisor_fixes;
 mod telemetry_freshness;
+mod v12;
 mod v7_lows;

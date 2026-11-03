@@ -312,14 +312,48 @@ fn valid_name(n: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
 }
 
+/// The link-name rule shared by every path that accepts or launches links.
+fn check_link_name(name: &str) -> Result<(), ApiError> {
+    if valid_name(name) {
+        Ok(())
+    } else {
+        Err(ApiError::bad(format!(
+            "link name {name:?} is invalid: a link name must be 1 to {MAX_NAME_CHARS} characters of A-Z a-z 0-9 _ . -"
+        )))
+    }
+}
+
+/// Most keys of the `/dpds/ports` telemetry dict of `dpds` (DPDK's
+/// `RTE_TEL_MAX_DICT_ENTRIES`).
+const MAX_TELEMETRY_DICT_ENTRIES: usize = 256;
+
+/// `dpds` publishes `3 + 5 * distinct ports + 10 * links` keys in one telemetry dict and
+/// refuses to start above 256: refuse such a setup here, before it is stored or launched.
+fn check_dict_limit<'a>(links: impl Iterator<Item = &'a Link>) -> Result<(), ApiError> {
+    let mut ports: Vec<&str> = Vec::new();
+    let mut count = 0;
+    for l in links {
+        count += 1;
+        for p in [l.ingress.as_str(), l.egress.as_str()] {
+            if !ports.contains(&p) {
+                ports.push(p);
+            }
+        }
+    }
+    let entries = 3 + 5 * ports.len() + 10 * count;
+    if entries > MAX_TELEMETRY_DICT_ENTRIES {
+        return Err(ApiError::bad(format!(
+            "{count} links over {} ports need {entries} telemetry entries (3 + 5 per port + 10 per link), more than the limit of {MAX_TELEMETRY_DICT_ENTRIES} of dpds",
+            ports.len()
+        )));
+    }
+    Ok(())
+}
+
 /// Validates a link and returns its ingress and egress, normalised (PCI addresses
 /// in lower case).
 fn validate_link(input: &LinkInput, others: &[&Link]) -> Result<(String, String), ApiError> {
-    if !valid_name(&input.name) {
-        return Err(ApiError::bad(format!(
-            "link name must be 1 to {MAX_NAME_CHARS} characters of A-Z a-z 0-9 _ . -"
-        )));
-    }
+    check_link_name(&input.name)?;
     let ingress = validate::port_name(&input.ingress).map_err(ApiError::bad)?;
     let egress = validate::port_name(&input.egress).map_err(ApiError::bad)?;
     input
@@ -505,11 +539,19 @@ impl App {
         // the state file may have been edited by hand or written by an older
         // version: what reaches dpds' command line passes the same rules as an edit
         for (i, l) in stored.links.iter().enumerate() {
+            check_link_name(&l.name)?;
+            if stored.links[..i].iter().any(|o| o.name == l.name) {
+                return Err(ApiError::conflict(format!(
+                    "a link named {} already exists",
+                    l.name
+                )));
+            }
             validate::port_name(&l.ingress).map_err(ApiError::bad)?;
             validate::port_name(&l.egress).map_err(ApiError::bad)?;
             let before: Vec<&Link> = stored.links[..i].iter().collect();
             check_ports_free(&l.name, &l.ingress, &l.egress, &before)?;
         }
+        check_dict_limit(stored.links.iter())?;
         validate::mlx5_devargs(&stored.settings.mlx5_devargs).map_err(ApiError::bad)?;
         validate::eal_extra_args(&stored.settings.eal_extra_args).map_err(ApiError::bad)?;
         let interfaces = discover(&self.deps.roots);
@@ -622,6 +664,7 @@ async fn create_link(
                 config: input.config,
                 worker: input.worker,
             };
+            check_dict_limit(s.links.iter().chain([&link]))?;
             s.next_id += 1;
             s.links.push(link.clone());
             Ok(link)
@@ -677,6 +720,7 @@ async fn update_link(
                 config: input.config,
                 worker: input.worker,
             };
+            check_dict_limit(s.links.iter().filter(|l| l.id != id).chain([&link]))?;
             for l in &mut s.links {
                 if l.id == id {
                     *l = link.clone();
@@ -1040,8 +1084,11 @@ async fn export(State(app): Shared) -> Json<ExportDoc> {
 /// document gets a message about the version, not about an unknown link field.
 fn check_version(raw: &serde_json::Value) -> Result<(), ApiError> {
     match raw.get("version").and_then(serde_json::Value::as_u64) {
+        Some(1) => Err(ApiError::bad(format!(
+            "version = 1: only version {EXPORT_VERSION} is supported (version 1 had links between two ports; re-create them as one link per direction, ingress to egress)"
+        ))),
         Some(v) if v != u64::from(EXPORT_VERSION) => Err(ApiError::bad(format!(
-            "version = {v}: only version {EXPORT_VERSION} is supported (version 1 had links between two ports; re-create them as one link per direction, ingress to egress)"
+            "version = {v}: only version {EXPORT_VERSION} is supported"
         ))),
         _ => Ok(()),
     }
@@ -1083,6 +1130,7 @@ fn apply_import(s: &mut StoredState, doc: ExportDoc) -> Result<(), ApiError> {
             worker: input.worker,
         });
     }
+    check_dict_limit(links.iter()).map_err(|e| e.in_document("links"))?;
     let mut presets: Vec<Preset> = Vec::new();
     for (i, p) in doc.presets.into_iter().enumerate() {
         validate_preset(&p.name, &p.config, &presets.iter().collect::<Vec<_>>())

@@ -152,13 +152,13 @@ impl Buffer {
     /// Like [`Buffer::new`], but returns an error for invalid delay
     /// distribution parameters, a `half_life_period_ns` that is negative, NaN
     /// or infinite (0 is valid) or, with correlation, so long that its
-    /// smoothing weight is not below 1, or an unallocatable `buffer_capacity`
+    /// smoothing weight is not below 1, an `initialization_rate_pps` that is
+    /// not finite or below 1, or an unallocatable `buffer_capacity`
     /// instead of panicking. Only the initial parameters are validated: the
     /// correlated delay re-derives its distribution from the measured packet
     /// rate, which a huge finite half-life can still push out of range later.
     pub fn try_new(config: Config) -> Result<Buffer, BuildError> {
-        // ~15 Mpps is current max rate of DPDS
-        let initialization_rate_pps = 15_000_000.;
+        let initialization_rate_pps = config.delayer.initialization_rate_pps;
 
         let capacity_error =
             |reason: std::collections::TryReserveError| BuildError::BufferCapacity {

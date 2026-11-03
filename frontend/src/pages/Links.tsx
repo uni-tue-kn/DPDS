@@ -3,13 +3,14 @@ import { Button, Modal, Table } from 'react-bootstrap';
 import { Link as RouterLink } from 'react-router-dom';
 import * as api from '../api/client';
 import ErrorAlert from '../components/ErrorAlert';
-import { errorMessage, formatBps, formatDuration, linkLabel } from '../common/format';
+import { errorMessage, formatBps, formatDuration, formatPct, linkLabel } from '../common/format';
 import { useLoad } from '../common/useLoad';
+import { usePortLabeler } from '../common/portLabel';
 import type { ConfigDto, Link } from '../api/types';
 
 /** "1.00 ms delay, 10.00 Gb/s limit, 0.5 % loss": the parts that tell two links apart at a glance. */
 function configSummary(c: ConfigDto): string {
-  const loss = c.loss_model.type === 'Random' ? `${c.loss_model.p * 100} % loss` : 'burst loss';
+  const loss = c.loss_model.type === 'Random' ? `${formatPct(c.loss_model.p * 100)} loss` : 'burst loss';
   return [
     `${formatDuration(c.delayer.mean_ns)} delay`,
     c.limiter.activate ? `${formatBps(c.limiter.rate_bps)} limit` : 'no limit',
@@ -20,6 +21,7 @@ function configSummary(c: ConfigDto): string {
 export default function Links() {
   const links = useLoad(api.getLinks);
   const emulation = useLoad(api.getEmulation);
+  const label = usePortLabeler();
   const [target, setTarget] = useState<Link | null>(null);
   const [actionError, setActionError] = useState<string>();
   const [deleting, setDeleting] = useState(false);
@@ -63,7 +65,7 @@ export default function Links() {
           <tbody>
             {links.data.map((l) => (
               <tr key={l.id}>
-                <td>{linkLabel(l.name, l.ingress, l.egress)}</td>
+                <td>{linkLabel(l.name, l.ingress, l.egress, label)}</td>
                 <td>{l.worker == null ? 'auto' : l.worker}</td>
                 <td>{configSummary(l.config)}</td>
                 <td className="text-end text-nowrap">

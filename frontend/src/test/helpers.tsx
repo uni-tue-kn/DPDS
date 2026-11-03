@@ -1,6 +1,31 @@
-// Test helpers + THE FRONTEND CONTRACT the tests assume (spec v5 part D + v6 + v10 directed links; the tester's
+// Test helpers + THE FRONTEND CONTRACT the tests assume (spec v5 part D + v6 + v10 directed links + v12; the tester's
 // choices where the spec is silent are listed here so the implementer can follow them or ask the coordinator to
 // change them).
+//
+// ## v12: port labels everywhere, configurable initialization rate (supersedes the v10 label examples below)
+// - Port label: `<pci> (<netdev>)`, e.g. "0000:65:00.0 (enp101s0f0)", where the netdev comes from `getInterfaces()` (the
+//   interface whose `pci` equals the port string). A port that is not in the list (vdev `net_null0`, an undiscovered
+//   address) or whose interface has `netdev: null` (vfio-bound NIC) shows only the device name. The label is used in
+//   (1) the Links list row "<name>: <ingress label> → <egress label>", (2) the dashboard card title (same format, from
+//   `stats.rx`/`stats.tx`, falling back to the plan's rx/tx), (3) the first column of the dashboard "NIC ports" table (the
+//   port's `name`), (4) the link editor pickers (already, "<label> - <reason>" when unusable), (5) the Interfaces page (pci
+//   and netdev columns, already). The Hints and Settings pages show no ports of their own: hint texts come from the
+//   controller and are printed verbatim, so they do not call `getInterfaces`.
+//   Fixture netdevs are "enp101s0f0" (0000:65:00.0) and "enp101s0f1" (0000:65:00.1); the spec's "ens1f0" is only an example.
+// - `getInterfaces` is called exactly ONCE per page load by the Links page and ONCE per mount by the Dashboard (not per
+//   stats/emulation poll). A rejected call is not an error for these pages: no alert, no warning, plain device names.
+//   A slow or never-resolving call does not delay the cards or rows (they appear with plain names and are relabelled).
+// - Links list loss text uses `formatPct(p * 100)` of common/format.ts: p 0.07 -> "7.00 % loss" (never "7.000000000000001").
+// - `DelayerDto.initialization_rate_pps: number` (required, wire name as is; src/api/types.ts) and the config form field
+//   "Initialization rate (pps)" in the delay section of EVERY config form (link editor, preset editor), a number input,
+//   shown also while "Activate correlation" is off. A NEW link / preset form starts with the field EMPTY (the user wants
+//   the rate always configured, never a preset value): saving the untouched form -> role=alert naming the field, no
+//   request; flows that create something type a rate first (`typeRate` below). Name and port errors are reported before
+//   the rate error (pure name/port rejection tests do not type a rate and rely on this order). Edit / apply-preset keep stored values. Validation (like the other fields, message "<label> must ..." naming
+//   "Initialization rate (pps)"): empty, non-finite, < 1 -> role=alert, no request; 1 and fractions >= 1 are accepted.
+//   It is sent as a number in `config.delayer`, populated from the stored link/preset on edit, copied by "Apply preset", and
+//   included in "Save as preset". The Links list summary only shows the mean delay (no other delay parameter), so it does
+//   not show the initialization rate either (not pinned).
 //
 // ## v10: directed links (supersedes every "two ports / two configs / Direction d" statement below)
 // A link is ONE direction: `interface Link { id: number; name: string; ingress: string; egress: string;
@@ -71,8 +96,8 @@
 // - Buttons "Start" and "Stop". Start enabled in stopped|failed; Stop enabled in starting|running.
 //   Both disabled otherwise and while their own request is in flight. API error -> `role="alert"`.
 // - failed: `emulation.error` visible + each `log_tail` line visible inside `data-testid="log-tail"`.
-// - Per direction (from `stats.directions`) a card `data-testid="direction-card-<dir>"` with the link name and
-//   rx/tx device names, and `<dt>`/`<dd>` pairs labelled: "RX rate" (pps and Gb/s), "TX rate", "Loss drops",
+// - A card `data-testid="direction-card-<dir>"` per entry of `stats.directions` (one per link, v10 title above), with
+//   `<dt>`/`<dd>` pairs labelled: "RX rate" (pps and Gb/s), "TX rate", "Loss drops",
 //   "Limiter drops", "Buffer full drops", "NIC TX drops", "NIC RX drops" (the five percentages),
 //   "Mean delay" ("<mean> ± <std>"), "Lateness" (mean and max), "Buffer max" (buffer_len_max), and (v7 F2)
 //   "Delay min / max" ("800.00 µs / 1.30 ms", n/a when null) and "First loss" (reason, detail and
@@ -86,11 +111,11 @@
 //   `data-testid="histogram-error"` (reason inside) in that direction's card instead of the chart; both recover.
 //   The sidebar re-polls `getOnline` at least every 5 s (serially) so "Offline" turns into "v<version>".
 // - v7 F4: rate/drop/histogram charts are wrapped in `role="img"` elements with a non-empty `aria-label` (rate label
-//   differs per direction); the emulation error box is `role="alert"`; `state-badge` sits in `aria-live="polite"` (or
+//   differs per card); the emulation error box is `role="alert"`; `state-badge` sits in `aria-live="polite"` (or
 //   role=status); (v10: cards read "<link>: <rx> → <tx>", see above).
 // - `data-testid="stale-indicator"` with text /stale/i iff the emulation state is `running` AND `stats.stale` AND
 //   `stats.age_ms != null` (v7 F1; the stopped payload `{directions:[],ports:[],stale:true}` shows nothing).
-// - Histogram per direction card: `<Bar>` (`data-testid="chart-bar"`, data.labels.length == bins.length,
+// - Histogram per link card: `<Bar>` (`data-testid="chart-bar"`, data.labels.length == bins.length,
 //   data.datasets[0].data == bins) fetched with `getDelayHistogram(dir)` on every poll, plus text
 //   "Underflow: n" / "Overflow: n". Not rendered, and not fetched, for `delay_stats: false` directions;
 //   a rejected histogram request just leaves the chart out.
@@ -104,20 +129,10 @@
 //   (text /restart/i) iff `getEmulation().pending_restart`.
 // - Delete: modal `role="dialog"` with buttons "Confirm delete" and "Cancel"; only Confirm calls
 //   `deleteLink(id)` and reloads the list; API errors -> `role="alert"`.
-// - Editor labels: "Name", "Number of ports" (select, values "1" | "2", default "2"), "Port A", "Port B"
-//   (selects; options from `getInterfaces`, option text = pci + (netdev) + " - " + reason when unusable;
-//   unusable or kernel_route interfaces are `disabled`; a stored port that is not an interface, e.g. a vdev,
-//   stays selectable as its own option; option value = the pci address / device name; a new link starts with
-//   no port selected and Save does nothing until both are chosen), "Worker lcores" (comma-separated, the edit form
-//   shows them as "7, 2"; empty -> null). v7 F5: next to each picker a text input "Port A (typed)" / "Port B (typed)"
-//   (none for Port B with 1 port); a non-empty typed value wins over the picker and is validated like the controller
-//   (PCI `dddd:bb:dd.f` with function 0-7, or `net_(null|ring)<digits>`; nothing else, e.g. no net_pcap and no
-//   `,key=value`): invalid -> role="alert" mentioning "port", no request. Seeds are kept as strings: a seed above
-//   2^53-1 -> role="alert" mentioning "seed", no request. Per direction a `<fieldset>` (role group) whose legend (v7 F4)
-//   reads "Direction d: <rx> → <tx>" (d 0-based; rx/tx from the chosen ports, loopback p → p) containing
-//   (validation messages are prefixed with the same "Direction d: "):
-//   "Delay distribution" (values = enum names), "Mean delay (ns)", "Delay std (ns)", "Activate correlation",
-//   "Half-life period (ns)", "Limiter active", "Limiter mode", "Rate (bit/s)", "Burst limit (bit)",
+// - Config form fields (the v10 block above says where the form lives; seeds are kept as strings: a seed above 2^53-1 ->
+//   role="alert" mentioning "seed", no request): "Delay distribution" (values = enum names), "Mean delay (ns)",
+//   "Delay std (ns)", "Activate correlation", "Half-life period (ns)", "Initialization rate (pps)" (v12), "Limiter
+//   active", "Limiter mode", "Rate (bit/s)", "Burst limit (bit)",
 //   "Loss model" (values Random | GilbertElliot), Random: "Random loss probability"; Gilbert-Elliot:
 //   "Gilbert-Elliot p", "... r", "... k", "... h", "Gilbert-Elliot starts in good state" (only the fields of
 //   the selected model are rendered), "Buffer capacity", "Reordering", "Seed" (empty -> null),
@@ -158,7 +173,7 @@
 //   (-> /presets/new); per row link "Edit <name>" (-> /presets/<id>) and button "Delete <name>" -> modal
 //   role=dialog with "Confirm delete" / "Cancel"; only Confirm calls deletePreset(id) and reloads. API errors -> role=alert.
 //   Editor (routes /presets/new "New preset", /presets/:id "Edit preset"): text inputs "Name" and "Description",
-//   then exactly ONE per-direction config form (same labels as the link editor: "Mean delay (ns)", ...), buttons
+//   then exactly ONE config form (same labels as the link editor: "Mean delay (ns)", ...), buttons
 //   "Save" / link "Cancel". Save -> createPreset / updatePreset(id) with {name, description, config} (config built by
 //   the same validation as the link editor; an empty description is sent as null/absent) then navigate to /presets.
 //   Empty name or an invalid config -> role=alert, no request. API error -> role=alert with the message, stays, values kept.
@@ -181,7 +196,7 @@
 //   with "<n> links" and "<m> presets" (counts from the reply), settings form reloaded. 400/409 -> the API message in a
 //   role=alert. Not JSON -> role=alert mentioning JSON, no dialog, no request. The input is enabled only while the
 //   emulation is `stopped` (getEmulation); otherwise it is disabled and `data-testid="import-hint"` (text /stop/i) shows.
-// ### Dashboard histogram (histogramExtras.test.tsx), inside each direction card with a histogram
+// ### Dashboard histogram (histogramExtras.test.tsx), inside each link card with a histogram
 //   select "Histogram window" (options "Since start" | "10 s" | "60 s" | "300 s", values "0"|"10"|"60"|"300"); a change
 //   refetches immediately and every later poll of that direction keeps the window; other directions are unaffected.
 //   `data-testid="percentiles"` holding <dt>/<dd> pairs "p50", "p90", "p99", "p99.9" (dd = formatDuration, "n/a" for null);
@@ -195,7 +210,8 @@
 // ## Settings (v7 F5): EAL extra arguments are a list, see the header of settings.test.tsx.
 // ## Interfaces / Host hints / Settings: see their test files.
 // ## Static packaging checks (Dockerfile, nginx.conf, docker-compose.yml, F6 leftovers): src/static.test.ts.
-import { render, act } from '@testing-library/react';
+import { render, act, screen } from '@testing-library/react';
+import type { UserEvent } from '@testing-library/user-event';
 import { vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 import App from '../App';
@@ -232,4 +248,14 @@ export function field(scope: HTMLElement, label: string): HTMLElement {
   const dd = dts[0].nextElementSibling;
   if (!dd || dd.tagName !== 'DD') throw new Error(`<dt>${label}</dt> is not followed by a <dd>`);
   return dd as HTMLElement;
+}
+
+/** A valid initialization rate for flows that create a link or preset (v12: new forms start with this field EMPTY). */
+export const TEST_RATE = '10000000';
+
+/** Types `rate` into the (empty or filled) "Initialization rate (pps)" field of the only config form on the page. */
+export async function typeRate(user: UserEvent, rate: string = TEST_RATE): Promise<void> {
+  const el = screen.getByLabelText('Initialization rate (pps)');
+  await user.clear(el);
+  await user.type(el, rate);
 }

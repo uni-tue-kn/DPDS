@@ -2,13 +2,17 @@
 //!
 //! `validate_lcore_count(lcores, num_ports)` (`lcores` counts the main lcore):
 //! Ok only for exactly `1 + num_ports` (main + one worker per direction).
-//! Otherwise `Err(LcoreCount { found, required })`, Display containing the
-//! hint ("1 port needs 2 lcores, e.g. -l 0-1" / "2 ports need 3
-//! lcores, e.g. -l 0-2") and the found count.
+//! Otherwise `Err(LcoreCount { found, required })`, Display counting LINKS
+//! (not ports), for `--links` and for the `--config*` shorthand alike:
+//! "<n> link(s) need <n+1> lcores (main + one worker per link), e.g. -l 0-<n>"
+//! (grammatical number is free: "1 link needs 2 lcores ..." and "1 link(s) need
+//! 2 lcores ..." are both accepted; the word "port" must not appear) and the
+//! found count.
 //!
 //! `validate_port_count(n)`: Ok for 1 or 2, else `Err(PortCount(n))`.
 //!
-//! `egress_port(direction, num_ports)`: 1 port -> 0; 2 ports -> `direction ^ 1`.
+//! The v1 helper `egress_port` (`direction ^ 1`) is gone (spec v12 C4); a
+//! source check below pins that.
 //!
 //! Pool size (N): the pool of a direction is not chosen by the user any more,
 //! it is `required_mbufs(buffer_capacity, rx_desc, tx_desc)` = `capacity + rx +
@@ -17,12 +21,37 @@
 //! `DEFAULT_NUM_MBUFS`, `check_pool` and the "pool too small" error are gone.
 
 use dpds::consts::*;
-use dpds::setup::{
-    egress_port, required_mbufs, validate_lcore_count, validate_port_count, SetupError,
-};
+use dpds::setup::{required_mbufs, validate_lcore_count, validate_port_count, SetupError};
+
+/// Asserts that `msg` is the lcore-count error for `links` links: it counts
+/// links, names `links + 1` lcores, the "main + one worker per link" rule and
+/// the `-l 0-<links>` example.
+fn assert_lcore_message(msg: &str, links: usize, found: usize) {
+    let lcores = links + 1;
+    let singular = format!("{links} link needs {lcores} lcores");
+    let plural = format!("{links} links need {lcores} lcores");
+    let literal = format!("{links} link(s) need {lcores} lcores");
+    assert!(
+        [singular, plural, literal].iter().any(|h| msg.contains(h)),
+        "links {links}: head of {msg:?}"
+    );
+    let tail = format!("lcores (main + one worker per link), e.g. -l 0-{links}");
+    assert!(
+        msg.contains(&tail),
+        "links {links}: tail {tail:?} of {msg:?}"
+    );
+    assert!(
+        !msg.contains("port"),
+        "links {links}: the message counts links, not ports: {msg:?}"
+    );
+    assert!(
+        msg.contains(&found.to_string()),
+        "links {links}: names the found count {found}: {msg:?}"
+    );
+}
 
 #[test]
-fn one_port_needs_exactly_two_lcores() {
+fn one_link_needs_exactly_two_lcores() {
     assert!(validate_lcore_count(2, 1).is_ok());
     for n in [0usize, 1, 3, 4, 64] {
         let err = validate_lcore_count(n, 1).unwrap_err();
@@ -33,17 +62,12 @@ fn one_port_needs_exactly_two_lcores() {
                 required: 2
             }
         );
-        let msg = err.to_string();
-        assert!(
-            msg.contains("1 port needs 2 lcores, e.g. -l 0-1"),
-            "{n}: {msg}"
-        );
-        assert!(msg.contains(&n.to_string()), "{n}: names the count: {msg}");
+        assert_lcore_message(&err.to_string(), 1, n);
     }
 }
 
 #[test]
-fn two_ports_need_exactly_three_lcores() {
+fn two_links_need_exactly_three_lcores() {
     assert!(validate_lcore_count(3, 2).is_ok());
     for n in [0usize, 1, 2, 4, 5, 64] {
         let err = validate_lcore_count(n, 2).unwrap_err();
@@ -54,12 +78,7 @@ fn two_ports_need_exactly_three_lcores() {
                 required: 3
             }
         );
-        let msg = err.to_string();
-        assert!(
-            msg.contains("2 ports need 3 lcores, e.g. -l 0-2"),
-            "{n}: {msg}"
-        );
-        assert!(msg.contains(&n.to_string()), "{n}: names the count: {msg}");
+        assert_lcore_message(&err.to_string(), 2, n);
     }
 }
 
@@ -93,10 +112,14 @@ fn setup_error_is_a_std_error() {
 }
 
 #[test]
-fn egress_port_per_direction() {
-    assert_eq!(egress_port(0, 1), 0, "one port: loopback on port 0");
-    assert_eq!(egress_port(0, 2), 1);
-    assert_eq!(egress_port(1, 2), 0);
+fn the_stale_v1_helper_egress_port_is_gone() {
+    // Directed links name their egress port; `direction ^ 1` has no meaning.
+    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/setup.rs"))
+        .expect("src/setup.rs");
+    assert!(
+        !src.contains("egress_port"),
+        "egress_port must be removed from setup.rs"
+    );
 }
 
 // ── constants ───────────────────────────────────────────────────────
@@ -172,15 +195,12 @@ fn the_size_follows_the_applied_descriptor_counts_not_the_constant() {
 #[test]
 fn each_direction_gets_its_own_size_from_its_own_ports_and_capacity() {
     // 2 ports, ring sizes of the ports differ: direction d reads RX of port d
-    // and TX of port e(d).
+    // and TX of the other port (links port 0 -> 1 and port 1 -> 0).
     let rx = [512u16, 2048];
     let tx = [1024u16, 4096];
     let cap = [1_000usize, 3_000];
-    let sizes: Vec<u64> = (0..2u16)
-        .map(|d| {
-            let e = egress_port(d, 2) as usize;
-            required_mbufs(cap[d as usize], rx[d as usize], tx[e])
-        })
+    let sizes: Vec<u64> = (0..2usize)
+        .map(|d| required_mbufs(cap[d], rx[d], tx[d ^ 1]))
         .collect();
     assert_eq!(sizes[0], 1_000 + 512 + 4096 + 832);
     assert_eq!(sizes[1], 3_000 + 2048 + 1024 + 832);
@@ -218,6 +238,8 @@ fn the_lcore_rule_for_any_number_of_directions_is_one_plus_directions() {
     }
     // a ring of three links: 3 workers, 4 lcores
     let msg = validate_lcore_count(3, 3).unwrap_err().to_string();
-    assert!(msg.contains("4 lcores, e.g. -l 0-3"), "{msg}");
-    assert!(msg.contains('3'), "names the found count: {msg}");
+    assert_lcore_message(&msg, 3, 3);
+    // eight links
+    let msg = validate_lcore_count(2, 8).unwrap_err().to_string();
+    assert_lcore_message(&msg, 8, 2);
 }

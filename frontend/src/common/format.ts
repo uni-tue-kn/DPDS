@@ -1,4 +1,6 @@
 // Display formats shared by the Dashboard and the Interfaces page. Null/undefined print "n/a".
+import type { PortLabeler } from './portLabel';
+
 const NA = 'n/a';
 
 export function formatPps(v?: number | null): string {
@@ -50,6 +52,8 @@ export function formatCount(v?: number | null): string {
 }
 
 /** "name: ingress → egress": the one label the dashboard and the links list share. */
-export function linkLabel(name?: string | null, ingress?: string | null, egress?: string | null): string {
-  return `${name || '?'}: ${ingress || '?'} → ${egress || '?'}`;
+export function linkLabel(
+  name?: string | null, ingress?: string | null, egress?: string | null, label: PortLabeler = (p) => p ?? undefined,
+): string {
+  return `${name || '?'}: ${label(ingress) || '?'} → ${label(egress) || '?'}`;
 }

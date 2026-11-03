@@ -103,6 +103,7 @@ impl Cfg {
                 std_ns: 0.0,
                 activate_correlation: false,
                 half_life_period_ns: 1.0,
+                initialization_rate_pps: 15e6,
             },
             limiter: LimiterConfig {
                 mode,
@@ -364,6 +365,7 @@ fn busy(mode: LimiterMode, reordering: bool, seed: u64) -> Config {
             std_ns: 800.0,
             activate_correlation: false,
             half_life_period_ns: 1.0,
+            initialization_rate_pps: 15e6,
         },
         limiter: LimiterConfig {
             mode,

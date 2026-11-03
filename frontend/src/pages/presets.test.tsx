@@ -4,7 +4,7 @@ import type { UserEvent } from '@testing-library/user-event';
 import type { ConfigDto, PresetInput } from '../api/types';
 import { api, ApiError } from '../test/mockApi';
 import * as fx from '../test/fixtures';
-import { renderApp } from '../test/helpers';
+import { renderApp, TEST_RATE, typeRate } from '../test/helpers';
 
 // Contract: "Presets page" in the v8 block of src/test/helpers.tsx.
 const DISTRIBUTIONS = [
@@ -28,6 +28,9 @@ function expectValidConfig(c: ConfigDto) {
   for (const v of [c.delayer.mean_ns, c.delayer.std_ns, c.delayer.half_life_period_ns, c.limiter.rate_bps, c.limiter.limit_bit]) {
     expect(Number.isFinite(v)).toBe(true);
   }
+  expect(typeof c.delayer.initialization_rate_pps).toBe('number'); // v12: required, finite >= 1
+  expect(Number.isFinite(c.delayer.initialization_rate_pps)).toBe(true);
+  expect(c.delayer.initialization_rate_pps).toBeGreaterThanOrEqual(1);
   expect(['Spacer', 'TokenBucketFilter']).toContain(c.limiter.mode);
   expect(['Random', 'GilbertElliot']).toContain(c.loss_model.type);
   expect(typeof c.delay_stats).toBe('boolean');
@@ -142,6 +145,12 @@ async function fillName(user: UserEvent, name: string) {
   await user.type(lbl('Name'), name);
 }
 
+/** Name plus the initialization rate (a new form starts without one), ready to save. */
+async function fillValid(user: UserEvent, name: string) {
+  await fillName(user, name);
+  await typeRate(user);
+}
+
 function lastCreate(): PresetInput {
   expect(api.createPreset).toHaveBeenCalledTimes(1);
   return api.createPreset.mock.calls[0][0];
@@ -160,7 +169,7 @@ describe('Presets: create', () => {
 
   it('creates a preset with a valid default config and navigates to the list', async () => {
     const user = await openNew();
-    await fillName(user, 'my-preset');
+    await fillValid(user, 'my-preset');
     await user.type(lbl('Description'), 'my description');
     await user.click(save());
     const sent = lastCreate();
@@ -174,7 +183,7 @@ describe('Presets: create', () => {
 
   it('sends edited config fields as typed', async () => {
     const user = await openNew();
-    await fillName(user, 'edited');
+    await fillValid(user, 'edited');
     await user.selectOptions(lbl('Delay distribution'), 'GammaDistribution');
     await user.clear(lbl('Mean delay (ns)'));
     await user.type(lbl('Mean delay (ns)'), '2500');
@@ -191,7 +200,7 @@ describe('Presets: create', () => {
 
   it('an empty description is sent as null or left out', async () => {
     const user = await openNew();
-    await fillName(user, 'nodesc');
+    await fillValid(user, 'nodesc');
     await user.click(save());
     expect(lastCreate().description ?? null).toBeNull();
   });
@@ -213,7 +222,7 @@ describe('Presets: create', () => {
 
   it('refuses a seed above 2^53-1 like the link editor (alert naming the seed, no request)', async () => {
     const user = await openNew();
-    await fillName(user, 'big-seed');
+    await fillValid(user, 'big-seed');
     await user.type(lbl('Seed'), '9007199254740993');
     await user.click(save());
     expect(await screen.findByRole('alert')).toHaveTextContent(/seed/i);
@@ -223,7 +232,7 @@ describe('Presets: create', () => {
   it('shows the API 409 message, stays on the page and keeps the values', async () => {
     api.createPreset.mockRejectedValue(new ApiError(409, 'preset name "dup" already exists'));
     const user = await openNew();
-    await fillName(user, 'dup');
+    await fillValid(user, 'dup');
     await user.type(lbl('Description'), 'keep me');
     await user.click(save());
     expect(await screen.findByRole('alert')).toHaveTextContent('preset name "dup" already exists');
@@ -235,7 +244,7 @@ describe('Presets: create', () => {
   it('shows the API 400 message naming the field', async () => {
     api.createPreset.mockRejectedValue(new ApiError(400, 'config.delayer.std_ns must be >= 0'));
     const user = await openNew();
-    await fillName(user, 'bad');
+    await fillValid(user, 'bad');
     await user.click(save());
     expect(await screen.findByRole('alert')).toHaveTextContent('config.delayer.std_ns must be >= 0');
   });
@@ -266,6 +275,7 @@ describe('Presets: edit', () => {
     expect(lbl('Delay std (ns)')).toHaveValue(300);
     expect(lbl('Activate correlation')).toBeChecked();
     expect(lbl('Half-life period (ns)')).toHaveValue(4000000);
+    expect(lbl('Initialization rate (pps)')).toHaveValue(8000000);
     expect(lbl('Limiter active')).toBeChecked();
     expect(lbl('Limiter mode')).toHaveValue('TokenBucketFilter');
     expect(lbl('Rate (bit/s)')).toHaveValue(40000000000);
@@ -292,6 +302,7 @@ describe('Presets: edit', () => {
     expect(sent.description).toBe('Typical WAN');
     expect(sent.config.delayer.mean_ns).toBe(4242);
     expect(sent.config.delayer.distribution).toBe('GammaDistribution');
+    expect(sent.config.delayer.initialization_rate_pps).toBe(8000000); // v12: the stored value goes back
     expect(sent.config.buffer_capacity).toBe(5000);
     expect(sent.config.seed).toBe(42);
     expect(api.createPreset).not.toHaveBeenCalled();
@@ -310,5 +321,77 @@ describe('Presets: edit', () => {
     api.getPreset.mockRejectedValue(new ApiError(404, 'preset 9 does not exist'));
     renderApp('/presets/9');
     expect(await screen.findByRole('alert')).toHaveTextContent('preset 9 does not exist');
+  });
+});
+
+// v12 (spec12 part B): same required field as in the link editor ("v12" block of src/test/helpers.tsx).
+describe('Presets: initialization rate (v12)', () => {
+  const RATE = 'Initialization rate (pps)';
+
+  it('a new preset shows the number field once, in the config form, and it starts EMPTY (no preset value)', async () => {
+    await openNew();
+    expect(screen.getAllByLabelText(RATE)).toHaveLength(1);
+    expect(lbl(RATE)).toHaveAttribute('type', 'number');
+    expect(lbl(RATE)).toHaveValue(null);
+    expect(lbl(RATE)).toHaveDisplayValue('');
+  });
+
+  it('saving the untouched form (name given, rate never entered) is refused: alert naming the field, no request', async () => {
+    const user = await openNew();
+    await fillName(user, 'no-rate');
+    await user.click(save());
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Initialization rate \(pps\)/);
+    expect(api.createPreset).not.toHaveBeenCalled();
+  });
+
+  it('typing a rate into the empty form makes it saveable (shared helper path)', async () => {
+    const user = await openNew();
+    await fillValid(user, 'with-rate');
+    expect(lbl(RATE)).toHaveValue(Number(TEST_RATE));
+    await user.click(save());
+    expect(lastCreate().config.delayer.initialization_rate_pps).toBe(Number(TEST_RATE));
+  });
+
+  it('sends the typed value as a number, also with correlation off', async () => {
+    const user = await openNew();
+    await fillName(user, 'typed');
+    expect(lbl('Activate correlation')).not.toBeChecked();
+    await user.clear(lbl(RATE));
+    await user.type(lbl(RATE), '3000000');
+    await user.click(save());
+    const sent = lastCreate().config.delayer.initialization_rate_pps;
+    expect(sent).toBe(3000000);
+    expect(typeof sent).toBe('number');
+  });
+
+  it.each(['', '0', '0.5', '-3'])('refuses "%s": alert naming the field, no request', async (v) => {
+    const user = await openNew();
+    await fillName(user, 'bad');
+    await user.clear(lbl(RATE));
+    if (v !== '') await user.type(lbl(RATE), v);
+    await user.click(save());
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Initialization rate \(pps\)/);
+    expect(api.createPreset).not.toHaveBeenCalled();
+  });
+
+  it('accepts exactly 1', async () => {
+    const user = await openNew();
+    await fillName(user, 'one');
+    await user.clear(lbl(RATE));
+    await user.type(lbl(RATE), '1');
+    await user.click(save());
+    expect(lastCreate().config.delayer.initialization_rate_pps).toBe(1);
+  });
+
+  it('edit: a changed value is sent by PUT', async () => {
+    const user = userEvent.setup();
+    api.getPreset.mockImplementation(async () => fx.preset({ id: 1, name: 'wan-100ms', config: fx.config2() }));
+    renderApp('/presets/1');
+    await screen.findByRole('heading', { level: 1, name: 'Edit preset' });
+    await waitFor(() => expect(lbl('Name')).toHaveValue('wan-100ms'));
+    await user.clear(lbl(RATE));
+    await user.type(lbl(RATE), '5000000');
+    await user.click(save());
+    expect(api.updatePreset.mock.calls[0][1].config.delayer.initialization_rate_pps).toBe(5000000);
   });
 });

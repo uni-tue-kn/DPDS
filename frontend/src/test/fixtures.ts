@@ -14,7 +14,7 @@ export function config(over: Partial<ConfigDto> = {}): ConfigDto {
     reordering: false,
     delayer: {
       distribution: 'NormalDistribution', mean_ns: 1000, std_ns: 10,
-      activate_correlation: false, half_life_period_ns: 0,
+      activate_correlation: false, half_life_period_ns: 0, initialization_rate_pps: 12500000,
     },
     limiter: { mode: 'Spacer', activate: false, rate_bps: 1e9, limit_bit: 0 },
     loss_model: { type: 'Random', p: 0 },
@@ -25,6 +25,9 @@ export function config(over: Partial<ConfigDto> = {}): ConfigDto {
   };
 }
 
+// v12: every delayer carries `initialization_rate_pps` (required), with a distinct value per config; none of them is
+// the old hard-coded 15 Mpps, so a UI that falls back to a constant instead of using the stored value is caught.
+
 /** Second config: everything different from `config()`. */
 export function config2(): ConfigDto {
   return {
@@ -32,7 +35,7 @@ export function config2(): ConfigDto {
     reordering: true,
     delayer: {
       distribution: 'GammaDistribution', mean_ns: 2500, std_ns: 300,
-      activate_correlation: true, half_life_period_ns: 4000000,
+      activate_correlation: true, half_life_period_ns: 4000000, initialization_rate_pps: 8000000,
     },
     limiter: { mode: 'TokenBucketFilter', activate: true, rate_bps: 40000000000, limit_bit: 120000 },
     loss_model: { type: 'GilbertElliot', p: 0.01, r: 0.2, k: 0.9, h: 0.3, state_is_good: false },
@@ -49,7 +52,7 @@ export function config3(): ConfigDto {
     reordering: true,
     delayer: {
       distribution: 'LogNormalDistribution', mean_ns: 7777, std_ns: 777,
-      activate_correlation: false, half_life_period_ns: 555,
+      activate_correlation: false, half_life_period_ns: 555, initialization_rate_pps: 2500000,
     },
     limiter: { mode: 'Spacer', activate: true, rate_bps: 5000000000, limit_bit: 64000 },
     loss_model: { type: 'Random', p: 0.25 },

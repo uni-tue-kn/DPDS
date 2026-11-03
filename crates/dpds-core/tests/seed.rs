@@ -27,6 +27,7 @@ fn config(seed: Option<u64>, reordering: bool, loss: LossModel, correlation: boo
             std_ns: 1e5,
             activate_correlation: correlation,
             half_life_period_ns: 4000.0,
+            initialization_rate_pps: 15e6,
         },
         limiter: LimiterConfig {
             mode: LimiterMode::Spacer,

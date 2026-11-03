@@ -273,7 +273,8 @@ pub fn config_full(
             "mean_ns": delay_ns,
             "std_ns": 0.0,
             "activate_correlation": false,
-            "half_life_period_ns": 1.0
+            "half_life_period_ns": 1.0,
+            "initialization_rate_pps": 15000000.0
         },
         "limiter": {
             "mode": "Spacer",
@@ -311,7 +312,8 @@ pub fn config_general(
             "mean_ns": mean_ns,
             "std_ns": std_ns,
             "activate_correlation": false,
-            "half_life_period_ns": 1.0
+            "half_life_period_ns": 1.0,
+            "initialization_rate_pps": 15000000.0
         },
         "limiter": {
             "mode": mode,

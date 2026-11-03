@@ -755,12 +755,12 @@ describe('Dashboard: accessibility and labels (F4)', () => {
     expect(badge.closest('[aria-live="polite"], [role="status"]')).not.toBeNull();
   });
 
-  it('cards are titled "<link>: <ingress> -> <egress>"', async () => {
+  it('cards are titled "<link>: <ingress label> -> <egress label>" (v12: PCI address and netdev)', async () => {
     renderApp('/');
     const c0 = await screen.findByTestId('direction-card-0');
     const c1 = await screen.findByTestId('direction-card-1');
-    expect(within(c0).getByText('a-b: 0000:65:00.0 → 0000:65:00.1')).toBeInTheDocument();
-    expect(within(c1).getByText('b-a: 0000:65:00.1 → 0000:65:00.0')).toBeInTheDocument();
+    expect(await within(c0).findByText('a-b: 0000:65:00.0 (enp101s0f0) → 0000:65:00.1 (enp101s0f1)')).toBeInTheDocument();
+    expect(await within(c1).findByText('b-a: 0000:65:00.1 (enp101s0f1) → 0000:65:00.0 (enp101s0f0)')).toBeInTheDocument();
   });
 
   it('the old "Direction d: rx -> tx" title is gone', async () => {
@@ -800,5 +800,158 @@ describe('Dashboard: accessibility and labels (F4)', () => {
     await waitFor(() => expect(api.getDelayHistogram).toHaveBeenCalledWith(1));
     expect(api.getDelayHistogram).toHaveBeenCalledWith(0);
     for (const call of api.getDelayHistogram.mock.calls) expect(typeof call[0]).toBe('number');
+  });
+});
+
+describe('Dashboard: port labels with interface names (v12)', () => {
+  const AB = 'a-b: 0000:65:00.0 (enp101s0f0) → 0000:65:00.1 (enp101s0f1)';
+  const PLAIN_AB = 'a-b: 0000:65:00.0 → 0000:65:00.1';
+
+  it('the card title shows PCI address and netdev of ingress and egress (one element, whole label)', async () => {
+    api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0)]));
+    renderApp('/');
+    const card = await screen.findByTestId('direction-card-0');
+    const title = await within(card).findByText(AB);
+    expect(title.textContent).toBe(AB);
+  });
+
+  it('a hairpin on a real NIC shows the label twice', async () => {
+    api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0, { link: 'hair', rx: '0000:65:00.1', tx: '0000:65:00.1' })]));
+    renderApp('/');
+    expect(await screen.findByText('hair: 0000:65:00.1 (enp101s0f1) → 0000:65:00.1 (enp101s0f1)')).toBeInTheDocument();
+  });
+
+  it('a vdev port shows only its device name, next to a NIC with a name', async () => {
+    api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0, { link: 'mix', rx: 'net_null0', tx: '0000:65:00.0' })]));
+    renderApp('/');
+    expect(await screen.findByText('mix: net_null0 → 0000:65:00.0 (enp101s0f0)')).toBeInTheDocument();
+  });
+
+  it('a NIC without netdev (vfio-bound) shows only its PCI address', async () => {
+    api.getInterfaces.mockResolvedValue([
+      fx.iface({ pci: '0000:65:00.0', netdev: null }),
+      fx.iface({ pci: '0000:65:00.1', netdev: 'enp101s0f1' }),
+    ]);
+    api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0)]));
+    renderApp('/');
+    expect(await screen.findByText('a-b: 0000:65:00.0 → 0000:65:00.1 (enp101s0f1)')).toBeInTheDocument();
+  });
+
+  it('a port missing from the interface list shows only its name', async () => {
+    api.getInterfaces.mockResolvedValue([fx.iface({ pci: '0000:65:00.1', netdev: 'enp101s0f1' })]);
+    api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0)]));
+    renderApp('/');
+    expect(await screen.findByText('a-b: 0000:65:00.0 → 0000:65:00.1 (enp101s0f1)')).toBeInTheDocument();
+  });
+
+  it('without rx/tx in the stats entry the plan of the emulation supplies the ports (labelled the same way)', async () => {
+    api.getEmulation.mockResolvedValue(fx.emulation('running'));
+    api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0, { link: null, rx: null, tx: null })]));
+    renderApp('/');
+    expect(await screen.findByText(AB)).toBeInTheDocument();
+  });
+
+  it('a failing getInterfaces falls back to device names: no alert, no warning, cards unaffected', async () => {
+    api.getInterfaces.mockRejectedValue(new ApiError(500, 'sysfs unreadable'));
+    api.getStats.mockResolvedValue(twoDirections());
+    renderApp('/');
+    expect(await screen.findByText(PLAIN_AB)).toBeInTheDocument();
+    expect(screen.getByText('b-a: 0000:65:00.1 → 0000:65:00.0')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('stats-warning')).not.toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent(/sysfs unreadable/);
+    expect(within(screen.getByTestId('direction-card-0')).getByText('RX rate')).toBeInTheDocument();
+  });
+
+  it('a slow interface list does not hold the cards back: plain names first, then the labels', async () => {
+    const d = deferred<ReturnType<typeof fx.interfaces>>();
+    api.getInterfaces.mockReturnValue(d.promise);
+    api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0)]));
+    renderApp('/');
+    expect(await screen.findByText(PLAIN_AB)).toBeInTheDocument();
+    d.resolve(fx.interfaces());
+    expect(await screen.findByText(AB)).toBeInTheDocument();
+    expect(screen.queryByText(PLAIN_AB)).not.toBeInTheDocument();
+  });
+
+  it('the interface list is fetched once per page load, not on every poll', async () => {
+    vi.useFakeTimers();
+    api.getEmulation.mockResolvedValue(fx.emulation('running'));
+    api.getStats.mockResolvedValue(twoDirections());
+    renderApp('/');
+    await tick(0);
+    await tick(0);
+    expect(api.getInterfaces).toHaveBeenCalledTimes(1);
+    const polls = api.getStats.mock.calls.length;
+    await tick(10000);
+    expect(api.getStats.mock.calls.length).toBeGreaterThanOrEqual(polls + 4); // polling went on...
+    expect(api.getInterfaces).toHaveBeenCalledTimes(1); // ...without asking for interfaces again
+    expect(screen.getByText(AB)).toBeInTheDocument();
+  });
+
+  it('a failed interface fetch is not retried on every poll either', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    api.getInterfaces.mockRejectedValue(new ApiError(500, 'sysfs unreadable'));
+    api.getEmulation.mockResolvedValue(fx.emulation('running'));
+    api.getStats.mockResolvedValue(twoDirections());
+    renderApp('/');
+    await tick(0);
+    await tick(10000);
+    expect(api.getInterfaces).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(PLAIN_AB)).toBeInTheDocument();
+  });
+
+  describe('NIC ports table', () => {
+    const portNames = (table: HTMLElement) => within(table).getAllByRole('rowheader').map((h) => h.textContent?.trim());
+
+    it('the first column shows PCI address and netdev', async () => {
+      api.getStats.mockResolvedValue(
+        fx.stats([fx.dirStats(0)], { ports: [fx.portStats(0), fx.portStats(1, { name: '0000:65:00.1' })] }),
+      );
+      renderApp('/');
+      const table = await screen.findByTestId('ports-table');
+      await waitFor(() => expect(portNames(table)).toEqual([
+        '0000:65:00.0 (enp101s0f0)', '0000:65:00.1 (enp101s0f1)',
+      ]));
+    });
+
+    it('a vdev port, a port without netdev and an unknown PCI address keep their plain name', async () => {
+      api.getInterfaces.mockResolvedValue([
+        fx.iface({ pci: '0000:65:00.0', netdev: null }),
+        fx.iface({ pci: '0000:65:00.1', netdev: 'enp101s0f1' }),
+      ]);
+      api.getStats.mockResolvedValue(
+        fx.stats([fx.dirStats(0)], {
+          ports: [
+            fx.portStats(0), // vfio-bound, no netdev
+            fx.portStats(1, { name: 'net_null0' }), // vdev
+            fx.portStats(2, { name: '0000:b3:00.0' }), // not in the list
+            fx.portStats(3, { name: '0000:65:00.1' }), // with a netdev, so that the labels have loaded
+          ],
+        }),
+      );
+      renderApp('/');
+      const table = await screen.findByTestId('ports-table');
+      await waitFor(() => expect(portNames(table)).toContain('0000:65:00.1 (enp101s0f1)'));
+      expect(portNames(table)).toEqual(['0000:65:00.0', 'net_null0', '0000:b3:00.0', '0000:65:00.1 (enp101s0f1)']);
+    });
+
+    it('still falls back to the port number without a name and with a failing interface fetch', async () => {
+      api.getInterfaces.mockRejectedValue(new ApiError(500, 'sysfs unreadable'));
+      api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0)], { ports: [fx.portStats(7, { name: null })] }));
+      renderApp('/');
+      const table = await screen.findByTestId('ports-table');
+      expect(within(table).getAllByRole('row')[1].textContent).toMatch(/\b7\b/);
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    });
+
+    it('with a failing interface fetch the names are the plain device names', async () => {
+      api.getInterfaces.mockRejectedValue(new ApiError(500, 'sysfs unreadable'));
+      api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0)], { ports: [fx.portStats(0)] }));
+      renderApp('/');
+      const table = await screen.findByTestId('ports-table');
+      expect(portNames(table)).toEqual(['0000:65:00.0']);
+    });
   });
 });

@@ -4,6 +4,7 @@ import * as api from '../api/client';
 import ErrorAlert from '../components/ErrorAlert';
 import { errorMessage } from '../common/format';
 import { startPolling } from '../common/polling';
+import { usePortLabeler } from '../common/portLabel';
 import DirectionCard from './DirectionCard';
 import PortsTable from './PortsTable';
 import type { Sample } from './DirectionCard';
@@ -35,6 +36,7 @@ export default function Dashboard() {
   const [dismissed, setDismissed] = useState<string>();
   const [actionError, setActionError] = useState<string>();
   const [busy, setBusy] = useState<'start' | 'stop'>();
+  const label = usePortLabeler();
 
   useEffect(() => {
     let alive = true;
@@ -144,9 +146,9 @@ export default function Dashboard() {
         </pre>
       )}
       {stats?.directions.map((d) => (
-        <DirectionCard key={d.dir} stats={d} plan={plan(d.dir)} history={history[d.dir] ?? []} />
+        <DirectionCard key={d.dir} stats={d} plan={plan(d.dir)} label={label} history={history[d.dir] ?? []} />
       ))}
-      {stats && stats.ports.length > 0 && <PortsTable ports={stats.ports} />}
+      {stats && stats.ports.length > 0 && <PortsTable ports={stats.ports} label={label} />}
     </>
   );
 }

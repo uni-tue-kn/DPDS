@@ -63,10 +63,16 @@ is derived from the configured `half_life_period_ns` and the measured packet
 rate, so the *effective* correlation half-life stays constant in wall-clock time
 regardless of how fast packets arrive. The rate is re-estimated every 1 ms. The
 smoothed delay starts at `mean_ns`, and the delay spread uses the weight of the
-15 Mpps initialisation rate from the first packet on.
+configured `initialization_rate_pps` from the first packet on, until the first
+1 ms estimate replaces it. There is no built-in rate: the field is required in
+every config. Set it to the expected packet rate of the link, e.g.
+`rate_bps / ((frame_bytes + 20) * 8)` for a link running at `rate_bps` (the
+limiter counts 20 bytes of preamble, start delimiter and inter-packet gap per
+packet), about 8.1 Mpps for 100 Gb/s with 1518 byte frames.
 
-`try_new` validates the initial parameters: `half_life_period_ns` must be
-finite and not negative, and with correlation active it must not be so long
+`try_new` validates the initial parameters: `initialization_rate_pps` must be
+finite and at least 1 (with or without correlation), `half_life_period_ns` must
+be finite and not negative, and with correlation active it must not be so long
 that the weight at the initialisation rate reaches 1. A huge finite half-life
 combined with a measured rate far above the initialisation rate can still make
 a later rate update fail, which panics in `delayer_sample_ns`.
@@ -102,7 +108,7 @@ pops packets. Everything is in `dpds_core::buffer` and the crate root:
 | --------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
 | `Config::from_file(path) -> Result<Config, ConfigError>` (`json`)     | Parse a JSON config file (see below). I/O and parse errors are distinct variants. |
 | `Buffer::new(config) -> Buffer`                                       | Create a buffer for the given config; panics on invalid parameters.              |
-| `Buffer::try_new(config) -> Result<Buffer, BuildError>`               | Same, but invalid delay distribution parameters, a negative/NaN/infinite (or, with correlation, absurdly long) `half_life_period_ns` or an unallocatable `buffer_capacity` are an error naming the parameter. |
+| `Buffer::try_new(config) -> Result<Buffer, BuildError>`               | Same, but invalid delay distribution parameters, a negative/NaN/infinite (or, with correlation, absurdly long) `half_life_period_ns` or an unallocatable `buffer_capacity`, or an `initialization_rate_pps` that is not finite or below 1, are an error naming the parameter. |
 | `Buffer::push(&mut self, pkt: *mut c_void, len_byte: u32, now_ns: f64) -> bool` | Offer a packet. Returns `false` if it was dropped or the buffer was full.  |
 | `Buffer::push_outcome(&mut self, pkt, len_byte, now_ns) -> PushOutcome` | Like `push`, but says why a packet was rejected and when an accepted one leaves: `Accepted { send_time_ns }`, `Lost`, `LimiterDrop` or `BufferFull` (**API change: addition**, `push` is a wrapper of it; see the precedence below). |
 | `Buffer::pop_due(&mut self, now_ns: f64) -> Option<*mut c_void>`      | Pop the head packet iff its send time (as `front_time` reports it) is `<= now_ns`. |
@@ -125,8 +131,9 @@ reports for the entry (in reordering mode including the 1/64 ns tie offsets).
 `push` and the draws of the random number generators are unchanged.
 
 `BuildError` implements `std::error::Error`; its message names the offending
-parameter (`mean_ns`, `std_ns`, `half_life_period_ns`, `buffer_capacity`).
-`BuildError` gained the `HalfLifePeriod` variant (API change for code that
+parameter (`mean_ns`, `std_ns`, `half_life_period_ns`,
+`initialization_rate_pps`, `buffer_capacity`). `BuildError` gained the
+`HalfLifePeriod` and `InitializationRate` variants (API change for code that
 matches it exhaustively).
 
 A typical host loop reads the clock once per iteration, pushes the arriving
@@ -157,6 +164,13 @@ for _ in 0..32 {
 > dereference them. The caller must keep each pushed pointer valid until it is
 > popped. `Buffer` is not `Send` because of those pointers; a host that moves
 > it to another thread must vouch that it owns the packets.
+
+## Required initialization rate
+
+**API change:** `DelayerConfig.initialization_rate_pps` is a new required public
+field (no serde default, no built-in rate), so every `DelayerConfig { .. }`
+struct literal and every JSON config needs it. See "Delay correlation" for how
+to choose it.
 
 ## Seeding
 
@@ -196,7 +210,8 @@ in [`config.example.json`](config.example.json):
     "mean_ns": 5000000.0,
     "std_ns": 500000.0,
     "activate_correlation": true,
-    "half_life_period_ns": 50000000.0
+    "half_life_period_ns": 50000000.0,
+    "initialization_rate_pps": 81000.0
   },
   "limiter": {
     "mode": "TokenBucketFilter",
@@ -228,6 +243,7 @@ in [`config.example.json`](config.example.json):
 | `mean_ns`              | float  | Mean delay in nanoseconds.                                                                                                     |
 | `std_ns`               | float  | Standard deviation of the delay in nanoseconds (ignored for `DeterministicDistribution`).                                      |
 | `activate_correlation` | bool   | Enable UTEMA autocorrelation of successive delays.                                                                             |
+| `initialization_rate_pps` | float | Required. Packet rate in packets per second the correlated delay starts with, until the first 1 ms rate estimate replaces it. Use the expected packet rate of the link (about 8.1 Mpps for 100 Gb/s with 1518 byte frames). Finite and at least 1, checked whether or not correlation is active. |
 | `half_life_period_ns`  | float  | Correlation half-life in nanoseconds (only used when correlation is active). Must be finite and not negative (0 is valid), whether or not correlation is active. With correlation, a half-life so long that its smoothing weight is not below 1 is rejected. |
 
 **`limiter`**

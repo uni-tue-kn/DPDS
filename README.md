@@ -381,7 +381,11 @@ naming it.
   the role. Every device DPDK probes must be used by some link (as ingress, as
   egress or both), otherwise startup fails naming it: allow only the devices you
   use. A port that is only an egress is never polled; one that is only an ingress
-  never transmits.
+  never transmits. The RX queue of an egress-only port is never polled, so any
+  traffic that arrives on that wire fills its ring and then shows up as NIC
+  `imissed` (mlx5: `rx_out_of_buffer`) for that port, and with telemetry in
+  `/nic/hw_first_loss,<port>`. Keep that wire free of traffic, or expect those
+  counters to rise.
 - **`name`**: 1 to 32 characters of `[A-Za-z0-9_.-]`, unique. It appears in
   `/dpds/ports` and in error messages. (With `--config*` the links are named
   `dir0` and `dir1`.)
@@ -438,7 +442,8 @@ printf '{"links":[{"name":"a-to-b","ingress":"net_null0","egress":"net_null1","c
 
 The emulation behaviour is controlled by one JSON config per link (a file for
 `--config`, `--config0`, `--config1`, the `config` object of a link in `--links`). The `config.json` in this repository is a
-working default (10 ms normally distributed delay, no rate limit, no loss);
+working default (10 ms normally distributed delay, no rate limit, no loss,
+`initialization_rate_pps` for 100 Gb/s with 1518 byte frames);
 `config.vdev.json` is the same with a small `buffer_capacity` for the
 [virtual-device examples](#without-hardware-virtual-devices). Example with
 the Spacer enabled, bursty loss and a fixed seed:
@@ -453,7 +458,8 @@ the Spacer enabled, bursty loss and a fixed seed:
     "mean_ns": 5000000.0,
     "std_ns": 500000.0,
     "activate_correlation": true,
-    "half_life_period_ns": 50000000.0
+    "half_life_period_ns": 50000000.0,
+    "initialization_rate_pps": 810000.0
   },
   "limiter": {
     "mode": "Spacer",
@@ -483,6 +489,7 @@ complete example in
 | `delayer.mean_ns`, `delayer.std_ns` | Mean and standard deviation of the delay in ns (`std_ns` is ignored for `DeterministicDistribution`)                          |
 | `delayer.activate_correlation`     | `true` · `false`: autocorrelation of successive delays                                                                        |
 | `delayer.half_life_period_ns`      | Correlation half-life in ns (finite, not negative; not absurdly long)                                                                        |
+| `delayer.initialization_rate_pps`  | Required, no default: expected packet rate of the link in packets per second (finite, at least 1); the correlated delay starts with it until the first 1 ms rate estimate. About 8.1 Mpps for 100 Gb/s with 1518 byte frames |
 | `limiter.mode`                     | `Spacer` · `TokenBucketFilter`                                                                                                |
 | `limiter.activate`                 | `true` · `false`: when `false` the limiter is a no-op                                                                         |
 | `limiter.rate_bps`                 | Target rate in bits per second                                                                                                |
@@ -666,7 +673,14 @@ the default; `--stable` only prints that no Rust stable release exists yet.
   `/api/stats/{dir}/delay_histogram`; per link, rx statistics come from the ingress port and tx
   statistics from the egress port. Hugepage and isolated-core hints count one pool and one core
   per link. A state file with the older two-port link shape is refused at startup with an error
-  naming the file; re-create the links.
+  naming the file; re-create the links. Link names are checked again when the emulation starts.
+  The setup must fit `dpds`' 256-entry telemetry dict, `3 + 5 * distinct ports + 10 * links <= 256`
+  (for example 16 links over 16 ports, but not 17): create, update, import and start refuse a
+  setup above it with 400 naming 256.
+- **Config**: every link and preset carries the full `dpds-core` config (see
+  [Configuration](#configuration)), including `delayer.initialization_rate_pps`, which is required
+  and has no default (400 naming the field when missing, not finite or below 1). Set it to the
+  expected packet rate of the link. It is part of presets, export/import and the links file.
 - **Frontend**: `http://<host>:8080` (`DPDS_FRONTEND_PORT`). Pages for the dashboard (start/stop, per-link rates, drop
   shares per cause, delay statistics and histogram), links, interfaces, host hints and settings.
 - **REST API**: served by the controller on port 8100 (`/api/...`); the frontend proxies it. The

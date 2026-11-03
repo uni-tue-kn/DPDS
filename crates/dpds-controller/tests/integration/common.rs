@@ -35,7 +35,7 @@
 //! }
 //! pub mod dto {         // ConfigDto: named-field mirror of dpds_core::Config
 //!     // JSON: {buffer_capacity, reordering, delayer{distribution,mean_ns,std_ns,
-//!     //   activate_correlation,half_life_period_ns}, limiter{mode,activate,rate_bps,limit_bit},
+//!     //   activate_correlation,half_life_period_ns,initialization_rate_pps}, limiter{mode,activate,rate_bps,limit_bit},
 //!     //   loss_model: {"type":"Random","p":f} | {"type":"GilbertElliot","p","r","k","h",
 //!     //   "state_is_good": bool (optional, default true)}, seed: u64|null (optional)}
 //!     // distribution / mode are the dpds_core enum variant names as strings.
@@ -124,6 +124,18 @@
 //!                                                                    // OpenAPI JSON at /api/openapi.json
 //! }
 //! ```
+//!
+//! # Spec v12 additions
+//!
+//! - `delayer.initialization_rate_pps` is REQUIRED in every `ConfigDto` (no default, serde error
+//!   naming the field -> 400), validated like `dpds_core` does (finite, >= 1, else 400 naming the
+//!   field), stored, exported/imported, part of presets and written into the links file.
+//! - `launch_plan` re-validates link names (the create rules: 1..=32 characters of `A-Za-z0-9_.-`,
+//!   unique) and the dpds telemetry dict limit `3 + 5 * distinct ports + 10 * links <= 256`
+//!   (the message names `256`); the same limit is checked on create, update and import.
+//! - `check_version`: for a version other than 2 the message names the supported version 2; only
+//!   for version 1 it keeps the hint about the old paired links.
+//! - OpenAPI `worker` of `Link`, `LinkInput` and `ExportLink` has `minimum: 0`.
 //!
 //! # HTTP contract the API tests assume (beyond the spec text)
 //!
@@ -610,7 +622,8 @@ pub fn cfg_json(mean_ns: f64, std_ns: f64) -> Value {
             "mean_ns": mean_ns,
             "std_ns": std_ns,
             "activate_correlation": false,
-            "half_life_period_ns": 1000000.0
+            "half_life_period_ns": 1000000.0,
+            "initialization_rate_pps": 15000000.0
         },
         "limiter": { "mode": "Spacer", "activate": false, "rate_bps": 1.0e9, "limit_bit": 1.0e6 },
         "loss_model": { "type": "Random", "p": 0.0 }

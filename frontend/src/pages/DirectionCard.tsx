@@ -8,6 +8,7 @@ import {
   errorMessage, formatBps, formatDuration, formatInt, formatPct, formatPps, linkLabel,
 } from '../common/format';
 import * as api from '../api/client';
+import type { PortLabeler } from '../common/portLabel';
 import type { DirectionPlan, DirectionStats, HistogramView, Percentiles as PercentilesDto } from '../api/types';
 
 /** One sample of the rate/drop charts (taken at every stats poll). */
@@ -166,9 +167,10 @@ function Histogram({ dir }: { dir: number }) {
   );
 }
 
-export default function DirectionCard({ stats, plan, history }: {
+export default function DirectionCard({ stats, plan, label, history }: {
   stats: DirectionStats;
   plan?: DirectionPlan;
+  label: PortLabeler;
   history: Sample[];
 }) {
   const labels = history.map((s) => new Date(s.t).toLocaleTimeString());
@@ -198,7 +200,7 @@ export default function DirectionCard({ stats, plan, history }: {
   return (
     <Card className="mb-3" data-testid={`direction-card-${stats.dir}`}>
       <Card.Header className="d-flex justify-content-between align-items-center">
-        <span>{linkLabel(stats.link ?? plan?.link, rx, tx)}</span>
+        <span>{linkLabel(stats.link ?? plan?.link, rx, tx, label)}</span>
         {plan && <Badge pill bg="light" text="dark">lcore {plan.lcore}</Badge>}
       </Card.Header>
       <Card.Body>

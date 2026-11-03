@@ -30,6 +30,7 @@
 //!         std_ns: 0.0,
 //!         activate_correlation: false,
 //!         half_life_period_ns: 1.0,
+//!         initialization_rate_pps: 1e6, // expected packet rate of the link
 //!     },
 //!     limiter: LimiterConfig {
 //!         mode: LimiterMode::Spacer,
@@ -61,6 +62,12 @@
 //! precedence is loss model, limiter, capacity), and
 //! [`Buffer::pop_due_with_time`](buffer::Buffer::pop_due_with_time) also returns
 //! the send time of the popped packet.
+//!
+//! **API change:** `DelayerConfig.initialization_rate_pps` is a new required
+//! public field (no serde default, no built-in rate): every `DelayerConfig { .. }`
+//! struct literal and every JSON config needs it. [`Delayer::try_new`](delayer::Delayer::try_new)
+//! and [`Buffer::try_new`](buffer::Buffer::try_new) reject a value that is not
+//! finite or below 1 with [`BuildError::InitializationRate`].
 //!
 //! ## Ownership and threads
 //!
@@ -127,6 +134,11 @@ pub struct DelayerConfig {
     pub std_ns: f64,                  // in nanoseconds
     pub activate_correlation: bool,   // true if correlation should be applied
     pub half_life_period_ns: f64,     // configurable memory of the UTEMA
+    /// Required: the packet rate (packets per second) the correlated delay
+    /// starts with, until the first 1 ms rate estimate replaces it. Use the
+    /// expected packet rate of the link. Finite and at least 1, validated
+    /// whether or not `activate_correlation` is set.
+    pub initialization_rate_pps: f64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -171,6 +183,8 @@ pub enum BuildError {
     /// with `activate_correlation`, so long that the smoothing weight derived
     /// from it and the initialisation rate is not below 1.
     HalfLifePeriod { half_life_period_ns: f64 },
+    /// `initialization_rate_pps` is not finite or is below 1.
+    InitializationRate { initialization_rate_pps: f64 },
     /// The buffer of `buffer_capacity` packets cannot be allocated.
     BufferCapacity { capacity: usize, reason: String },
 }
@@ -192,6 +206,12 @@ impl fmt::Display for BuildError {
             } => write!(
                 f,
                 "invalid half_life_period_ns = {half_life_period_ns}: must be finite and not negative, and with correlation short enough for a smoothing weight below 1"
+            ),
+            BuildError::InitializationRate {
+                initialization_rate_pps,
+            } => write!(
+                f,
+                "invalid initialization_rate_pps = {initialization_rate_pps}: must be finite and at least 1 (the expected packet rate of the link)"
             ),
             BuildError::BufferCapacity { capacity, reason } => write!(
                 f,

@@ -46,6 +46,7 @@ mod json {
                 std_ns: 20.25,
                 activate_correlation: true,
                 half_life_period_ns: 4000.0,
+                initialization_rate_pps: 2.5e6,
             },
             limiter: LimiterConfig {
                 mode: LimiterMode::TokenBucketFilter,
@@ -74,6 +75,7 @@ mod json {
             assert!(back.reordering);
             assert_eq!(back.delayer.mean_ns, 1500.5);
             assert_eq!(back.delayer.std_ns, 20.25);
+            assert_eq!(back.delayer.initialization_rate_pps, 2.5e6);
             assert!(matches!(
                 back.delayer.distribution,
                 RVDistribution::LogNormalDistribution
@@ -90,7 +92,8 @@ mod json {
     const NO_SEED: &str = r#"{
         "buffer_capacity": 10, "reordering": false,
         "delayer": {"distribution": "DeterministicDistribution", "mean_ns": 1.0,
-                    "std_ns": 0.0, "activate_correlation": false, "half_life_period_ns": 1.0},
+                    "std_ns": 0.0, "activate_correlation": false, "half_life_period_ns": 1.0,
+                    "initialization_rate_pps": 15000000.0},
         "limiter": {"mode": "Spacer", "activate": false, "rate_bps": 1e9, "limit_bit": 1e9},
         "loss_model": {"Random": 0.0}
     }"#;

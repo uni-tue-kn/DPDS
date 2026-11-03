@@ -29,7 +29,8 @@ const VALID: &str = r#"{
         "mean_ns": 2000.0,
         "std_ns": 100.0,
         "activate_correlation": false,
-        "half_life_period_ns": 5.0
+        "half_life_period_ns": 5.0,
+        "initialization_rate_pps": 2500000.0
     },
     "limiter": {
         "mode": "TokenBucketFilter",
@@ -57,6 +58,7 @@ fn from_file_parses_a_valid_file_field_by_field() {
     assert_eq!(cfg.delayer.std_ns, 100.0);
     assert!(!cfg.delayer.activate_correlation);
     assert_eq!(cfg.delayer.half_life_period_ns, 5.0);
+    assert_eq!(cfg.delayer.initialization_rate_pps, 2_500_000.0);
     assert!(matches!(cfg.limiter.mode, LimiterMode::TokenBucketFilter));
     assert!(cfg.limiter.activate);
     assert_eq!(cfg.limiter.rate_bps, 1e9);
@@ -100,6 +102,8 @@ fn from_file_parses_the_example_config_shipped_with_the_crate() {
     assert_eq!(cfg.buffer_capacity, 100000);
     assert!(cfg.delayer.activate_correlation);
     assert!(cfg.limiter.activate);
+    let rate = cfg.delayer.initialization_rate_pps;
+    assert!(rate.is_finite() && rate >= 1.0, "example rate {rate}");
 }
 
 #[test]
@@ -110,6 +114,70 @@ fn from_file_parses_the_workspace_root_config() {
     assert!(!cfg.reordering);
     assert!(!cfg.limiter.activate);
     assert!(matches!(cfg.loss_model, LossModel::Random(p) if p == 0.0));
+    let rate = cfg.delayer.initialization_rate_pps;
+    assert!(rate.is_finite() && rate >= 1.0, "config.json rate {rate}");
+}
+
+#[test]
+fn from_file_parses_the_vdev_config() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config.vdev.json");
+    let cfg = Config::from_file(path).expect("config.vdev.json at the repo root must parse");
+    let rate = cfg.delayer.initialization_rate_pps;
+    assert!(
+        rate.is_finite() && rate >= 1.0,
+        "config.vdev.json rate {rate}"
+    );
+}
+
+// `initialization_rate_pps` is required: no serde default, whether or not the
+// correlation is active, and the error names the field.
+
+#[test]
+fn from_file_without_initialization_rate_pps_is_an_error_naming_the_field() {
+    let dir = tempfile::tempdir().unwrap();
+    let json = VALID.replace(",\n        \"initialization_rate_pps\": 2500000.0", "");
+    assert!(!json.contains("initialization_rate_pps"), "test setup");
+    let path = write(&dir, "norate.json", &json);
+    let err = Config::from_file(path).expect_err("a config without the rate must not parse");
+    assert!(matches!(err, ConfigError::Parse(..)), "{err:?}");
+    assert!(
+        err.to_string().contains("initialization_rate_pps"),
+        "message {:?} must name the field",
+        err.to_string()
+    );
+}
+
+#[test]
+fn from_file_requires_the_rate_also_with_correlation_off_and_on() {
+    let dir = tempfile::tempdir().unwrap();
+    for corr in ["false", "true"] {
+        let json = VALID
+            .replace(",\n        \"initialization_rate_pps\": 2500000.0", "")
+            .replace(
+                "\"activate_correlation\": false",
+                &format!("\"activate_correlation\": {corr}"),
+            );
+        let path = write(&dir, "norate.json", &json);
+        assert!(Config::from_file(path).is_err(), "correlation {corr}");
+    }
+}
+
+#[test]
+fn from_file_initialization_rate_pps_must_be_a_number() {
+    let dir = tempfile::tempdir().unwrap();
+    for bad in ["\"fast\"", "null", "true", "[1]"] {
+        let json = VALID.replace("2500000.0", bad);
+        let path = write(&dir, "badrate.json", &json);
+        assert!(Config::from_file(path).is_err(), "rate {bad}");
+    }
+}
+
+#[test]
+fn from_file_accepts_an_integer_json_number_for_the_rate() {
+    let dir = tempfile::tempdir().unwrap();
+    let json = VALID.replace("2500000.0", "3000000");
+    let cfg = Config::from_file(write(&dir, "int.json", &json)).unwrap();
+    assert_eq!(cfg.delayer.initialization_rate_pps, 3_000_000.0);
 }
 
 #[test]

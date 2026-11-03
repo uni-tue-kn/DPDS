@@ -1,0 +1,143 @@
+# CI: formatting, clippy and tests for the Rust workspace, the web frontend and dpds.sh.
+name: CI
+
+on:
+  push:
+    branches: [nightly, main, master]
+  pull_request:
+
+# A newer push to the same branch or pull request makes the older run pointless.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  fmt:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      # Pinned so a new stable release (new clippy lints, rustfmt changes) can't turn CI red on an
+      # unchanged tree; bump deliberately together with dpds-core's rust-version note.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.99.1
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  rust:
+    runs-on: ubuntu-24.04 # 4 vCPUs on public repositories; the e2e tests need 4
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: always
+      # Plain build instead of the repository's default (.cargo/config.toml: target-cpu=native,
+      # linker-plugin-lto, lld). That setup needs a clang/lld with the same LLVM major as rustc;
+      # CI wants none of it, the tests do not depend on cross-language LTO. RUSTFLAGS and
+      # RUSTDOCFLAGS from the environment replace `build.rustflags` / `build.rustdocflags` from
+      # the config file even when empty (the doctests of dpds-core are linked by rustdoc, hence
+      # RUSTDOCFLAGS too).
+      RUSTFLAGS: ""
+      RUSTDOCFLAGS: ""
+      # dpdk-sys/build.rs compiles the bindgen wrappers with clang LTO objects when `clang` is on
+      # PATH and CC is unset. CC=gcc selects its plain-compiler fallback. It also adds
+      # -march=native, which would bake the CPU of whichever runner built a cached target
+      # directory into the wrappers; CFLAGS comes last on the command line and wins.
+      CC: gcc
+      CFLAGS: -march=x86-64-v2
+    steps:
+      - uses: actions/checkout@v7
+
+      # libclang-dev: bindgen. libpcap-dev: libdpdk.pc requires libpcap, and the net_pcap vdev of
+      # the e2e tests links it. The rest is only needed to build DPDK on a cache miss.
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libclang-dev libpcap-dev pkg-config meson ninja-build python3-pyelftools
+
+      # The Ubuntu 24.04 package is DPDK 23.11 (25.11 on 26.04); dpdk-sys needs >= 25.11 and the
+      # project is developed against 26.07, so DPDK is built from the release tarball. The install
+      # is cached on the hash of the script, which holds the version and all build options.
+      - name: Restore DPDK
+        id: dpdk-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/dpdk
+          key: dpdk-ubuntu-24.04-${{ hashFiles('.github/scripts/install-dpdk.sh') }}
+      - name: Build DPDK
+        if: steps.dpdk-cache.outputs.cache-hit != 'true'
+        run: .github/scripts/install-dpdk.sh "$HOME/dpdk"
+      # Saved right after the build, not at the end of the job: red tests must not cost a DPDK
+      # build on every rerun.
+      - name: Save DPDK
+        if: steps.dpdk-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/dpdk
+          key: ${{ steps.dpdk-cache.outputs.cache-primary-key }}
+      - name: Use DPDK
+        run: |
+          echo "PKG_CONFIG_PATH=$HOME/dpdk/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$HOME/dpdk/lib" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.99.1
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      # `telemetry` (crate dpds) is the only feature that changes code paths, the others of
+      # dpds-core are on by default. All features is a second pass over the telemetry code.
+      - name: Clippy, all features
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      # --release as in the README ("Testing & Automation"): the controller's e2e tests need a
+      # release `dpds` anyway, and the e2e timings are meant for the release profile.
+      # --no-fail-fast reports every failing test binary, not just the first.
+      # The dpds e2e tests start the real binary on net_null/net_pcap vdevs without root or
+      # hugepages. They need up to 4 CPUs (`-l 0-3`) and serialise themselves with a lock.
+      - name: Test
+        run: cargo test --workspace --release --no-fail-fast
+      - name: Test dpds with telemetry
+        run: cargo test -p dpds --release --features telemetry --no-fail-fast
+      # The controller's end-to-end tests are #[ignore]d: they supervise a real `dpds` with
+      # telemetry, so that binary is built first. They run one at a time.
+      - name: Build dpds with telemetry
+        run: cargo build --release -p dpds --features telemetry
+      - name: Test controller end-to-end
+        run: cargo test --release -p dpds-controller --test integration -- --ignored --test-threads=1
+
+  frontend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+      # Node 22 as in frontend/Dockerfile; package.json allows >= 18.18.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - name: Typecheck
+        run: npx tsc --noEmit
+      - name: Test
+        run: npx vitest run
+
+  packaging:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      # Plain bash with stubbed cargo/docker/systemctl; no root or real systemd needed.
+      - run: bash packaging/tests/dpds_sh.test.sh

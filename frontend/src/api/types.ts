@@ -19,6 +19,8 @@ export interface DelayerDto {
   std_ns: number;
   activate_correlation: boolean;
   half_life_period_ns: number;
+  /** Rate (packets/s) the delay correlation assumes while it initializes; always required. */
+  initialization_rate_pps: number;
 }
 
 export interface LimiterDto {

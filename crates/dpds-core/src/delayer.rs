@@ -158,8 +158,9 @@ impl Delayer {
 
     /// Like [`Delayer::new`], but returns an error for invalid distribution
     /// parameters or a `half_life_period_ns` that is negative, NaN or infinite
-    /// (0 is valid) instead of panicking. With `activate_correlation`, a
-    /// half-life so long that the smoothing weight at
+    /// (0 is valid) instead of panicking. An `initialization_rate_pps` that is
+    /// not finite or below 1 is an error too, with or without correlation. With
+    /// `activate_correlation`, a half-life so long that the smoothing weight at
     /// `initialization_rate_pps` is not below 1 is an error as well. Only the
     /// initial parameters are validated, see [`Delayer::delayer_sample_ns`].
     pub fn try_new(
@@ -212,6 +213,11 @@ impl Delayer {
         initialization_rate_pps: f64,
         rng: SmallRng,
     ) -> Result<Self, BuildError> {
+        if !initialization_rate_pps.is_finite() || initialization_rate_pps < 1. {
+            return Err(BuildError::InitializationRate {
+                initialization_rate_pps,
+            });
+        }
         if !half_life_period_ns.is_finite() || half_life_period_ns < 0. {
             return Err(BuildError::HalfLifePeriod {
                 half_life_period_ns,

@@ -48,6 +48,7 @@ fn config(
             std_ns: std,
             activate_correlation: corr,
             half_life_period_ns: half_life,
+            initialization_rate_pps: 15e6,
         },
         limiter: LimiterConfig {
             mode: LimiterMode::Spacer,

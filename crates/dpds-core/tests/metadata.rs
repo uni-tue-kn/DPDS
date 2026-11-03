@@ -183,3 +183,48 @@ fn hot_path_methods_are_inline_and_push_is_not() {
         "limiter_calculate_offset_ns"
     ));
 }
+
+// ---- initialization_rate_pps: required config field, no built-in rate ---------
+
+#[test]
+fn readme_documents_the_required_initialization_rate_and_has_no_15_mpps_preset() {
+    let r = read(crate_dir().join("README.md"));
+    assert!(
+        r.contains("| `initialization_rate_pps`"),
+        "README.md needs a row for `initialization_rate_pps` in the config table"
+    );
+    let json_examples = r.matches("\"initialization_rate_pps\"").count();
+    assert!(
+        json_examples >= 1,
+        "the README config example must carry `initialization_rate_pps`"
+    );
+    assert!(
+        !r.contains("15 Mpps"),
+        "the delay correlation section must not describe a built-in 15 Mpps rate"
+    );
+}
+
+#[test]
+fn crate_docs_note_the_api_change_for_the_initialization_rate() {
+    let lib = read(crate_dir().join("src/lib.rs"));
+    let docs: String = lib
+        .lines()
+        .filter_map(|l| l.trim_start().strip_prefix("//!"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        docs.contains("initialization_rate_pps"),
+        "the crate docs need the `initialization_rate_pps` API-change note"
+    );
+}
+
+#[test]
+fn no_fallback_initialization_rate_constant_is_left_in_the_buffer() {
+    let src = read(crate_dir().join("src/buffer.rs"));
+    for needle in ["15_000_000", "15e6", "15_000_000.", "Mpps"] {
+        assert!(
+            !src.contains(needle),
+            "src/buffer.rs must not hard-code a rate (`{needle}`)"
+        );
+    }
+}

@@ -21,7 +21,8 @@
 //!     (and each of its fields) and `delay_stats` are optional (defaults: None,
 //!     `HistogramSpec::default()`, true). File-level validation:
 //!       - invalid JSON / missing "links" / a bad Config / a missing required key
-//!         (the error names the key)                           -> Err
+//!         (the error names the key; `config.delayer.initialization_rate_pps` is
+//!         required too)                           -> Err
 //!       - no link at all (`"links": []`)                      -> Err
 //!       - an unknown key at any level (`#[serde(deny_unknown_fields)]`), in
 //!         particular the v1 keys `ports`, `configs`, `lcores`, `histograms`
@@ -92,7 +93,8 @@ fn cfg(capacity: u64) -> Value {
             "mean_ns": 1000.0,
             "std_ns": 0.0,
             "activate_correlation": false,
-            "half_life_period_ns": 1.0
+            "half_life_period_ns": 1.0,
+            "initialization_rate_pps": 15000000.0
         },
         "limiter": {
             "mode": "Spacer",
@@ -250,6 +252,29 @@ fn a_missing_required_key_is_an_error_naming_it() {
         let e = err_of(vec![l]);
         assert!(e.contains(missing), "{missing}: {e}");
     }
+}
+
+#[test]
+fn a_config_without_initialization_rate_pps_is_an_error_naming_the_field() {
+    // Required in every link config (no default), also with correlation off.
+    let mut l = link("x", "p", "q", 1);
+    l["config"]["delayer"]
+        .as_object_mut()
+        .unwrap()
+        .remove("initialization_rate_pps");
+    let e = err_of(vec![l]);
+    assert!(e.contains("initialization_rate_pps"), "{e}");
+}
+
+#[test]
+fn the_initialization_rate_of_a_link_config_is_read_per_link() {
+    let mut a = link("a", "p", "q", 1);
+    a["config"]["delayer"]["initialization_rate_pps"] = json!(2.5e6);
+    let mut b = link("b", "q", "p", 1);
+    b["config"]["delayer"]["initialization_rate_pps"] = json!(40_000);
+    let links = parse_links(&file(vec![a, b])).unwrap();
+    assert_eq!(links[0].config.delayer.initialization_rate_pps, 2.5e6);
+    assert_eq!(links[1].config.delayer.initialization_rate_pps, 40_000.0);
 }
 
 #[test]

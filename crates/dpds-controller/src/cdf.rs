@@ -303,6 +303,7 @@ mod tests {
             std_ns: std,
             activate_correlation: corr,
             half_life_period_ns: 1e6,
+            initialization_rate_pps: 15e6,
         }
     }
 
