@@ -55,7 +55,7 @@ afterEach(() => {
 async function open() {
   const user = userEvent.setup();
   renderApp('/settings');
-  await waitFor(() => expect(screen.getByLabelText('mlx5 devargs')).toHaveValue('txq_mpw_en=1'));
+  await waitFor(() => expect(screen.getByLabelText('Poll interval (ms)')).toHaveValue(500));
   return user;
 }
 
@@ -159,7 +159,7 @@ describe('Settings: import setup', () => {
 
   it('success: status with the stored counts, dialog closed, settings form reloaded from the controller', async () => {
     api.importSetup.mockResolvedValue({ links: 3, presets: 2 });
-    api.getSettings.mockResolvedValueOnce(fx.settings()).mockResolvedValue(fx.settings({ mlx5_devargs: 'imported=1' }));
+    api.getSettings.mockResolvedValueOnce(fx.settings()).mockResolvedValue(fx.settings({ poll_interval_ms: 123 }));
     const user = await open();
     await upload(user);
     await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Confirm import' }));
@@ -167,7 +167,7 @@ describe('Settings: import setup', () => {
     expect(status).toHaveTextContent(/2 presets/i);
     expect(screen.getByRole('status')).toHaveTextContent(/imported/i);
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-    await waitFor(() => expect(screen.getByLabelText('mlx5 devargs')).toHaveValue('imported=1'));
+    await waitFor(() => expect(screen.getByLabelText('Poll interval (ms)')).toHaveValue(123));
   });
 
   it('shows the API 400 message (validation of the document)', async () => {

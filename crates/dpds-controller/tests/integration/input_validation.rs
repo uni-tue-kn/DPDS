@@ -11,8 +11,8 @@
 //!   long options take their value after `=` (tested by experiment: `--log-level 7`
 //!   as two tokens is "unknown argument"), so the long forms are single tokens here;
 //!   the two-token long forms are left open (not tested either way);
-//! - `settings.mlx5_devargs` is an allowlist of keys (`txq_mpw_en`, `txq_inline_*`,
-//!   `rxq_cqe_comp_en`, `rx_vec_en`, `tx_pp`, ...) and never `mprq_*`;
+//! - the mlx5 devargs are fixed to PREOF's `txq_mpw_en=1` (spec v17): `settings.mlx5_devargs`
+//!   does not exist, so any body that carries it is a 400 naming the field, whatever the value;
 //! - `buffer_capacity` is at most 2^31 (400 above).
 
 use crate::common::*;
@@ -23,9 +23,8 @@ fn app() -> TestApp {
     TestApp::new(FakeHost::bare_metal())
 }
 
-fn settings(eal: Value, devargs: &str) -> Value {
-    json!({"main_lcore": null, "mlx5_devargs": devargs, "eal_extra_args": eal,
-           "poll_interval_ms": 500})
+fn settings(eal: Value) -> Value {
+    json!({"main_lcore": null, "eal_extra_args": eal, "poll_interval_ms": 500})
 }
 
 // ---- port names ------------------------------------------------------------
@@ -218,9 +217,7 @@ async fn allowed_eal_arguments_are_accepted() {
         (json!(["-m", "1024", "-n", "2", "--no-huge"]), "mixed order"),
     ] {
         let a = app();
-        let r = a
-            .put("/api/settings", settings(args.clone(), "txq_mpw_en=1"))
-            .await;
+        let r = a.put("/api/settings", settings(args.clone())).await;
         assert_eq!(r.status, 200, "{what}: {}", r.text());
         assert_eq!(r.json()["eal_extra_args"], args, "{what}");
     }
@@ -259,9 +256,7 @@ async fn other_eal_arguments_are_a_400_naming_the_token() {
         (json!(["--log-level=-d"]), "--log-level"),
     ] {
         let a = app();
-        let r = a
-            .put("/api/settings", settings(args.clone(), "txq_mpw_en=1"))
-            .await;
+        let r = a.put("/api/settings", settings(args.clone())).await;
         assert_eq!(r.status, 400, "{args}: {}", r.text());
         assert!(r.message().contains(named), "{args}: {}", r.text());
         assert_eq!(
@@ -281,73 +276,45 @@ async fn a_token_with_whitespace_is_not_an_exact_token() {
         json!(["--no-huge\n-d"]),
     ] {
         let a = app();
-        let r = a
-            .put("/api/settings", settings(args.clone(), "txq_mpw_en=1"))
-            .await;
+        let r = a.put("/api/settings", settings(args.clone())).await;
         assert_eq!(r.status, 400, "{args}: {}", r.text());
         r.message();
     }
 }
 
-// ---- mlx5_devargs ------------------------------------------------------------
+// ---- mlx5_devargs (gone, spec v17) ----------------------------------------------------
 
 #[tokio::test]
-async fn allowlisted_mlx5_devargs_are_accepted() {
+async fn any_body_with_mlx5_devargs_is_a_400_naming_the_field_whatever_the_value() {
     for d in [
         "",
         "txq_mpw_en=1",
         "txq_mpw_en=1,txq_inline_max=0",
-        "txq_inline_min=128,txq_inline_mpw=0",
         "rxq_cqe_comp_en=1,rx_vec_en=1",
         "tx_pp=500",
-    ] {
-        let a = app();
-        let r = a.put("/api/settings", settings(json!([]), d)).await;
-        assert_eq!(r.status, 200, "{d:?}: {}", r.text());
-        assert_eq!(r.json()["mlx5_devargs"], d);
-    }
-}
-
-#[tokio::test]
-async fn mprq_and_unknown_or_malformed_mlx5_devargs_are_a_400() {
-    for d in [
         "mprq_en=1",
-        "mprq_en=0",
-        "MPRQ_EN=1",
-        "mprq_log_stride_num=6",
-        "mprq_max_memcpy_len=64",
-        "txq_mpw_en=1,mprq_en=0",
         "bogus_key=1",
-        "txq_mpw_en=1,bogus_key=1",
-        "txq_mpw_en",
-        "txq_mpw_en=",
-        "txq_mpw_en=1,,rx_vec_en=1",
         "txq_mpw_en=1,",
-        "txq_mpw_en=1 rx_vec_en=1",
-        "txq_mpw_en=1;x",
-        " txq_mpw_en=1",
-        "-txq_mpw_en=1",
-        "txq_mpw_en=1\n",
     ] {
         let a = app();
-        let r = a.put("/api/settings", settings(json!([]), d)).await;
+        let mut body = settings(json!([]));
+        body["mlx5_devargs"] = json!(d);
+        let r = a.put("/api/settings", body).await;
         assert_eq!(r.status, 400, "{d:?}: {}", r.text());
-        r.message();
-        assert_eq!(
-            a.get("/api/settings").await.json()["mlx5_devargs"],
-            "txq_mpw_en=1",
+        assert!(r.message().contains("mlx5_devargs"), "{d:?}: {}", r.text());
+        assert!(
+            absent(&a.get("/api/settings").await.json(), "mlx5_devargs"),
             "{d:?} must not be stored"
         );
     }
-}
-
-#[tokio::test]
-async fn the_mprq_refusal_names_mprq() {
-    let a = app();
-    let r = a
-        .put("/api/settings", settings(json!([]), "mprq_en=1"))
-        .await;
-    assert!(r.message().to_lowercase().contains("mprq"));
+    // not only strings: a null or a number is the same unknown field
+    for v in [json!(null), json!(1), json!(["txq_mpw_en=1"])] {
+        let a = app();
+        let mut body = settings(json!([]));
+        body["mlx5_devargs"] = v.clone();
+        let r = a.put("/api/settings", body).await;
+        assert_eq!(r.status, 400, "{v}: {}", r.text());
+    }
 }
 
 // ---- buffer_capacity ---------------------------------------------------------

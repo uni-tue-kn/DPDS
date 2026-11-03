@@ -1,5 +1,5 @@
 //! Spec v7 S4: `POST /api/emulation/start` re-validates what is stored (ports,
-//! `eal_extra_args`, `mlx5_devargs`) with the same rules as the REST edits, so a
+//! `eal_extra_args`) with the same rules as the REST edits, so a
 //! hand-edited `state.json` or one written by an older version (when `net_pcap` or
 //! `,key=value` vdevs were still valid) cannot put a forbidden argument on the `dpds`
 //! command line. The start is refused (400, or 409) with a `{"message"}` that names the
@@ -138,20 +138,6 @@ async fn stored_eal_extra_args_outside_the_allowlist_refuse_the_start() {
     ] {
         let mut s = state_with(vec![link(1, "l", "net_null0", "net_null0", None)]);
         s.settings.eal_extra_args = args.iter().map(|a| a.to_string()).collect();
-        let a = app_with(&s);
-        assert_refused(&a, named).await;
-    }
-}
-
-#[tokio::test]
-async fn stored_mlx5_devargs_outside_the_allowlist_refuse_the_start() {
-    for (devargs, named) in [
-        ("mprq_en=1", "mprq"),
-        ("txq_mpw_en=1,mprq_en=1", "mprq"),
-        ("bogus_key=1", "bogus_key"),
-    ] {
-        let mut s = state_with(vec![link(1, "l", "net_null0", "net_null0", None)]);
-        s.settings.mlx5_devargs = devargs.into();
         let a = app_with(&s);
         assert_refused(&a, named).await;
     }

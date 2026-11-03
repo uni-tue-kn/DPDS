@@ -150,7 +150,7 @@ fn the_served_binary_has_no_cors_without_the_option() {
 // ---- 415 -------------------------------------------------------------------
 
 fn valid_settings() -> Value {
-    json!({"main_lcore": 1, "mlx5_devargs": "txq_mpw_en=1", "eal_extra_args": [],
+    json!({"main_lcore": 1, "eal_extra_args": [],
            "poll_interval_ms": 250})
 }
 

@@ -28,9 +28,10 @@
 //!     // The tests build `Link` through serde (see `link()` below), so only the JSON names matter.
 //!     pub struct Link { pub id: u32, pub name: String, pub ingress: String, pub egress: String,
 //!                       pub config: ConfigDto, pub worker: Option<u32> }
-//!     pub struct Settings { pub main_lcore: Option<u32>, pub mlx5_devargs: String,
+//!     // spec v17: no `mlx5_devargs` (fixed to PREOF's `txq_mpw_en=1`); the body is `deny_unknown_fields`
+//!     pub struct Settings { pub main_lcore: Option<u32>,
 //!                           pub eal_extra_args: Vec<String>, pub poll_interval_ms: u64 }
-//!     // Default: None, "txq_mpw_en=1", [], 500
+//!     // Default: None, [], 500
 //!     pub struct StoredState { pub links: Vec<Link>, pub settings: Settings, pub next_id: u32 } // Default
 //! }
 //! pub mod dto {         // ConfigDto: named-field mirror of dpds_core::Config
@@ -78,7 +79,8 @@
 //! pub mod eal {         // B3 pure functions
 //!     pub struct EalPort { pub name: String, pub driver: Option<String> } // driver = kernel driver of a PCI port
 //!     pub struct EalInput { pub main_lcore: u32, pub worker_lcores: Vec<u32>, pub ports: Vec<EalPort>,
-//!                           pub mlx5_devargs: String, pub eal_extra_args: Vec<String>, pub links_file: PathBuf }
+//!                           pub eal_extra_args: Vec<String>, pub links_file: PathBuf }
+//!     // spec v17: the argv appends `,txq_mpw_en=1` to every PCI port bound to mlx5_core, nothing else
 //!     pub fn eal_argv(i: &EalInput) -> Vec<String>;               // argv WITHOUT the binary name
 //!     // links file v2: {"links":[{"name","ingress","egress","config":{..},"lcore":n,
 //!     //   "histogram"?:{..}, "delay_stats"?:false}]}: `lcore` of link L = the `lcore` of the entry of
@@ -146,8 +148,8 @@
 //! - Validation error: 400, conflict (duplicate link name, port already used as ingress (or as
 //!   egress) by another link; the message names that link): 409, unknown id / unknown direction: 404. Malformed or
 //!   incomplete JSON bodies: 400 or 422. Every error body is `{"message": str}`.
-//! - Settings: `poll_interval_ms == 0` => 400; `mlx5_devargs` containing
-//!   `mprq_en` => 400 (the controller never sets MPRQ).
+//! - Settings: `poll_interval_ms == 0` => 400; a body with `mlx5_devargs` (any value) => 400
+//!   naming the field (spec v17).
 //! - `/api/stats` with no telemetry data: 200 `{"directions":[],"ports":[]}`;
 //!   histogram for a direction without data: 404.
 //! - Link ids are monotonically increasing and never reused after DELETE.
@@ -720,7 +722,7 @@ pub fn assert_close(actual: f64, expected: f64) {
 // hints helpers
 // ---------------------------------------------------------------------------
 
-pub const HINT_IDS: [&str; 10] = [
+pub const HINT_IDS: [&str; 9] = [
     "isolation",
     "isolated_cores",
     "hugepages",
@@ -730,8 +732,18 @@ pub const HINT_IDS: [&str; 10] = [
     "iommu",
     "mtu",
     "pcie_maxreadreq",
-    "mprq",
 ];
+
+/// Spec v17: there is no MPRQ hint, and no hint proposes or discusses mlx5 devargs.
+pub fn assert_no_devargs_hint(hints: &Value) {
+    for h in hints.as_array().expect("hints must be a JSON array") {
+        assert_ne!(h["id"], "mprq", "the MPRQ hint is gone: {h}");
+        let text = h.to_string().to_lowercase();
+        for word in ["mprq", "devargs", "txq_mpw", "_en="] {
+            assert!(!text.contains(word), "hint mentions {word:?}: {h}");
+        }
+    }
+}
 
 pub fn rank(level: &str) -> u8 {
     match level {

@@ -47,7 +47,6 @@ fn fully_tuned_bare_metal_host_has_no_warning() {
     ] {
         assert_level(&h, id, "ok", "ok");
     }
-    assert_level(&h, "mprq", "info", "info");
     assert!(
         h.as_array()
             .unwrap()
@@ -58,15 +57,17 @@ fn fully_tuned_bare_metal_host_has_no_warning() {
 }
 
 #[test]
-fn mprq_note_is_static_info_mentioning_mprq_en() {
-    let h = hints_json(&FakeHost::bare(), &state_with(vec![]));
-    let x = hint(&h, "mprq");
-    assert_eq!(x["level"], "info");
-    let text = format!("{} {} {}", x["title"], x["detail"], x["suggestion"]);
-    assert!(
-        text.contains("mprq_en") || text.to_lowercase().contains("mprq"),
-        "{x}"
-    );
+fn there_is_no_mprq_hint_and_no_hint_discusses_devargs() {
+    for host in [FakeHost::bare_metal(), FakeHost::vm(), FakeHost::bare()] {
+        for state in [state_with(vec![]), one_link_nic0()] {
+            let h = hints_json(&host, &state);
+            assert!(
+                h.as_array().unwrap().iter().all(|x| x["id"] != "mprq"),
+                "{h}"
+            );
+            assert_no_devargs_hint(&h);
+        }
+    }
 }
 
 // ---- isolation -----------------------------------------------------------

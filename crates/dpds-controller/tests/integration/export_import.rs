@@ -34,7 +34,7 @@ fn app() -> TestApp {
 const FORMAT: &str = "dpds-controller-export";
 
 fn settings_doc() -> Value {
-    json!({"main_lcore": 1, "mlx5_devargs": "txq_mpw_en=1",
+    json!({"main_lcore": 1,
            "eal_extra_args": ["--no-huge", "-m", "256"], "poll_interval_ms": 250})
 }
 
@@ -108,7 +108,7 @@ async fn populate(a: &TestApp) {
     let r = a
         .put(
             "/api/settings",
-            json!({"main_lcore": null, "mlx5_devargs": "txq_mpw_en=1",
+            json!({"main_lcore": null,
                    "eal_extra_args": [], "poll_interval_ms": 777}),
         )
         .await;
@@ -136,6 +136,29 @@ async fn the_export_of_an_empty_controller_is_the_documented_skeleton() {
     assert_eq!(v["links"], json!([]));
     assert_eq!(v["presets"], json!([]));
     assert_eq!(v["settings"], a.get("/api/settings").await.json());
+}
+
+/// Spec v17: the mlx5 devargs are fixed to `txq_mpw_en=1`, so they are not part of the settings
+/// and therefore not of the export.
+#[tokio::test]
+async fn the_export_has_no_mlx5_devargs() {
+    let a = app();
+    populate(&a).await;
+    let v = export(&a).await;
+    let keys: BTreeSet<&str> = v["settings"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        keys,
+        BTreeSet::from(["main_lcore", "eal_extra_args", "poll_interval_ms"]),
+        "{v}"
+    );
+    assert!(!v.to_string().contains("mlx5_devargs"), "{v}");
+    let empty = export(&app()).await;
+    assert!(!empty.to_string().contains("mlx5_devargs"), "{empty}");
 }
 
 #[tokio::test]
@@ -612,8 +635,14 @@ fn bad_documents() -> Vec<(&'static str, Value)> {
     add("poll interval 0", &|d| {
         d["settings"]["poll_interval_ms"] = json!(0)
     });
-    add("mprq devargs", &|d| {
+    add("mlx5 devargs (mprq)", &|d| {
         d["settings"]["mlx5_devargs"] = json!("mprq_en=1")
+    });
+    add("mlx5 devargs (the fixed value)", &|d| {
+        d["settings"]["mlx5_devargs"] = json!("txq_mpw_en=1")
+    });
+    add("mlx5 devargs (empty)", &|d| {
+        d["settings"]["mlx5_devargs"] = json!("")
     });
     add("disallowed EAL argument", &|d| {
         d["settings"]["eal_extra_args"] = json!(["--vdev=net_pcap0,tx_pcap=/tmp/x"])
@@ -706,6 +735,38 @@ async fn the_message_of_a_rejected_part_names_it() {
     let mut d = doc();
     d["version"] = json!(9);
     assert!(import(&a, d).await.message().contains("version"));
+}
+
+/// Spec v17: a document that still carries `settings.mlx5_devargs` (an export of an older
+/// controller) is refused, naming the field. There is no compatibility.
+#[tokio::test]
+async fn a_document_with_mlx5_devargs_is_a_400_naming_the_field_and_changes_nothing() {
+    let a = app();
+    populate(&a).await;
+    let before = state_of(&a).await;
+    for devargs in ["txq_mpw_en=1", "", "txq_mpw_en=1,rx_vec_en=1"] {
+        let mut d = doc();
+        d["settings"]["mlx5_devargs"] = json!(devargs);
+        let r = import(&a, d).await;
+        assert_eq!(r.status, 400, "{devargs:?}: {}", r.text());
+        assert!(
+            r.message().contains("mlx5_devargs"),
+            "{devargs:?}: {}",
+            r.message()
+        );
+    }
+    assert_eq!(state_of(&a).await, before);
+}
+
+#[tokio::test]
+async fn a_document_without_mlx5_devargs_is_imported() {
+    let a = app();
+    let d = doc();
+    assert!(d["settings"].get("mlx5_devargs").is_none());
+    assert_eq!(import(&a, d).await.status, 200);
+    let s = a.get("/api/settings").await.json();
+    assert!(absent(&s, "mlx5_devargs"), "{s}");
+    assert_eq!(s["poll_interval_ms"], 250);
 }
 
 #[tokio::test]
@@ -823,6 +884,18 @@ async fn openapi_documents_export_and_import() {
     assert!(
         params.contains("mode"),
         "the mode query parameter is documented: {params}"
+    );
+}
+
+#[tokio::test]
+async fn openapi_schemas_of_the_settings_and_the_export_have_no_mlx5_devargs() {
+    let a = app();
+    let v = a.get("/api/openapi.json").await.json();
+    let schemas = &v["components"]["schemas"];
+    assert!(schemas["Settings"].is_object(), "{schemas}");
+    assert!(
+        !v.to_string().contains("mlx5_devargs"),
+        "mlx5_devargs is still in the OpenAPI document"
     );
 }
 

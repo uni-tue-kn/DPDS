@@ -4,7 +4,8 @@ import { api, ApiError } from '../test/mockApi';
 import * as fx from '../test/fixtures';
 import { renderApp } from '../test/helpers';
 
-// Labels: "Main lcore" (number, empty = null/automatic), "mlx5 devargs" (text), "Poll interval (ms)" (number).
+// Labels: "Main lcore" (number, empty = null/automatic), "Poll interval (ms)" (number). There is NO mlx5 devargs
+// field (spec v17: the controller fixes them to PREOF's `txq_mpw_en=1`), and the page proposes no devargs.
 // EAL extra arguments are a LIST (F5): a `<fieldset>` (role group) named "EAL extra arguments" with one text
 // input per argument labelled "EAL argument 1", "EAL argument 2", ... (1-based row numbers), a button
 // "Remove EAL argument N" per row and a button "Add EAL argument" (appends an empty row). Each row is exactly
@@ -13,7 +14,7 @@ import { renderApp } from '../test/helpers';
 async function open() {
   const user = userEvent.setup();
   renderApp('/settings');
-  await waitFor(() => expect(screen.getByLabelText('mlx5 devargs')).toHaveValue('txq_mpw_en=1'));
+  await waitFor(() => expect(screen.getByLabelText('Poll interval (ms)')).toHaveValue(500));
   return user;
 }
 const save = () => screen.getByRole('button', { name: /^save$/i });
@@ -25,16 +26,38 @@ const addArg = () => screen.getByRole('button', { name: 'Add EAL argument' });
 describe('Settings page', () => {
   it('loads the stored settings into the form', async () => {
     api.getSettings.mockResolvedValue(
-      fx.settings({ main_lcore: 1, mlx5_devargs: 'txq_mpw_en=1', eal_extra_args: ['--no-huge', '-m', '256', '--no-pci'], poll_interval_ms: 250 }),
+      fx.settings({ main_lcore: 1, eal_extra_args: ['--no-huge', '-m', '256', '--no-pci'], poll_interval_ms: 250 }),
     );
     renderApp('/settings');
     await waitFor(() => expect(screen.getByLabelText('Main lcore')).toHaveValue(1));
-    expect(screen.getByLabelText('mlx5 devargs')).toHaveValue('txq_mpw_en=1');
     await waitFor(() => expect(ealRows()).toHaveLength(4));
     expect(ealRows().map((r) => r.value)).toEqual(['--no-huge', '-m', '256', '--no-pci']);
     expect(ealArg(1)).toHaveValue('--no-huge');
     expect(ealArg(4)).toHaveValue('--no-pci');
     expect(screen.getByLabelText('Poll interval (ms)')).toHaveValue(250);
+  });
+
+  it('has no mlx5 devargs field and proposes no devargs (spec v17)', async () => {
+    await open();
+    expect(screen.queryByLabelText(/devargs/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/mlx5/i)).not.toBeInTheDocument();
+    const page = document.body.textContent ?? '';
+    for (const word of [/devargs/i, /mprq/i, /txq_mpw_en/, /rx_vec_en/, /txq_inline/, /rxq_cqe_comp_en/]) {
+      expect(page).not.toMatch(word);
+    }
+    for (const box of screen.queryAllByRole('textbox') as HTMLInputElement[]) expect(box.value).not.toMatch(/_en=/);
+    // exactly the remaining settings: main lcore, the EAL argument list, the poll interval
+    expect(screen.getByLabelText('Main lcore')).toBeInTheDocument();
+    expect(screen.getByLabelText('Poll interval (ms)')).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'EAL extra arguments' })).toBeInTheDocument();
+  });
+
+  it('sends the settings without mlx5_devargs even when saved unchanged', async () => {
+    const user = await open();
+    await user.click(save());
+    expect(api.updateSettings).toHaveBeenCalledTimes(1);
+    expect(api.updateSettings).toHaveBeenCalledWith({ main_lcore: null, eal_extra_args: [], poll_interval_ms: 500 });
+    expect(Object.keys(api.updateSettings.mock.calls[0][0]).sort()).toEqual(['eal_extra_args', 'main_lcore', 'poll_interval_ms']);
   });
 
   it('shows an empty main lcore as empty (automatic)', async () => {
@@ -47,8 +70,6 @@ describe('Settings page', () => {
   it('saves edited values as typed (one list row per EAL argument)', async () => {
     const user = await open();
     await user.type(screen.getByLabelText('Main lcore'), '2');
-    await user.clear(screen.getByLabelText('mlx5 devargs'));
-    await user.type(screen.getByLabelText('mlx5 devargs'), 'txq_mpw_en=1,rx_vec_en=1');
     await user.click(addArg());
     await user.type(ealArg(1), '--no-huge');
     await user.click(addArg());
@@ -60,8 +81,9 @@ describe('Settings page', () => {
     await user.click(save());
     expect(api.updateSettings).toHaveBeenCalledTimes(1);
     expect(api.updateSettings).toHaveBeenCalledWith({
-      main_lcore: 2, mlx5_devargs: 'txq_mpw_en=1,rx_vec_en=1', eal_extra_args: ['--no-huge', '-m', '256'], poll_interval_ms: 100,
+      main_lcore: 2, eal_extra_args: ['--no-huge', '-m', '256'], poll_interval_ms: 100,
     });
+    expect(api.updateSettings.mock.calls[0][0]).not.toHaveProperty('mlx5_devargs');
     expect(await screen.findByRole('status')).toHaveTextContent(/saved/i);
   });
 
@@ -90,7 +112,7 @@ describe('Settings page', () => {
     expect(screen.getByLabelText('Poll interval (ms)')).toHaveValue(0);
   });
 
-  it('shows the API rejection of a forbidden devarg / EAL argument', async () => {
+  it('shows the API rejection of a forbidden EAL argument', async () => {
     api.updateSettings.mockRejectedValue(new ApiError(400, 'eal_extra_args: "--vdev" is not allowed'));
     const user = await open();
     await user.click(addArg());
@@ -110,7 +132,7 @@ describe('Settings page', () => {
     const user = await open();
     await user.click(save());
     expect(await screen.findByRole('status')).toHaveTextContent(/saved/i);
-    await user.type(screen.getByLabelText('mlx5 devargs'), ',rx_vec_en=1');
+    await user.type(screen.getByLabelText('Poll interval (ms)'), '0');
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
   });
 

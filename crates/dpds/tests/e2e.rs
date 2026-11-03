@@ -2427,6 +2427,12 @@ fn the_readme_without_hardware_examples_start_cleanly_and_stop_with_sigint() {
             cmd[0], "./target/release/dpds",
             "README example does not start with the binary: {cmd:?}"
         );
+        // spec v17: like PREOF, runs by hand use `--in-memory` (no hugepage files)
+        let eal = cmd.split(|a| a == "--").next().unwrap();
+        assert!(
+            eal.iter().any(|a| a == "--in-memory"),
+            "README example lacks --in-memory: {cmd:?}"
+        );
         // A scratch working directory that looks like a checkout root (the
         // top-level files, e.g. config.json and any config.vdev.json, are
         // symlinked) and holds the input pcap the example names.
@@ -2473,6 +2479,163 @@ fn the_readme_without_hardware_examples_start_cleanly_and_stop_with_sigint() {
         assert!(!out.contains("too small"), "{cmd:?}\n{out}");
         assert!(!out.contains("panicked"), "{cmd:?}\n{out}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// memory locking (spec v17): `dpds` calls mlockall(MCL_CURRENT | MCL_FUTURE) first thing,
+// before EAL init, like PREOF. A failure is a warning, never fatal.
+// ---------------------------------------------------------------------------
+
+/// `CAP_IPC_LOCK` (capability number 14) in the effective set of this process: such a process
+/// may lock memory whatever `RLIMIT_MEMLOCK` says, and so may its children.
+fn has_cap_ipc_lock() -> bool {
+    let status = fs::read_to_string("/proc/self/status").unwrap();
+    let eff = status
+        .lines()
+        .find_map(|l| l.strip_prefix("CapEff:"))
+        .expect("CapEff in /proc/self/status")
+        .trim();
+    u64::from_str_radix(eff, 16).unwrap() & (1 << 14) != 0
+}
+
+/// Can this process give a child `RLIMIT_MEMLOCK = limit`? Raising it above the hard limit needs
+/// `CAP_SYS_RESOURCE`; lowering never needs anything.
+fn can_set_memlock_limit(limit: libc::rlim_t) -> bool {
+    let mut cur = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    let rc = unsafe { libc::getrlimit(libc::RLIMIT_MEMLOCK, &mut cur) };
+    assert_eq!(rc, 0);
+    limit <= cur.rlim_max
+}
+
+/// `Env::spawn`, with `RLIMIT_MEMLOCK` of the child (soft and hard) set to `limit` bytes.
+fn spawn_with_memlock_limit(env: &Env, limit: libc::rlim_t) -> Run {
+    use std::os::unix::process::CommandExt;
+    let mut cmd = Command::new(DPDS);
+    cmd.args(env.args())
+        .env("XDG_RUNTIME_DIR", env.xdg.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    // SAFETY: the closure only calls the async-signal-safe setrlimit(2).
+    unsafe {
+        cmd.pre_exec(move || {
+            let l = libc::rlimit {
+                rlim_cur: limit,
+                rlim_max: limit,
+            };
+            if libc::setrlimit(libc::RLIMIT_MEMLOCK, &l) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
+    let mut child = cmd.spawn().expect("failed to spawn dpds");
+    let stdout = collect(child.stdout.take().unwrap());
+    let stderr = collect(child.stderr.take().unwrap());
+    Run {
+        child,
+        stdout,
+        stderr,
+        status: None,
+        socket: Some(env.socket_path()),
+    }
+}
+
+/// `VmLck` of a process in kB: the memory it has locked (`mlockall` and `mlock`).
+fn vm_lck_kb(pid: u32) -> u64 {
+    let status = fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
+    status
+        .lines()
+        .find_map(|l| l.strip_prefix("VmLck:"))
+        .unwrap_or_else(|| panic!("no VmLck in /proc/{pid}/status"))
+        .trim()
+        .trim_end_matches("kB")
+        .trim()
+        .parse()
+        .unwrap()
+}
+
+/// A net_null run (`--no-huge`, no root needed) that has finished its startup.
+fn started_null_run(env: &mut Env, limit: libc::rlim_t) -> Run {
+    env.vdevs.push("net_null0".into());
+    let mut run = spawn_with_memlock_limit(env, limit);
+    run.command_list(); // fails fast, with the output, if dpds exits early
+    thread::sleep(Duration::from_millis(1500));
+    assert!(
+        run.poll_exit().is_none(),
+        "dpds died during startup\n{}",
+        run.output()
+    );
+    run
+}
+
+#[test]
+fn a_failing_mlockall_is_a_warning_and_dpds_runs_on_unlocked() {
+    require_cpus(2);
+    let _g = serial();
+    let mut env = Env::new(&config_json(0, 0.0));
+    // a zero memlock limit makes mlockall fail with ENOMEM for a process without CAP_IPC_LOCK
+    let mut run = started_null_run(&mut env, 0);
+    let err = run.stderr.lock().unwrap().clone();
+    if has_cap_ipc_lock() {
+        // root/CAP_IPC_LOCK (e.g. CI containers): the lock cannot be made to fail, so it works
+        assert!(!err.contains("mlockall"), "{}", run.output());
+        assert!(vm_lck_kb(run.child.id()) > 0, "{}", run.output());
+    } else {
+        let at = err
+            .find("mlockall failed")
+            .unwrap_or_else(|| panic!("no mlockall warning on stderr\n{}", run.output()));
+        assert!(
+            err[at..].contains("continuing unlocked"),
+            "PREOF's wording: `WARNING: mlockall failed, continuing unlocked: <error>`\n{}",
+            run.output()
+        );
+        assert!(
+            err.contains("WARNING"),
+            "the warning is marked WARNING\n{}",
+            run.output()
+        );
+        // it is the very first thing: before anything EAL prints
+        if let Some(eal) = err.find("EAL") {
+            assert!(
+                at < eal,
+                "the warning must come before EAL init\n{}",
+                run.output()
+            );
+        }
+        assert_eq!(vm_lck_kb(run.child.id()), 0, "{}", run.output());
+    }
+    // not fatal: it keeps running and stops cleanly
+    run.signal(libc::SIGINT);
+    assert_clean_exit(run.wait_exit(), &run);
+}
+
+#[test]
+fn with_the_limit_lifted_dpds_locks_its_whole_memory_without_a_warning() {
+    require_cpus(2);
+    let _g = serial();
+    if !can_set_memlock_limit(libc::RLIM_INFINITY) && !has_cap_ipc_lock() {
+        eprintln!("skipped: this process cannot give a child an unlimited memlock limit");
+        return;
+    }
+    let mut env = Env::new(&config_json(0, 0.0));
+    let mut run = started_null_run(&mut env, libc::RLIM_INFINITY);
+    let err = run.stderr.lock().unwrap().clone();
+    assert!(!err.contains("mlockall"), "{}", run.output());
+    // MCL_FUTURE: the 256 MiB EAL heap (`-m 256`) is mapped after the call, so it is locked and
+    // resident as well, not only what existed at the time of the call.
+    let locked_kb = vm_lck_kb(run.child.id());
+    assert!(
+        locked_kb >= 128 * 1024,
+        "VmLck is only {locked_kb} kB: dpds must lock current and future mappings\n{}",
+        run.output()
+    );
+    run.signal(libc::SIGINT);
+    assert_clean_exit(run.wait_exit(), &run);
 }
 
 // ---------------------------------------------------------------------------

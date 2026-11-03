@@ -131,14 +131,14 @@ export function hints(): Hint[] {
     { id: 'isolation', level: 'error', title: 'No core isolation', detail: 'isolcpus is not set.', suggestion: 'Add isolcpus=2-5 nohz_full=2-5 rcu_nocbs=2-5 to the kernel command line.' },
     { id: 'hugepages', level: 'warn', title: 'Few hugepages', detail: 'Only 2 free.', suggestion: 'Reserve 4 GiB of 1G hugepages.' },
     { id: 'governor', level: 'warn', title: 'Governor is powersave', detail: 'cpu2 uses powersave.', suggestion: 'Use the performance governor.' },
-    { id: 'mprq', level: 'info', title: 'MPRQ is never set', detail: 'The controller never enables mprq_en.', suggestion: 'Nothing to do.' },
+    { id: 'mtu', level: 'info', title: 'MTU is 1500', detail: 'The ports use the default MTU.', suggestion: 'Nothing to do.' },
     { id: 'irqbalance', level: 'ok', title: 'irqbalance not running', detail: 'No irqbalance process.', suggestion: 'None.' },
   ];
 }
 
 export function settings(over: Partial<Settings> = {}): Settings {
   return {
-    main_lcore: null, mlx5_devargs: 'txq_mpw_en=1', eal_extra_args: [], poll_interval_ms: 500, ...over,
+    main_lcore: null, eal_extra_args: [], poll_interval_ms: 500, ...over,
   };
 }
 

@@ -20,6 +20,7 @@
   - [Topology and lcores](#topology-and-lcores)
   - [Budgets, rings and pools](#budgets-rings-and-pools)
   - [Packet free path](#packet-free-path)
+  - [Memory locking](#memory-locking)
   - [Shutdown](#shutdown)
 - [🚀 Installation \& Quick Start](#-installation--quick-start)
   - [Requirements](#requirements)
@@ -199,9 +200,26 @@ egress port) report `MBUF_FAST_FREE` active, the worker frees with the raw
 covers the mbufs the NIC did not accept (direct, refcount 1, from the link's
 pool), and the mbufs the buffer rejected on RX are single-segment: RX scatter is
 off and the data room fits the largest frame. The choice is logged per link
-at startup (and shown as `dir<d>_raw_free` by `/dpds/ports`). mlx5 withdraws
-`MBUF_FAST_FREE` when MPRQ is enabled (`mprq_en=1`), so keep MPRQ off, see
-[Performance tuning](#-performance-tuning).
+at startup (and shown as `dir<d>_raw_free` by `/dpds/ports`).
+
+### Memory locking
+
+Like preof, `dpds` locks its memory before it does anything else: its first call, before EAL
+initialisation, is `mlockall(MCL_CURRENT | MCL_FUTURE)`. With `MCL_FUTURE` every later mapping is
+locked and populated when it is created: the EAL heap and mbuf pools, each link's delay buffer
+(reserved up front at its full `buffer_capacity`) and the telemetry structures. All of it is
+allocated and resident before the first packet is forwarded, so no worker lcore takes a page
+fault while it polls. The forwarding loops allocate nothing; the only allocations after startup
+are the small telemetry replies, built on DPDK's telemetry thread.
+
+A failure is not fatal: without `CAP_IPC_LOCK` and with too low a `RLIMIT_MEMLOCK` `dpds` prints
+`WARNING: mlockall failed, continuing unlocked: <error>` and runs unlocked. Locked memory counts
+against that limit, and the pools and buffers are large (see
+[Budgets, rings and pools](#budgets-rings-and-pools)). Root has `CAP_IPC_LOCK`; run by hand as
+another user, raise the limit (`ulimit -l unlimited`, or `memlock` in
+`/etc/security/limits.conf`). The unit `packaging/dpds-controller.service` sets
+`LimitMEMLOCK=infinity` explicitly, so the `dpds` child of the controller can lock whatever it
+needs.
 
 ### Shutdown
 
@@ -288,19 +306,18 @@ pool size and socket, and the free path (raw or pktmbuf).
 ```bash
 # 3 lcores (main + one worker per link), two NICs inline,
 # a different emulation per direction (link dir0 = port 0 -> port 1):
-sudo ./target/release/dpds -l 0-2 -a <PCI0> -a <PCI1> -- \
+sudo ./target/release/dpds -l 0-2 --in-memory -a <PCI0>,txq_mpw_en=1 -a <PCI1>,txq_mpw_en=1 -- \
     --config0 forward.json --config1 return.json
 ```
 
 - `-l 0-2` - exactly three lcores for two ports: the main lcore and one worker
   per link. One port needs `-l 0-1`.
 - `-a <PCI>` - NIC PCI address (e.g. `0000:65:00.0`); pass one for loopback,
-  two for inline. For mlx5 NICs append driver arguments to it, e.g.
-  `-a <PCI0>,txq_mpw_en=1` (Enhanced Multi-Packet Write on TX; already the
-  default on ConnectX-5 and newer, so this is a safety net). Do not set
-  `mprq_en`, see [Performance tuning](#-performance-tuning).
-- `--in-memory` is a sensible EAL flag for real runs too: it skips the hugepage
-  file setup, so a crashed process leaves no state behind.
+  two for inline. The controller appends `,txq_mpw_en=1` (Enhanced Multi-Packet Write on TX,
+  preof's setting) to every port bound to mlx5_core, e.g. `-a <PCI0>,txq_mpw_en=1`; when you
+  run `dpds` by hand, use the same.
+- `--in-memory` - like preof, always: it skips the hugepage file setup, so a crashed process
+  leaves no state behind. The controller passes it too.
 
 Tuning a testbed host (isolated cores, NIC settings) and launching, stopping and
 syncing DPDS there is done by the separate evaluation automation, not by this
@@ -536,7 +553,7 @@ Query with the client that ships with DPDK (`--file-prefix` as given to DPDS,
 and the same `XDG_RUNTIME_DIR` when running as non-root):
 
 ```bash
-./target/release/dpds -l 0-2 --file-prefix demo -a <PCI0> -a <PCI1> -- --config config.json &
+./target/release/dpds -l 0-2 --in-memory --file-prefix demo -a <PCI0> -a <PCI1> -- --config config.json &
 echo '/dpds/stats,0' | dpdk-telemetry.py -f demo
 echo '/dpds/ports' | dpdk-telemetry.py -f demo
 ```
@@ -598,11 +615,6 @@ All of these are runtime-only (they revert on reboot or NIC reset) unless noted.
   throughput; the control run with counting-mode `perf stat` alone was not done.
   Use `perf stat` (counting) for throughput, IPC and cycles, and take sampled
   profiles only for relative shares.
-- **Do not enable MPRQ** (`mprq_en=1`). preof ran with it and turned it off after
-  its zero-loss sweep showed an RX queue running out of buffers
-  (`rx_out_of_buffer`) in most runs, suspected because held packets pin whole
-  MPRQ buffers. DPDS holds packets for the emulated delay too, and mlx5 also
-  withdraws `MBUF_FAST_FREE` under MPRQ, which the raw bulk free path needs.
 - **Do not use the stack mempool ops** (`--mbuf-pool-ops-name=stack`). preof
   removed it after every 10 ms zero-loss run lost millions of packets to
   `imissed`.
@@ -748,7 +760,7 @@ the default; `--stable` only prints that no Rust stable release exists yet.
 - **Input allowlists**: the controller starts `dpds` as root, so it only accepts values it can
   vet. Ports are a PCI address or `net_null<N>` / `net_ring<N>` (no devargs, no `net_pcap`). Extra
   EAL arguments are limited to `--no-huge`, `--no-pci`, `-m <n>`, `-n <n>`, `--socket-mem=<list>`
-  and `--log-level=<spec>`. mlx5 devargs come from a fixed list of keys; `mprq` is never set. The
+  and `--log-level=<spec>`. The mlx5 devargs are fixed to `txq_mpw_en=1` and not configurable. The
   management-NIC guard refuses to start a link on an interface that carries an IP route (409).
 - **Host check**: `dpds.sh check` and `install` run `dpds-controller check`, which prints one
   `OK`/`INFO`/`WARN`/`ERROR` line per hint: isolated cores (`isolcpus`, `nohz_full`,

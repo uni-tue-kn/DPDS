@@ -66,6 +66,13 @@ async fn host_hints_are_the_shared_hint_array() {
     );
 }
 
+#[tokio::test]
+async fn host_hints_have_no_mprq_hint_and_never_discuss_devargs() {
+    let a = app();
+    let v = a.get("/api/host/hints").await.json();
+    assert_no_devargs_hint(&v);
+}
+
 // ---- links ---------------------------------------------------------------
 
 #[tokio::test]
@@ -574,11 +581,11 @@ async fn settings_defaults_put_and_persistence() {
     assert_eq!(r.status, 200);
     let v = r.json();
     assert!(absent(&v, "main_lcore"));
-    assert_eq!(v["mlx5_devargs"], "txq_mpw_en=1");
+    assert!(absent(&v, "mlx5_devargs"), "{v}");
     assert_eq!(v["eal_extra_args"], json!([]));
     assert_eq!(v["poll_interval_ms"], 500);
 
-    let new = json!({"main_lcore": 1, "mlx5_devargs": "txq_mpw_en=1,rxq_cqe_comp_en=0",
+    let new = json!({"main_lcore": 1,
                      "eal_extra_args": ["--no-huge","-m","256"], "poll_interval_ms": 250});
     let r = a.put("/api/settings", new.clone()).await;
     assert_eq!(r.status, 200, "{}", r.text());
@@ -596,21 +603,49 @@ async fn settings_defaults_put_and_persistence() {
 #[tokio::test]
 async fn settings_validation() {
     let a = app();
-    let base = json!({"main_lcore": null, "mlx5_devargs": "txq_mpw_en=1", "eal_extra_args": [], "poll_interval_ms": 500});
+    let base = json!({"main_lcore": null, "eal_extra_args": [], "poll_interval_ms": 500});
     let mut zero = base.clone();
     zero["poll_interval_ms"] = json!(0);
     let r = a.put("/api/settings", zero).await;
     assert_eq!(r.status, 400);
     r.message();
-    let mut mprq = base.clone();
-    mprq["mlx5_devargs"] = json!("txq_mpw_en=1,mprq_en=1");
-    let r = a.put("/api/settings", mprq).await;
-    assert_eq!(r.status, 400);
-    assert!(r.message().to_lowercase().contains("mprq"));
+}
+
+/// Spec v17: the mlx5 devargs are fixed to PREOF's `txq_mpw_en=1`, so the field is gone and a
+/// body that still carries it is refused by `deny_unknown_fields`, naming the field.
+#[tokio::test]
+async fn a_settings_body_with_mlx5_devargs_is_a_400_naming_the_field_and_changes_nothing() {
+    let a = app();
+    let before = a.get("/api/settings").await.json();
+    for devargs in ["txq_mpw_en=1", "", "mprq_en=1", "txq_mpw_en=1,rx_vec_en=1"] {
+        let body = json!({"main_lcore": 1, "mlx5_devargs": devargs,
+                          "eal_extra_args": ["--no-huge"], "poll_interval_ms": 250});
+        let r = a.put("/api/settings", body).await;
+        assert_eq!(r.status, 400, "{devargs:?}: {}", r.text());
+        assert!(
+            r.message().contains("mlx5_devargs"),
+            "{devargs:?}: {}",
+            r.message()
+        );
+    }
+    assert_eq!(a.get("/api/settings").await.json(), before);
     assert_eq!(
-        a.get("/api/settings").await.json()["mlx5_devargs"],
-        "txq_mpw_en=1"
+        store::load(a.state_dir.path())
+            .unwrap()
+            .settings
+            .poll_interval_ms,
+        500
     );
+}
+
+#[tokio::test]
+async fn the_settings_without_mlx5_devargs_are_accepted_and_echoed_without_it() {
+    let a = app();
+    let body = json!({"main_lcore": null, "eal_extra_args": [], "poll_interval_ms": 500});
+    let r = a.put("/api/settings", body).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert!(absent(&r.json(), "mlx5_devargs"), "{}", r.text());
+    assert!(absent(&a.get("/api/settings").await.json(), "mlx5_devargs"));
 }
 
 // ---- emulation -----------------------------------------------------------
@@ -761,7 +796,6 @@ async fn start_hands_the_supervisor_a_complete_launch_plan() {
                 driver: None,
             },
         ],
-        mlx5_devargs: "txq_mpw_en=1".into(),
         eal_extra_args: vec![],
         links_file: a.runtime_dir.join("links.json"),
     });
@@ -875,11 +909,11 @@ async fn the_worker_override_of_a_link_reaches_plan_and_links_file() {
 }
 
 #[tokio::test]
-async fn settings_extra_args_and_devargs_reach_the_argv() {
+async fn settings_extra_args_reach_the_argv_and_the_devargs_stay_fixed() {
     let a = app();
     a.put(
         "/api/settings",
-        json!({"main_lcore": 1, "mlx5_devargs": "txq_mpw_en=1,rxq_cqe_comp_en=0",
+        json!({"main_lcore": 1,
         "eal_extra_args": ["--no-huge", "-m", "256"], "poll_interval_ms": 500}),
     )
     .await;
@@ -887,9 +921,7 @@ async fn settings_extra_args_and_devargs_reach_the_argv() {
     start_ok(&a).await;
     let plan = &a.supervisor.plans()[0];
     assert_eq!(plan.main_lcore, 1);
-    assert!(plan
-        .argv
-        .contains(&format!("{NIC0},txq_mpw_en=1,rxq_cqe_comp_en=0")));
+    assert!(plan.argv.contains(&format!("{NIC0},txq_mpw_en=1")));
     assert!(plan
         .argv
         .windows(3)
@@ -1055,7 +1087,7 @@ async fn every_kind_of_edit_while_running_flags_pending_restart() {
                 let r = a
                     .put(
                         "/api/settings",
-                        json!({"main_lcore": 1, "mlx5_devargs": "txq_mpw_en=1",
+                        json!({"main_lcore": 1,
                     "eal_extra_args": [], "poll_interval_ms": 500}),
                     )
                     .await;

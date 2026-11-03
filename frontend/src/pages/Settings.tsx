@@ -9,7 +9,6 @@ import type { ExportDocument, Settings as SettingsDto } from '../api/types';
 
 interface FormState {
   main_lcore: string;
-  mlx5_devargs: string;
   /** One list row per argument. */
   eal_extra_args: string[];
   poll_interval_ms: string;
@@ -18,7 +17,6 @@ interface FormState {
 function toForm(s: SettingsDto): FormState {
   return {
     main_lcore: s.main_lcore == null ? '' : String(s.main_lcore),
-    mlx5_devargs: s.mlx5_devargs,
     eal_extra_args: s.eal_extra_args,
     poll_interval_ms: String(s.poll_interval_ms),
   };
@@ -31,7 +29,6 @@ function toDto(f: FormState): SettingsDto {
   if (main !== '' && !Number.isInteger(Number(main))) throw new Error('Main lcore must be an integer or empty');
   return {
     main_lcore: main === '' ? null : Number(main),
-    mlx5_devargs: f.mlx5_devargs,
     eal_extra_args: f.eal_extra_args.map((a) => a.trim()).filter(Boolean),
     poll_interval_ms: poll,
   };
@@ -159,10 +156,6 @@ export default function Settings() {
                 <Form.Label>Main lcore</Form.Label>
                 <Form.Control type="number" value={form.main_lcore} onChange={(e) => edit({ main_lcore: e.target.value })} />
                 <Form.Text>Empty: the lowest non-isolated online core.</Form.Text>
-              </Form.Group>
-              <Form.Group className="mb-3" controlId="mlx5-devargs">
-                <Form.Label>mlx5 devargs</Form.Label>
-                <Form.Control type="text" value={form.mlx5_devargs} onChange={(e) => edit({ mlx5_devargs: e.target.value })} />
               </Form.Group>
               <fieldset className="mb-3">
                 <legend className="fs-6">EAL extra arguments</legend>

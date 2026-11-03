@@ -45,7 +45,6 @@ fn tuned_host_exits_zero_and_prints_one_line_per_hint() {
     let l = lines(&o);
     assert!(l.len() >= HINT_IDS.len(), "{l:?}");
     assert!(l.iter().any(|x| x.contains("OK")), "{l:?}");
-    assert!(l.iter().any(|x| x.contains("INFO")), "{l:?}"); // the MPRQ note
     assert!(!l.iter().any(|x| x.contains("ERROR")), "{l:?}");
 }
 
@@ -122,4 +121,19 @@ fn stored_links_are_taken_into_account() {
         "5 links need 5 isolated cores: {:?}",
         lines(&o)
     );
+}
+
+#[test]
+fn the_check_prints_no_mprq_line_in_text_or_json() {
+    for host in [FakeHost::bare_metal(), FakeHost::bare()] {
+        let state = tempfile::tempdir().unwrap();
+        let j = run(&host, state.path(), true);
+        let hints: Value = serde_json::from_slice(&j.stdout).unwrap();
+        assert_no_devargs_hint(&hints);
+        let t = run(&host, state.path(), false);
+        for l in lines(&t) {
+            let l = l.to_lowercase();
+            assert!(!l.contains("mprq") && !l.contains("devargs"), "{l}");
+        }
+    }
 }

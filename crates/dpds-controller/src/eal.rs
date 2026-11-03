@@ -15,6 +15,10 @@ use crate::model::Link;
 /// Margin on top of the longest delay when waiting for `dpds` to drain.
 const DRAIN_MARGIN: Duration = Duration::from_secs(5);
 
+/// The mlx5 devargs of every `-a <pci>` on an mlx5_core port. Fixed to preof's value, not
+/// configurable.
+pub const MLX5_DEVARGS: &str = "txq_mpw_en=1";
+
 /// A DPDK device of the links and the kernel driver of a PCI port, if known.
 #[derive(Debug, Clone)]
 pub struct EalPort {
@@ -27,14 +31,13 @@ pub struct EalInput {
     pub main_lcore: u32,
     pub worker_lcores: Vec<u32>,
     pub ports: Vec<EalPort>,
-    pub mlx5_devargs: String,
     pub eal_extra_args: Vec<String>,
     pub links_file: PathBuf,
 }
 
 /// `dpds` arguments without the binary name. Vdev names (`net_*`) become
-/// `--vdev`; mlx5 devargs go only to PCI ports bound to mlx5_core. `mprq_en` is
-/// never generated.
+/// `--vdev`; PCI ports bound to mlx5_core get [`MLX5_DEVARGS`], the same fixed devargs as
+/// preof. Nothing else is ever appended.
 pub fn eal_argv(i: &EalInput) -> Vec<String> {
     let lcores: Vec<String> = std::iter::once(i.main_lcore)
         .chain(i.worker_lcores.iter().copied())
@@ -55,9 +58,9 @@ pub fn eal_argv(i: &EalInput) -> Vec<String> {
             argv.push(p.name.clone());
         } else {
             argv.push("-a".into());
-            let mlx5 = p.driver.as_deref() == Some("mlx5_core") && !i.mlx5_devargs.is_empty();
+            let mlx5 = p.driver.as_deref() == Some("mlx5_core");
             argv.push(if mlx5 {
-                format!("{},{}", p.name, i.mlx5_devargs)
+                format!("{},{MLX5_DEVARGS}", p.name)
             } else {
                 p.name.clone()
             });

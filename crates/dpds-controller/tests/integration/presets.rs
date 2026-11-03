@@ -500,7 +500,7 @@ async fn an_old_state_file_without_presets_loads_as_no_presets() {
             "id": 3, "name": "ab", "ingress": NIC0, "egress": NIC1,
             "config": cfg_json(1.0e6, 1.0e5)
         }],
-        "settings": {"main_lcore": null, "mlx5_devargs": "txq_mpw_en=1",
+        "settings": {"main_lcore": null,
                      "eal_extra_args": [], "poll_interval_ms": 500},
         "next_id": 4
     });

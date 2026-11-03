@@ -192,7 +192,7 @@ impl Controller {
             "PUT",
             "/api/settings",
             Some(json!({
-                "main_lcore": null, "mlx5_devargs": "txq_mpw_en=1",
+                "main_lcore": null,
                 "eal_extra_args": eal_extra, "poll_interval_ms": 250
             })),
         );

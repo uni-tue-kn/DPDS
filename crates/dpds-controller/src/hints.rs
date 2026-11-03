@@ -114,7 +114,6 @@ pub fn compute_hints(roots: &HostRoots, state: &StoredState) -> Vec<Hint> {
         iommu(&ctx),
         mtu(&ctx),
         maxreadreq(&ctx),
-        mprq(),
     ]);
     hints.extend(drain(&ctx));
     hints
@@ -671,15 +670,5 @@ fn maxreadreq(ctx: &Ctx) -> Hint {
         title,
         details.join("; "),
         suggestion,
-    )
-}
-
-fn mprq() -> Hint {
-    hint(
-        "mprq",
-        Level::Info,
-        "MPRQ",
-        "the controller never sets mprq_en: it loses the fast mbuf free path and causes rx_out_of_buffer".into(),
-        "Do not add mprq_en to the mlx5 devargs.",
     )
 }

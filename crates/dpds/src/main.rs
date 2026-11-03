@@ -62,6 +62,31 @@ extern "C" {
     fn signal(signum: i32, handler: extern "C" fn(i32)) -> isize;
 }
 
+// ── Memory locking ───────────────────────────────────────────────────────────
+// Like preof: lock the whole process into RAM before EAL starts, so with `MCL_FUTURE` every
+// later mapping (EAL heap, mempools, the delay buffers' up-front reservation, telemetry) is
+// locked and populated when it is created and no worker lcore takes a page fault mid-run.
+
+/// `mlockall(2)` flag (`<sys/mman.h>`, Linux): lock every page mapped now.
+const MCL_CURRENT: i32 = 1;
+/// `mlockall(2)` flag (`<sys/mman.h>`, Linux): lock every page mapped later too.
+const MCL_FUTURE: i32 = 2;
+
+extern "C" {
+    fn mlockall(flags: i32) -> i32;
+}
+
+/// `mlockall(MCL_CURRENT | MCL_FUTURE)`. Failure (no `CAP_IPC_LOCK` and a low
+/// `RLIMIT_MEMLOCK`) is the caller's warning, not an error: unlocked still works.
+fn lock_memory() -> std::result::Result<(), std::io::Error> {
+    // SAFETY: mlockall takes only flags and touches no Rust memory.
+    if unsafe { mlockall(MCL_CURRENT | MCL_FUTURE) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
 fn install_signal_handlers() -> Result<()> {
     for sig in [SIGINT, SIGTERM] {
         if unsafe { signal(sig, on_signal) } == SIG_ERR {
@@ -209,6 +234,11 @@ fn shorthand_links(cli: &dpds::cli::Cli, probed: &[(String, u16)]) -> Result<Lay
 }
 
 fn run() -> Result<()> {
+    // First thing, before EAL: non-fatal, a container or non-root run just stays unlocked.
+    if let Err(e) = lock_memory() {
+        eprintln!("WARNING: mlockall failed, continuing unlocked: {e}");
+    }
+
     let args: Vec<String> = std::env::args().collect();
     let cli = parse_args(&args)?;
 
@@ -538,4 +568,19 @@ fn serve(
             .map_err(|e| format!("lcore {lcore} did not shut down cleanly: {e}"))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lock_memory;
+
+    /// Smoke test only (PREOF's `lock_memory_does_not_panic`): `lock_memory` wraps a raw
+    /// `mlockall(MCL_CURRENT | MCL_FUTURE)`, which legitimately fails without `CAP_IPC_LOCK` and
+    /// with a low `RLIMIT_MEMLOCK`, so it asserts neither `Ok` nor `Err`, only that the call is
+    /// wired up, returns the OS error as `io::Error` and does not crash the test process.
+    #[test]
+    fn lock_memory_does_not_panic() {
+        let result: Result<(), std::io::Error> = lock_memory();
+        let _ = result;
+    }
 }

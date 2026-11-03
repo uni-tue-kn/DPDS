@@ -1,5 +1,5 @@
-//! Input validation (C3): port names, the EAL argument allowlist and the mlx5
-//! devargs allowlist. Everything the controller puts on the `dpds` command line
+//! Input validation (C3): port names and the EAL argument allowlist.
+//! Everything the controller puts on the `dpds` command line
 //! comes from here or from its own code, never from a free-form string.
 
 /// A DPDK device name: a PCI address (returned in lower case) or a vdev that
@@ -78,46 +78,4 @@ fn log_spec(s: &str) -> bool {
         && !s.starts_with('-')
         && s.bytes()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'*' | b':' | b'-'))
-}
-
-/// mlx5 devargs the controller lets through; `mprq_*` is never one of them.
-fn mlx5_key(k: &str) -> bool {
-    matches!(
-        k,
-        "txq_mpw_en"
-            | "txq_inline"
-            | "rxq_cqe_comp_en"
-            | "rxq_pkt_pad_en"
-            | "rx_vec_en"
-            | "tx_pp"
-            | "tx_skew"
-    ) || k
-        .strip_prefix("txq_inline_")
-        .is_some_and(|s| !s.is_empty() && s.bytes().all(|c| c.is_ascii_lowercase() || c == b'_'))
-}
-
-/// `key=value[,key=value...]` over the allowlisted keys; empty is fine.
-pub fn mlx5_devargs(devargs: &str) -> Result<(), String> {
-    if devargs.to_lowercase().contains("mprq") {
-        return Err(
-            "mlx5_devargs must not contain mprq_en: the controller never enables MPRQ (README, \"What not to do\")".into(),
-        );
-    }
-    if devargs.is_empty() {
-        return Ok(());
-    }
-    for part in devargs.split(',') {
-        let ok = part.split_once('=').is_some_and(|(k, v)| {
-            mlx5_key(k)
-                && !v.is_empty()
-                && v.bytes()
-                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.'))
-        });
-        if !ok {
-            return Err(format!(
-                "mlx5_devargs: {part:?} is not allowed (key=value with a key of txq_mpw_en, txq_inline[_*], rxq_cqe_comp_en, rxq_pkt_pad_en, rx_vec_en, tx_pp, tx_skew)"
-            ));
-        }
-    }
-    Ok(())
 }

@@ -36,11 +36,10 @@ pub struct Preset {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Settings {
     /// Main lcore; the lowest non-isolated online core when absent.
     pub main_lcore: Option<u32>,
-    /// mlx5 devargs appended to `-a <pci>` of ports bound to mlx5_core. `mprq_en` is refused.
-    pub mlx5_devargs: String,
     /// Extra EAL arguments, passed before the `--` separator.
     pub eal_extra_args: Vec<String>,
     /// Telemetry poll interval.
@@ -51,7 +50,6 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             main_lcore: None,
-            mlx5_devargs: "txq_mpw_en=1".into(),
             eal_extra_args: Vec::new(),
             poll_interval_ms: 500,
         }

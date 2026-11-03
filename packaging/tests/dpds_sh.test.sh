@@ -140,7 +140,7 @@
 # packaging/dpds-controller.service
 #   runs as root (no User= or User=root), `EnvironmentFile=-/etc/dpds/controller.env`,
 #   ExecStart=/usr/local/bin/dpds-controller serve, KillSignal=SIGTERM, TimeoutStopSec >= 120 s,
-#   Restart=on-failure, [Install] WantedBy=multi-user.target; parses without warnings under
+#   LimitMEMLOCK=infinity in [Service] (spec v17; dpds locks its memory), Restart=on-failure, [Install] WantedBy=multi-user.target; parses without warnings under
 #   `systemd-analyze verify`.
 #
 # Sandbox conventions used by this file (PATH contains only stubs + whitelisted base utilities):
@@ -749,6 +749,12 @@ test_install_unit_paths_follow_prefix_and_etc() {
   assert_file_has "$(installed_unit)" "^EnvironmentFile=-$DPDS_ETC_DIR/controller.env\$"
   assert_file_has "$(installed_unit)" '^KillSignal=SIGTERM$'
   assert_file_has "$(installed_unit)" '^Restart=on-failure$'
+}
+
+test_install_unit_keeps_the_memlock_limit() {
+  run_dpds --yes install
+  assert_rc 0 "$ERR"
+  assert_file_has "$(installed_unit)" '^LimitMEMLOCK=infinity$'
 }
 
 test_install_env_file_default_bind_and_paths() {
@@ -1860,6 +1866,18 @@ test_unit_timeout_stop_at_least_120s() {
     *)    secs=$v;;
   esac
   (( secs >= 120 )) || fail "TimeoutStopSec=$v is shorter than 120 s"
+}
+
+# Spec v17: dpds calls mlockall(MCL_CURRENT|MCL_FUTURE) before EAL init, and its parent is this
+# unit's controller, so the unit sets the memlock limit of the service to unlimited explicitly
+# instead of relying on systemd's default or on root's CAP_IPC_LOCK.
+test_unit_lifts_the_memlock_limit_in_the_service_section() {
+  local n; n="$(grep -Ec '^LimitMEMLOCK=' "$UNIT")"
+  assert_eq "$n" "1" "number of LimitMEMLOCK= lines"
+  assert_eq "$(unit_value LimitMEMLOCK)" "infinity" "LimitMEMLOCK"
+  local section
+  section="$(awk '/^\[/ {s=$0} /^LimitMEMLOCK=/ {print s}' "$UNIT")"
+  assert_eq "$section" "[Service]" "section of LimitMEMLOCK"
 }
 
 test_unit_install_section_wanted_by_multi_user() {

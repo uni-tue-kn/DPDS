@@ -303,7 +303,7 @@ fn doc_with(link_rate: Value, preset_rate: Value) -> Value {
     json!({
         "format": FORMAT,
         "version": 2,
-        "settings": {"main_lcore": null, "mlx5_devargs": "txq_mpw_en=1",
+        "settings": {"main_lcore": null,
                      "eal_extra_args": [], "poll_interval_ms": 250},
         "links": [{"name": "ab", "ingress": "net_null0", "egress": "net_null1",
                    "config": cfg_rate(link_rate)}],
@@ -666,7 +666,7 @@ fn ring_doc(n: usize) -> Value {
     json!({
         "format": FORMAT,
         "version": 2,
-        "settings": {"main_lcore": null, "mlx5_devargs": "txq_mpw_en=1",
+        "settings": {"main_lcore": null,
                      "eal_extra_args": [], "poll_interval_ms": 250},
         "links": links,
         "presets": []

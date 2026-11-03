@@ -34,7 +34,6 @@ fn input(ports: Vec<EalPort>) -> EalInput {
         main_lcore: 0,
         worker_lcores: vec![2, 3],
         ports,
-        mlx5_devargs: "txq_mpw_en=1".into(),
         eal_extra_args: vec![],
         links_file: PathBuf::from("/run/dpds-controller/links.json"),
     }
@@ -109,19 +108,29 @@ fn mlx5_devargs_only_for_pci_ports_bound_to_mlx5_core() {
 }
 
 #[test]
-fn empty_devargs_add_no_trailing_comma_and_custom_devargs_pass_through() {
-    let mut i = input(vec![port(NIC0, Some("mlx5_core"))]);
-    i.mlx5_devargs = String::new();
-    assert!(eal_argv(&i).contains(&NIC0.to_string()));
-    i.mlx5_devargs = "txq_mpw_en=1,rxq_cqe_comp_en=0".into();
-    assert!(eal_argv(&i).contains(&format!("{NIC0},txq_mpw_en=1,rxq_cqe_comp_en=0")));
+fn the_mlx5_devargs_are_exactly_txq_mpw_en_1_with_no_trailing_comma() {
+    // spec v17: PREOF's `txq_mpw_en=1`, fixed, not configurable
+    let argv = eal_argv(&input(vec![port(NIC0, Some("mlx5_core"))]));
+    let i = argv.iter().position(|a| a == "-a").unwrap();
+    assert_eq!(argv[i + 1], format!("{NIC0},txq_mpw_en=1"));
+    for a in &argv {
+        if a.contains(NIC0) {
+            assert!(!a.ends_with(','), "{a}");
+            assert_eq!(a.matches(',').count(), 1, "{a}");
+        }
+    }
 }
 
 #[test]
-fn mprq_is_never_generated() {
-    for driver in [Some("mlx5_core"), Some("vfio-pci"), None] {
+fn no_devargs_other_than_txq_mpw_en_1_are_ever_generated() {
+    for driver in [Some("mlx5_core"), Some("vfio-pci"), Some("tg3"), None] {
         let argv = eal_argv(&input(vec![port(NIC0, driver), port("net_null0", None)]));
-        assert!(!argv.join(" ").contains("mprq"), "{argv:?}");
+        let joined = argv.join(" ");
+        assert!(!joined.to_lowercase().contains("mprq"), "{argv:?}");
+        // the only `,key=value` anywhere is `,txq_mpw_en=1` on an mlx5_core PCI port
+        let devargs = joined.matches('=').count();
+        let expected = usize::from(driver == Some("mlx5_core"));
+        assert_eq!(devargs, expected, "{argv:?}");
     }
 }
 

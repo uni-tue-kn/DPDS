@@ -181,6 +181,7 @@ mod first_loss;
 mod forward;
 mod links;
 mod quit;
+mod readme;
 mod setup;
 mod stats;
 mod support;

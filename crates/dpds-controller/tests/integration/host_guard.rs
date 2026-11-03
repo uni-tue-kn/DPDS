@@ -70,7 +70,7 @@ fn all_routes() -> Vec<(&'static str, &'static str, Option<Value>)> {
         (
             "PUT",
             "/api/settings",
-            Some(json!({"main_lcore": 1, "mlx5_devargs": "txq_mpw_en=1",
+            Some(json!({"main_lcore": 1,
                         "eal_extra_args": [], "poll_interval_ms": 7})),
         ),
         ("POST", "/api/emulation/start", Some(json!({}))),
@@ -128,7 +128,7 @@ fn rejected_mutating_requests_change_nothing() {
         Some(&body),
     );
     assert!(rejected(st), "{st}");
-    let settings = json!({"main_lcore": 1, "mlx5_devargs": "txq_mpw_en=1",
+    let settings = json!({"main_lcore": 1,
                           "eal_extra_args": [], "poll_interval_ms": 7});
     let (st, _) = call(
         &c.addr,

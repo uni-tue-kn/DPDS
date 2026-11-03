@@ -19,6 +19,10 @@ KillMode=mixed
 KillSignal=SIGTERM
 TimeoutStopSec=600
 
+# dpds locks all its memory (mlockall) before it starts; the limit is set explicitly,
+# not left to the default, so the child can always lock its pools and buffers.
+LimitMEMLOCK=infinity
+
 Restart=on-failure
 RestartSec=5
 

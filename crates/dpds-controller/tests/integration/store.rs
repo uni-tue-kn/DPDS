@@ -14,9 +14,9 @@ fn sample() -> StoredState {
     ]);
     s.settings = Settings {
         main_lcore: Some(0),
-        mlx5_devargs: "txq_mpw_en=1".into(),
         eal_extra_args: vec!["--no-huge".into(), "-m".into(), "256".into()],
-        poll_interval_ms: 250,
+        // the poll interval stays at its default
+        ..Settings::default()
     };
     s
 }
@@ -26,7 +26,6 @@ fn missing_directory_loads_the_default_state() {
     let tmp = tempfile::tempdir().unwrap();
     let s = store::load(&tmp.path().join("does/not/exist")).unwrap();
     assert!(s.links.is_empty());
-    assert_eq!(s.settings.mlx5_devargs, "txq_mpw_en=1");
     assert_eq!(s.settings.poll_interval_ms, 500);
     assert_eq!(s.settings.main_lcore, None);
     assert!(s.settings.eal_extra_args.is_empty());
@@ -63,17 +62,22 @@ fn file_has_the_documented_top_level_shape() {
     for old in ["ports", "configs", "workers"] {
         assert!(v["links"][0].get(old).is_none(), "`{old}` in {v}");
     }
-    for k in [
-        "main_lcore",
-        "mlx5_devargs",
-        "eal_extra_args",
-        "poll_interval_ms",
-    ] {
+    for k in ["main_lcore", "eal_extra_args", "poll_interval_ms"] {
         assert!(
             v["settings"].get(k).is_some(),
             "settings.{k} missing in {v}"
         );
     }
+    // spec v17: the mlx5 devargs are fixed (`txq_mpw_en=1`), not stored
+    assert!(
+        v["settings"].get("mlx5_devargs").is_none(),
+        "settings.mlx5_devargs stored in {v}"
+    );
+    assert_eq!(
+        v["settings"].as_object().unwrap().len(),
+        3,
+        "unexpected settings keys in {v}"
+    );
 }
 
 #[test]
@@ -127,7 +131,7 @@ fn old_shape_state() -> Value {
              "configs": [cfg_json(1.0e6, 1.0e5), cfg_json(2.0e6, 0.0)], "workers": [2, 6]},
             {"id": 7, "name": "loop", "ports": ["net_null0"], "configs": [cfg_json(3.0e6, 0.0)]}
         ],
-        "settings": {"main_lcore": 1, "mlx5_devargs": "txq_mpw_en=1",
+        "settings": {"main_lcore": 1,
                      "eal_extra_args": [], "poll_interval_ms": 250},
         "next_id": 9
     })

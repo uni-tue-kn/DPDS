@@ -104,7 +104,6 @@ export interface Hint {
 
 export interface Settings {
   main_lcore?: number | null;
-  mlx5_devargs: string;
   eal_extra_args: string[];
   poll_interval_ms: number;
 }

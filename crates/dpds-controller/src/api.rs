@@ -261,7 +261,6 @@ pub struct PresetInput {
 #[serde(deny_unknown_fields)]
 pub struct ExportSettings {
     main_lcore: Option<u32>,
-    mlx5_devargs: String,
     eal_extra_args: Vec<String>,
     poll_interval_ms: u64,
 }
@@ -435,7 +434,6 @@ fn validate_settings(settings: &Settings) -> Result<(), ApiError> {
     if settings.poll_interval_ms == 0 {
         return Err(ApiError::bad("poll_interval_ms must be at least 1"));
     }
-    validate::mlx5_devargs(&settings.mlx5_devargs).map_err(ApiError::bad)?;
     validate::eal_extra_args(&settings.eal_extra_args).map_err(ApiError::bad)
 }
 
@@ -562,7 +560,6 @@ impl App {
             check_ports_free(&l.name, &l.ingress, &l.egress, &before)?;
         }
         check_dict_limit(stored.links.iter())?;
-        validate::mlx5_devargs(&stored.settings.mlx5_devargs).map_err(ApiError::bad)?;
         validate::eal_extra_args(&stored.settings.eal_extra_args).map_err(ApiError::bad)?;
         let interfaces = discover(&self.deps.roots);
         let mut ports: Vec<EalPort> = Vec::new();
@@ -597,7 +594,6 @@ impl App {
             main_lcore: assignment.main_lcore,
             worker_lcores: workers,
             ports,
-            mlx5_devargs: stored.settings.mlx5_devargs.clone(),
             eal_extra_args: stored.settings.eal_extra_args.clone(),
             links_file: links_file.clone(),
         });
@@ -1071,7 +1067,6 @@ async fn export(State(app): Shared) -> Json<ExportDoc> {
         version: EXPORT_VERSION,
         settings: ExportSettings {
             main_lcore: s.settings.main_lcore,
-            mlx5_devargs: s.settings.mlx5_devargs.clone(),
             eal_extra_args: s.settings.eal_extra_args.clone(),
             poll_interval_ms: s.settings.poll_interval_ms,
         },
@@ -1123,7 +1118,6 @@ fn apply_import(s: &mut StoredState, doc: ExportDoc) -> Result<(), ApiError> {
     }
     let settings = Settings {
         main_lcore: doc.settings.main_lcore,
-        mlx5_devargs: doc.settings.mlx5_devargs,
         eal_extra_args: doc.settings.eal_extra_args,
         poll_interval_ms: doc.settings.poll_interval_ms,
     };
