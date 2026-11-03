@@ -6,7 +6,7 @@ import * as api from '../api/client';
 import ErrorAlert from '../components/ErrorAlert';
 import { errorMessage } from '../common/format';
 import { useLoad } from '../common/useLoad';
-import ConfigFieldset from './ConfigFieldset';
+import ConfigFieldset, { RequiredMarker, RequiredNote } from './ConfigFieldset';
 import SavePresetModal from './SavePresetModal';
 import { configToDto, configToForm, defaultConfigForm, parseWorker, portError } from './linkForm';
 import type { ConfigForm } from './linkForm';
@@ -16,17 +16,16 @@ import type { Interface, Link, Preset } from '../api/types';
 type Users = Map<string, string>;
 
 function optionLabel(i: Interface, usedBy?: string, role?: string): string {
-  const base = i.netdev ? `${i.pci} (${i.netdev})` : i.pci;
+  const base = i.netdev ?? i.pci;
   const reasons: string[] = [];
   if (!i.dpds_usable || i.kernel_route) reasons.push(i.reason ?? (i.kernel_route ? 'management NIC' : 'not usable'));
   if (usedBy !== undefined) reasons.push(`already used as ${role} by ${usedBy}`);
   return reasons.length === 0 ? base : `${base} - ${reasons.join('; ')}`;
 }
 
-/** A picker over the discovered interfaces plus a free-text field; a typed value wins (see `Editor`). */
-function PortField({ name, id, value, typed, interfaces, users, onChange, onType }: {
-  name: string; id: string; value: string; typed: string; interfaces: Interface[]; users: Users;
-  onChange: (v: string) => void; onType: (v: string) => void;
+/** A picker over the discovered interfaces, shown by netdev (device name without one). */
+function PortField({ name, id, value, interfaces, users, onChange }: {
+  name: string; id: string; value: string; interfaces: Interface[]; users: Users; onChange: (v: string) => void;
 }) {
   const role = name.toLowerCase();
   // A stored port that is not a discovered interface (e.g. a vdev) stays selectable as its own option.
@@ -35,7 +34,8 @@ function PortField({ name, id, value, typed, interfaces, users, onChange, onType
     <Col md={6} className="mb-3">
       <Form.Group controlId={id}>
         <Form.Label>{name}</Form.Label>
-        <Form.Select value={value} onChange={(e) => onChange(e.target.value)}>
+        <RequiredMarker />
+        <Form.Select value={value} onChange={(e) => onChange(e.target.value)} required aria-required="true">
           <option value="">Select a port...</option>
           {unknown && <option value={value}>{value}</option>}
           {interfaces.map((i) => (
@@ -44,11 +44,6 @@ function PortField({ name, id, value, typed, interfaces, users, onChange, onType
             </option>
           ))}
         </Form.Select>
-      </Form.Group>
-      <Form.Group controlId={`${id}-typed`} className="mt-2">
-        <Form.Label>{`${name} (typed)`}</Form.Label>
-        <Form.Control type="text" value={typed} onChange={(e) => onType(e.target.value)} placeholder="0000:65:00.0 or net_null0" />
-        <Form.Text>Overrides the picker when not empty.</Form.Text>
       </Form.Group>
     </Col>
   );
@@ -61,8 +56,6 @@ function Editor({ id, link, interfaces, others, presets, onPresetSaved }: {
   const [name, setName] = useState(link?.name ?? '');
   const [ingress, setIngress] = useState(link?.ingress ?? '');
   const [egress, setEgress] = useState(link?.egress ?? '');
-  const [typedIngress, setTypedIngress] = useState('');
-  const [typedEgress, setTypedEgress] = useState('');
   const [config, setConfig] = useState<ConfigForm>(() => (link ? configToForm(link.config) : defaultConfigForm()));
   const [worker, setWorker] = useState(link?.worker == null ? '' : String(link.worker));
   const [error, setError] = useState<string>();
@@ -85,8 +78,7 @@ function Editor({ id, link, interfaces, others, presets, onPresetSaved }: {
     let input;
     try {
       if (name.trim() === '') throw new Error('Name is required');
-      // A typed value wins over the picker.
-      const ports = [['Ingress', typedIngress.trim() || ingress], ['Egress', typedEgress.trim() || egress]];
+      const ports = [['Ingress', ingress], ['Egress', egress]];
       for (const [role, port] of ports) {
         if (port === '') throw new Error(`Select an ${role.toLowerCase()} port`);
         const bad = portError(port);
@@ -114,13 +106,17 @@ function Editor({ id, link, interfaces, others, presets, onPresetSaved }: {
     <>
       <Form onSubmit={submit} noValidate>
         <ErrorAlert message={error} />
+        <RequiredNote />
         {presetSaved && <div role="status" className="alert alert-success">{presetSaved}</div>}
         <Card className="mb-3">
           <Card.Body>
             <Row>
               <Form.Group as={Col} md={6} className="mb-3" controlId="link-name">
                 <Form.Label>Name</Form.Label>
-                <Form.Control type="text" value={name} onChange={(e) => setName(e.target.value)} />
+                <RequiredMarker />
+                <Form.Control
+                  type="text" value={name} onChange={(e) => setName(e.target.value)} required aria-required="true"
+                />
               </Form.Group>
               <Form.Group as={Col} md={6} className="mb-3" controlId="link-worker">
                 <Form.Label>Worker lcore</Form.Label>
@@ -130,12 +126,12 @@ function Editor({ id, link, interfaces, others, presets, onPresetSaved }: {
             </Row>
             <Row>
               <PortField
-                name="Ingress" id="link-ingress" value={ingress} typed={typedIngress} interfaces={interfaces}
-                users={ingressUsers} onChange={setIngress} onType={setTypedIngress}
+                name="Ingress" id="link-ingress" value={ingress} interfaces={interfaces}
+                users={ingressUsers} onChange={setIngress}
               />
               <PortField
-                name="Egress" id="link-egress" value={egress} typed={typedEgress} interfaces={interfaces}
-                users={egressUsers} onChange={setEgress} onType={setTypedEgress}
+                name="Egress" id="link-egress" value={egress} interfaces={interfaces}
+                users={egressUsers} onChange={setEgress}
               />
             </Row>
           </Card.Body>

@@ -1,23 +1,31 @@
 // Form model of the link editor: every number is kept as the typed string so inputs can be emptied and
 // retyped; `configToDto` validates and converts back to the wire type.
 import type { ConfigDto, Distribution, LimiterMode, LossModelDto } from '../api/types';
+import { PPS_UNITS, RATE_UNITS, SIZE_UNITS, TIME_UNITS, emptyUnit, fromBase, toBase } from '../common/units';
+import type { Unit, UnitValue } from '../common/units';
 
 export const DISTRIBUTIONS: Distribution[] = [
   'DeterministicDistribution', 'LogNormalDistribution', 'NormalDistribution', 'GammaDistribution', 'UniformDistribution',
 ];
 export const LIMITER_MODES: LimiterMode[] = ['Spacer', 'TokenBucketFilter'];
 
+/** Index of each field's default unit (ms, Mpps, Gbit/s, Mbit): what a new form and a zero or empty value show. */
+export const MS = 2;
+export const MPPS = 2;
+export const GBIT = 3;
+export const MBIT = 2;
+
 export interface ConfigForm {
   distribution: Distribution;
-  mean_ns: string;
-  std_ns: string;
+  mean_ns: UnitValue;
+  std_ns: UnitValue;
   activate_correlation: boolean;
-  half_life_period_ns: string;
-  initialization_rate_pps: string;
+  half_life_period_ns: UnitValue;
+  initialization_rate_pps: UnitValue;
   limiter_activate: boolean;
   limiter_mode: LimiterMode;
-  rate_bps: string;
-  limit_bit: string;
+  rate_bps: UnitValue;
+  limit_bit: UnitValue;
   loss_type: LossModelDto['type'];
   random_p: string;
   ge_p: string;
@@ -29,44 +37,51 @@ export interface ConfigForm {
   reordering: boolean;
   seed: string;
   hist_bins: string;
-  hist_lo: string;
-  hist_hi: string;
+  hist_lo: UnitValue;
+  hist_hi: UnitValue;
   delay_stats: boolean;
 }
 
+/** Conditionally required fields: the form marks them and refuses them empty only while the rule holds. */
+export const stdRequired = (f: ConfigForm) => f.distribution !== 'DeterministicDistribution';
+export const halfLifeRequired = (f: ConfigForm) => f.activate_correlation;
+export const limiterRequired = (f: ConfigForm) => f.limiter_activate;
+
 export function defaultConfigForm(): ConfigForm {
   return {
-    distribution: 'NormalDistribution', mean_ns: '1000000', std_ns: '100000',
-    activate_correlation: false, half_life_period_ns: '0', initialization_rate_pps: '',
-    limiter_activate: false, limiter_mode: 'Spacer', rate_bps: '10000000000', limit_bit: '12000000',
+    distribution: 'NormalDistribution', mean_ns: fromBase(1e6, TIME_UNITS, MS), std_ns: fromBase(1e5, TIME_UNITS, MS),
+    activate_correlation: false, half_life_period_ns: fromBase(0, TIME_UNITS, MS), initialization_rate_pps: emptyUnit(MPPS),
+    limiter_activate: false, limiter_mode: 'Spacer', rate_bps: fromBase(1e10, RATE_UNITS, GBIT),
+    limit_bit: fromBase(12e6, SIZE_UNITS, MBIT),
     loss_type: 'Random', random_p: '0', ge_p: '0.01', ge_r: '0.2', ge_k: '1', ge_h: '0', ge_good: true,
-    buffer_capacity: '100000', reordering: false, seed: '', hist_bins: '', hist_lo: '', hist_hi: '',
+    buffer_capacity: '100000', reordering: false, seed: '', hist_bins: '', hist_lo: emptyUnit(MS), hist_hi: emptyUnit(MS),
     delay_stats: true,
   };
 }
 
 const str = (v: number | null | undefined) => (v == null ? '' : String(v));
+const optUnit = (v: number | null | undefined, units: Unit[], dflt: number) => (v == null ? emptyUnit(dflt) : fromBase(v, units, dflt));
 
 export function configToForm(c: ConfigDto): ConfigForm {
   const f: ConfigForm = {
     ...defaultConfigForm(),
     distribution: c.delayer.distribution,
-    mean_ns: String(c.delayer.mean_ns),
-    std_ns: String(c.delayer.std_ns),
+    mean_ns: fromBase(c.delayer.mean_ns, TIME_UNITS, MS),
+    std_ns: fromBase(c.delayer.std_ns, TIME_UNITS, MS),
     activate_correlation: c.delayer.activate_correlation,
-    half_life_period_ns: String(c.delayer.half_life_period_ns),
-    initialization_rate_pps: String(c.delayer.initialization_rate_pps),
+    half_life_period_ns: fromBase(c.delayer.half_life_period_ns, TIME_UNITS, MS),
+    initialization_rate_pps: fromBase(c.delayer.initialization_rate_pps, PPS_UNITS, MPPS),
     limiter_activate: c.limiter.activate,
     limiter_mode: c.limiter.mode,
-    rate_bps: String(c.limiter.rate_bps),
-    limit_bit: String(c.limiter.limit_bit),
+    rate_bps: fromBase(c.limiter.rate_bps, RATE_UNITS, GBIT),
+    limit_bit: fromBase(c.limiter.limit_bit, SIZE_UNITS, MBIT),
     loss_type: c.loss_model.type,
     buffer_capacity: String(c.buffer_capacity),
     reordering: c.reordering,
     seed: str(c.seed),
     hist_bins: str(c.histogram?.bins),
-    hist_lo: str(c.histogram?.lo_ns),
-    hist_hi: str(c.histogram?.hi_ns),
+    hist_lo: optUnit(c.histogram?.lo_ns, TIME_UNITS, MS),
+    hist_hi: optUnit(c.histogram?.hi_ns, TIME_UNITS, MS),
     delay_stats: c.delay_stats ?? true,
   };
   if (c.loss_model.type === 'Random') {
@@ -87,12 +102,20 @@ function num(s: string, label: string): number {
   return n;
 }
 
+/** A unit field in its base unit. Empty is 0 while the field is not required, an error while it is. */
+function unitNum(v: UnitValue, units: Unit[], label: string, required = true): number {
+  if (v.text.trim() === '' && !required) return 0;
+  const n = toBase(v, units);
+  if (n === null) throw new Error(`${label} must be a number`);
+  return n;
+}
+
 /** No default exists for this rate: the user always chooses it. */
-function initRate(s: string): number {
-  const label = 'Initialization rate (pps)';
-  if (s.trim() === '') throw new Error(`${label} is required`);
-  const n = num(s, label);
-  if (n < 1) throw new Error(`${label} must be at least 1`);
+function initRate(v: UnitValue): number {
+  const label = 'Initialization rate';
+  if (v.text.trim() === '') throw new Error(`${label} is required`);
+  const n = unitNum(v, PPS_UNITS, label);
+  if (n < 1) throw new Error(`${label} must be at least 1 pps`);
   return n;
 }
 
@@ -140,24 +163,24 @@ export function configToDto(f: ConfigForm): ConfigDto {
       state_is_good: f.ge_good,
     };
   const bins = optInt(f.hist_bins, 'Histogram bins');
-  const lo_ns = f.hist_lo.trim() === '' ? null : num(f.hist_lo, 'Histogram lo (ns)');
-  const hi_ns = f.hist_hi.trim() === '' ? null : num(f.hist_hi, 'Histogram hi (ns)');
+  const lo_ns = f.hist_lo.text.trim() === '' ? null : unitNum(f.hist_lo, TIME_UNITS, 'Histogram lo');
+  const hi_ns = f.hist_hi.text.trim() === '' ? null : unitNum(f.hist_hi, TIME_UNITS, 'Histogram hi');
   return {
     buffer_capacity: int(f.buffer_capacity, 'Buffer capacity'),
     reordering: f.reordering,
     delayer: {
       distribution: f.distribution,
-      mean_ns: num(f.mean_ns, 'Mean delay (ns)'),
-      std_ns: num(f.std_ns, 'Delay std (ns)'),
+      mean_ns: unitNum(f.mean_ns, TIME_UNITS, 'Mean delay'),
+      std_ns: unitNum(f.std_ns, TIME_UNITS, 'Delay std', stdRequired(f)),
       activate_correlation: f.activate_correlation,
-      half_life_period_ns: num(f.half_life_period_ns, 'Half-life period (ns)'),
+      half_life_period_ns: unitNum(f.half_life_period_ns, TIME_UNITS, 'Half-life period', halfLifeRequired(f)),
       initialization_rate_pps: initRate(f.initialization_rate_pps),
     },
     limiter: {
       mode: f.limiter_mode,
       activate: f.limiter_activate,
-      rate_bps: num(f.rate_bps, 'Rate (bit/s)'),
-      limit_bit: num(f.limit_bit, 'Burst limit (bit)'),
+      rate_bps: unitNum(f.rate_bps, RATE_UNITS, 'Rate', limiterRequired(f)),
+      limit_bit: unitNum(f.limit_bit, SIZE_UNITS, 'Burst limit', limiterRequired(f)),
     },
     loss_model,
     seed: seed(f.seed),

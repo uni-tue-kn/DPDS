@@ -6,7 +6,7 @@ import * as api from '../api/client';
 import ErrorAlert from '../components/ErrorAlert';
 import { errorMessage } from '../common/format';
 import { useLoad } from '../common/useLoad';
-import ConfigFieldset from './ConfigFieldset';
+import ConfigFieldset, { RequiredMarker, RequiredNote } from './ConfigFieldset';
 import { configToDto, configToForm, defaultConfigForm } from './linkForm';
 import type { ConfigForm } from './linkForm';
 import type { Preset } from '../api/types';
@@ -49,11 +49,15 @@ function Editor({ id, preset }: { id?: number; preset?: Preset }) {
   return (
     <Form onSubmit={submit} noValidate>
       <ErrorAlert message={error} />
+      <RequiredNote />
       <Card className="mb-3">
         <Card.Body>
           <Form.Group className="mb-3" controlId="preset-name">
             <Form.Label>Name</Form.Label>
-            <Form.Control type="text" maxLength={64} value={name} onChange={(e) => setName(e.target.value)} />
+            <RequiredMarker />
+            <Form.Control
+              type="text" maxLength={64} value={name} onChange={(e) => setName(e.target.value)} required aria-required="true"
+            />
           </Form.Group>
           <Form.Group controlId="preset-description">
             <Form.Label>Description</Form.Label>

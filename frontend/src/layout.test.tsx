@@ -113,6 +113,66 @@ describe('dark mode', () => {
   });
 });
 
+// v16: P4TG-style API documentation link (a book icon at the bottom of the sidebar, opens the controller's Swagger UI).
+describe('sidebar API documentation link (v16)', () => {
+  const docs = () => screen.getByRole('link', { name: 'API documentation' });
+
+  it('is a link named "API documentation" to /api/docs that opens a new tab safely', () => {
+    renderApp('/');
+    const a = docs();
+    expect(a.tagName).toBe('A');
+    expect(a).toHaveAttribute('href', '/api/docs');
+    expect(a).toHaveAttribute('target', '_blank');
+    const rel = (a.getAttribute('rel') ?? '').split(/\s+/);
+    expect(rel).toContain('noopener');
+    expect(rel).toContain('noreferrer');
+    expect(a).toHaveAttribute('title', 'API documentation');
+  });
+
+  it('shows the bootstrap-icons book (bi-book) inside the link, hidden from assistive technology', () => {
+    renderApp('/');
+    const icon = docs().querySelector('i.bi.bi-book');
+    expect(icon).not.toBeNull();
+    expect(icon).toHaveAttribute('aria-hidden', 'true');
+  });
+
+  it('sits in the sidebar after the navigation entries, outside the page navigation', () => {
+    renderApp('/');
+    const nav = screen.getByRole('navigation', { name: 'Main navigation' });
+    expect(docs().closest('.sidebar')).not.toBeNull();
+    expect(nav.closest('.sidebar')).toBe(docs().closest('.sidebar'));
+    expect(nav).not.toContainElement(docs());
+    expect(nav.compareDocumentPosition(docs()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // the page links keep their five entries in order (the docs link is not one of them)
+    const names = within(nav).getAllByRole('link').map((a) => a.getAttribute('aria-label') ?? a.textContent?.trim());
+    expect(names.slice(0, 5)).toEqual(NAV);
+    expect(names).not.toContain('API documentation');
+  });
+
+  it('is the last link of the sidebar (after every page link)', () => {
+    renderApp('/');
+    const sidebar = docs().closest('.sidebar') as HTMLElement;
+    const links = within(sidebar).getAllByRole('link');
+    expect(links[links.length - 1]).toBe(docs());
+  });
+
+  it('is a plain anchor, not a router link: never marked as the current page', () => {
+    renderApp('/');
+    expect(docs()).not.toHaveAttribute('aria-current');
+  });
+
+  it.each(PAGES)('is available on every page (%s)', (_name, path) => {
+    renderApp(path);
+    expect(docs()).toHaveAttribute('href', '/api/docs');
+  });
+
+  it('stays next to the dark-mode toggle and the version line (nothing replaced)', () => {
+    renderApp('/');
+    expect(screen.getByRole('button', { name: 'Toggle dark mode' })).toBeInTheDocument();
+    expect(docs().closest('.sidebar')).toContainElement(screen.getByRole('button', { name: 'Toggle dark mode' }));
+  });
+});
+
 describe('sidebar server status (F3)', () => {
   it('shows the version once /api/online answers', async () => {
     renderApp('/hints');

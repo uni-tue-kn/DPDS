@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import * as api from '../api/client';
 
-/** "0000:65:00.0 (enp101s0f0)", or just the device name for a port without a kernel netdev (vdev, vfio-bound). */
+/** The Linux interface name (netdev) of a port; a port without one (vdev, vfio-bound) keeps its device name. */
 export type PortLabeler = (port?: string | null) => string | undefined;
 
 /**
@@ -28,6 +28,6 @@ export function usePortLabeler(): PortLabeler {
   return (port) => {
     if (!port) return port ?? undefined;
     const netdev = names.get(port);
-    return netdev ? `${port} (${netdev})` : port;
+    return netdev ?? port;
   };
 }

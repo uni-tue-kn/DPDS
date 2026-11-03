@@ -70,6 +70,12 @@ function Sidebar({ theme, onToggle }: { theme: Theme; onToggle: () => void }) {
         >
           <i className={`bi ${theme === 'dark' ? 'bi-sun' : 'bi-moon-stars'}`} aria-hidden="true" />
         </button>
+        <a
+          href="/api/docs" target="_blank" rel="noopener noreferrer" className="btn btn-link theme-toggle mb-2"
+          aria-label="API documentation" title="API documentation"
+        >
+          <i className="bi bi-book" aria-hidden="true" />
+        </a>
         <div className="nav-label" title={info?.dpds_bin}>
           {info ? `v${info.version}` : 'Offline'}
           {info && !info.telemetry && <span className="badge rounded-pill text-bg-warning ms-2">no telemetry</span>}

@@ -221,12 +221,46 @@ fieldset.direction {
   margin-bottom: 1rem;
 }
 
-fieldset.direction > legend {
-  float: none;
-  width: auto;
-  padding: 0 0.5rem;
-  margin: 0;
+fieldset.direction > .config-title {
+  margin: 0 0 0.5rem;
   font-size: 1rem;
   font-weight: 600;
   color: var(--color-primary);
+}
+
+fieldset.config-section {
+  border-top: 1px solid var(--color-border);
+  padding-top: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+fieldset.config-section > legend {
+  float: none;
+  width: auto;
+  padding: 0 0.5rem 0 0;
+  margin: 0 0 0.5rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.unit-select {
+  max-width: 7rem;
+}
+
+.required-marker {
+  color: var(--color-primary);
+  margin-left: 0.2rem;
+  font-weight: 700;
+}
+
+.inspect-fields {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.2rem 1rem;
+}
+
+.inspect-fields > dd {
+  margin: 0;
 }

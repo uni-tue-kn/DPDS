@@ -4,7 +4,7 @@ import type { UserEvent } from '@testing-library/user-event';
 import type { ConfigDto, Link, LinkInput } from '../api/types';
 import { api, ApiError } from '../test/mockApi';
 import * as fx from '../test/fixtures';
-import { renderApp, TEST_RATE, typeRate } from '../test/helpers';
+import { renderApp, section, TEST_RATE, typeInto, typeRate, unitOf } from '../test/helpers';
 
 const DISTRIBUTIONS = [
   'DeterministicDistribution', 'LogNormalDistribution', 'NormalDistribution', 'GammaDistribution', 'UniformDistribution',
@@ -25,7 +25,7 @@ async function openNew(others: Link[] = []): Promise<UserEvent> {
   const user = userEvent.setup();
   renderApp('/links/new');
   await screen.findByRole('heading', { level: 1, name: 'New link' });
-  await waitFor(() => expect(option('Ingress', /0000:65:00\.0/)).toBeInTheDocument());
+  await waitFor(() => expect(option('Ingress', /enp101s0f0/)).toBeInTheDocument());
   return user;
 }
 
@@ -87,20 +87,46 @@ describe('Link editor: interface pickers', () => {
     }
   });
 
-  it('lists the interfaces of /api/interfaces in both pickers', async () => {
+  it('lists the interfaces of /api/interfaces in both pickers, labelled by netdev (v16)', async () => {
     await openNew();
     for (const label of ['Ingress', 'Egress']) {
       const opts = within(select(label)).getAllByRole('option').map((o) => o.textContent ?? '');
-      for (const pci of ['0000:65:00.0', '0000:65:00.1', '0000:b3:00.0', '0000:17:00.0']) {
-        expect(opts.some((t) => t.includes(pci))).toBe(true);
+      for (const netdev of ['enp101s0f0', 'enp101s0f1', 'enp179s0f0', 'eno1']) {
+        expect(opts.some((t) => t.startsWith(netdev))).toBe(true);
       }
     }
   });
 
-  it('shows the netdev name next to the address', async () => {
+  it('shows the netdev only, no PCI address in the option text, while the value stays the PCI address (v16)', async () => {
     await openNew();
-    expect(option('Ingress', /enp101s0f0/)).toBeInTheDocument();
-    expect(option('Egress', /enp101s0f1/)).toBeInTheDocument();
+    for (const label of ['Ingress', 'Egress'] as const) {
+      const o = option(label, /enp101s0f0/) as HTMLOptionElement;
+      expect(o.textContent).toBe('enp101s0f0');
+      expect(o.value).toBe('0000:65:00.0');
+      expect(option(label, /enp101s0f1/).textContent).toBe('enp101s0f1');
+      for (const t of within(select(label)).getAllByRole('option').map((x) => x.textContent ?? '')) {
+        expect(t).not.toMatch(/0000:/);
+        expect(t).not.toContain('(');
+      }
+    }
+  });
+
+  it('an interface without a netdev (vfio-bound) is labelled by its PCI address', async () => {
+    api.getInterfaces.mockResolvedValue([
+      fx.iface({ pci: '0000:65:00.0', netdev: null }), fx.iface({ pci: '0000:65:00.1', netdev: 'enp101s0f1' }),
+    ]);
+    api.getLinks.mockResolvedValue([]);
+    renderApp('/links/new');
+    await screen.findByRole('heading', { level: 1, name: 'New link' });
+    expect(await within(select('Ingress')).findByRole('option', { name: '0000:65:00.0' })).toBeInTheDocument();
+    expect(within(select('Egress')).getByRole('option', { name: 'enp101s0f1' })).toBeInTheDocument();
+  });
+
+  it('an unusable interface keeps its netdev label plus the reason, still without the PCI address', async () => {
+    await openNew();
+    const o = option('Ingress', /enp179s0f0/);
+    expect(o.textContent).toMatch(/^enp179s0f0 - .*bind to vfio-pci/);
+    expect(o.textContent).not.toMatch(/0000:b3/);
   });
 
   it('starts with nothing selected', async () => {
@@ -113,11 +139,11 @@ describe('Link editor: interface pickers', () => {
     'disables unusable and management interfaces in the %s picker and shows the reason',
     async (label) => {
       await openNew();
-      expect(option(label, /0000:65:00\.0/)).toBeEnabled();
-      const unusable = option(label, /0000:b3:00\.0/);
+      expect(option(label, /enp101s0f0/)).toBeEnabled();
+      const unusable = option(label, /enp179s0f0/);
       expect(unusable).toBeDisabled();
       expect(unusable).toHaveTextContent('bind to vfio-pci');
-      const mgmt = option(label, /0000:17:00\.0/);
+      const mgmt = option(label, /eno1/);
       expect(mgmt).toBeDisabled();
       expect(mgmt).toHaveTextContent(/management NIC/);
     },
@@ -133,7 +159,7 @@ describe('Link editor: interface pickers', () => {
 describe('Link editor: ports already used by other links', () => {
   it('Ingress picker: a port another link uses as ingress is disabled with the reason and the link name', async () => {
     await openNew([other()]);
-    const used = option('Ingress', /0000:65:00\.0/);
+    const used = option('Ingress', /enp101s0f0/);
     expect(used).toBeDisabled();
     expect(used).toHaveTextContent(/already used as ingress by/i);
     expect(used).toHaveTextContent('other');
@@ -141,12 +167,12 @@ describe('Link editor: ports already used by other links', () => {
 
   it('Ingress picker: a port another link only uses as egress stays selectable (ring A->B, B->C)', async () => {
     await openNew([other()]); // other: .0 -> .1
-    expect(option('Ingress', /0000:65:00\.1/)).toBeEnabled();
+    expect(option('Ingress', /enp101s0f1/)).toBeEnabled();
   });
 
   it('Egress picker: a port another link uses as egress is disabled with the reason and the link name', async () => {
     await openNew([other()]);
-    const used = option('Egress', /0000:65:00\.1/);
+    const used = option('Egress', /enp101s0f1/);
     expect(used).toBeDisabled();
     expect(used).toHaveTextContent(/already used as egress by/i);
     expect(used).toHaveTextContent('other');
@@ -154,13 +180,13 @@ describe('Link editor: ports already used by other links', () => {
 
   it('Egress picker: a port another link only uses as ingress stays selectable', async () => {
     await openNew([other()]);
-    expect(option('Egress', /0000:65:00\.0/)).toBeEnabled();
+    expect(option('Egress', /enp101s0f0/)).toBeEnabled();
   });
 
   it('the Ingress reason says "ingress", the Egress reason says "egress" (never the other word)', async () => {
     await openNew([other()]);
-    expect(option('Ingress', /0000:65:00\.0/).textContent).not.toMatch(/already used as egress/i);
-    expect(option('Egress', /0000:65:00\.1/).textContent).not.toMatch(/already used as ingress/i);
+    expect(option('Ingress', /enp101s0f0/).textContent).not.toMatch(/already used as egress/i);
+    expect(option('Egress', /enp101s0f1/).textContent).not.toMatch(/already used as ingress/i);
   });
 
   it('a port is only disabled for its own role: the reverse link of an existing link can be created', async () => {
@@ -178,28 +204,28 @@ describe('Link editor: ports already used by other links', () => {
   it('names the link for each use when two different links hold the two roles of one port', async () => {
     // .0 is ingress of "first" (.0 -> .1) and egress of "second" (.1 -> .0)
     await openNew([fx.link({ id: 10, name: 'first' }), fx.linkRev({ id: 11, name: 'second' })]);
-    expect(option('Ingress', /0000:65:00\.0/)).toBeDisabled();
-    expect(option('Ingress', /0000:65:00\.0/)).toHaveTextContent('first');
-    expect(option('Egress', /0000:65:00\.0/)).toBeDisabled();
-    expect(option('Egress', /0000:65:00\.0/)).toHaveTextContent('second');
-    expect(option('Ingress', /0000:65:00\.1/)).toBeDisabled();
-    expect(option('Ingress', /0000:65:00\.1/)).toHaveTextContent('second');
-    expect(option('Egress', /0000:65:00\.1/)).toBeDisabled();
-    expect(option('Egress', /0000:65:00\.1/)).toHaveTextContent('first');
+    expect(option('Ingress', /enp101s0f0/)).toBeDisabled();
+    expect(option('Ingress', /enp101s0f0/)).toHaveTextContent('first');
+    expect(option('Egress', /enp101s0f0/)).toBeDisabled();
+    expect(option('Egress', /enp101s0f0/)).toHaveTextContent('second');
+    expect(option('Ingress', /enp101s0f1/)).toBeDisabled();
+    expect(option('Ingress', /enp101s0f1/)).toHaveTextContent('second');
+    expect(option('Egress', /enp101s0f1/)).toBeDisabled();
+    expect(option('Egress', /enp101s0f1/)).toHaveTextContent('first');
   });
 
   it('with no other links nothing is disabled except unusable interfaces', async () => {
     await openNew([]);
     for (const label of ['Ingress', 'Egress'] as const) {
-      expect(option(label, /0000:65:00\.0/)).toBeEnabled();
-      expect(option(label, /0000:65:00\.1/)).toBeEnabled();
-      expect(option(label, /0000:65:00\.0/).textContent).not.toMatch(/already used/i);
+      expect(option(label, /enp101s0f0/)).toBeEnabled();
+      expect(option(label, /enp101s0f1/)).toBeEnabled();
+      expect(option(label, /enp101s0f0/).textContent).not.toMatch(/already used/i);
     }
   });
 
   it('a used-but-unusable port keeps its own (driver) reason', async () => {
     await openNew([fx.link({ id: 10, name: 'other', ingress: '0000:b3:00.0' })]);
-    const o = option('Ingress', /0000:b3:00\.0/);
+    const o = option('Ingress', /enp179s0f0/);
     expect(o).toBeDisabled();
     expect(o).toHaveTextContent('bind to vfio-pci');
   });
@@ -213,20 +239,20 @@ describe('Link editor: ports already used by other links', () => {
     await screen.findByRole('heading', { level: 1, name: 'Edit link' });
     await waitFor(() => expect(select('Ingress').value).toBe('0000:65:00.0'));
     expect(select('Egress').value).toBe('0000:65:00.1');
-    expect(option('Ingress', /0000:65:00\.0/)).toBeEnabled(); // mine
-    expect(option('Egress', /0000:65:00\.1/)).toBeEnabled(); // mine
-    expect(option('Ingress', /0000:65:00\.1/)).toBeDisabled(); // b-a's ingress
-    expect(option('Ingress', /0000:65:00\.1/)).toHaveTextContent('b-a');
-    expect(option('Egress', /0000:65:00\.0/)).toBeDisabled(); // b-a's egress
-    expect(option('Egress', /0000:65:00\.0/)).toHaveTextContent('b-a');
+    expect(option('Ingress', /enp101s0f0/)).toBeEnabled(); // mine
+    expect(option('Egress', /enp101s0f1/)).toBeEnabled(); // mine
+    expect(option('Ingress', /enp101s0f1/)).toBeDisabled(); // b-a's ingress
+    expect(option('Ingress', /enp101s0f1/)).toHaveTextContent('b-a');
+    expect(option('Egress', /enp101s0f0/)).toBeDisabled(); // b-a's egress
+    expect(option('Egress', /enp101s0f0/)).toHaveTextContent('b-a');
   });
 
   it('a hairpin link of another link disables that port in both pickers', async () => {
     await openNew([fx.link({ id: 10, name: 'h', ingress: '0000:65:00.0', egress: '0000:65:00.0' })]);
-    expect(option('Ingress', /0000:65:00\.0/)).toBeDisabled();
-    expect(option('Egress', /0000:65:00\.0/)).toBeDisabled();
-    expect(option('Ingress', /0000:65:00\.1/)).toBeEnabled();
-    expect(option('Egress', /0000:65:00\.1/)).toBeEnabled();
+    expect(option('Ingress', /enp101s0f0/)).toBeDisabled();
+    expect(option('Egress', /enp101s0f0/)).toBeDisabled();
+    expect(option('Ingress', /enp101s0f1/)).toBeEnabled();
+    expect(option('Egress', /enp101s0f1/)).toBeEnabled();
   });
 
   it('the editor still works when the links cannot be loaded (nothing disabled)', async () => {
@@ -234,8 +260,8 @@ describe('Link editor: ports already used by other links', () => {
     const user = userEvent.setup();
     renderApp('/links/new');
     await screen.findByRole('heading', { level: 1, name: 'New link' });
-    await waitFor(() => expect(option('Ingress', /0000:65:00\.0/)).toBeInTheDocument());
-    expect(option('Ingress', /0000:65:00\.0/)).toBeEnabled();
+    await waitFor(() => expect(option('Ingress', /enp101s0f0/)).toBeInTheDocument());
+    expect(option('Ingress', /enp101s0f0/)).toBeEnabled();
     await fillValid(user);
     await user.click(save());
     expect(lastCreate().ingress).toBe('0000:65:00.0');
@@ -255,7 +281,7 @@ describe('Link editor: create', () => {
   it('starts with a single link configuration form', async () => {
     await openNew();
     expect(screen.getAllByRole('group', { name: /^Link configuration/ })).toHaveLength(1);
-    expect(screen.getAllByLabelText('Mean delay (ns)')).toHaveLength(1);
+    expect(screen.getAllByLabelText('Mean delay')).toHaveLength(1);
     expect(screen.queryByRole('group', { name: /^Direction \d/ })).not.toBeInTheDocument();
   });
 
@@ -291,34 +317,28 @@ describe('Link editor: create', () => {
     expect(await screen.findByRole('heading', { level: 1, name: 'Links' })).toBeInTheDocument();
   });
 
-  it('sends every config field as typed', async () => {
+  it('sends every config field as typed (each time/rate/size field in its own unit)', async () => {
     const user = await openNew();
     await fillValid(user, 'full');
     const g = group();
     await user.selectOptions(within(g).getByLabelText('Delay distribution'), 'GammaDistribution');
-    await user.clear(input(g, 'Mean delay (ns)'));
-    await user.type(input(g, 'Mean delay (ns)'), '2500000');
-    await user.clear(input(g, 'Delay std (ns)'));
-    await user.type(input(g, 'Delay std (ns)'), '120000');
+    await typeInto(user, g, 'Mean delay', '2.5', 'ms');
+    await typeInto(user, g, 'Delay std', '120', '\u00b5s');
     await user.click(input(g, 'Activate correlation'));
-    await user.clear(input(g, 'Half-life period (ns)'));
-    await user.type(input(g, 'Half-life period (ns)'), '8000000');
-    await user.clear(input(g, 'Initialization rate (pps)'));
-    await user.type(input(g, 'Initialization rate (pps)'), '4000000');
+    await typeInto(user, g, 'Half-life period', '8', 'ms');
+    await typeInto(user, g, 'Initialization rate', '4', 'Mpps');
     await user.click(input(g, 'Limiter active'));
     await user.selectOptions(within(g).getByLabelText('Limiter mode'), 'TokenBucketFilter');
-    await user.clear(input(g, 'Rate (bit/s)'));
-    await user.type(input(g, 'Rate (bit/s)'), '100000000000');
-    await user.clear(input(g, 'Burst limit (bit)'));
-    await user.type(input(g, 'Burst limit (bit)'), '240000');
+    await typeInto(user, g, 'Rate', '100', 'Gbit/s');
+    await typeInto(user, g, 'Burst limit', '240', 'kbit');
     await user.clear(input(g, 'Buffer capacity'));
     await user.type(input(g, 'Buffer capacity'), '250000');
     await user.click(input(g, 'Reordering'));
     await user.clear(input(g, 'Seed'));
     await user.type(input(g, 'Seed'), '1234');
     await user.type(input(g, 'Histogram bins'), '128');
-    await user.type(input(g, 'Histogram lo (ns)'), '1000000');
-    await user.type(input(g, 'Histogram hi (ns)'), '4000000');
+    await typeInto(user, g, 'Histogram lo', '1', 'ms');
+    await typeInto(user, g, 'Histogram hi', '4000', '\u00b5s');
     await user.click(input(g, 'Delay statistics')); // default on -> off
     await user.clear(input(g, 'Random loss probability'));
     await user.type(input(g, 'Random loss probability'), '0.05');
@@ -361,7 +381,7 @@ describe('Link editor: create', () => {
 
   it('shows only the fields of the selected loss model', async () => {
     const user = await openNew();
-    const g = group();
+    const g = section('Dropper');
     expect(within(g).getByLabelText('Random loss probability')).toBeInTheDocument();
     expect(within(g).queryByLabelText('Gilbert-Elliot p')).not.toBeInTheDocument();
     await user.selectOptions(within(g).getByLabelText('Loss model'), 'GilbertElliot');
@@ -512,45 +532,59 @@ describe('Link editor: edit', () => {
     expect(screen.getByLabelText('Worker lcore')).toHaveValue(null);
   });
 
-  it('populates every field of the config (default-ish fixture)', async () => {
+  it('populates every field of the config (default-ish fixture) with display units', async () => {
     await openEdit();
     const g = group();
     expect(within(g).getByLabelText('Delay distribution')).toHaveValue('NormalDistribution');
-    expect(input(g, 'Mean delay (ns)')).toHaveValue(1000);
-    expect(input(g, 'Delay std (ns)')).toHaveValue(10);
+    expect(input(g, 'Mean delay')).toHaveValue(1); // 1000 ns
+    expect(unitOf(g, 'Mean delay')).toBe('\u00b5s');
+    expect(input(g, 'Delay std')).toHaveValue(10); // 10 ns
+    expect(unitOf(g, 'Delay std')).toBe('ns');
     expect(input(g, 'Activate correlation')).not.toBeChecked();
-    expect(input(g, 'Half-life period (ns)')).toHaveValue(0);
-    expect(input(g, 'Initialization rate (pps)')).toHaveValue(12500000);
+    expect(input(g, 'Half-life period')).toHaveValue(0);
+    expect(unitOf(g, 'Half-life period')).toBe('ms'); // 0 -> the default unit
+    expect(input(g, 'Initialization rate')).toHaveValue(12.5); // 12500000 pps
+    expect(unitOf(g, 'Initialization rate')).toBe('Mpps');
     expect(input(g, 'Limiter active')).not.toBeChecked();
     expect(within(g).getByLabelText('Limiter mode')).toHaveValue('Spacer');
-    expect(input(g, 'Rate (bit/s)')).toHaveValue(1e9);
-    expect(input(g, 'Burst limit (bit)')).toHaveValue(0);
+    expect(input(g, 'Rate')).toHaveValue(1); // 1e9 bit/s
+    expect(unitOf(g, 'Rate')).toBe('Gbit/s');
+    expect(input(g, 'Burst limit')).toHaveValue(0);
+    expect(unitOf(g, 'Burst limit')).toBe('Mbit'); // 0 -> the default unit
     expect(within(g).getByLabelText('Loss model')).toHaveValue('Random');
     expect(input(g, 'Random loss probability')).toHaveValue(0);
     expect(input(g, 'Buffer capacity')).toHaveValue(1000);
     expect(input(g, 'Reordering')).not.toBeChecked();
     expect(input(g, 'Seed')).toHaveDisplayValue('');
     expect(input(g, 'Histogram bins')).toHaveValue(null);
-    expect(input(g, 'Histogram lo (ns)')).toHaveValue(null);
-    expect(input(g, 'Histogram hi (ns)')).toHaveValue(null);
+    expect(input(g, 'Histogram lo')).toHaveValue(null);
+    expect(unitOf(g, 'Histogram lo')).toBe('ms'); // empty -> the default unit
+    expect(input(g, 'Histogram hi')).toHaveValue(null);
+    expect(unitOf(g, 'Histogram hi')).toBe('ms');
     expect(input(g, 'Delay statistics')).toBeChecked();
   });
 
-  it('populates every field of the config (Gilbert-Elliot, TBF, histogram, delay_stats off)', async () => {
+  it('populates every field of the config (Gilbert-Elliot, TBF, histogram, delay_stats off) with display units', async () => {
     await openEdit(fx.linkRev());
     const g = group();
     expect(select('Ingress').value).toBe('0000:65:00.1');
     expect(select('Egress').value).toBe('0000:65:00.0');
     expect(within(g).getByLabelText('Delay distribution')).toHaveValue('GammaDistribution');
-    expect(input(g, 'Mean delay (ns)')).toHaveValue(2500);
-    expect(input(g, 'Delay std (ns)')).toHaveValue(300);
+    expect(input(g, 'Mean delay')).toHaveValue(2.5); // 2500 ns
+    expect(unitOf(g, 'Mean delay')).toBe('\u00b5s');
+    expect(input(g, 'Delay std')).toHaveValue(300);
+    expect(unitOf(g, 'Delay std')).toBe('ns');
     expect(input(g, 'Activate correlation')).toBeChecked();
-    expect(input(g, 'Half-life period (ns)')).toHaveValue(4000000);
-    expect(input(g, 'Initialization rate (pps)')).toHaveValue(8000000);
+    expect(input(g, 'Half-life period')).toHaveValue(4); // 4000000 ns
+    expect(unitOf(g, 'Half-life period')).toBe('ms');
+    expect(input(g, 'Initialization rate')).toHaveValue(8);
+    expect(unitOf(g, 'Initialization rate')).toBe('Mpps');
     expect(input(g, 'Limiter active')).toBeChecked();
     expect(within(g).getByLabelText('Limiter mode')).toHaveValue('TokenBucketFilter');
-    expect(input(g, 'Rate (bit/s)')).toHaveValue(40000000000);
-    expect(input(g, 'Burst limit (bit)')).toHaveValue(120000);
+    expect(input(g, 'Rate')).toHaveValue(40); // 4e10 bit/s
+    expect(unitOf(g, 'Rate')).toBe('Gbit/s');
+    expect(input(g, 'Burst limit')).toHaveValue(120); // 120000 bit
+    expect(unitOf(g, 'Burst limit')).toBe('kbit');
     expect(within(g).getByLabelText('Loss model')).toHaveValue('GilbertElliot');
     expect(input(g, 'Gilbert-Elliot p')).toHaveValue(0.01);
     expect(input(g, 'Gilbert-Elliot r')).toHaveValue(0.2);
@@ -561,8 +595,10 @@ describe('Link editor: edit', () => {
     expect(input(g, 'Reordering')).toBeChecked();
     expect(input(g, 'Seed')).toHaveDisplayValue('42');
     expect(input(g, 'Histogram bins')).toHaveValue(64);
-    expect(input(g, 'Histogram lo (ns)')).toHaveValue(100);
-    expect(input(g, 'Histogram hi (ns)')).toHaveValue(9000);
+    expect(input(g, 'Histogram lo')).toHaveValue(100); // 100 ns
+    expect(unitOf(g, 'Histogram lo')).toBe('ns');
+    expect(input(g, 'Histogram hi')).toHaveValue(9); // 9000 ns
+    expect(unitOf(g, 'Histogram hi')).toBe('\u00b5s');
     expect(input(g, 'Delay statistics')).not.toBeChecked();
   });
 
@@ -615,8 +651,8 @@ describe('Link editor: edit', () => {
     const g = group();
     await user.clear(input(g, 'Seed'));
     await user.clear(input(g, 'Histogram bins'));
-    await user.clear(input(g, 'Histogram lo (ns)'));
-    await user.clear(input(g, 'Histogram hi (ns)'));
+    await user.clear(input(g, 'Histogram lo'));
+    await user.clear(input(g, 'Histogram hi'));
     await user.click(save());
     const c = api.updateLink.mock.calls[0][1].config;
     expect(c.seed ?? null).toBeNull();
@@ -651,135 +687,116 @@ describe('Link editor: edit', () => {
   });
 });
 
-describe('Link editor: typed ports (F5)', () => {
-  // Contract: next to each picker there is a free-text input "Ingress (typed)" / "Egress (typed)"; a non-empty
-  // typed value wins over the picker; empty -> the picker value.
-  const typed = (p: 'Ingress' | 'Egress') => screen.getByLabelText(`${p} (typed)`) as HTMLInputElement;
+// v16: the typed "Ingress (typed)" / "Egress (typed)" inputs are gone. What they covered (vdev and undiscovered ports,
+// the port rule, hairpins of vdevs) is now reached through a STORED link whose port is not a discovered interface.
+describe('Link editor: ports come only from the pickers (v16)', () => {
+  async function openStored(link: Link) {
+    api.getLink.mockResolvedValue(link);
+    api.getLinks.mockResolvedValue([link]);
+    const user = userEvent.setup();
+    renderApp(`/links/${link.id}`);
+    await screen.findByRole('heading', { level: 1, name: 'Edit link' });
+    await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue(link.name));
+    return user;
+  }
+  const selectedText = (label: 'Ingress' | 'Egress') =>
+    (within(select(label)).getByRole('option', { selected: true }) as HTMLOptionElement).textContent;
 
-  it('offers a typed field next to each picker', async () => {
+  it('has no typed port inputs, no typed labels and no override hint (new and edit form)', async () => {
     await openNew();
-    expect(typed('Ingress')).toHaveValue('');
-    expect(typed('Egress')).toHaveValue('');
+    for (const gone of ['Ingress (typed)', 'Egress (typed)']) expect(screen.queryByLabelText(gone)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/\(typed\)/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/overrides the picker/i)).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText(/net_null0/)).not.toBeInTheDocument();
+    expect(select('Ingress')).toBeInTheDocument();
+    expect(select('Egress')).toBeInTheDocument();
+  });
+
+  it('the edit form has no typed port inputs either', async () => {
+    await openStored(fx.loopLink({ id: 5 }));
+    expect(screen.queryByLabelText(/\(typed\)/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/overrides the picker/i)).not.toBeInTheDocument();
   });
 
   it.each(['0000:af:00.0', '0000:65:00.7', 'net_null0', 'net_null12', 'net_ring1', 'net_ring007'])(
-    'accepts the typed ingress %s and sends it unchanged',
+    'a stored ingress %s that is not a discovered interface is shown selected and sent back unchanged',
     async (port) => {
-      const user = await openNew();
-      await fillName(user, 'typed');
-      await typeRate(user);
-      await user.type(typed('Ingress'), port);
-      await user.selectOptions(select('Egress'), '0000:65:00.1');
+      const user = await openStored(fx.link({ id: 6, ingress: port }));
+      expect(select('Ingress').value).toBe(port);
+      expect(selectedText('Ingress')).toBe(port);
+      expect(within(select('Ingress')).getAllByRole('option', { name: port })).toHaveLength(1);
+      expect(option('Ingress', new RegExp(port.replace(/\./g, '\\.')))).toBeEnabled();
       await user.click(save());
-      expect(lastCreate().ingress).toBe(port);
-      expect(lastCreate().egress).toBe('0000:65:00.1');
+      const sent = api.updateLink.mock.calls[0][1];
+      expect(sent.ingress).toBe(port);
+      expect(sent.egress).toBe('0000:65:00.1');
     },
   );
 
-  it.each(['0000:af:00.0', 'net_null12', 'net_ring1'])('accepts the typed egress %s and sends it unchanged', async (port) => {
-    const user = await openNew();
-    await fillName(user, 'typed');
-    await typeRate(user);
-    await user.selectOptions(select('Ingress'), '0000:65:00.0');
-    await user.type(typed('Egress'), port);
+  it.each(['0000:af:00.0', 'net_null12', 'net_ring1'])('a stored egress %s that is not a discovered interface is shown selected and sent back unchanged', async (port) => {
+    const user = await openStored(fx.link({ id: 6, egress: port }));
+    expect(select('Egress').value).toBe(port);
+    expect(selectedText('Egress')).toBe(port);
     await user.click(save());
-    expect(lastCreate().ingress).toBe('0000:65:00.0');
-    expect(lastCreate().egress).toBe(port);
+    const sent = api.updateLink.mock.calls[0][1];
+    expect(sent.egress).toBe(port);
+    expect(sent.ingress).toBe('0000:65:00.0');
   });
 
-  it('accepts typed values in both fields (vdev pair)', async () => {
-    const user = await openNew();
-    await fillName(user, 'typed');
-    await typeRate(user);
-    await user.type(typed('Ingress'), 'net_null0');
-    await user.type(typed('Egress'), 'net_ring1');
+  it('a stored vdev pair (net_null0 -> net_ring1) keeps both ports', async () => {
+    const user = await openStored(fx.link({ id: 6, ingress: 'net_null0', egress: 'net_ring1' }));
+    expect(select('Ingress').value).toBe('net_null0');
+    expect(select('Egress').value).toBe('net_ring1');
     await user.click(save());
-    const sent = lastCreate();
+    const sent = api.updateLink.mock.calls[0][1];
     expect([sent.ingress, sent.egress]).toEqual(['net_null0', 'net_ring1']);
     expect(await screen.findByRole('heading', { level: 1, name: 'Links' })).toBeInTheDocument();
   });
 
-  it('accepts a typed hairpin (same vdev as ingress and egress)', async () => {
-    const user = await openNew();
-    await fillName(user, 'typed');
-    await typeRate(user);
-    await user.type(typed('Ingress'), 'net_null0');
-    await user.type(typed('Egress'), 'net_null0');
-    await user.click(save());
-    const sent = lastCreate();
-    expect([sent.ingress, sent.egress]).toEqual(['net_null0', 'net_null0']);
+  it('a port that is a discovered interface is not duplicated as an extra option (4 interfaces + placeholder)', async () => {
+    await openStored(fx.link());
+    expect(within(select('Ingress')).getAllByRole('option')).toHaveLength(5);
+    expect(within(select('Egress')).getAllByRole('option')).toHaveLength(5);
   });
 
-  it('a typed value wins over the picker; clearing it falls back to the picker', async () => {
-    const user = await openNew();
-    await fillValid(user, 'typed');
-    await user.type(typed('Ingress'), 'net_null0');
-    await user.clear(typed('Ingress'));
-    await user.click(save());
-    expect(lastCreate().ingress).toBe('0000:65:00.0');
+  it('the stored unknown port is an option of its own picker only, not of the other one', async () => {
+    await openStored(fx.link({ id: 6, ingress: 'net_null0', egress: '0000:65:00.1' }));
+    expect(within(select('Ingress')).getAllByRole('option')).toHaveLength(6);
+    expect(within(select('Egress')).queryByRole('option', { name: 'net_null0' })).not.toBeInTheDocument();
   });
 
-  it('a typed value replaces the picker choice', async () => {
-    const user = await openNew();
-    await fillValid(user, 'typed');
-    await user.type(typed('Egress'), 'net_ring3');
+  it('choosing a discovered interface replaces the stored unknown port', async () => {
+    const user = await openStored(fx.loopLink({ id: 5 }));
+    await user.selectOptions(select('Ingress'), '0000:65:00.0');
     await user.click(save());
-    expect(lastCreate().ingress).toBe('0000:65:00.0');
-    expect(lastCreate().egress).toBe('net_ring3');
+    const sent = api.updateLink.mock.calls[0][1];
+    expect(sent.ingress).toBe('0000:65:00.0');
+    expect(sent.egress).toBe('net_null0');
   });
 
-  const INVALID = [
-    'net_pcap0,tx_pcap=/x', 'net_pcap0', 'net_null', 'net_ring', 'net_null0,size=64', 'net_ring1,nodeaction=x:0:CREATE',
-    'net_nullx', 'net_tap0', 'xnet_null0', 'net_null0x', 'eth0', 'enp101s0f0', '0000:65:00', '0000:65:00.8',
-    '000:65:00.0', '0000:65:00.00', '0000:65:0g.0', '/etc/passwd', 'net_null0;reboot',
-  ];
+  // The port rule still applies to what is sent: a stored value the controller would reject is refused here.
+  it.each(['net_pcap0,tx_pcap=/x', 'eth0', '0000:65:00.8'])('a stored ingress %s is refused on save: alert naming the ingress, no request', async (port) => {
+    const user = await openStored(fx.link({ id: 6, ingress: port }));
+    expect(select('Ingress').value).toBe(port);
+    await user.click(save());
+    expect(api.updateLink).not.toHaveBeenCalled();
+    expect(await screen.findByRole('alert')).toHaveTextContent(/ingress/i);
+  });
 
-  it.each(INVALID)('rejects the typed ingress %s: message naming the ingress, no request', async (port) => {
-    const user = await openNew();
-    await fillName(user, 'typed');
-    await user.type(typed('Ingress'), port);
+  it.each(['net_ring1,nodeaction=x:0:CREATE', 'enp101s0f0', '0000:65:00'])('a stored egress %s is refused on save: alert naming the egress, no request', async (port) => {
+    const user = await openStored(fx.link({ id: 6, egress: port }));
+    await user.click(save());
+    expect(api.updateLink).not.toHaveBeenCalled();
+    expect(await screen.findByRole('alert')).toHaveTextContent(/egress/i);
+  });
+
+  it('a refused stored port can be fixed through the picker and then saved', async () => {
+    const user = await openStored(fx.link({ id: 6, egress: 'eth0' }));
+    await user.click(save());
+    expect(await screen.findByRole('alert')).toHaveTextContent(/egress/i);
     await user.selectOptions(select('Egress'), '0000:65:00.1');
     await user.click(save());
-    expect(api.createLink).not.toHaveBeenCalled();
-    expect(await screen.findByRole('alert')).toHaveTextContent(/ingress/i);
-    expect(screen.getByRole('heading', { level: 1, name: 'New link' })).toBeInTheDocument();
-    expect(screen.getByLabelText('Name')).toHaveValue('typed');
-  });
-
-  it.each(INVALID)('rejects the typed egress %s: message naming the egress, no request', async (port) => {
-    const user = await openNew();
-    await fillName(user, 'typed');
-    await user.selectOptions(select('Ingress'), '0000:65:00.0');
-    await user.type(typed('Egress'), port);
-    await user.click(save());
-    expect(api.createLink).not.toHaveBeenCalled();
-    expect(await screen.findByRole('alert')).toHaveTextContent(/egress/i);
-  });
-
-  it('rejects an invalid typed egress, accepts it once fixed', async () => {
-    const user = await openNew();
-    await fillName(user, 'typed');
-    await typeRate(user);
-    await user.selectOptions(select('Ingress'), '0000:65:00.0');
-    await user.type(typed('Egress'), 'net_pcap0,rx_pcap=/tmp/in.pcap');
-    await user.click(save());
-    expect(api.createLink).not.toHaveBeenCalled();
-    expect(await screen.findByRole('alert')).toHaveTextContent(/egress/i);
-    await user.clear(typed('Egress'));
-    await user.type(typed('Egress'), 'net_null1');
-    await user.click(save());
-    expect(lastCreate().egress).toBe('net_null1');
-  });
-
-  it('editing a link whose ports are vdevs: the typed fields stay empty, the ports are kept', async () => {
-    api.getLink.mockResolvedValue(fx.loopLink({ id: 5 }));
-    api.getLinks.mockResolvedValue([fx.loopLink({ id: 5 })]);
-    renderApp('/links/5');
-    await screen.findByRole('heading', { level: 1, name: 'Edit link' });
-    await waitFor(() => expect(select('Ingress').value).toBe('net_null0'));
-    expect(select('Egress').value).toBe('net_null0');
-    expect(typed('Ingress')).toHaveValue('');
-    expect(typed('Egress')).toHaveValue('');
+    expect(api.updateLink.mock.calls[0][1].egress).toBe('0000:65:00.1');
   });
 });
 
@@ -843,16 +860,18 @@ describe('Link editor: labels (v10)', () => {
   it('a second validation message names its own field', async () => {
     const user = await openNew();
     await fillValid(user, 'v');
-    await user.clear(input(group(), 'Mean delay (ns)'));
+    await user.clear(input(group(), 'Mean delay'));
     await user.click(save());
-    expect(await screen.findByRole('alert')).toHaveTextContent(/Mean delay \(ns\)/);
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/Mean delay/);
+    expect(alert).not.toHaveTextContent(/\(ns\)/); // v16: messages name the field, not a unit
   });
 
   it('all element ids on the page are unique (no label-derived control ids colliding)', async () => {
     await openNew();
     const ids = Array.from(document.querySelectorAll('[id]')).map((e) => e.id);
     expect(new Set(ids).size).toBe(ids.length);
-    for (const l of ['Ingress', 'Egress', 'Ingress (typed)', 'Egress (typed)', 'Worker lcore']) {
+    for (const l of ['Ingress', 'Egress', 'Worker lcore', 'Mean delay unit', 'Delay std unit', 'Rate unit']) {
       expect(screen.getByLabelText(l)).toBeInTheDocument();
     }
   });
@@ -860,7 +879,7 @@ describe('Link editor: labels (v10)', () => {
 
 // v12 (spec12 part B): the correlation initialization rate is a required config field, never a hidden constant.
 describe('Link editor: initialization rate (v12)', () => {
-  const RATE = 'Initialization rate (pps)';
+  const RATE = 'Initialization rate';
   const rate = () => input(group(), RATE);
 
   async function openEdit(link = fx.link()) {
@@ -880,11 +899,12 @@ describe('Link editor: initialization rate (v12)', () => {
     expect(group()).toContainElement(rate());
   });
 
-  it('sits in the delay section, before the limiter fields', async () => {
+  it('sits in the Delayer subsection, after the mean delay and before the Limiter subsection', async () => {
     await openNew();
-    const order = (a: HTMLElement, b: HTMLElement) => a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING;
-    expect(order(within(group()).getByLabelText('Mean delay (ns)'), rate())).toBeTruthy();
-    expect(order(rate(), within(group()).getByLabelText('Limiter active'))).toBeTruthy();
+    const order = (x: HTMLElement, y: HTMLElement) => x.compareDocumentPosition(y) & Node.DOCUMENT_POSITION_FOLLOWING;
+    expect(section('Delayer')).toContainElement(rate());
+    expect(order(within(group()).getByLabelText('Mean delay'), rate())).toBeTruthy();
+    expect(order(rate(), section('Limiter'))).toBeTruthy();
   });
 
   it('is shown while "Activate correlation" is off and stays after switching it on (always required)', async () => {
@@ -899,11 +919,12 @@ describe('Link editor: initialization rate (v12)', () => {
     const user = await openNew();
     expect(rate()).toHaveValue(null);
     expect(rate()).toHaveDisplayValue('');
+    expect(unitOf(group(), RATE)).toBe('Mpps'); // only the unit has a default
     await fillName(user, 'untouched');
     await user.selectOptions(select('Ingress'), '0000:65:00.0');
     await user.selectOptions(select('Egress'), '0000:65:00.1');
     await user.click(save()); // everything else valid, only the rate was never entered
-    expect(await screen.findByRole('alert')).toHaveTextContent(/Initialization rate \(pps\)/);
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Initialization rate/);
     expect(api.createLink).not.toHaveBeenCalled();
   });
 
@@ -941,7 +962,7 @@ describe('Link editor: initialization rate (v12)', () => {
     await user.clear(rate());
     await user.type(rate(), v);
     await user.click(save());
-    expect(await screen.findByRole('alert')).toHaveTextContent(/Initialization rate \(pps\)/);
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Initialization rate/);
     expect(api.createLink).not.toHaveBeenCalled();
   });
 
@@ -950,7 +971,7 @@ describe('Link editor: initialization rate (v12)', () => {
     await fillValid(user);
     await user.clear(rate());
     await user.click(save());
-    expect(await screen.findByRole('alert')).toHaveTextContent(/Initialization rate \(pps\)/);
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Initialization rate/);
     expect(api.createLink).not.toHaveBeenCalled();
   });
 
@@ -961,8 +982,8 @@ describe('Link editor: initialization rate (v12)', () => {
     await user.selectOptions(select('Egress'), '0000:65:00.1');
     expect(input(group(), 'Activate correlation')).not.toBeChecked();
     await user.click(save());
-    expect(await screen.findByRole('alert')).toHaveTextContent(/Initialization rate \(pps\)/);
-    await user.type(rate(), '9000000');
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Initialization rate/);
+    await typeRate(user, '9000000');
     await user.click(save());
     expect(lastCreate().config.delayer.initialization_rate_pps).toBe(9000000);
   });
@@ -977,14 +998,16 @@ describe('Link editor: initialization rate (v12)', () => {
     expect(alert).not.toHaveTextContent(/Direction \d/);
   });
 
-  it('edit: shows the stored value of the link', async () => {
+  it('edit: shows the stored value of the link (8000000 pps as 8 Mpps)', async () => {
     await openEdit(fx.linkRev());
-    expect(rate()).toHaveValue(8000000);
+    expect(rate()).toHaveValue(8);
+    expect(unitOf(group(), RATE)).toBe('Mpps');
   });
 
   it('edit: saving without changes sends the stored value back', async () => {
     const user = await openEdit(fx.link({ config: fx.config({ delayer: { ...fx.config().delayer, initialization_rate_pps: 6543210 } }) }));
-    expect(rate()).toHaveValue(6543210);
+    expect(rate()).toHaveValue(6543.21); // 5 decimals in Mpps, so kpps
+    expect(unitOf(group(), RATE)).toBe('kpps');
     await user.click(save());
     expect(api.updateLink).toHaveBeenCalledTimes(1);
     expect(api.updateLink.mock.calls[0][1].config.delayer.initialization_rate_pps).toBe(6543210);
@@ -992,8 +1015,7 @@ describe('Link editor: initialization rate (v12)', () => {
 
   it('edit: a changed value is sent instead of the stored one', async () => {
     const user = await openEdit();
-    await user.clear(rate());
-    await user.type(rate(), '7000000');
+    await typeRate(user, '7000000');
     await user.click(save());
     expect(api.updateLink.mock.calls[0][1].config.delayer.initialization_rate_pps).toBe(7000000);
   });
@@ -1002,12 +1024,13 @@ describe('Link editor: initialization rate (v12)', () => {
     const user = await openEdit();
     await user.clear(rate());
     await user.click(save());
-    expect(await screen.findByRole('alert')).toHaveTextContent(/Initialization rate \(pps\)/);
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Initialization rate/);
     expect(api.updateLink).not.toHaveBeenCalled();
   });
 
   it('the value of a hairpin link is populated too', async () => {
     await openEdit(fx.loopLink({ config: fx.config3() }));
-    expect(rate()).toHaveValue(2500000);
+    expect(rate()).toHaveValue(2.5);
+    expect(unitOf(group(), RATE)).toBe('Mpps');
   });
 });

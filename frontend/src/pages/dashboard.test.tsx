@@ -136,13 +136,13 @@ describe('Dashboard: per-direction cards', () => {
     api.getStats.mockResolvedValue(twoDirections());
   });
 
-  it('renders one card per link with link and device names', async () => {
+  it('renders one card per link with link and interface names (netdevs, v16)', async () => {
     renderApp('/');
     const c0 = await screen.findByTestId('direction-card-0');
     const c1 = await screen.findByTestId('direction-card-1');
     expect(c0).toHaveTextContent('a-b');
-    expect(c0).toHaveTextContent('0000:65:00.0');
-    expect(c0).toHaveTextContent('0000:65:00.1');
+    await waitFor(() => expect(c0).toHaveTextContent('enp101s0f0'));
+    expect(c0).toHaveTextContent('enp101s0f1');
     expect(c1).toHaveTextContent('b-a');
     expect(screen.queryByTestId('direction-card-2')).not.toBeInTheDocument();
   });
@@ -570,6 +570,8 @@ describe('Dashboard: NIC ports table (F2)', () => {
     );
     renderApp('/');
     const table = await screen.findByTestId('ports-table');
+    // the first column shows the netdev once the interface list has arrived (v16)
+    await within(table).findByRole('rowheader', { name: 'enp101s0f0' });
     const headers = within(table).getAllByRole('columnheader').map((h) => h.textContent?.trim());
     for (const c of COLUMNS) expect(headers).toContain(c);
     expect(within(table).getAllByRole('row')).toHaveLength(3); // header + 2 ports
@@ -577,11 +579,11 @@ describe('Dashboard: NIC ports table (F2)', () => {
       ipackets: '1234567', opackets: '7654321', ibytes: '98765432100', obytes: '12345678900',
       imissed: '11', ierrors: '22', oerrors: '33', rx_nombuf: '44',
     };
-    for (const c of COLUMNS) expect(digits(cell(table, '0000:65:00.0', c))).toBe(expected0[c]);
+    for (const c of COLUMNS) expect(digits(cell(table, 'enp101s0f0', c))).toBe(expected0[c]);
     const expected1: Record<string, string> = {
       ipackets: '5', opackets: '6', ibytes: '7', obytes: '8', imissed: '9', ierrors: '10', oerrors: '12', rx_nombuf: '13',
     };
-    for (const c of COLUMNS) expect(digits(cell(table, '0000:65:00.1', c))).toBe(expected1[c]);
+    for (const c of COLUMNS) expect(digits(cell(table, 'enp101s0f1', c))).toBe(expected1[c]);
   });
 
   it('shows zero counters as 0, not as n/a or empty', async () => {
@@ -590,7 +592,8 @@ describe('Dashboard: NIC ports table (F2)', () => {
     );
     renderApp('/');
     const table = await screen.findByTestId('ports-table');
-    for (const c of ['imissed', 'ierrors', 'oerrors', 'rx_nombuf']) expect(cell(table, '0000:65:00.0', c)).toBe('0');
+    await within(table).findByRole('rowheader', { name: 'enp101s0f0' });
+    for (const c of ['imissed', 'ierrors', 'oerrors', 'rx_nombuf']) expect(cell(table, 'enp101s0f0', c)).toBe('0');
   });
 
   it('falls back to the port number when the port has no name', async () => {
@@ -755,12 +758,12 @@ describe('Dashboard: accessibility and labels (F4)', () => {
     expect(badge.closest('[aria-live="polite"], [role="status"]')).not.toBeNull();
   });
 
-  it('cards are titled "<link>: <ingress label> -> <egress label>" (v12: PCI address and netdev)', async () => {
+  it('cards are titled "<link>: <ingress label> -> <egress label>" (v16: the netdev only)', async () => {
     renderApp('/');
     const c0 = await screen.findByTestId('direction-card-0');
     const c1 = await screen.findByTestId('direction-card-1');
-    expect(await within(c0).findByText('a-b: 0000:65:00.0 (enp101s0f0) → 0000:65:00.1 (enp101s0f1)')).toBeInTheDocument();
-    expect(await within(c1).findByText('b-a: 0000:65:00.1 (enp101s0f1) → 0000:65:00.0 (enp101s0f0)')).toBeInTheDocument();
+    expect(await within(c0).findByText('a-b: enp101s0f0 → enp101s0f1')).toBeInTheDocument();
+    expect(await within(c1).findByText('b-a: enp101s0f1 → enp101s0f0')).toBeInTheDocument();
   });
 
   it('the old "Direction d: rx -> tx" title is gone', async () => {
@@ -803,45 +806,46 @@ describe('Dashboard: accessibility and labels (F4)', () => {
   });
 });
 
-describe('Dashboard: port labels with interface names (v12)', () => {
-  const AB = 'a-b: 0000:65:00.0 (enp101s0f0) → 0000:65:00.1 (enp101s0f1)';
+describe('Dashboard: port labels are the netdev, device name as fallback (v16, replaces v12 "PCI (netdev)")', () => {
+  const AB = 'a-b: enp101s0f0 → enp101s0f1';
   const PLAIN_AB = 'a-b: 0000:65:00.0 → 0000:65:00.1';
 
-  it('the card title shows PCI address and netdev of ingress and egress (one element, whole label)', async () => {
+  it('the card title shows the netdev of ingress and egress and no PCI address (one element, whole label)', async () => {
     api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0)]));
     renderApp('/');
     const card = await screen.findByTestId('direction-card-0');
     const title = await within(card).findByText(AB);
     expect(title.textContent).toBe(AB);
+    expect(card.textContent).not.toMatch(/0000:65:00\.[01] \(/); // never "PCI (netdev)" any more
   });
 
   it('a hairpin on a real NIC shows the label twice', async () => {
     api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0, { link: 'hair', rx: '0000:65:00.1', tx: '0000:65:00.1' })]));
     renderApp('/');
-    expect(await screen.findByText('hair: 0000:65:00.1 (enp101s0f1) → 0000:65:00.1 (enp101s0f1)')).toBeInTheDocument();
+    expect(await screen.findByText('hair: enp101s0f1 → enp101s0f1')).toBeInTheDocument();
   });
 
-  it('a vdev port shows only its device name, next to a NIC with a name', async () => {
+  it('a vdev port shows its device name, next to a NIC shown by netdev', async () => {
     api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0, { link: 'mix', rx: 'net_null0', tx: '0000:65:00.0' })]));
     renderApp('/');
-    expect(await screen.findByText('mix: net_null0 → 0000:65:00.0 (enp101s0f0)')).toBeInTheDocument();
+    expect(await screen.findByText('mix: net_null0 → enp101s0f0')).toBeInTheDocument();
   });
 
-  it('a NIC without netdev (vfio-bound) shows only its PCI address', async () => {
+  it('a NIC without netdev (vfio-bound) falls back to its PCI address', async () => {
     api.getInterfaces.mockResolvedValue([
       fx.iface({ pci: '0000:65:00.0', netdev: null }),
       fx.iface({ pci: '0000:65:00.1', netdev: 'enp101s0f1' }),
     ]);
     api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0)]));
     renderApp('/');
-    expect(await screen.findByText('a-b: 0000:65:00.0 → 0000:65:00.1 (enp101s0f1)')).toBeInTheDocument();
+    expect(await screen.findByText('a-b: 0000:65:00.0 → enp101s0f1')).toBeInTheDocument();
   });
 
   it('a port missing from the interface list shows only its name', async () => {
     api.getInterfaces.mockResolvedValue([fx.iface({ pci: '0000:65:00.1', netdev: 'enp101s0f1' })]);
     api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0)]));
     renderApp('/');
-    expect(await screen.findByText('a-b: 0000:65:00.0 → 0000:65:00.1 (enp101s0f1)')).toBeInTheDocument();
+    expect(await screen.findByText('a-b: 0000:65:00.0 → enp101s0f1')).toBeInTheDocument();
   });
 
   it('without rx/tx in the stats entry the plan of the emulation supplies the ports (labelled the same way)', async () => {
@@ -905,14 +909,14 @@ describe('Dashboard: port labels with interface names (v12)', () => {
   describe('NIC ports table', () => {
     const portNames = (table: HTMLElement) => within(table).getAllByRole('rowheader').map((h) => h.textContent?.trim());
 
-    it('the first column shows PCI address and netdev', async () => {
+    it('the first column shows the netdev only', async () => {
       api.getStats.mockResolvedValue(
         fx.stats([fx.dirStats(0)], { ports: [fx.portStats(0), fx.portStats(1, { name: '0000:65:00.1' })] }),
       );
       renderApp('/');
       const table = await screen.findByTestId('ports-table');
       await waitFor(() => expect(portNames(table)).toEqual([
-        '0000:65:00.0 (enp101s0f0)', '0000:65:00.1 (enp101s0f1)',
+        'enp101s0f0', 'enp101s0f1',
       ]));
     });
 
@@ -933,8 +937,8 @@ describe('Dashboard: port labels with interface names (v12)', () => {
       );
       renderApp('/');
       const table = await screen.findByTestId('ports-table');
-      await waitFor(() => expect(portNames(table)).toContain('0000:65:00.1 (enp101s0f1)'));
-      expect(portNames(table)).toEqual(['0000:65:00.0', 'net_null0', '0000:b3:00.0', '0000:65:00.1 (enp101s0f1)']);
+      await waitFor(() => expect(portNames(table)).toContain('enp101s0f1'));
+      expect(portNames(table)).toEqual(['0000:65:00.0', 'net_null0', '0000:b3:00.0', 'enp101s0f1']);
     });
 
     it('still falls back to the port number without a name and with a failing interface fetch', async () => {

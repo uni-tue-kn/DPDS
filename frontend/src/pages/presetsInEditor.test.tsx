@@ -4,7 +4,7 @@ import type { UserEvent } from '@testing-library/user-event';
 import type { ConfigDto } from '../api/types';
 import { api, ApiError } from '../test/mockApi';
 import * as fx from '../test/fixtures';
-import { renderApp } from '../test/helpers';
+import { renderApp, typeInto, typeRate, unitOf } from '../test/helpers';
 
 // Contract: "Link editor additions" in the v8 block of src/test/helpers.tsx.
 // Link 1 ("a-b", one directed link) = config(); preset "wan" = config3(), "other" = config2() (different everywhere).
@@ -21,7 +21,7 @@ async function openEdit(list = presets()): Promise<UserEvent> {
   const user = userEvent.setup();
   renderApp('/links/1');
   await screen.findByRole('heading', { level: 1, name: 'Edit link' });
-  await waitFor(() => expect(field(group(), 'Mean delay (ns)')).toHaveValue(1000));
+  await waitFor(() => expect(field(group(), 'Mean delay')).toHaveValue(1));
   return user;
 }
 
@@ -65,7 +65,7 @@ describe('Link editor: Apply preset', () => {
     api.getPresets.mockRejectedValue(new ApiError(500, 'presets unreadable'));
     renderApp('/links/1');
     await screen.findByRole('heading', { level: 1, name: 'Edit link' });
-    await waitFor(() => expect(field(group(), 'Mean delay (ns)')).toHaveValue(1000));
+    await waitFor(() => expect(field(group(), 'Mean delay')).toHaveValue(1));
     expect(group()).toBeInTheDocument();
   });
 
@@ -74,23 +74,31 @@ describe('Link editor: Apply preset', () => {
     await user.selectOptions(applySelect(), 'wan');
     const g = group();
     expect(field(g, 'Delay distribution')).toHaveValue('LogNormalDistribution');
-    expect(field(g, 'Mean delay (ns)')).toHaveValue(7777);
-    expect(field(g, 'Delay std (ns)')).toHaveValue(777);
+    expect(field(g, 'Mean delay')).toHaveValue(7.777); // 7777 ns
+    expect(unitOf(g, 'Mean delay')).toBe('\u00b5s');
+    expect(field(g, 'Delay std')).toHaveValue(777);
+    expect(unitOf(g, 'Delay std')).toBe('ns');
     expect(field(g, 'Activate correlation')).not.toBeChecked();
-    expect(field(g, 'Half-life period (ns)')).toHaveValue(555);
-    expect(field(g, 'Initialization rate (pps)')).toHaveValue(2500000); // v12
+    expect(field(g, 'Half-life period')).toHaveValue(555);
+    expect(unitOf(g, 'Half-life period')).toBe('ns');
+    expect(field(g, 'Initialization rate')).toHaveValue(2.5); // v12: 2500000 pps
+    expect(unitOf(g, 'Initialization rate')).toBe('Mpps');
     expect(field(g, 'Limiter active')).toBeChecked();
     expect(field(g, 'Limiter mode')).toHaveValue('Spacer');
-    expect(field(g, 'Rate (bit/s)')).toHaveValue(5000000000);
-    expect(field(g, 'Burst limit (bit)')).toHaveValue(64000);
+    expect(field(g, 'Rate')).toHaveValue(5); // 5e9 bit/s
+    expect(unitOf(g, 'Rate')).toBe('Gbit/s');
+    expect(field(g, 'Burst limit')).toHaveValue(64); // 64000 bit
+    expect(unitOf(g, 'Burst limit')).toBe('kbit');
     expect(field(g, 'Loss model')).toHaveValue('Random');
     expect(field(g, 'Random loss probability')).toHaveValue(0.25);
     expect(field(g, 'Buffer capacity')).toHaveValue(321);
     expect(field(g, 'Reordering')).toBeChecked();
     expect(field(g, 'Seed')).toHaveValue(7);
     expect(field(g, 'Histogram bins')).toHaveValue(32);
-    expect(field(g, 'Histogram lo (ns)')).toHaveValue(1000);
-    expect(field(g, 'Histogram hi (ns)')).toHaveValue(50000);
+    expect(field(g, 'Histogram lo')).toHaveValue(1); // 1000 ns
+    expect(unitOf(g, 'Histogram lo')).toBe('\u00b5s');
+    expect(field(g, 'Histogram hi')).toHaveValue(50); // 50000 ns
+    expect(unitOf(g, 'Histogram hi')).toBe('\u00b5s');
     expect(field(g, 'Delay statistics')).toBeChecked();
   });
 
@@ -106,7 +114,7 @@ describe('Link editor: Apply preset', () => {
     expect(field(g, 'Gilbert-Elliot starts in good state')).not.toBeChecked();
     expect(field(g, 'Delay statistics')).not.toBeChecked();
     expect(field(g, 'Delay distribution')).toHaveValue('GammaDistribution');
-    expect(field(g, 'Initialization rate (pps)')).toHaveValue(8000000); // v12
+    expect(field(g, 'Initialization rate')).toHaveValue(8); // v12: 8 Mpps
   });
 
   it('saves exactly the applied config and leaves name, ingress, egress and worker as stored', async () => {
@@ -124,10 +132,9 @@ describe('Link editor: Apply preset', () => {
 
   it('overwrites edits made before applying and does not touch name, ingress or egress', async () => {
     const user = await openEdit();
-    await user.clear(field(group(), 'Mean delay (ns)'));
-    await user.type(field(group(), 'Mean delay (ns)'), '123');
+    await typeInto(user, group(), 'Mean delay', '123', 'ns');
     await user.selectOptions(applySelect(), 'wan');
-    expect(field(group(), 'Mean delay (ns)')).toHaveValue(7777);
+    expect(field(group(), 'Mean delay')).toHaveValue(7.777);
     expect(screen.getByLabelText('Name')).toHaveValue('a-b');
     expect(screen.getByLabelText('Ingress')).toHaveValue('0000:65:00.0');
     expect(screen.getByLabelText('Egress')).toHaveValue('0000:65:00.1');
@@ -136,8 +143,7 @@ describe('Link editor: Apply preset', () => {
   it('a form edited after applying is saved with the edit (the preset is a copy, not a reference)', async () => {
     const user = await openEdit();
     await user.selectOptions(applySelect(), 'wan');
-    await user.clear(field(group(), 'Mean delay (ns)'));
-    await user.type(field(group(), 'Mean delay (ns)'), '9999');
+    await typeInto(user, group(), 'Mean delay', '9999', 'ns');
     await user.click(screen.getByRole('button', { name: /^save$/i }));
     const sent = api.updateLink.mock.calls[0][1];
     expect(sent.config.delayer.mean_ns).toBe(9999);
@@ -153,10 +159,10 @@ describe('Link editor: Apply preset', () => {
     await screen.findByRole('heading', { level: 1, name: 'New link' });
     await waitFor(() => expect(within(applySelect()).getAllByRole('option')).toHaveLength(3));
     expect(field(group(), 'Buffer capacity')).toHaveValue(100000);
-    expect(field(group(), 'Initialization rate (pps)')).toHaveValue(null); // v12: new forms start empty
+    expect(field(group(), 'Initialization rate')).toHaveValue(null); // v12: new forms start empty
     await user.selectOptions(applySelect(), 'wan');
     expect(field(group(), 'Buffer capacity')).toHaveValue(321);
-    expect(field(group(), 'Initialization rate (pps)')).toHaveValue(2500000); // applied from the preset
+    expect(field(group(), 'Initialization rate')).toHaveValue(2.5); // applied from the preset
   });
 });
 
@@ -196,8 +202,7 @@ describe('Link editor: Save as preset', () => {
 
   it('posts the CURRENT (edited, unsaved) form values of the link', async () => {
     const user = await openEdit();
-    await user.clear(field(group(), 'Mean delay (ns)'));
-    await user.type(field(group(), 'Mean delay (ns)'), '4242');
+    await typeInto(user, group(), 'Mean delay', '4242', 'ns');
     await user.click(saveAs());
     const dialog = await screen.findByRole('dialog');
     await user.type(within(dialog).getByLabelText('Preset name'), 'edited');
@@ -214,7 +219,7 @@ describe('Link editor: Save as preset', () => {
     const user = userEvent.setup();
     renderApp('/links/1');
     await screen.findByRole('heading', { level: 1, name: 'Edit link' });
-    await waitFor(() => expect(field(group(), 'Mean delay (ns)')).toHaveValue(1000));
+    await waitFor(() => expect(field(group(), 'Mean delay')).toHaveValue(1));
     await user.click(saveAs());
     const dialog = await screen.findByRole('dialog');
     await user.type(within(dialog).getByLabelText('Preset name'), 'fresh');
@@ -271,8 +276,7 @@ describe('Link editor: Save as preset', () => {
 describe('Link editor: initialization rate and presets (v12)', () => {
   it('"Save as preset" posts an edited initialization rate', async () => {
     const user = await openEdit();
-    await user.clear(field(group(), 'Initialization rate (pps)'));
-    await user.type(field(group(), 'Initialization rate (pps)'), '3333333');
+    await typeRate(user, '3333333');
     await user.click(within(group()).getByRole('button', { name: 'Save as preset' }));
     const dialog = await screen.findByRole('dialog');
     await user.type(within(dialog).getByLabelText('Preset name'), 'rate');
@@ -282,21 +286,20 @@ describe('Link editor: initialization rate and presets (v12)', () => {
 
   it('"Save as preset" with an empty initialization rate is refused with an alert naming the field, no request', async () => {
     const user = await openEdit();
-    await user.clear(field(group(), 'Initialization rate (pps)'));
+    await user.clear(field(group(), 'Initialization rate'));
     await user.click(within(group()).getByRole('button', { name: 'Save as preset' }));
     const dialog = await screen.findByRole('dialog');
     await user.type(within(dialog).getByLabelText('Preset name'), 'bad-rate');
     await user.click(within(dialog).getByRole('button', { name: 'Save preset' }));
     expect(api.createPreset).not.toHaveBeenCalled();
-    expect((await screen.findAllByRole('alert')).some((a) => /Initialization rate \(pps\)/.test(a.textContent ?? ''))).toBe(true);
+    expect((await screen.findAllByRole('alert')).some((a) => /Initialization rate/.test(a.textContent ?? ''))).toBe(true);
   });
 
   it('applying a preset replaces a rate typed before, and the link is saved with the preset\'s rate', async () => {
     const user = await openEdit();
-    await user.clear(field(group(), 'Initialization rate (pps)'));
-    await user.type(field(group(), 'Initialization rate (pps)'), '999');
+    await typeRate(user, '999');
     await user.selectOptions(applySelect(), 'other'); // config2: 8 Mpps
-    expect(field(group(), 'Initialization rate (pps)')).toHaveValue(8000000);
+    expect(field(group(), 'Initialization rate')).toHaveValue(8);
     await user.click(screen.getByRole('button', { name: /^save$/i }));
     expect(api.updateLink.mock.calls[0][1].config.delayer.initialization_rate_pps).toBe(8000000);
   });

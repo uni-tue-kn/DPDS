@@ -1,6 +1,125 @@
-// Test helpers + THE FRONTEND CONTRACT the tests assume (spec v5 part D + v6 + v10 directed links + v12; the tester's
-// choices where the spec is silent are listed here so the implementer can follow them or ask the coordinator to
-// change them).
+// Test helpers + THE FRONTEND CONTRACT the tests assume (spec v5 part D + v6 + v10 directed links + v12 + v16; the
+// tester's choices where the spec is silent are listed here so the implementer can follow them or ask the coordinator
+// to change them).
+//
+// ## v16: units per field, subsections, no typed ports, visibly required fields (supersedes the v8/v10/v12 label lists)
+// The REST API and the stored values stay in base units (ns, bit/s, bit, pps); only the form shows units.
+// ### Field labels (the unit suffix is gone from the label; the unit lives in a select next to the input)
+//   Buffer: "Buffer capacity" (plain packet count, no unit), "Reordering", "Seed".
+//   Delayer: "Delay distribution", "Mean delay", "Delay std", "Activate correlation", "Half-life period",
+//     "Initialization rate" (was "Initialization rate (pps)"; message and label no longer carry the unit).
+//   Limiter: "Limiter active", "Limiter mode", "Rate" (was "Rate (bit/s)"), "Burst limit" (was "Burst limit (bit)").
+//   Dropper: "Loss model" (options Random | GilbertElliot only: the DTO has no "none", Random with p 0 is "no loss"),
+//     "Random loss probability" | "Gilbert-Elliot p|r|k|h", "Gilbert-Elliot starts in good state".
+//   Statistics: "Delay statistics", "Histogram bins" (no unit), "Histogram lo" (was "Histogram lo (ns)"), "Histogram hi".
+//   Validation messages name the label without a unit ("Mean delay must ...", never "(ns)"); the rules are on the base
+//   value (Initialization rate: finite and >= 1 pps AFTER conversion, so 0.5 Mpps is fine and 0.9 pps is not).
+// ### Unit selects
+//   Fields with a unit: Mean delay, Delay std, Half-life period, Histogram lo, Histogram hi (time); Initialization rate
+//   (pps); Rate (bit/s); Burst limit (bit). Each has ONE `<select>` whose accessible name is "<field label> unit"
+//   (e.g. "Mean delay unit", "Initialization rate unit", "Rate unit", "Burst limit unit"), located in the same field
+//   group as the input and directly AFTER it (no other form control between the input and its unit select, "right of
+//   the input like P4TG"). No other field has a unit select (not Buffer capacity, Seed, Histogram bins, probabilities).
+//   Option TEXTS in this order, exactly (tests pick options by text, values are free):
+//     time   ns | µs | ms | s            (the micro sign is U+00B5, as in the spec and P4TG's "µs", never "us")
+//     rate   bit/s | kbit/s | Mbit/s | Gbit/s  (Rate)
+//     pps    pps | kpps | Mpps                 (Initialization rate)
+//     size   bit | kbit | Mbit | Gbit          (Burst limit)
+//   Multipliers: x1000 per step. A unit select is disabled exactly when its input is.
+// ### Values and conversion (all decimal-exact; no float noise such as 1004999.9999999999)
+//   - Display when a form opens with a stored base value: the LARGEST unit in which the value is >= 1 and has at most
+//     3 decimals; 0 (and an empty optional field) shows the field's default unit. Examples: 10000000 ns -> "10" ms,
+//     2500 ns -> "2.5" µs, 1001 ns -> "1.001" µs, 1234567 ns -> "1234.567" µs (ms would need 6 decimals),
+//     6543210 pps -> "6543.21" kpps, 0 -> "0" in the default unit.
+//   - Default units for empty/0 fields: delay mean/std ms, half-life ms, histogram lo/hi ms, Rate Gbit/s, Burst limit
+//     Mbit, Initialization rate Mpps. A NEW link/preset form keeps the old default VALUES (mean 1e6 ns, std 1e5 ns,
+//     half-life 0, rate 1e10 bit/s, limit 12e6 bit, buffer 100000, histogram empty) which are sent unchanged; only how
+//     they are displayed is free (the tests read them as "shown value x selected unit"). Initialization rate starts EMPTY
+//     (value null) with the unit select on Mpps.
+//   - Changing a unit CONVERTS the shown number (value x oldMultiplier / newMultiplier, exact: 8.2 ms -> 8200 µs, 2500 ns ->
+//     2.5 µs -> 0.0025 ms and back), it does not reinterpret it. An empty field stays empty.
+//   - Saving: shown value x multiplier in base units, exact (1.005 ms -> 1005000, 8.2 ms -> 8200000, 1.001 µs -> 1001,
+//     0.067 Gbit/s -> 67000000, 1.5 Gbit/s -> 1500000000). NO rounding to an integer: the API fields are f64, so
+//     1.5 ns is sent as 1.5. buffer_capacity, seed and histogram bins stay integers as before.
+// ### Subsections
+//   The config form keeps its outer fieldset (legend "Link configuration" / "Preset configuration"). Inside it, in this
+//   order, exactly five nested `<fieldset>`s with legends "Buffer", "Delayer", "Limiter", "Dropper", "Statistics"
+//   (role group, accessible name = legend). Contents: Buffer = capacity, reordering, seed; Delayer = distribution, mean,
+//   std, correlation switch, half-life, initialization rate (each with its unit select); Limiter = active, mode, rate,
+//   limit; Dropper = loss model and the parameters of the chosen model; Statistics = delay statistics and the histogram
+//   (bins, lo, hi). "Apply preset" and "Save as preset" are direct children of the outer fieldset, in no subsection.
+//   Name / Worker lcore / Ingress / Egress stay in the card above (outside the config fieldset).
+// ### Enable / disable (chosen: fields stay visible but DISABLED; the stored value is kept and still sent)
+//   - Half-life period (+ its unit) is disabled while "Activate correlation" is off. Initialization rate is always enabled.
+//   - Limiter mode, Rate, Burst limit (+ units) are disabled while "Limiter active" is off.
+//   - Loss parameters: only the fields of the selected model are rendered (hidden, not disabled: they are alternatives);
+//     switching the model away and back keeps the typed values.
+//   - Histogram bins/lo/hi are NOT switch-dependent: enabled also while "Delay statistics" is off.
+//   - Toggling a switch off and on keeps the field values; a disabled field's value is still in the payload.
+//   - A conditionally required field that is empty while it is not required is sent as 0 (std with the deterministic
+//     distribution, half-life with correlation off, Rate/Burst limit with an inactive limiter), never refused.
+// ### Ports
+//   The typed "Ingress (typed)" / "Egress (typed)" inputs are gone (also their hint). Ports come only from the pickers.
+//   A stored port that is not a discovered interface (vdev, undiscovered PCI address) is an extra option, shown
+//   selected, so an edit does not lose it; it is sent back unchanged. A stored port that fails the port rule
+//   (e.g. "eth0") is still refused on save with an alert naming "ingress" / "egress".
+// ### Required fields are visibly marked (user, 2026-11-03)
+//   - Marker: an element with class `required-marker`, `aria-hidden="true"` and text exactly "*", inside the field's own
+//     group (descendant of the parent element of the field's `<label>`, so it may sit in the label or right after it;
+//     exactly one per required field, none otherwise). index.css gives `.required-marker` a red colour via
+//     `var(--color-primary)`. aria-hidden keeps the accessible name stable: `getByLabelText("Mean delay")` and
+//     `getByRole("spinbutton", {name: "Mean delay"})` keep matching (the implementer may put the marker into the label
+//     and add `aria-label`, or place it after the label; both pass).
+//   - The control carries the `required` attribute AND `aria-required="true"`; optional fields have neither.
+//   - ONE note on the form (not aria-hidden) whose own text is exactly "* required".
+//   - Required: Name (link and preset editor), Ingress, Egress (link editor); Buffer capacity; Mean delay; Delay std
+//     unless the distribution is DeterministicDistribution; Half-life period only while correlation is on;
+//     Initialization rate; Rate and Burst limit only while the limiter is active; every loss parameter of the chosen
+//     model (Random loss probability, or Gilbert-Elliot p, r, k, h). Marked as soon as the rule holds, independent of
+//     whether the field is filled.
+//   - NOT marked: Description, Worker lcore, Seed, Histogram bins/lo/hi (all automatic when empty), the selects with a
+//     default (Delay distribution, Limiter mode, Loss model, Apply preset), checkboxes, every unit select.
+//   - The forms keep `noValidate`: the in-app alert messages still appear instead of the browser's own bubbles.
+// ### Port labels, compact Links list, inspect panel (user, 2026-11-03; supersedes the v12 "<pci> (<netdev>)" label)
+//   - A port is displayed by its Linux interface name (netdev) ONLY; a port with no netdev (vfio-bound NIC, vdev) or not
+//     in the interface list shows its device name (PCI address / vdev name). Values, API payloads and `<option value>`
+//     stay the device name. Applies to: Links list, dashboard card titles ("<link>: <ingress> -> <egress>", e.g.
+//     "a-b: enp101s0f0 → enp101s0f1"), the first column of the dashboard NIC ports table, the editor pickers (option text
+//     = netdev [+ " - " + reason]) and the inspect panel (which shows BOTH netdev and PCI). The Interfaces page is
+//     unchanged (PCI and Netdev columns). Fixture netdevs: 0000:65:00.0 enp101s0f0, 0000:65:00.1 enp101s0f1,
+//     0000:b3:00.0 enp179s0f0, 0000:17:00.0 eno1. The "once per page load, never an alert, never blocks" rules of v12 hold.
+//   - Links list: columnheaders exactly [Name, Interfaces, Delay, Reordering, Limiter, Loss, <actions>] (7 columns, in this
+//     order; the user chose one column per section over a single summary line). Row = name cell (own text exactly the
+//     name), interface cell (ONE element, own text "enp101s0f0 → enp101s0f1", arrow U+2192), four config cells (cell index
+//     2..5, own text exactly as below), actions: link "Edit <name>", button "Delete <name>", button "Inspect <name>".
+//     No worker text, no PCI address, no parentheses, brackets or " · " in the row (the user's brackets were placeholders).
+//   - Config cells:
+//       Delay       "<dist> <mean> / <std>", dist = Normal | LogNormal | Gamma | Uniform (enum name without "Distribution"),
+//                   e.g. "Normal 10 ms / 1 ms"; Deterministic shows the mean only ("Deterministic 10 ms"), also when a std is
+//                   stored. mean and std each use the editor's display-unit rule on their own ("2.5 µs / 1 ms", "0 ms / 0 ms").
+//       Reordering  "+" (on) or "−" (off); the minus is U+2212.
+//       Limiter     "spacing <rate>" (Spacer), "policing <rate>" (TokenBucketFilter), "none" (inactive); rate in its display
+//                   unit ("10 Gbit/s", "1.5 kbit/s"); the burst limit is not shown.
+//       Loss        "Random p=<p>" | "Gilbert-Elliott p=<p>, r=<r>, h=<h>, k=<k>" (this order); numbers as stored, no float noise.
+//     Examples: config() -> "Normal 1 µs / 10 ns" | "−" | "none" | "Random p=0";
+//               config2() -> "Gamma 2.5 µs / 300 ns" | "+" | "policing 40 Gbit/s" | "Gilbert-Elliott p=0.01, r=0.2, h=0.3, k=0.9".
+//   - Inspect = SIDE PANEL (react-bootstrap Offcanvas, the user's "slider"), not an expandable row. "Inspect <name>" opens
+//     exactly one `role="dialog"` whose accessible name is the link name (it contains a heading with the name, one
+//     "Close" button, and a link "Edit <name>" to /links/<id>); nothing is rendered while closed; it uses the list data
+//     (no extra link request). Content: <dt>/<dd> pairs "Ingress" and "Egress" (dd holds netdev AND PCI address; a device
+//     without netdev stands alone) and "Worker lcore" ("auto" or the number) outside any subsection, then five
+//     `role="group"` subsections named Buffer, Delayer, Limiter, Dropper, Statistics in this order, each a list of <dt>/<dd>:
+//       Buffer:     Buffer capacity "1000" | Reordering "on"/"off" | Seed "42" or "random"
+//       Delayer:    Delay distribution (enum name) | Mean delay | Delay std | Correlation "on"/"off" |
+//                   Half-life period (ONLY while correlation is on) | Initialization rate
+//       Limiter:    Limiter "off" and nothing else, or Limiter "on" + Limiter mode | Rate | Burst limit
+//       Dropper:    Loss model (enum name) + Random loss probability, or Gilbert-Elliot p | r | k | h | "starts in good state" yes/no
+//       Statistics: Delay statistics "on"/"off" and, only while on, Histogram bins | lo | hi ("automatic" when not set)
+//     Unit fields read "<number> <unit>" by the editor's display rule ("2.5 \u00b5s", "12.5 Mpps", "40 Gbit/s", "120 kbit",
+//     "4 ms"), probabilities as the plain stored number ("0.07", no float noise), no "(ns)" anywhere.
+// ### Test helpers (below): `section`, `numberField`, `unitSelect`, `unitOf`, `pickUnit`, `typeInto`, `shownBase`,
+//   and `typeRate(user, rate = TEST_RATE, unit = 'pps')`, which now also selects the unit (default pps, so TEST_RATE
+//   stays 10,000,000 pps = what it always meant).
 //
 // ## v12: port labels everywhere, configurable initialization rate (supersedes the v10 label examples below)
 // - Port label: `<pci> (<netdev>)`, e.g. "0000:65:00.0 (enp101s0f0)", where the netdev comes from `getInterfaces()` (the
@@ -210,7 +329,7 @@
 // ## Settings (v7 F5): EAL extra arguments are a list, see the header of settings.test.tsx.
 // ## Interfaces / Host hints / Settings: see their test files.
 // ## Static checks (no Docker/nginx files, vite dev proxy, CI without a frontend asset job, README, F6 leftovers): src/static.test.ts.
-import { render, act, screen } from '@testing-library/react';
+import { render, act, screen, within } from '@testing-library/react';
 import type { UserEvent } from '@testing-library/user-event';
 import { vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
@@ -253,9 +372,98 @@ export function field(scope: HTMLElement, label: string): HTMLElement {
 /** A valid initialization rate for flows that create a link or preset (v12: new forms start with this field EMPTY). */
 export const TEST_RATE = '10000000';
 
-/** Types `rate` into the (empty or filled) "Initialization rate (pps)" field of the only config form on the page. */
-export async function typeRate(user: UserEvent, rate: string = TEST_RATE): Promise<void> {
-  const el = screen.getByLabelText('Initialization rate (pps)');
+// ---- v16: units, subsections ------------------------------------------------------------------------------------
+
+export const TIME_UNITS = ['ns', '\u00b5s', 'ms', 's'];
+export const RATE_UNITS = ['bit/s', 'kbit/s', 'Mbit/s', 'Gbit/s'];
+export const PPS_UNITS = ['pps', 'kpps', 'Mpps'];
+export const SIZE_UNITS = ['bit', 'kbit', 'Mbit', 'Gbit'];
+export const MULTIPLIER: Record<string, number> = {
+  ns: 1, '\u00b5s': 1e3, ms: 1e6, s: 1e9,
+  'bit/s': 1, 'kbit/s': 1e3, 'Mbit/s': 1e6, 'Gbit/s': 1e9,
+  pps: 1, kpps: 1e3, Mpps: 1e6,
+  bit: 1, kbit: 1e3, Mbit: 1e6, Gbit: 1e9,
+};
+/** The five subsections of the config form, in their order. */
+export const SECTIONS = ['Buffer', 'Delayer', 'Limiter', 'Dropper', 'Statistics'];
+
+/** One subsection fieldset of the (only) config form on the page. */
+export function section(name: string): HTMLElement {
+  return screen.getByRole('group', { name });
+}
+
+/** The input of a labelled field (any scope). */
+export function numberField(scope: HTMLElement, label: string): HTMLInputElement {
+  return within(scope).getByLabelText(label) as HTMLInputElement;
+}
+
+/** The unit `<select>` of a field: accessible name "<label> unit". */
+export function unitSelect(scope: HTMLElement, label: string): HTMLSelectElement {
+  return within(scope).getByLabelText(`${label} unit`) as HTMLSelectElement;
+}
+
+/** Text of the selected unit option of a field. */
+export function unitOf(scope: HTMLElement, label: string): string {
+  const sel = unitSelect(scope, label);
+  return sel.options[sel.selectedIndex].textContent ?? '';
+}
+
+export async function pickUnit(user: UserEvent, scope: HTMLElement, label: string, unit: string): Promise<void> {
+  const sel = unitSelect(scope, label);
+  await user.selectOptions(sel, within(sel).getByRole('option', { name: unit }));
+}
+
+/** Optionally switches the unit first (the field is cleared afterwards, so nothing is converted), then replaces the text. */
+export async function typeInto(user: UserEvent, scope: HTMLElement, label: string, text: string, unit?: string): Promise<void> {
+  if (unit !== undefined) await pickUnit(user, scope, label, unit);
+  const el = numberField(scope, label);
   await user.clear(el);
-  await user.type(el, rate);
+  if (text !== '') await user.type(el, text);
+}
+
+/** Shown value x multiplier of the selected unit, rounded to 3 decimals (to read defaults whose unit is free); null when empty. */
+export function shownBase(scope: HTMLElement, label: string): number | null {
+  const el = numberField(scope, label);
+  if (el.value === '') return null;
+  return Math.round(Number(el.value) * MULTIPLIER[unitOf(scope, label)] * 1000) / 1000;
+}
+
+/** Types `rate` (in `unit`, default pps) into the (empty or filled) "Initialization rate" field of the only config form. */
+export async function typeRate(user: UserEvent, rate: string = TEST_RATE, unit: string = 'pps'): Promise<void> {
+  await typeInto(user, document.body, 'Initialization rate', rate, unit);
+}
+
+// ---- v16: required markers --------------------------------------------------------------------------------------
+
+/** Required markers (class `required-marker`, aria-hidden, text "*") in the group of the control's own label. */
+export function requiredMarkers(control: HTMLElement): HTMLElement[] {
+  const labels = Array.from((control as HTMLInputElement).labels ?? []);
+  const label = labels[0] ?? document.querySelector(`label[for="${control.id}"]`);
+  if (!label?.parentElement) throw new Error('control has no label with a parent element');
+  return Array.from(label.parentElement.querySelectorAll<HTMLElement>('.required-marker'));
+}
+
+/** Marker + `required` + aria-required, exactly one marker, aria-hidden "*". */
+export function expectRequired(control: HTMLElement): void {
+  const marks = requiredMarkers(control);
+  expect(marks).toHaveLength(1);
+  expect(marks[0]).toHaveAttribute('aria-hidden', 'true');
+  expect(marks[0].textContent?.trim()).toBe('*');
+  expect(control).toBeRequired();
+  expect(control).toHaveAttribute('required');
+  expect(control).toHaveAttribute('aria-required', 'true');
+}
+
+/** No marker, no `required`, no aria-required="true". */
+export function expectOptional(control: HTMLElement): void {
+  expect(requiredMarkers(control)).toHaveLength(0);
+  expect(control).not.toHaveAttribute('required');
+  expect(control.getAttribute('aria-required')).not.toBe('true');
+}
+
+/** Every `.required-marker` inside the form that holds the Save button. */
+export function allRequiredMarkers(): HTMLElement[] {
+  const form = screen.getByRole('button', { name: /^save$/i }).closest('form');
+  if (!form) throw new Error('Save button is not inside a form');
+  return Array.from(form.querySelectorAll<HTMLElement>('.required-marker'));
 }

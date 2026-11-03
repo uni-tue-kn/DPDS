@@ -3,26 +3,19 @@ import { Button, Modal, Table } from 'react-bootstrap';
 import { Link as RouterLink } from 'react-router';
 import * as api from '../api/client';
 import ErrorAlert from '../components/ErrorAlert';
-import { errorMessage, formatBps, formatDuration, formatPct, linkLabel } from '../common/format';
+import { errorMessage } from '../common/format';
 import { useLoad } from '../common/useLoad';
 import { usePortLabeler } from '../common/portLabel';
-import type { ConfigDto, Link } from '../api/types';
-
-/** "1.00 ms delay, 10.00 Gb/s limit, 0.5 % loss": the parts that tell two links apart at a glance. */
-function configSummary(c: ConfigDto): string {
-  const loss = c.loss_model.type === 'Random' ? `${formatPct(c.loss_model.p * 100)} loss` : 'burst loss';
-  return [
-    `${formatDuration(c.delayer.mean_ns)} delay`,
-    c.limiter.activate ? `${formatBps(c.limiter.rate_bps)} limit` : 'no limit',
-    loss,
-  ].join(', ');
-}
+import LinkInspect from './LinkInspect';
+import { delayCell, limiterCell, lossCell, reorderingCell } from './linkSummary';
+import type { Link } from '../api/types';
 
 export default function Links() {
   const links = useLoad(api.getLinks);
   const emulation = useLoad(api.getEmulation);
   const label = usePortLabeler();
   const [target, setTarget] = useState<Link | null>(null);
+  const [inspected, setInspected] = useState<Link | null>(null);
   const [actionError, setActionError] = useState<string>();
   const [deleting, setDeleting] = useState(false);
 
@@ -60,15 +53,21 @@ export default function Links() {
       {links.data && links.data.length > 0 && (
         <Table striped size="sm" responsive>
           <thead className="table-dark">
-            <tr><th>Link</th><th>Worker</th><th>Configuration</th><th /></tr>
+            <tr><th>Name</th><th>Interfaces</th><th>Delay</th><th>Reordering</th><th>Limiter</th><th>Loss</th><th /></tr>
           </thead>
           <tbody>
             {links.data.map((l) => (
               <tr key={l.id}>
-                <td>{linkLabel(l.name, l.ingress, l.egress, label)}</td>
-                <td>{l.worker == null ? 'auto' : l.worker}</td>
-                <td>{configSummary(l.config)}</td>
+                <td>{l.name}</td>
+                <td>{`${label(l.ingress)} → ${label(l.egress)}`}</td>
+                <td>{delayCell(l.config)}</td>
+                <td>{reorderingCell(l.config)}</td>
+                <td>{limiterCell(l.config)}</td>
+                <td>{lossCell(l.config)}</td>
                 <td className="text-end text-nowrap">
+                  <Button size="sm" variant="outline-secondary" className="me-1" aria-label={`Inspect ${l.name}`} onClick={() => setInspected(l)}>
+                    <i className="bi bi-eye" aria-hidden="true" />
+                  </Button>
                   <RouterLink to={`/links/${l.id}`} className="btn btn-sm btn-outline-secondary me-1" aria-label={`Edit ${l.name}`}>
                     <i className="bi bi-pencil" aria-hidden="true" />
                   </RouterLink>
@@ -81,6 +80,7 @@ export default function Links() {
           </tbody>
         </Table>
       )}
+      <LinkInspect link={inspected} label={label} onClose={() => setInspected(null)} />
       <Modal show={target !== null} onHide={() => setTarget(null)} animation={false} centered>
         <Modal.Header closeButton><Modal.Title>Delete link</Modal.Title></Modal.Header>
         <Modal.Body>Delete link {target?.name}? This cannot be undone.</Modal.Body>

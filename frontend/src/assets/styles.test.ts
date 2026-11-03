@@ -44,3 +44,12 @@ describe('index.css theme variables', () => {
     expect(css).toMatch(/var\(--color-sidebar-background\)/);
   });
 });
+
+// v16: required fields carry a visible red marker (class `required-marker`, see the v16 block of test/helpers.tsx).
+describe('index.css required marker', () => {
+  it('.required-marker is drawn in the theme red (var(--color-primary)) and is not hidden', () => {
+    const rule = block(/\.required-marker\s*\{/);
+    expect(rule).toMatch(/color:\s*var\(--color-primary\)/);
+    expect(rule).not.toMatch(/display:\s*none|visibility:\s*hidden/);
+  });
+});
