@@ -25,7 +25,7 @@ function expectValidConfig(c: ConfigDto) {
   expect(Number.isInteger(c.buffer_capacity)).toBe(true);
   expect(typeof c.reordering).toBe('boolean');
   expect(DISTRIBUTIONS).toContain(c.delayer.distribution);
-  for (const v of [c.delayer.mean_ns, c.delayer.std_ns, c.delayer.half_life_period_ns, c.limiter.rate_bps, c.limiter.limit_bit]) {
+  for (const v of [c.delayer.mean_ns, c.delayer.std_ns, c.delayer.half_life_period_ns, c.limiter.rate_bps]) {
     expect(Number.isFinite(v)).toBe(true);
   }
   expect(typeof c.delayer.initialization_rate_pps).toBe('number'); // v12: required, finite >= 1
@@ -282,8 +282,6 @@ describe('Presets: edit', () => {
     expect(lbl('Limiter mode')).toHaveValue('TokenBucketFilter');
     expect(lbl('Rate')).toHaveValue(40);
     expect(unitOf(document.body, 'Rate')).toBe('Gbit/s');
-    expect(lbl('Burst limit')).toHaveValue(120);
-    expect(unitOf(document.body, 'Burst limit')).toBe('kbit');
     expect(lbl('Loss model')).toHaveValue('GilbertElliot');
     expect(lbl('Buffer capacity')).toHaveValue(5000);
     expect(lbl('Reordering')).toBeChecked();

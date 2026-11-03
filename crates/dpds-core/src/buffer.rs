@@ -4,7 +4,9 @@ use std::{
     ffi::c_void,
 };
 
-use crate::{delayer::Delayer, dropper::Dropper, limiter::Limiter, BuildError, Config};
+use crate::{
+    delayer::Delayer, derived_limit_bit, dropper::Dropper, limiter::Limiter, BuildError, Config,
+};
 
 /// Fractional bits of the reordering heap key: send times are kept in 1/64 ns.
 const TIE_FRAC_BITS: u32 = 6;
@@ -15,11 +17,11 @@ const DROPPER_SEED_XOR: u64 = 0x9E37_79B9_7F4A_7C15;
 /// What [`Buffer::push_outcome`] did with a packet.
 ///
 /// The cause of a rejection follows the evaluation order of the push: the
-/// limiter accounts the packet first (also when the packet is rejected
-/// afterwards), then the loss model decides, then the capacity is checked. The
-/// reported cause is the first of these that rejects the packet: the loss model
-/// (`Lost`), else the limiter (`LimiterDrop`), else the capacity (`BufferFull`).
-/// A packet that both the loss model and the limiter reject therefore counts as
+/// capacity is checked first (`BufferFull`, nothing else is touched), then the
+/// limiter accounts the packet (also when the packet is rejected afterwards)
+/// and the loss model decides. The reported cause is the first that rejects the
+/// packet: the capacity (`BufferFull`), else the loss model (`Lost`), else the
+/// limiter (`LimiterDrop`). A packet that both the loss model and the limiter reject therefore counts as
 /// `Lost`, so with a loss model active `LimiterDrop` can under-count the
 /// packets the limiter alone would have rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,8 +34,8 @@ pub enum PushOutcome {
     Lost,
     /// The limiter rejected the packet (and the loss model did not drop it).
     LimiterDrop,
-    /// The packet was accepted by loss model and limiter, but the buffer
-    /// already holds `buffer_capacity` packets.
+    /// The buffer already holds `buffer_capacity` packets. Checked first: the
+    /// delayer, limiter and dropper are left untouched.
     BufferFull,
 }
 
@@ -198,11 +200,12 @@ impl Buffer {
             ),
         }?;
 
+        let limit_bit = derived_limit_bit(config.buffer_capacity);
         let limiter = Limiter::new(
             config.limiter.mode,
             config.limiter.activate,
             config.limiter.rate_bps,
-            config.limiter.limit_bit,
+            limit_bit,
         );
 
         let dropper = match config.seed {
@@ -251,6 +254,12 @@ impl Buffer {
         packet_length_byte: u32,
         current_time_ns: f64,
     ) -> PushOutcome {
+        // Room first: a packet that cannot be enqueued must not be accounted
+        // anywhere (it would drift the limiter and consume random draws).
+        if self.len() >= self.capacity {
+            return PushOutcome::BufferFull;
+        }
+
         let time_to_send_ns = current_time_ns + self.delayer.delayer_sample_ns(current_time_ns);
 
         // Increase by 4 because L2 FEC is removed
@@ -273,9 +282,6 @@ impl Buffer {
 
         match &mut self.inner {
             InnerBuffer::Queue(q) => {
-                if q.len() >= self.capacity {
-                    return PushOutcome::BufferFull;
-                }
                 let time_to_send_ns = send_time_ns as u64;
                 q.push_back(TimeToPacket {
                     time_to_send_ns,
@@ -286,9 +292,6 @@ impl Buffer {
                 }
             }
             InnerBuffer::Heap(h) => {
-                if h.len() >= self.capacity {
-                    return PushOutcome::BufferFull;
-                }
                 if current_time_ns != self.tie_instant_ns {
                     self.tie_instant_ns = current_time_ns;
                     self.tie = 0;

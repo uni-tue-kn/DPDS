@@ -1,6 +1,6 @@
 [package]
 name = "dpds-core"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 # The toolchain this crate is developed and tested with (rustc 1.99.1); older
 # versions are not checked.

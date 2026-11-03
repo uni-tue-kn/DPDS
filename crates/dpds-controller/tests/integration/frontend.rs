@@ -770,3 +770,77 @@ fn build_script_rejects_a_dist_without_index_html_and_accepts_one_with() {
         "an empty DPDS_FRONTEND_DIST must count as unset: {err}"
     );
 }
+
+// ---- spec 18: the browser checks for a new release ---------------------------------------------
+
+/// The directives of a CSP as `(name, sorted sources)`, white space normalised.
+fn directives(csp: &str) -> std::collections::BTreeMap<String, Vec<String>> {
+    csp.split(';')
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .map(|d| {
+            let mut parts = d.split_whitespace();
+            let name = parts.next().unwrap().to_string();
+            let mut sources: Vec<String> = parts.map(str::to_string).collect();
+            sources.sort();
+            (name, sources)
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn connect_src_allows_the_raw_githubusercontent_version_file_and_nothing_else_new() {
+    for (what, site) in [
+        ("fixture", fixture_site()),
+        ("placeholder", placeholder_site()),
+    ] {
+        // the placeholder dist has no assets: /assets/... would only be the 404/fallback there
+        let paths: &[&str] = if what == "fixture" {
+            &["/", "/index.html", "/links/3", JS]
+        } else {
+            &["/", "/index.html", "/links/3"]
+        };
+        for &path in paths {
+            let r = get(&site, path).await;
+            assert_eq!(r.status, 200, "{what} {path}");
+            let csp = header(&r, "content-security-policy");
+            let d = directives(&csp);
+            assert_eq!(
+                d["connect-src"],
+                ["'self'", "https://raw.githubusercontent.com"],
+                "{what} {path}: {csp}"
+            );
+            // every other directive is what it was before the update check
+            let expected: &[(&str, &[&str])] = &[
+                ("default-src", &["'self'"]),
+                ("script-src", &["'self'"]),
+                ("style-src", &["'self'", "'unsafe-inline'"]),
+                ("img-src", &["'self'", "data:"]),
+                ("font-src", &["'self'"]),
+                ("object-src", &["'none'"]),
+                ("base-uri", &["'self'"]),
+                ("form-action", &["'self'"]),
+                ("frame-ancestors", &["'none'"]),
+            ];
+            for (name, sources) in expected {
+                let mut want: Vec<String> = sources.iter().map(|s| s.to_string()).collect();
+                want.sort();
+                assert_eq!(d[*name], want, "{what} {path}: {name} in {csp}");
+            }
+            assert_eq!(
+                d.len(),
+                expected.len() + 1,
+                "{what} {path}: extra directive in {csp}"
+            );
+            assert!(!csp.contains('*'), "{what} {path}: wildcard in {csp}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn the_version_endpoint_reports_the_release_version_with_a_bundled_frontend() {
+    let v = get(&fixture_site(), "/api/version").await.json();
+    assert_eq!(v["version"], "1.0.0", "{v}");
+    let v = get(&placeholder_site(), "/api/version").await.json();
+    assert_eq!(v["version"], "1.0.0", "{v}");
+}

@@ -144,7 +144,7 @@ fn drain(ctx: &Ctx) -> Option<Hint> {
                 "stopping waits for the buffered packets to leave; link(s) {} need more than {DRAIN_WARN_S} s, but the systemd unit allows TimeoutStopSec={SYSTEMD_STOP_LIMIT_S}, after which systemd kills dpds mid-drain",
                 slow.join(", ")
             ),
-            "Shorten the delay or the limiter limit (limit_bit / rate_bps) of those links, or raise TimeoutStopSec in dpds-controller.service.",
+            "Shorten the delay, shrink the buffer capacity or raise the limiter rate (the drain takes capacity × 12336 bit / rate_bps) of those links, or raise TimeoutStopSec in dpds-controller.service.",
         )
     })
 }

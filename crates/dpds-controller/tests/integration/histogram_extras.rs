@@ -794,8 +794,7 @@ async fn the_model_is_per_direction() {
 
 fn limited(mode: &str, activate: bool) -> Value {
     let mut c = cfg("NormalDistribution", 1000.0, 200.0);
-    c["limiter"] =
-        json!({"mode": mode, "activate": activate, "rate_bps": 1.0e9, "limit_bit": 1.0e6});
+    c["limiter"] = json!({"mode": mode, "activate": activate, "rate_bps": 1.0e9});
     c
 }
 

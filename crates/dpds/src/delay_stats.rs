@@ -132,7 +132,7 @@ fn automatic_window(config: &Config) -> (f64, f64) {
     let (mean, std) = (config.delayer.mean_ns, config.delayer.std_ns);
     let limiter = &config.limiter;
     let extra = if limiter.activate && matches!(limiter.mode, LimiterMode::Spacer) {
-        let extra = limiter.limit_bit / limiter.rate_bps * 1e9;
+        let extra = dpds_core::derived_limit_bit(config.buffer_capacity) / limiter.rate_bps * 1e9;
         if extra.is_finite() {
             extra.max(0.0)
         } else {
@@ -192,7 +192,7 @@ impl HistRange {
     ///
     /// ```text
     /// lo = max(0, mean - 6 std)
-    /// hi = mean + 6 std + extra       extra = limit_bit / rate_bps * 1e9 for an
+    /// hi = mean + 6 std + extra       extra = capacity * 12336 / rate_bps * 1e9 for an
     ///                                 active Spacer (its queueing allowance), else 0
     /// if hi - lo < 1000 ns:           mid = (lo + hi) / 2
     ///                                 lo = max(0, mid - 500);  hi = lo + 1000

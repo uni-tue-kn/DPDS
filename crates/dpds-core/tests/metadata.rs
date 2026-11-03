@@ -228,3 +228,134 @@ fn no_fallback_initialization_rate_constant_is_left_in_the_buffer() {
         );
     }
 }
+
+// ── spec20: the limiter limit is derived, `limit_bit` is gone ────────
+
+fn crate_docs() -> String {
+    let lib = read(crate_dir().join("src/lib.rs"));
+    lib.lines()
+        .filter_map(|l| l.trim_start().strip_prefix("//!"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn max_frame_bytes_is_a_public_constant_of_1542() {
+    let src = ["lib.rs", "buffer.rs", "limiter.rs"]
+        .iter()
+        .map(|f| read(crate_dir().join("src").join(f)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        src.contains("pub const MAX_FRAME_WIRE_BYTES: u32 = 1542;"),
+        "src needs `pub const MAX_FRAME_WIRE_BYTES: u32 = 1542;`"
+    );
+    assert!(
+        !src.contains("MAX_FRAME_BYTES"),
+        "the first-draft name MAX_FRAME_BYTES (1522) must be gone"
+    );
+}
+
+#[test]
+fn readme_documents_the_derived_limit_the_order_and_the_api_change() {
+    let r = read(crate_dir().join("README.md"));
+    assert!(
+        !r.contains("| `limit_bit`"),
+        "README.md must not list `limit_bit` as a config field any more"
+    );
+    assert!(
+        !r.contains("\"limit_bit\":"),
+        "README.md config examples must not carry `limit_bit`"
+    );
+    for needle in [
+        "1542",
+        "MAX_FRAME_WIRE_BYTES",
+        "buffer_capacity",
+        "API change",
+    ] {
+        assert!(r.contains(needle), "README.md should mention `{needle}`");
+    }
+    // the removal is announced as an API change next to the field's name
+    assert!(
+        r.lines()
+            .any(|l| l.contains("limit_bit") && !l.trim_start().starts_with('|')),
+        "README.md should name the removed `limit_bit` in its API-change note"
+    );
+}
+
+#[test]
+fn crate_docs_note_the_removed_limit_bit_the_derived_limit_and_the_order() {
+    let docs = crate_docs();
+    for needle in [
+        "limit_bit",
+        "MAX_FRAME_WIRE_BYTES",
+        "1542",
+        "API change",
+        "BufferFull",
+    ] {
+        assert!(
+            docs.contains(needle),
+            "crate docs should mention `{needle}`"
+        );
+    }
+    assert!(
+        !docs.contains("limit_bit: 1e6"),
+        "the crate-doc example must not set `limit_bit`"
+    );
+}
+
+#[test]
+fn push_outcome_docs_state_that_the_capacity_check_comes_first() {
+    let buf = read(crate_dir().join("src/buffer.rs"));
+    assert!(
+        !buf.contains("then the capacity is checked"),
+        "the PushOutcome docs still describe the old order (capacity last)"
+    );
+    assert!(
+        !buf.contains("The packet was accepted by loss model and limiter, but the buffer"),
+        "BufferFull docs still describe the old order"
+    );
+}
+
+#[test]
+fn no_workspace_doc_or_config_example_carries_a_limit_bit_json_key_or_table_row() {
+    let root = crate_dir().join("../..");
+    for rel in [
+        "README.md",
+        "docs/TELEMETRY.md",
+        "crates/dpds-core/README.md",
+    ] {
+        let text = read(root.join(rel));
+        assert!(
+            !text.contains("\"limit_bit\""),
+            "{rel}: a JSON example still has `limit_bit`"
+        );
+        assert!(
+            !text.contains("| `limit_bit`") && !text.contains("| `limiter.limit_bit`"),
+            "{rel}: a field table still lists `limit_bit`"
+        );
+        assert!(
+            !text.contains("limit_bit / rate_bps"),
+            "{rel}: a formula still uses `limit_bit`"
+        );
+    }
+    // the telemetry reference has no reason to mention the removed field at all
+    let t = read(root.join("docs/TELEMETRY.md"));
+    assert!(
+        !t.contains("limit_bit"),
+        "docs/TELEMETRY.md still mentions `limit_bit`"
+    );
+}
+
+#[test]
+fn the_root_readme_documents_the_derived_limit_and_the_order_of_operations() {
+    let r = read(crate_dir().join("../../README.md"));
+    assert!(
+        r.contains("1542"),
+        "README.md should state the 1542 B frame size of the derived limit"
+    );
+    assert!(
+        r.contains("buffer_capacity") && r.contains("limit"),
+        "README.md should explain that the limit comes from the buffer capacity"
+    );
+}

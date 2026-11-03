@@ -40,7 +40,6 @@ fn config(capacity: usize, reordering: bool, delay_ns: f64) -> Config {
             mode: LimiterMode::Spacer,
             activate: false,
             rate_bps: 1e9,
-            limit_bit: 1e9,
         },
         loss_model: LossModel::Random(0.0),
         seed: None,
@@ -195,31 +194,38 @@ fn zero_loss_never_drops() {
 
 #[test]
 fn token_bucket_filter_drops_packet_that_exceeds_budget() {
-    let mut cfg = config(8, false, 0.0);
+    // Capacity 1 gives the bucket the derived depth 1 * 1542 * 8 = 12336 bit.
+    // A 1519-byte packet is (1519 + 4 + 20) * 8 = 12344 bit: larger than the
+    // whole bucket, so it is dropped although the bucket starts full.
+    let mut cfg = config(1, false, 0.0);
     cfg.limiter = LimiterConfig {
         mode: LimiterMode::TokenBucketFilter,
         activate: true,
         rate_bps: 1e9,
-        limit_bit: 100.0, // smaller than any packet
     };
     let mut b = Buffer::new(cfg);
-    assert!(!b.push(pkt(1), 100, 0.0));
+    assert!(!b.push(pkt(1), 1519, 0.0));
     assert!(b.is_empty());
 }
 
 #[test]
 fn spacer_drops_packet_that_would_overflow_its_limit() {
-    // One 100-byte packet occupies (100 + 4 FCS + 20 L1 overhead) * 8 = 992 bit.
-    let mut cfg = config(8, false, 0.0);
+    // Capacity 2 gives the Spacer the derived limit 2 * 1542 * 8 = 24672 bit.
+    // One 1519-byte packet occupies (1519 + 4 FCS + 20 L1 overhead) * 8 =
+    // 12344 bit, so the second one (24688 bit) does not fit although the
+    // buffer has room for it.
+    let mut cfg = config(2, false, 0.0);
     cfg.limiter = LimiterConfig {
         mode: LimiterMode::Spacer,
         activate: true,
         rate_bps: 1e9,
-        limit_bit: 1500.0,
     };
     let mut b = Buffer::new(cfg);
-    assert!(b.push(pkt(1), 100, 0.0));
-    assert!(!b.push(pkt(2), 100, 0.0), "992 + 992 bit > 1500 bit limit");
+    assert!(b.push(pkt(1), 1519, 0.0));
+    assert!(
+        !b.push(pkt(2), 1519, 0.0),
+        "12344 + 12344 bit > 24672 bit limit"
+    );
     assert_eq!(b.len(), 1);
 }
 
@@ -232,7 +238,6 @@ fn spacer_spaces_back_to_back_packets_by_their_serialization_time() {
         mode: LimiterMode::Spacer,
         activate: true,
         rate_bps: 1e9,
-        limit_bit: 1e9,
     };
     let mut b = Buffer::new(cfg);
     assert!(b.push(pkt(1), 100, 0.0));

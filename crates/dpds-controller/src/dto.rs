@@ -69,7 +69,6 @@ pub struct LimiterDto {
     pub mode: LimiterModeDto,
     pub activate: bool,
     pub rate_bps: f64,
-    pub limit_bit: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -254,12 +253,6 @@ impl ConfigDto {
                 l.rate_bps
             )));
         }
-        if l.activate && !(l.limit_bit.is_finite() && l.limit_bit >= 0.0) {
-            return Err(DtoError(format!(
-                "limiter limit_bit = {}: must not be negative when the limiter is active",
-                l.limit_bit
-            )));
-        }
         let config = Config {
             buffer_capacity: self.buffer_capacity,
             reordering: self.reordering,
@@ -275,7 +268,6 @@ impl ConfigDto {
                 mode: l.mode.into(),
                 activate: l.activate,
                 rate_bps: l.rate_bps,
-                limit_bit: l.limit_bit,
             },
             loss_model,
             seed: self.seed,
@@ -308,7 +300,6 @@ impl ConfigDto {
                 mode: c.limiter.mode.into(),
                 activate: c.limiter.activate,
                 rate_bps: c.limiter.rate_bps,
-                limit_bit: c.limiter.limit_bit,
             },
             loss_model: match c.loss_model {
                 LossModel::Random(p) => LossModelDto::Random { p },

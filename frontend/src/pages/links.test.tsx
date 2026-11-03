@@ -360,11 +360,10 @@ describe('Links: inspect panel (v16)', () => {
     expect(field(delayer, 'Initialization rate').textContent?.trim()).toBe('8 Mpps');
 
     const limiter = group(dialog, 'Limiter');
-    expect(dts(limiter)).toEqual(['Limiter', 'Limiter mode', 'Rate', 'Burst limit']);
+    expect(dts(limiter)).toEqual(['Limiter', 'Limiter mode', 'Rate']); // spec20: no burst limit
     expect(field(limiter, 'Limiter').textContent?.trim()).toBe('on');
     expect(field(limiter, 'Limiter mode').textContent?.trim()).toBe('TokenBucketFilter');
     expect(field(limiter, 'Rate').textContent?.trim()).toBe('40 Gbit/s');
-    expect(field(limiter, 'Burst limit').textContent?.trim()).toBe('120 kbit');
 
     const dropper = group(dialog, 'Dropper');
     expect(dts(dropper)).toEqual([
@@ -395,7 +394,6 @@ describe('Links: inspect panel (v16)', () => {
     const lim = group(dialog, 'Limiter');
     expect(field(lim, 'Limiter mode').textContent?.trim()).toBe('Spacer');
     expect(field(lim, 'Rate').textContent?.trim()).toBe('5 Gbit/s');
-    expect(field(lim, 'Burst limit').textContent?.trim()).toBe('64 kbit');
     // correlation is off in config3: its half-life (555 ns) is not listed
     expect(dts(group(dialog, 'Delayer'))).not.toContain('Half-life period');
     expect(field(group(dialog, 'Delayer'), 'Mean delay').textContent?.trim()).toBe('7.777 \u00b5s');
@@ -539,9 +537,9 @@ describe('Links list: Delay, Reordering, Limiter and Loss columns (v16)', () => 
     ['Spacer', false, 10000000000, 'none'],
     ['TokenBucketFilter', false, 40000000000, 'none'],
   ] as const)('limiter %s active=%s rate %d reads "%s"', async (mode, activate, rate_bps, text) => {
-    api.getLinks.mockResolvedValue([withConfig({}, {}, { mode, activate, rate_bps, limit_bit: 120000 })]);
+    api.getLinks.mockResolvedValue([withConfig({}, {}, { mode, activate, rate_bps })]);
     renderApp('/links');
-    expect(await cellOf('a-b', LIMITER)).toBe(text); // the burst limit (120 kbit) is not shown
+    expect(await cellOf('a-b', LIMITER)).toBe(text);
   });
 
   it.each([

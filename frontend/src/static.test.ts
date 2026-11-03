@@ -88,17 +88,28 @@ describe('.github/workflows/ci.yml: no frontend release asset any more (spec v15
     expect(job('frontend-asset')).toBe('');
   });
 
-  it('is read-only: no contents: write, and the workflow default stays contents: read', () => {
-    expect(ci).not.toMatch(/contents:\s*write/);
+  // Spec 18 allows exactly one exception: the `release` job on main (tag + GitHub release with generated notes,
+  // no build assets). Everything else stays read-only and publishes nothing. The Rust side pins the job itself
+  // (crates/dpds-controller/tests/integration/release.rs).
+  const release = job('release');
+  const rest = ci.replace(release, '');
+
+  it('is read-only apart from the release job: contents: write only there, and the workflow default stays contents: read', () => {
+    expect(release).not.toBe('');
+    expect(release.match(/contents:\s*write/g)).toHaveLength(1);
+    expect(rest).not.toMatch(/contents:\s*write/);
+    expect(ci.match(/:\s*write\b/g)).toHaveLength(1);
     expect(ci).toMatch(/^permissions:\s*\n\s+contents:\s*read/m);
   });
 
-  it('publishes nothing: no gh release, no frontend-builds release, no GH_TOKEN, no artifacts', () => {
-    expect(ci).not.toMatch(/\bgh release\b/);
+  it('publishes nothing but the release: gh release and the token only in the release job, no assets or artifacts', () => {
+    expect(release).toMatch(/\bgh release create\b/);
+    expect(release).toMatch(/GH_TOKEN:\s*\$\{\{\s*secrets\.GITHUB_TOKEN\s*\}\}/);
+    expect(rest).not.toMatch(/\bgh release\b/);
+    expect(rest).not.toMatch(/GH_TOKEN|GITHUB_TOKEN/);
     expect(ci).not.toMatch(/frontend-builds/);
-    expect(ci).not.toMatch(/GH_TOKEN|GITHUB_TOKEN/);
     expect(ci).not.toMatch(/actions\/(upload|download)-artifact/);
-    expect(ci).not.toMatch(/--clobber/);
+    expect(ci).not.toMatch(/gh release upload|upload-release-asset|--clobber/);
     expect(ci).not.toMatch(/dpds-frontend-/);
   });
 

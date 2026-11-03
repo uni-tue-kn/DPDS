@@ -169,3 +169,27 @@ fn a_state_file_with_the_old_link_shape_is_refused_naming_the_file_and_left_unto
     let e = store::load(tmp.path()).expect_err("old shape must not load");
     assert!(e.to_string().contains(STATE_FILE_NAME), "{e}");
 }
+
+// ---- a state file that still has `limit_bit` is refused (spec20) --------------------------
+
+#[test]
+fn a_state_file_with_limit_bit_is_refused_naming_the_file_and_left_untouched() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join(STATE_FILE_NAME);
+    let mut cfg = cfg_json(1.0e6, 1.0e5);
+    cfg["limiter"]["limit_bit"] = json!(1.0e6);
+    let state = json!({
+        "links": [{"id": 1, "name": "a", "ingress": "net_null0", "egress": "net_null0",
+                   "config": cfg}],
+        "settings": {"main_lcore": null, "eal_extra_args": [], "poll_interval_ms": 500},
+        "next_id": 2
+    });
+    let bytes = serde_json::to_vec_pretty(&state).unwrap();
+    fs::write(&path, &bytes).unwrap();
+    let e = store::load(tmp.path()).expect_err("a stored limit_bit must not load");
+    let msg = e.to_string();
+    assert!(msg.contains(STATE_FILE_NAME), "{msg}");
+    assert!(msg.contains("limit_bit"), "{msg}");
+    // no migration and no rewrite
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+}

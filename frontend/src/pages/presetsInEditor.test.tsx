@@ -87,8 +87,6 @@ describe('Link editor: Apply preset', () => {
     expect(field(g, 'Limiter mode')).toHaveValue('Spacer');
     expect(field(g, 'Rate')).toHaveValue(5); // 5e9 bit/s
     expect(unitOf(g, 'Rate')).toBe('Gbit/s');
-    expect(field(g, 'Burst limit')).toHaveValue(64); // 64000 bit
-    expect(unitOf(g, 'Burst limit')).toBe('kbit');
     expect(field(g, 'Loss model')).toHaveValue('Random');
     expect(field(g, 'Random loss probability')).toHaveValue(0.25);
     expect(field(g, 'Buffer capacity')).toHaveValue(321);

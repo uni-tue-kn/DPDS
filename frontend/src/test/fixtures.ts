@@ -5,7 +5,7 @@ import type {
 } from '../api/types';
 
 export function online(over: Partial<OnlineView> = {}): OnlineView {
-  return { version: '0.1.0', dpds_bin: '/usr/local/bin/dpds', telemetry: true, root: true, ...over };
+  return { version: '1.0.0', dpds_bin: '/usr/local/bin/dpds', telemetry: true, root: true, ...over };
 }
 
 export function config(over: Partial<ConfigDto> = {}): ConfigDto {
@@ -16,7 +16,7 @@ export function config(over: Partial<ConfigDto> = {}): ConfigDto {
       distribution: 'NormalDistribution', mean_ns: 1000, std_ns: 10,
       activate_correlation: false, half_life_period_ns: 0, initialization_rate_pps: 12500000,
     },
-    limiter: { mode: 'Spacer', activate: false, rate_bps: 1e9, limit_bit: 0 },
+    limiter: { mode: 'Spacer', activate: false, rate_bps: 1e9 },
     loss_model: { type: 'Random', p: 0 },
     seed: null,
     histogram: null,
@@ -37,7 +37,7 @@ export function config2(): ConfigDto {
       distribution: 'GammaDistribution', mean_ns: 2500, std_ns: 300,
       activate_correlation: true, half_life_period_ns: 4000000, initialization_rate_pps: 8000000,
     },
-    limiter: { mode: 'TokenBucketFilter', activate: true, rate_bps: 40000000000, limit_bit: 120000 },
+    limiter: { mode: 'TokenBucketFilter', activate: true, rate_bps: 40000000000 },
     loss_model: { type: 'GilbertElliot', p: 0.01, r: 0.2, k: 0.9, h: 0.3, state_is_good: false },
     seed: 42,
     histogram: { bins: 64, lo_ns: 100, hi_ns: 9000 },
@@ -54,7 +54,7 @@ export function config3(): ConfigDto {
       distribution: 'LogNormalDistribution', mean_ns: 7777, std_ns: 777,
       activate_correlation: false, half_life_period_ns: 555, initialization_rate_pps: 2500000,
     },
-    limiter: { mode: 'Spacer', activate: true, rate_bps: 5000000000, limit_bit: 64000 },
+    limiter: { mode: 'Spacer', activate: true, rate_bps: 5000000000 },
     loss_model: { type: 'Random', p: 0.25 },
     seed: 7,
     histogram: { bins: 32, lo_ns: 1000, hi_ns: 50000 },

@@ -559,9 +559,11 @@ fn each_iteration_frees_its_own_rejects_with_its_own_single_call() {
 
 #[test]
 fn a_limiter_refusal_uses_the_packet_length_and_is_freed_in_bulk() {
-    // Spacer, 1500 bit limit: one 100-byte packet fits, the second does not.
-    let cfg = config_full(100, false, 0.0, 0.0, Some((1e9, 1500.0)));
-    let mut m = FakeMbufs::new(2, 0, 100);
+    // Spacer, capacity 2: the derived limit is 2 * 1542 * 8 = 24672 bit. A
+    // 1519-byte packet is (1519 + 4 + 20) * 8 = 12344 bit: one fits, the second
+    // (24688 bit) does not, although the buffer has room for it.
+    let cfg = config_full(2, false, 0.0, 0.0, Some(1e9));
+    let mut m = FakeMbufs::new(2, 0, 1519);
     let p = m.ptrs();
     let o = Play::new(cfg, vec![p.clone()])
         .clock(Clk::Script(vec![0.0, 1e6]))

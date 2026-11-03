@@ -4,9 +4,10 @@ import {
   configToForm, DISTRIBUTIONS, halfLifeRequired, LIMITER_MODES, limiterRequired, stdRequired,
 } from './linkForm';
 import type { ConfigForm } from './linkForm';
-import { PPS_UNITS, RATE_UNITS, SIZE_UNITS, TIME_UNITS, changeUnit } from '../common/units';
+import { PPS_UNITS, RATE_UNITS, TIME_UNITS, changeUnit } from '../common/units';
 import type { Unit, UnitValue } from '../common/units';
 import type { Preset } from '../api/types';
+import { derivedLimitText } from './linkSummary';
 
 /** The marker after the label of a required field. aria-hidden: the accessible name stays the plain label. */
 export function RequiredMarker() {
@@ -168,7 +169,9 @@ export default function ConfigFieldset({ title, value, onChange, presets, onSave
         {check('limiter_activate', 'Limiter active')}
         {select('limiter_mode', 'Limiter mode', LIMITER_MODES, limiterOff)}
         {unitField('rate_bps', 'Rate', RATE_UNITS, { required: limiterReq, disabled: limiterOff })}
-        {unitField('limit_bit', 'Burst limit', SIZE_UNITS, { required: limiterReq, disabled: limiterOff })}
+        <Col md={12} className="mb-3">
+          <Form.Text>{derivedLimitText(value.buffer_capacity)}</Form.Text>
+        </Col>
       </Section>
       <Section title="Dropper">
         {select('loss_type', 'Loss model', ['Random', 'GilbertElliot'])}

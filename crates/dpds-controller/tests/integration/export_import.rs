@@ -439,7 +439,7 @@ async fn export_then_import_then_export_is_identical_modulo_ids() {
     assert_eq!(a.post("/api/links", body).await.status, 201);
     let mut c = cfg_json(3.0e6, 3.0e5);
     c["delayer"]["distribution"] = json!("LogNormalDistribution");
-    c["limiter"] = json!({"mode": "TokenBucketFilter", "activate": true, "rate_bps": 2.0e9, "limit_bit": 1.0e6});
+    c["limiter"] = json!({"mode": "TokenBucketFilter", "activate": true, "rate_bps": 2.0e9});
     c["loss_model"] = json!({"type": "GilbertElliot", "p": 0.01, "r": 0.5, "k": 0.9, "h": 0.1});
     c["seed"] = json!(7);
     c["histogram"] = json!({"bins": 32, "lo_ns": 0.0, "hi_ns": 1.0e7});
@@ -589,6 +589,12 @@ fn bad_documents() -> Vec<(&'static str, Value)> {
     add("a worker that is a list", &|d| {
         d["links"][0]["worker"] = json!([2, 6])
     });
+    add("a link limiter with the removed limit_bit", &|d| {
+        d["links"][1]["config"]["limiter"]["limit_bit"] = json!(1.0e6)
+    });
+    add("a preset limiter with the removed limit_bit", &|d| {
+        d["presets"][0]["config"]["limiter"]["limit_bit"] = json!(1.0e6)
+    });
     add("unknown key in a preset config", &|d| {
         d["presets"][0]["config"]["mean_nss"] = json!(1)
     });
@@ -630,7 +636,7 @@ fn bad_documents() -> Vec<(&'static str, Value)> {
     });
     add("invalid preset config", &|d| {
         d["presets"][1]["config"]["limiter"] =
-            json!({"mode": "Spacer", "activate": true, "rate_bps": -1.0, "limit_bit": 1.0})
+            json!({"mode": "Spacer", "activate": true, "rate_bps": -1.0})
     });
     add("poll interval 0", &|d| {
         d["settings"]["poll_interval_ms"] = json!(0)
@@ -677,6 +683,27 @@ async fn an_invalid_document_is_a_400_and_nothing_changes() {
     }
     // and the controller still takes a good document afterwards
     assert_eq!(import(&a, doc()).await.status, 200);
+}
+
+#[tokio::test]
+async fn an_import_with_limit_bit_is_a_400_naming_the_field_and_stores_nothing() {
+    // spec20: the limit is derived from the buffer capacity, `limit_bit` is gone
+    let a = app();
+    let mut d = doc();
+    d["links"][0]["config"]["limiter"]["limit_bit"] = json!(1.0e6);
+    let r = import(&a, d).await;
+    assert_eq!(r.status, 400, "{}", r.text());
+    assert!(r.message().contains("limit_bit"), "{}", r.text());
+    assert_eq!(a.get("/api/links").await.json(), json!([]));
+    assert_eq!(a.get("/api/presets").await.json(), json!([]));
+}
+
+#[tokio::test]
+async fn an_export_never_contains_limit_bit() {
+    let a = app();
+    assert_eq!(import(&a, doc()).await.status, 200);
+    let text = export(&a).await.to_string();
+    assert!(!text.contains("limit_bit"), "{text}");
 }
 
 #[tokio::test]

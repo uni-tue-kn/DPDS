@@ -12,8 +12,7 @@
   "limiter": {
     "mode": "TokenBucketFilter",
     "activate": true,
-    "rate_bps": 1000000000.0,
-    "limit_bit": 2000000.0
+    "rate_bps": 1000000000.0
   },
   "loss_model": {
     "GilbertElliot": [0.01, 0.3, 1.0, 0.5, true]

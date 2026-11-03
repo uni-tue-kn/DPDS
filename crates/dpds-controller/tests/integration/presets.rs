@@ -26,6 +26,41 @@ fn body(name: &str) -> Value {
     json!({ "name": name, "description": format!("about {name}"), "config": cfg_json(1.0e6, 1.0e5) })
 }
 
+/// spec20: `limit_bit` is gone (the limit is derived from the buffer capacity).
+fn with_limit_bit(mut b: Value) -> Value {
+    b["config"]["limiter"]["limit_bit"] = json!(1.0e6);
+    b
+}
+
+#[tokio::test]
+async fn a_preset_with_limit_bit_is_a_400_naming_the_field() {
+    let a = app();
+    let r = a.post("/api/presets", with_limit_bit(body("old"))).await;
+    assert_eq!(r.status, 400, "{}", r.text());
+    assert!(r.message().contains("limit_bit"), "{}", r.text());
+    assert_eq!(a.get("/api/presets").await.json(), json!([]));
+
+    // and on update; the stored preset stays as it was
+    let id = create(&a, "good").await["id"].as_u64().unwrap();
+    let before = a.get(&format!("/api/presets/{id}")).await.json();
+    let r = a
+        .put(&format!("/api/presets/{id}"), with_limit_bit(body("good")))
+        .await;
+    assert_eq!(r.status, 400, "{}", r.text());
+    assert!(r.message().contains("limit_bit"), "{}", r.text());
+    assert_eq!(a.get(&format!("/api/presets/{id}")).await.json(), before);
+}
+
+#[tokio::test]
+async fn a_stored_preset_has_no_limit_bit_in_its_limiter() {
+    let a = app();
+    let p = create(&a, "plain").await;
+    let lim = p["config"]["limiter"].as_object().unwrap();
+    let mut keys: Vec<&str> = lim.keys().map(String::as_str).collect();
+    keys.sort();
+    assert_eq!(keys, ["activate", "mode", "rate_bps"], "{p}");
+}
+
 /// The config as the API stores and returns it (defaults filled in).
 fn stored_cfg(mean_ns: f64, std_ns: f64) -> Value {
     serde_json::to_value(cfg_dto(mean_ns, std_ns)).unwrap()
@@ -292,7 +327,7 @@ fn bad_configs() -> Vec<(Value, &'static str)> {
     c["loss_model"] = json!({"type": "Random", "p": 1.5});
     v.push((c, "loss_model"));
     let mut c = cfg_json(1.0e6, 1.0e5);
-    c["limiter"] = json!({"mode": "Spacer", "activate": true, "rate_bps": 0.0, "limit_bit": 1.0e6});
+    c["limiter"] = json!({"mode": "Spacer", "activate": true, "rate_bps": 0.0});
     v.push((c, "rate_bps"));
     let mut c = cfg_json(1.0e6, 1.0e5);
     c["histogram"] = json!({"bins": 0});
@@ -361,7 +396,7 @@ async fn a_valid_but_unusual_config_is_stored_verbatim() {
     let a = app();
     let mut c = cfg_json(2.0e6, 5.0e5);
     c["delayer"]["distribution"] = json!("GammaDistribution");
-    c["limiter"] = json!({"mode": "TokenBucketFilter", "activate": true, "rate_bps": 5.0e9, "limit_bit": 2.0e6});
+    c["limiter"] = json!({"mode": "TokenBucketFilter", "activate": true, "rate_bps": 5.0e9});
     c["loss_model"] = json!({"type": "GilbertElliot", "p": 0.1, "r": 0.2, "k": 0.3, "h": 0.4});
     c["seed"] = json!(42);
     c["histogram"] = json!({"bins": 64, "lo_ns": 0.0, "hi_ns": 1.0e7});

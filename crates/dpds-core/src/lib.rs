@@ -36,7 +36,6 @@
 //!         mode: LimiterMode::Spacer,
 //!         activate: false,
 //!         rate_bps: 1e9,
-//!         limit_bit: 1e6,
 //!     },
 //!     loss_model: LossModel::Random(0.0),
 //!     seed: Some(42),
@@ -53,13 +52,29 @@
 //! assert!(buf.is_empty());
 //! ```
 //!
+//! ## Order of a push, and the derived limiter limit
+//!
+//! **API change (emulation order, user-authorised):** `Buffer::push_outcome`
+//! first checks for room: a buffer already holding `buffer_capacity` packets
+//! answers `BufferFull` and touches no delayer, limiter or dropper state (the
+//! packet never takes part in the emulation, so nothing is accounted for it).
+//! Only then come the delay sample, the limiter accounting, the loss draw, the
+//! limiter verdict and the enqueue.
+//!
+//! **API change:** `LimiterConfig.limit_bit` is removed (a `limit_bit` key in
+//! JSON is a parse error). The limiter's limit is derived for both modes as
+//! `buffer_capacity * MAX_FRAME_WIRE_BYTES * 8` bit, with
+//! [`MAX_FRAME_WIRE_BYTES`] `= 1542`: exactly `buffer_capacity` maximum-size
+//! frames fit. Every `LimiterConfig { .. }` struct literal must drop
+//! `limit_bit`.
+//!
 //! ## Why a packet was rejected
 //!
 //! **API change (addition):** [`Buffer::push_outcome`](buffer::Buffer::push_outcome)
 //! returns a [`PushOutcome`](buffer::PushOutcome): `Accepted { send_time_ns }`,
 //! `Lost` (loss model), `LimiterDrop` or `BufferFull`. `push` is a wrapper of it.
 //! A packet that both the loss model and the limiter reject is `Lost` (the
-//! precedence is loss model, limiter, capacity), and
+//! precedence is loss model, limiter; `BufferFull` is decided first), and
 //! [`Buffer::pop_due_with_time`](buffer::Buffer::pop_due_with_time) also returns
 //! the send time of the popped packet.
 //!
@@ -141,13 +156,29 @@ pub struct DelayerConfig {
     pub initialization_rate_pps: f64,
 }
 
+/// Wire size, in bytes, of a maximum-size packet as the limiter counts it:
+/// 1518 B maximum Ethernet frame + 4 FEC bytes + 20 B L1 overhead (preamble,
+/// SFD, inter-packet gap).
+///
+/// The limiter's limit, for both modes (Spacer fill-state limit, Token Bucket
+/// Filter bucket depth), is `buffer_capacity * MAX_FRAME_WIRE_BYTES * 8` bit:
+/// exactly `buffer_capacity` maximum-size frames fit.
+pub const MAX_FRAME_WIRE_BYTES: u32 = 1542;
+
+/// The limiter's derived limit in bits for a buffer of `buffer_capacity`
+/// packets: `buffer_capacity * MAX_FRAME_WIRE_BYTES * 8`. Computed in `f64`, so
+/// a huge capacity cannot overflow.
+pub fn derived_limit_bit(buffer_capacity: usize) -> f64 {
+    buffer_capacity as f64 * f64::from(MAX_FRAME_WIRE_BYTES) * 8.0
+}
+
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct LimiterConfig {
     pub mode: LimiterMode, // which limiter to use (Spacer or TokenBucketFilter)
     pub activate: bool,    // true if limiter should be applied
     pub rate_bps: f64,     // in bits per second
-    pub limit_bit: f64,    // in bits
 }
 
 #[derive(Debug, Clone, Copy)]

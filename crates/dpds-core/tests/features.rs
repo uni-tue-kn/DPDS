@@ -52,7 +52,6 @@ mod json {
                 mode: LimiterMode::TokenBucketFilter,
                 activate: true,
                 rate_bps: 2.5e9,
-                limit_bit: 8192.0,
             },
             loss_model: LossModel::GilbertElliot(0.01, 0.3, 1.0, 0.5, true),
             seed,
@@ -81,7 +80,7 @@ mod json {
                 RVDistribution::LogNormalDistribution
             ));
             assert!(matches!(back.limiter.mode, LimiterMode::TokenBucketFilter));
-            assert_eq!(back.limiter.limit_bit, 8192.0);
+            assert_eq!(back.limiter.rate_bps, 2.5e9);
             assert!(matches!(
                 back.loss_model,
                 LossModel::GilbertElliot(p, r, k, h, true) if p == 0.01 && r == 0.3 && k == 1.0 && h == 0.5
@@ -94,7 +93,7 @@ mod json {
         "delayer": {"distribution": "DeterministicDistribution", "mean_ns": 1.0,
                     "std_ns": 0.0, "activate_correlation": false, "half_life_period_ns": 1.0,
                     "initialization_rate_pps": 15000000.0},
-        "limiter": {"mode": "Spacer", "activate": false, "rate_bps": 1e9, "limit_bit": 1e9},
+        "limiter": {"mode": "Spacer", "activate": false, "rate_bps": 1e9},
         "loss_model": {"Random": 0.0}
     }"#;
 
@@ -103,6 +102,13 @@ mod json {
         let path = dir.path().join("cfg.json");
         std::fs::write(&path, json).unwrap();
         Config::from_file(&path).unwrap()
+    }
+
+    #[test]
+    fn the_serialized_config_has_no_limit_bit() {
+        let text = serde_json::to_string_pretty(&config(Some(1))).unwrap();
+        assert!(!text.contains("limit_bit"), "{text}");
+        assert!(text.contains("rate_bps"), "{text}");
     }
 
     #[test]

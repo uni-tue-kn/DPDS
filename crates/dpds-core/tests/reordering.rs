@@ -36,7 +36,6 @@ fn config(capacity: usize, reordering: bool, delay_ns: f64) -> Config {
             mode: LimiterMode::Spacer,
             activate: false,
             rate_bps: 1e9,
-            limit_bit: 1e9,
         },
         loss_model: LossModel::Random(0.0),
         seed: None,

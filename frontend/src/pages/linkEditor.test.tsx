@@ -63,7 +63,7 @@ function expectValidConfig(c: ConfigDto) {
   expect(['Spacer', 'TokenBucketFilter']).toContain(c.limiter.mode);
   expect(typeof c.limiter.activate).toBe('boolean');
   expect(c.limiter.rate_bps).toBeGreaterThan(0);
-  expect(c.limiter.limit_bit).toBeGreaterThanOrEqual(0);
+  expect(Object.keys(c.limiter).sort()).toEqual(['activate', 'mode', 'rate_bps']); // spec20: no limit_bit
   expect(['Random', 'GilbertElliot']).toContain(c.loss_model.type);
   expect(typeof c.delay_stats).toBe('boolean');
 }
@@ -330,7 +330,6 @@ describe('Link editor: create', () => {
     await user.click(input(g, 'Limiter active'));
     await user.selectOptions(within(g).getByLabelText('Limiter mode'), 'TokenBucketFilter');
     await typeInto(user, g, 'Rate', '100', 'Gbit/s');
-    await typeInto(user, g, 'Burst limit', '240', 'kbit');
     await user.clear(input(g, 'Buffer capacity'));
     await user.type(input(g, 'Buffer capacity'), '250000');
     await user.click(input(g, 'Reordering'));
@@ -349,7 +348,7 @@ describe('Link editor: create', () => {
       distribution: 'GammaDistribution', mean_ns: 2500000, std_ns: 120000,
       activate_correlation: true, half_life_period_ns: 8000000, initialization_rate_pps: 4000000,
     });
-    expect(c.limiter).toEqual({ mode: 'TokenBucketFilter', activate: true, rate_bps: 100000000000, limit_bit: 240000 });
+    expect(c.limiter).toEqual({ mode: 'TokenBucketFilter', activate: true, rate_bps: 100000000000 });
     expect(c.buffer_capacity).toBe(250000);
     expect(c.reordering).toBe(true);
     expect(c.seed).toBe(1234);
@@ -549,8 +548,6 @@ describe('Link editor: edit', () => {
     expect(within(g).getByLabelText('Limiter mode')).toHaveValue('Spacer');
     expect(input(g, 'Rate')).toHaveValue(1); // 1e9 bit/s
     expect(unitOf(g, 'Rate')).toBe('Gbit/s');
-    expect(input(g, 'Burst limit')).toHaveValue(0);
-    expect(unitOf(g, 'Burst limit')).toBe('Mbit'); // 0 -> the default unit
     expect(within(g).getByLabelText('Loss model')).toHaveValue('Random');
     expect(input(g, 'Random loss probability')).toHaveValue(0);
     expect(input(g, 'Buffer capacity')).toHaveValue(1000);
@@ -583,8 +580,6 @@ describe('Link editor: edit', () => {
     expect(within(g).getByLabelText('Limiter mode')).toHaveValue('TokenBucketFilter');
     expect(input(g, 'Rate')).toHaveValue(40); // 4e10 bit/s
     expect(unitOf(g, 'Rate')).toBe('Gbit/s');
-    expect(input(g, 'Burst limit')).toHaveValue(120); // 120000 bit
-    expect(unitOf(g, 'Burst limit')).toBe('kbit');
     expect(within(g).getByLabelText('Loss model')).toHaveValue('GilbertElliot');
     expect(input(g, 'Gilbert-Elliot p')).toHaveValue(0.01);
     expect(input(g, 'Gilbert-Elliot r')).toHaveValue(0.2);

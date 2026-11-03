@@ -223,8 +223,7 @@ fn config_full(delay_ns: u64, loss: f64, buffer_capacity: usize, reordering: boo
     "limiter": {{
         "mode": "Spacer",
         "activate": false,
-        "rate_bps": 100000000000.0,
-        "limit_bit": 6152000000.0
+        "rate_bps": 100000000000.0
     }},
     "loss_model": {{ "Random": {loss:?} }}
 }}"#
@@ -2110,6 +2109,24 @@ fn a_config_without_initialization_rate_pps_fails_startup_naming_the_field() {
     assert!(out.contains("initialization_rate_pps"), "{out}");
 }
 
+// ── limit_bit: gone, the limiter's limit is derived from the buffer capacity ──
+
+#[test]
+fn a_config_that_still_has_limit_bit_fails_startup_naming_the_field() {
+    require_cpus(2);
+    let _g = serial();
+    let json = config_json(0, 0.0).replace(
+        r#""rate_bps": 100000000000.0"#,
+        r#""rate_bps": 100000000000.0,
+        "limit_bit": 6152000000.0"#,
+    );
+    assert!(json.contains("limit_bit"), "test setup");
+    let mut env = Env::new(&json);
+    env.vdevs.push("net_null0".into());
+    let out = expect_failure(&env);
+    assert!(out.contains("limit_bit"), "{out}");
+}
+
 #[test]
 fn a_config_of_direction_1_without_initialization_rate_pps_fails_startup() {
     require_cpus(3);
@@ -2745,18 +2762,38 @@ fn config_dist(distribution: &str, mean_ns: u64, std_ns: u64) -> String {
 }
 
 #[cfg(feature = "telemetry")]
-/// A Spacer config that admits exactly three 64-byte frames at one instant
-/// and spaces them 7.04 ms apart (1e5 bit/s; a 64-byte frame is
-/// (64 + 4 + 20) * 8 = 704 bit on the wire, the limit is three of them).
-fn config_spacer_three() -> String {
-    let base = config_json(0, 0.0);
+/// Length of the frames the limiter tests send: the maximum Ethernet frame. On the wire
+/// the limiter counts (1518 + 4 + 20) * 8 = 12336 bit = 1542 * 8, which is exactly one
+/// "slot" of the derived limit `buffer_capacity * 1542 * 8` bit.
+const MAX_FRAME_LEN: usize = 1518;
+
+#[cfg(feature = "telemetry")]
+/// `n` maximum-size frames (the header and sequence of `frames`).
+fn max_frames(tag: u8, n: u32) -> Vec<Vec<u8>> {
+    frames(tag, n)
+        .into_iter()
+        .map(|mut f| {
+            f.resize(MAX_FRAME_LEN, 0xa5);
+            f
+        })
+        .collect()
+}
+
+#[cfg(feature = "telemetry")]
+/// A config with an active limiter: the limit is derived, not configured
+/// (`capacity * 1542 * 8` bit), so only the mode, the rate, the delay and the buffer
+/// capacity are chosen here.
+fn config_limited(mode: &str, rate_bps: f64, delay_ns: u64, capacity: usize) -> String {
+    let base = config_json_cap(delay_ns, 0.0, capacity);
     let cfg = base.replace(
-        r#""activate": false,
-        "rate_bps": 100000000000.0,
-        "limit_bit": 6152000000.0"#,
-        r#""activate": true,
-        "rate_bps": 100000.0,
-        "limit_bit": 2112.0"#,
+        r#""mode": "Spacer",
+        "activate": false,
+        "rate_bps": 100000000000.0"#,
+        &format!(
+            r#""mode": "{mode}",
+        "activate": true,
+        "rate_bps": {rate_bps:?}"#
+        ),
     );
     assert_ne!(cfg, base, "the limiter block of config_json changed");
     cfg
@@ -3377,9 +3414,12 @@ mod links_telemetry {
     }
 
     #[test]
-    fn limiter_drops_are_counted_and_the_histogram_covers_the_spacer_queueing() {
-        // Hairpin link with a Spacer that admits three 64-byte frames at one
-        // instant (see config_spacer_three): of 100 frames 3 are accepted.
+    fn a_token_bucket_burst_beyond_the_derived_depth_is_dropped_and_counted_as_limiter() {
+        // TBF, capacity 64: the bucket starts full with the derived 64 * 1542 * 8 =
+        // 789504 bit, exactly 64 maximum frames. Of 100 frames at one instant 64 pass
+        // (no delay, they leave at once, so the buffer never holds 64), the other 36
+        // find an empty bucket (the refill at 1e4 bit/s is far below one frame in the
+        // time the test takes: a frame needs 1.2 s).
         const N: u32 = 100;
         require_cpus(2);
         let _g = serial();
@@ -3389,49 +3429,98 @@ mod links_telemetry {
                 "l",
                 "net_pcap0",
                 "net_pcap0",
-                &config_spacer_three(),
+                &config_limited("TokenBucketFilter", 1.0e4, 0, 64),
             )],
         );
-        add_pcap_port(&mut env, 0, &frames(0, N));
+        add_pcap_port(&mut env, 0, &max_frames(0, N));
         let out0 = pcap_out(&env, 0);
         let mut run = env.spawn();
-        wait_frames(&mut run, &out0, 3);
+        wait_frames(&mut run, &out0, 64);
         wait_rx(&mut run, 0, N as u64);
         thread::sleep(Duration::from_millis(300));
 
         let st = run.query("/dpds/stats,0");
         assert_eq!(u(&st, "rx_pkts"), N as u64, "{st}");
-        assert_eq!(u(&st, "limiter_drops"), N as u64 - 3, "{st}");
+        assert_eq!(u(&st, "limiter_drops"), N as u64 - 64, "{st}");
         assert_eq!(u(&st, "loss_drops"), 0, "{st}");
         assert_eq!(u(&st, "buffer_full_drops"), 0, "{st}");
-        assert_eq!(u(&st, "dpds_rejects"), N as u64 - 3, "{st}");
-        assert_eq!(u(&st, "tx_sent"), 3, "{st}");
+        assert_eq!(u(&st, "dpds_rejects"), N as u64 - 64, "{st}");
+        assert_eq!(u(&st, "tx_sent"), 64, "{st}");
         assert_eq!(
             s(&st, "first_loss_detail"),
             "from=dpds,cause=limiter",
             "{st}"
         );
-        // the third frame waits two frame times: ~14.08 ms
-        let max = num(&st, "delay_max_ns");
-        assert!((14_079_000.0..=14_081_000.0).contains(&max), "{st}");
-        assert!(
-            num(&st, "delay_min_ns") < 1000.0,
-            "the first frame is not delayed: {st}"
+
+        run.signal(libc::SIGINT);
+        assert_clean_exit(run.wait_exit(), &run);
+        assert_eq!(read_pcap(&out0).len(), 64);
+    }
+
+    #[test]
+    fn the_buffer_is_checked_first_and_the_spacer_histogram_covers_capacity_maximum_frames() {
+        // Spacer, capacity 4, 2 s delay (nothing leaves while the test looks), 10 Gbit/s:
+        // the derived limit is 4 * 1542 * 8 = 49344 bit, exactly four maximum frames. Of
+        // 100 frames at one instant 4 are accepted, the other 96 find the buffer full:
+        // the buffer is checked first, so none of them is a limiter drop (and none is
+        // accounted by the limiter).
+        const N: u32 = 100;
+        require_cpus(2);
+        let _g = serial();
+        let mut env = links_env(
+            "0-1",
+            &[link_json(
+                "l",
+                "net_pcap0",
+                "net_pcap0",
+                &config_limited("Spacer", 1.0e10, 2_000_000_000, 4),
+            )],
         );
-        // range [0, 21.12 ms] (the queueing allowance of the limiter): all 3 inside
+        add_pcap_port(&mut env, 0, &max_frames(0, N));
+        let out0 = pcap_out(&env, 0);
+        let mut run = env.spawn();
+        wait_rx(&mut run, 0, N as u64);
+        thread::sleep(Duration::from_millis(300));
+
+        let st = run.query("/dpds/stats,0");
+        assert_eq!(u(&st, "rx_pkts"), N as u64, "{st}");
+        assert_eq!(u(&st, "buffer_full_drops"), N as u64 - 4, "{st}");
+        assert_eq!(u(&st, "limiter_drops"), 0, "{st}");
+        assert_eq!(u(&st, "loss_drops"), 0, "{st}");
+        assert_eq!(u(&st, "dpds_rejects"), N as u64 - 4, "{st}");
+        assert_eq!(
+            s(&st, "first_loss_detail"),
+            "from=dpds,cause=buffer_full",
+            "{st}"
+        );
+        // the four frames wait 2 s plus 0, 1.2336, 2.4672, 3.7008 us of spacing
+        assert!(num(&st, "delay_min_ns") >= 1_999_999_000.0, "{st}");
+        let max = num(&st, "delay_max_ns");
+        assert!((2_000_003_000.0..=2_000_004_500.0).contains(&max), "{st}");
+        // range [2 s, 2 s + 4934.4 ns]: the queueing allowance of the derived limit
+        // (49344 bit at 1e10 bit/s); all 4 inside
         let h = run.query("/dpds/delay_hist,0");
-        assert_eq!(hist_total(&h), 3, "{h}");
-        assert_eq!((u(&h, "underflow"), u(&h, "overflow")), (0, 0), "{h}");
-        assert!(num(&h, "lo_ns") < 1000.0, "{h}");
-        let hi = num(&h, "lo_ns") + 256.0 * num(&h, "bin_ns");
+        // the first frame has no spacing offset and its delay is the truncated send time
+        // minus now, a hair below 2 s: it may sit just under the lower edge (underflow)
+        let under = u(&h, "underflow");
+        assert!(under <= 1, "{h}");
+        assert_eq!(hist_total(&h), 4, "{h}");
+        assert_eq!(u(&h, "overflow"), 0, "{h}");
+        let lo = num(&h, "lo_ns");
+        assert!((lo - 2.0e9).abs() < 2.0, "{h}");
+        let hi = lo + 256.0 * num(&h, "bin_ns");
         assert!(
-            hi >= 21_000_000.0,
-            "the range reaches the limiter's allowance: {h}"
+            (hi - lo - 4934.4).abs() < 1.0,
+            "the range is the allowance: {h}"
         );
 
         run.signal(libc::SIGINT);
         assert_clean_exit(run.wait_exit(), &run);
-        assert_eq!(read_pcap(&out0).len(), 3);
+        assert_eq!(
+            read_pcap(&out0).len(),
+            4,
+            "the drain emits the four held frames"
+        );
     }
 
     #[test]

@@ -17,8 +17,22 @@
 #     download, CI-built frontend, release asset or DPDS_FRONTEND_DIST; it mentions Node or npm
 #     (install and update build the frontend on the host).
 #   - --nightly is the default channel and is accepted explicitly.
-#   - --stable: error on stderr saying that no Rust stable release exists yet ("stable release"),
-#     exit non-zero, nothing is executed (no cargo/git/systemctl).
+#   - --stable (spec v18): install and update use the latest release tag instead of the nightly
+#     branch. After the prerequisites, `git fetch --tags`, then the highest tag matching v* by version
+#     (`git tag --list 'v*' --sort=-v:refname`, first line; v1.10.0 beats v1.9.0, tags such as x2.0.0 or
+#     nightly-build are not releases), then `git checkout <tag>` (a detached HEAD is fine), all in the
+#     repository root and before the frontend build and any cargo build. No `git checkout nightly`, no
+#     `git pull`, no "switching to nightly" warning. update keeps its other rules: a dirty tree is
+#     refused before any git change, the service is restarted only if it was active. A failing
+#     `git fetch` or `git checkout` aborts before any build. With no v* tag: error on stderr that says
+#     "release" and "tag", exit non-zero, no checkout, no build, no npm, no systemctl change.
+#     The other commands do not touch git with --stable. --nightly update/install are unchanged (install
+#     makes no git call at all, update checks out nightly) even when v* tags exist.
+#     The git stub answers `git tag` from STUB_GIT_TAGS (space separated); without --sort it lists
+#     them alphabetically, with --sort=-v:refname by version, highest first.
+#   - `status` (spec v18) prints the installed version taken from the /api/online answer ("version"),
+#     on a line of its own besides the raw answer, also when the key is not the first one. Nothing
+#     reads the version from jq (not on the PATH) or from the repository.
 #   - --nightly together with --stable: exit non-zero, nothing is executed.
 #   - Errors go to stderr. The script may be started from any working directory: it works on the
 #     repository it lives in (cargo, npm and git run there; npm in its frontend/ directory).
@@ -264,7 +278,7 @@ setup_sandbox() {
   unset STUB_ACTIVE STUB_NO_LIBDPDK STUB_RUSTC_LLVM STUB_CLANG_VERSION STUB_LLD_VERSION \
         STUB_CONTROLLER_RC STUB_CARGO_FAIL STUB_SYSTEMCTL_RC STUB_SYSTEMCTL_FAIL_SUB \
         STUB_GIT_FAIL_SUB STUB_CURL_RC DPDS_BIND STUB_GIT_DIRTY STUB_GIT_DIRTY_FRONTEND STUB_GIT_BRANCH \
-        STUB_NODE_VERSION STUB_NPM_FAIL_SUB STUB_NPM_NO_INDEX STUB_NPM_BUILD_NOOP STUB_DPDK_VERSION STUB_RUSTC_VERSION \
+        STUB_GIT_TAGS STUB_ONLINE_JSON STUB_NODE_VERSION STUB_NPM_FAIL_SUB STUB_NPM_NO_INDEX STUB_NPM_BUILD_NOOP STUB_DPDK_VERSION STUB_RUSTC_VERSION \
         DPDS_FRONTEND_DIST DPDS_FRONTEND_ASSET_URL
   mkdir -p "$T/tmp"
   export DPDS_PREFIX="$T/prefix" DPDS_ETC_DIR="$T/etc" DPDS_STATE_DIR="$T/state" DPDS_SYSTEMD_DIR="$T/systemd"
@@ -324,6 +338,18 @@ case "${1:-}" in
       *) echo "$br";;
     esac;;
   branch) [ "$br" = HEAD ] || echo "$br";;
+  tag)
+    # STUB_GIT_TAGS: space separated. Without --sort git lists alphabetically; --sort=-v:refname is by version, highest first.
+    sortkey=""; pat=""
+    for a in "${@:2}"; do case "$a" in --sort=*) sortkey=${a#--sort=};; -*) ;; *) [ -z "$pat" ] && pat=$a;; esac; done
+    for t in ${STUB_GIT_TAGS:-}; do
+      # shellcheck disable=SC2053
+      if [ -z "$pat" ] || [[ "$t" == $pat ]]; then echo "$t"; fi
+    done | case "$sortkey" in
+      -v:refname) sort -rV;;
+      v:refname) sort -V;;
+      *) LC_ALL=C sort;;
+    esac;;
   symbolic-ref) if [ "$br" = HEAD ]; then echo "fatal: ref HEAD is not a symbolic ref" >&2; exit 128; fi; echo "$br";;
   status)
     if [ -n "${STUB_GIT_DIRTY:-}" ]; then echo " M dpds.sh"
@@ -341,7 +367,10 @@ url=""
 for a in "$@"; do case $a in http*|file*) url=$a;; esac; done
 if [ "${STUB_CURL_RC:-0}" != 0 ]; then echo "curl: (${STUB_CURL_RC}) stub failure" >&2; exit "${STUB_CURL_RC}"; fi
 case "$url" in
-  */api/online) echo '{"version":"stub-online"}'; exit 0;;
+  */api/online)
+    json="${STUB_ONLINE_JSON:-}"
+    [ -n "$json" ] || json='{"version":"7.8.9","dpds_bin":"/usr/local/bin/dpds","telemetry":true,"root":true}'
+    echo "$json"; exit 0;;
 esac
 echo "curl: (22) The requested URL returned error: 404" >&2
 exit 22
@@ -528,22 +557,212 @@ test_unknown_option_exit1() {
   assert_log_empty
 }
 
-test_stable_prints_no_release_and_fails() {
-  run_dpds --stable install
-  assert_rc_nonzero
-  assert_err_has "stable release"
-  assert_log_empty
+# ------------------------------------------------------------------ tests: spec v18 (--stable = latest release tag)
+RELEASE_TAGS="v1.9.0 v1.10.0 v1.2.0 v0.9.9 x2.0.0 nightly-build"
+
+test_stable_install_builds_the_highest_release_tag() {
+  export STUB_GIT_TAGS="$RELEASE_TAGS"
+  run_dpds --stable --yes install
+  assert_rc 0 "$ERR"
+  assert_log_has '^git fetch .*--tags|^git fetch --tags'
+  assert_log_has '^git checkout (--detach )?v1\.10\.0$'
+  assert_log_lacks '^git checkout .*(nightly|v1\.9\.0|v1\.2\.0|v0\.9\.9|x2\.0\.0)'
+  assert_log_lacks '^git pull'
+  assert_before '^(rustc|cargo|node|npm|clang|pkg-config) ' '^git fetch'
+  assert_before '^git fetch' '^git checkout'
+  assert_before '^git checkout' '^npm ci'
+  assert_before '^git checkout' '^cargo build'
+  assert_dir_of '^git (fetch|checkout)' "$REPO_ROOT"
+  assert_file_has "$DPDS_PREFIX/bin/dpds-controller" 'STUB-BINARY-dpds-controller'
+  assert_file_has "$DPDS_PREFIX/bin/dpds" 'STUB-BINARY-dpds'
 }
 
-test_stable_with_every_command_runs_nothing() {
+test_stable_update_checks_out_the_highest_release_tag_instead_of_nightly() {
+  fake_install
+  export STUB_GIT_TAGS="$RELEASE_TAGS"
+  run_dpds --stable --yes update
+  assert_rc 0 "$ERR"
+  assert_log_has '^git fetch .*--tags|^git fetch --tags'
+  assert_log_has '^git checkout (--detach )?v1\.10\.0$'
+  assert_log_lacks '^git checkout nightly'
+  assert_log_lacks '^git pull'
+  assert_before '^git fetch' '^git checkout'
+  assert_before '^git checkout' '^npm ci'
+  assert_before '^git checkout' '^cargo build'
+  assert_dir_of '^git (fetch|checkout)' "$REPO_ROOT"
+  ! grep -Ei 'warn' <<<"$OUT$ERR" | grep -qi 'nightly' || fail "a warning talks about switching to nightly: $(grep -Ei warn <<<"$OUT$ERR")"
+  assert_file_has "$DPDS_PREFIX/bin/dpds-controller" 'STUB-BINARY-dpds-controller'
+}
+
+test_stable_update_restarts_only_a_service_that_was_active() {
+  fake_install
+  export STUB_GIT_TAGS="v1.0.0" STUB_ACTIVE=1
+  run_dpds --stable --yes update
+  assert_rc 0 "$ERR"
+  assert_log_has '^systemctl disable --now dpds-controller$'
+  assert_log_has '^systemctl enable --now dpds-controller$'
+  : >"$STUB_LOG"
+  STUB_ACTIVE=0 run_dpds --stable --yes update
+  assert_rc 0 "$ERR"
+  assert_log_lacks '^systemctl (enable|start|restart)'
+}
+
+test_stable_update_refuses_a_dirty_tree_before_any_git_change() {
+  fake_install
+  export STUB_GIT_TAGS="v1.0.0" STUB_GIT_DIRTY=1
+  run_dpds --stable --yes update
+  assert_rc_nonzero
+  grep -Eiq 'uncommitted|dirty|working tree|local changes' <<<"$ERR" || fail "stderr does not explain the dirty tree: $ERR"
+  assert_log_lacks '^git checkout'
+  assert_log_lacks '^cargo build'
+  assert_log_lacks '^systemctl (enable|disable)'
+}
+
+test_stable_update_from_a_detached_release_tag_is_not_blocked_by_a_warning_about_nightly() {
+  fake_install
+  export STUB_GIT_TAGS="v1.0.0 v1.1.0" STUB_GIT_BRANCH=HEAD
+  run_dpds --stable --yes update
+  assert_rc 0 "$ERR"
+  assert_log_has '^git checkout (--detach )?v1\.1\.0$'
+  assert_log_lacks '^git checkout nightly'
+}
+
+test_stable_picks_the_highest_version_not_the_last_or_the_alphabetical_one() {
+  local tags expected
+  for pair in "v2.0.0 v10.0.0 v9.9.9=v10.0.0" "v1.0.0=v1.0.0" "v1.0.9 v1.0.10 v1.0.2=v1.0.10" "v0.0.9 v0.1.0 v0.0.10=v0.1.0"; do
+    tags="${pair%=*}"; expected="${pair#*=}"
+    : >"$STUB_LOG"
+    STUB_GIT_TAGS="$tags" run_dpds --stable --yes install
+    assert_rc 0 "$tags: $ERR"
+    assert_log_has "^git checkout (--detach )?${expected//./\\.}\$"
+  done
+}
+
+test_stable_ignores_tags_that_are_not_releases() {
+  export STUB_GIT_TAGS="x2.0.0 nightly-build 1.99.0 zz v1.0.0"
+  run_dpds --stable --yes install
+  assert_rc 0 "$ERR"
+  assert_log_has '^git checkout (--detach )?v1\.0\.0$'
+}
+
+test_stable_without_a_release_tag_is_a_clear_error_for_install_and_update() {
+  local tags
+  for tags in "" "nightly-build x2.0.0 1.0.0"; do
+    for c in install update; do
+      fake_install
+      : >"$STUB_LOG"
+      STUB_GIT_TAGS="$tags" run_dpds --stable --yes "$c"
+      CTX="$c, tags '$tags'"
+      assert_rc_nonzero "$c"
+      assert_err_has "release"
+      assert_err_has "tag"
+      assert_log_lacks '^git checkout'
+      assert_log_lacks '^git pull'
+      assert_log_lacks '^npm (ci|run|install)'
+      assert_log_lacks '^cargo build'
+      assert_log_lacks '^systemctl (enable|disable|restart|daemon-reload)'
+      ! grep -q 'STUB-BINARY' "$DPDS_PREFIX/bin/dpds-controller" 2>/dev/null || fail "binary replaced by $c"
+    done
+  done
+  CTX=""
+}
+
+test_stable_aborts_before_any_build_when_fetching_tags_fails() {
+  fake_install
+  export STUB_GIT_TAGS="v1.0.0" STUB_GIT_FAIL_SUB=fetch
+  run_dpds --stable --yes update
+  assert_rc_nonzero
+  assert_log_lacks '^git checkout'
+  assert_log_lacks '^cargo build'
+  assert_log_lacks '^systemctl (enable|disable|restart)'
+}
+
+test_stable_aborts_before_any_build_when_the_checkout_fails() {
+  fake_install
+  export STUB_GIT_TAGS="v1.0.0" STUB_GIT_FAIL_SUB=checkout
+  run_dpds --stable --yes update
+  assert_rc_nonzero
+  assert_log_lacks '^npm (ci|run|install)'
+  assert_log_lacks '^cargo build'
+  assert_log_lacks '^systemctl (enable|disable|restart)'
+}
+
+test_stable_leaves_the_other_commands_alone() {
   local c
-  for c in check install update start stop restart status uninstall; do
+  export STUB_GIT_TAGS="v1.0.0"
+  for c in start stop restart status uninstall; do
     : >"$STUB_LOG"
     run_dpds --stable --yes "$c"
-    assert_rc_nonzero "--stable $c"
-    assert_err_has "stable release"
-    assert_log_empty
+    assert_log_lacks '^git '
+    assert_log_lacks '^(cargo build|npm (ci|run|install))'
   done
+}
+
+test_nightly_install_makes_no_git_call_even_when_release_tags_exist() {
+  export STUB_GIT_TAGS="$RELEASE_TAGS"
+  run_dpds --yes install
+  assert_rc 0 "$ERR"
+  assert_log_lacks '^git '
+  : >"$STUB_LOG"
+  run_dpds --nightly --yes install
+  assert_rc 0 "$ERR"
+  assert_log_lacks '^git '
+}
+
+test_nightly_update_keeps_following_the_branch_even_when_release_tags_exist() {
+  fake_install
+  export STUB_GIT_TAGS="$RELEASE_TAGS"
+  run_dpds --nightly --yes update
+  assert_rc 0 "$ERR"
+  assert_log_has '^git checkout nightly$'
+  assert_log_has '^git pull --ff-only$'
+  assert_log_lacks '^git checkout (--detach )?v[0-9]'
+}
+
+test_help_describes_stable_as_the_latest_release_tag() {
+  run_dpds --help
+  assert_rc 0
+  grep -E -- '--stable' <<<"$OUT" | grep -Eqi 'release|tag' || fail "--help does not tie --stable to a release or tag: $OUT"
+  ! grep -Eqi 'no rust stable release|only prints|not yet|no stable release' <<<"$OUT" || fail "--help still says there is no stable release: $OUT"
+  grep -E -- '--nightly' <<<"$OUT" | grep -qi 'default' || fail "--help no longer says --nightly is the default: $OUT"
+}
+
+# ------------------------------------------------------------------ tests: spec v18 (status shows the installed version)
+# a line of the output that is not the raw JSON answer
+plain_line_with() { grep -v '[{"]' <<<"$OUT" | grep -Fq -- "$1"; }
+
+test_status_prints_the_installed_version_on_its_own_line() {
+  run_dpds status
+  assert_rc 0 "$ERR"
+  plain_line_with "7.8.9" || fail "no plain line shows the version 7.8.9: $OUT"
+}
+
+test_status_finds_the_version_whatever_the_key_order_and_spacing() {
+  export STUB_ONLINE_JSON='{"dpds_bin":"/usr/local/bin/dpds","telemetry":true,"version": "3.4.5","root":true}'
+  run_dpds status
+  assert_rc 0 "$ERR"
+  plain_line_with "3.4.5" || fail "no plain line shows the version 3.4.5: $OUT"
+  export STUB_ONLINE_JSON='{
+  "version": "11.12.13",
+  "telemetry": true
+}'
+  run_dpds status
+  assert_rc 0 "$ERR"
+  plain_line_with "11.12.13" || fail "no plain line shows the version 11.12.13: $OUT"
+}
+
+test_status_shows_no_version_when_the_api_is_down_and_still_exits_zero() {
+  export STUB_CURL_RC=7
+  run_dpds status
+  assert_rc 0 "$ERR"
+  ! plain_line_with "7.8.9" || fail "a version is shown although the API is down: $OUT"
+}
+
+test_status_survives_an_answer_without_a_version() {
+  export STUB_ONLINE_JSON='{"telemetry":true}'
+  run_dpds status
+  assert_rc 0 "$ERR"
+  assert_log_has '^systemctl .*status'
 }
 
 test_nightly_and_stable_conflict() {
@@ -932,7 +1151,7 @@ test_status_runs_both_probes() {
   assert_log_has '^systemctl .*status.* dpds-controller'
   assert_log_has '^curl .*http://127\.0\.0\.1:8100/api/online'
   assert_out_has "STUB-SYSTEMCTL-STATUS"
-  assert_out_has "stub-online"
+  assert_out_has "7.8.9"
 }
 
 test_status_uses_port_from_env_file() {

@@ -6,7 +6,7 @@
   ![License](https://img.shields.io/badge/licence-Apache%202.0-blue)
   ![Language](https://img.shields.io/badge/lang-rust-darkred)
   ![Built with DPDK](https://img.shields.io/badge/built%20with-DPDK-orange)
-  ![Version](https://img.shields.io/badge/v-0.1.0-yellow)
+  ![Version](https://img.shields.io/badge/v-1.0.0-yellow)
 </div>
 
 ---
@@ -127,8 +127,8 @@ One loop iteration of a worker:
 1. Read the quit flag.
 2. Read the clock **once**; that `now` is used for every time in the iteration.
 3. Unless quitting, `rx_burst` up to `BURST_SIZE` (32) packets.
-4. Push each packet into the buffer. Packets the buffer refuses (loss model,
-   rate limiter, buffer full) are freed with one bulk free.
+4. Push each packet into the buffer. Packets the buffer refuses (buffer full,
+   loss model, rate limiter) are freed with one bulk free.
 5. Pop up to `BURST_SIZE` (32) packets whose send time is due.
 6. Prefetch the popped packets' mbuf headers and those of the next queued ones.
 7. `tx_burst` the popped packets **in the same iteration**; whatever the NIC
@@ -483,8 +483,7 @@ the Spacer enabled, bursty loss and a fixed seed:
   "limiter": {
     "mode": "Spacer",
     "activate": true,
-    "rate_bps": 10000000000.0,
-    "limit_bit": 12000000.0
+    "rate_bps": 10000000000.0
   },
   "loss_model": {
     "GilbertElliot": [0.01, 0.3, 1.0, 0.5, true]
@@ -511,9 +510,22 @@ complete example in
 | `delayer.initialization_rate_pps`  | Required, no default: expected packet rate of the link in packets per second (finite, at least 1); the correlated delay starts with it until the first 1 ms rate estimate. About 8.1 Mpps for 100 Gb/s with 1518 byte frames |
 | `limiter.mode`                     | `Spacer` · `TokenBucketFilter`                                                                                                |
 | `limiter.activate`                 | `true` · `false`: when `false` the limiter is a no-op                                                                         |
-| `limiter.rate_bps`                 | Target rate in bits per second                                                                                                |
-| `limiter.limit_bit`                | Spacer: maximum in-flight backlog in bits; Token Bucket Filter: bucket size (burst budget) in bits                            |
+| `limiter.rate_bps`                 | Target rate in bits per second. The limiter's limit is not configured, see [The limiter's limit](#the-limiters-limit)         |
 | `loss_model`                       | `{ "Random": p }` · `{ "GilbertElliot": [p, r, k, h, state_is_good] }`                                                        |
+
+#### The limiter's limit
+
+**API change:** `limiter.limit_bit` is removed; a config that still has it is
+rejected (the error names the field). Both limiter modes use one derived limit,
+`buffer_capacity x MAX_FRAME_WIRE_BYTES x 8` bit with `MAX_FRAME_WIRE_BYTES = 1542`
+(1518 B maximum Ethernet frame + 4 FEC bytes + 20 B L1 overhead, as the limiter
+counts a packet), i.e. `buffer_capacity x 12336` bit: exactly `buffer_capacity`
+maximum-size frames fit. It is the Spacer's maximum in-flight backlog and the Token
+Bucket Filter's bucket depth (the bucket starts full). The `dpds-core` buffer
+evaluates a pushed packet in this order: **room check first** (a full buffer
+rejects the packet and touches nothing else, so no packet is accounted that the
+emulation never uses), then delay, limiter accounting, loss model, limiter verdict
+and enqueue.
 
 #### Reproducible Runs
 
@@ -564,7 +576,7 @@ registered and the instrumentation compiles to nothing.
 
 A rejected packet counts as exactly one of `loss_drops` (the loss model dropped
 it), `limiter_drops` (the limiter rejected it) or `buffer_full_drops` (the buffer
-held `buffer_capacity` packets); `dpds_rejects` is their sum. When both the loss
+held `buffer_capacity` packets, checked first); `dpds_rejects` is their sum. When both the loss
 model and the limiter would reject a packet it counts as a loss, so
 `limiter_drops` can under-count what the limiter alone would reject while a loss
 model is active.
@@ -655,8 +667,8 @@ embedded in the `dpds-controller` binary, so one service on one port gives the f
 `http://<host>:<controller port>/` (default port 8100) and the REST API under `/api`. There is no
 Docker and no separate web server.
 
-`dpds.sh` builds and installs both. It needs Rust (stable works; `--nightly` only selects the
-`nightly` git branch), clang and `ld.lld` of the same LLVM major version as `rustc`, DPDK at least 26.07
+`dpds.sh` builds and installs both. It needs Rust (stable works; `--nightly` and `--stable` only
+select the git revision, see below), clang and `ld.lld` of the same LLVM major version as `rustc`, DPDK at least 26.07
 (`pkg-config --atleast-version=26.07 libdpdk`), and Node at least 22.22 (the `engines.node` of
 `frontend/package.json`) with npm. `check`, `install` and `update` verify all of them first, list every
 missing or too old tool at once and never install anything. `update` refuses a working tree with
@@ -683,15 +695,40 @@ server on port 5173 proxies `/api` to a controller on `127.0.0.1:8100` (`DPDS_CO
 ./dpds.sh install    # build dpds (telemetry) and the controller, host check, install binaries,
                      # systemd unit, /etc/dpds/controller.env; builds the frontend (npm) first
 ./dpds.sh start      # systemctl enable --now dpds-controller
-./dpds.sh status     # service, GET /api/online
+./dpds.sh status     # service, GET /api/online and the installed version
 ./dpds.sh stop       # systemctl disable --now dpds-controller
 ./dpds.sh restart    # stop, then start
 ./dpds.sh update     # git pull nightly, rebuild, reinstall; restarts only if it was running
+./dpds.sh --stable update  # the same from the latest release tag instead of nightly
 ./dpds.sh uninstall  # remove binaries and unit; keeps the state dir and controller.env
 ```
 
 `--yes` skips the question that `install` and `update` ask after the host check. `--nightly` is
-the default; `--stable` only prints that no Rust stable release exists yet.
+the default and follows the `nightly` branch. `--stable` installs or updates from the latest
+release: `dpds.sh` runs `git fetch --tags`, picks the highest `v*` tag by version and checks it
+out (a detached HEAD), then builds as usual; it stops with an error when there is no release tag
+yet. `status` prints the installed version, as reported by `/api/online`.
+
+### Versions and releases
+
+The version of DPDS is in `VERSION.md` (first line, `X.Y.Z`). Every crate, `frontend/package.json`,
+`frontend/package-lock.json`, `Cargo.lock` and the version badge above carry the same number; a test
+fails when they disagree. The controller reports it as `version` in `GET /api/online` and
+`GET /api/version`, and the web frontend shows it at the bottom of the sidebar.
+
+Releases are made by CI. To publish one, raise the version in `VERSION.md`, the crates (the
+`[workspace.package] version` in `Cargo.toml`, then `Cargo.lock`), `frontend/package.json`,
+`frontend/package-lock.json` and the badge on the `nightly` branch, then merge `nightly` into `main`. When all
+check jobs pass on `main`, the release job creates the tag `v<version>` on that commit and a GitHub
+release with generated notes and no build assets. It does nothing when the tag exists, so merges
+without a version bump release nothing. The releases are listed at
+<https://github.com/uni-tue-kn/DPDS/releases>.
+
+The web frontend checks once per page load whether `VERSION.md` on `main` is newer than the running
+version. It asks `raw.githubusercontent.com` from the browser (the DPDS host makes no outbound
+request) and, when a newer release exists, shows a red arrow next to the version and an "Update
+available" notice. Update with `./dpds.sh update --stable`. Any failure of the check, for example
+without internet access, means no notice.
 
 - **Links**: a link is one direction, `ingress` port to `egress` port, with one config
   (`{name, ingress, egress, config, worker?}`; `GET|POST /api/links`, `GET|PUT|DELETE
@@ -755,8 +792,8 @@ the default; `--stable` only prints that no Rust stable release exists yet.
 - **Stopping** the service stops `dpds` cleanly: it drains the delay buffers first, which can
   take as long as the longest configured delay. The unit's `TimeoutStopSec` is 600 s; after
   that systemd kills `dpds` mid-drain. The controller adds a `drain_timeout` hint when a stored
-  link needs more than 590 s (delay mean + 6 std + limiter queue `limit_bit / rate_bps`); shorten
-  the delay or the limiter queue for such a link.
+  link needs more than 590 s (delay mean + 6 std + limiter queue `buffer_capacity * 12336 bit / rate_bps`); shorten
+  the delay, the buffer or the limiter queue for such a link.
 - **Input allowlists**: the controller starts `dpds` as root, so it only accepts values it can
   vet. Ports are a PCI address or `net_null<N>` / `net_ring<N>` (no devargs, no `net_pcap`). Extra
   EAL arguments are limited to `--no-huge`, `--no-pci`, `-m <n>`, `-n <n>`, `--socket-mem=<list>`

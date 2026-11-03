@@ -33,7 +33,6 @@ fn config(seed: Option<u64>, reordering: bool, loss: LossModel, correlation: boo
             mode: LimiterMode::Spacer,
             activate: false,
             rate_bps: 1e9,
-            limit_bit: 1e9,
         },
         loss_model: loss,
         seed,

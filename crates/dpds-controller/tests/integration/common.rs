@@ -36,7 +36,7 @@
 //! }
 //! pub mod dto {         // ConfigDto: named-field mirror of dpds_core::Config
 //!     // JSON: {buffer_capacity, reordering, delayer{distribution,mean_ns,std_ns,
-//!     //   activate_correlation,half_life_period_ns,initialization_rate_pps}, limiter{mode,activate,rate_bps,limit_bit},
+//!     //   activate_correlation,half_life_period_ns,initialization_rate_pps}, limiter{mode,activate,rate_bps},
 //!     //   loss_model: {"type":"Random","p":f} | {"type":"GilbertElliot","p","r","k","h",
 //!     //   "state_is_good": bool (optional, default true)}, seed: u64|null (optional)}
 //!     // distribution / mode are the dpds_core enum variant names as strings.
@@ -627,7 +627,7 @@ pub fn cfg_json(mean_ns: f64, std_ns: f64) -> Value {
             "half_life_period_ns": 1000000.0,
             "initialization_rate_pps": 15000000.0
         },
-        "limiter": { "mode": "Spacer", "activate": false, "rate_bps": 1.0e9, "limit_bit": 1.0e6 },
+        "limiter": { "mode": "Spacer", "activate": false, "rate_bps": 1.0e9 },
         "loss_model": { "type": "Random", "p": 0.0 }
     })
 }

@@ -106,13 +106,13 @@ fn histogram_json(c: &ConfigDto) -> Value {
 }
 
 /// How long `dpds` may need to drain: the longest `mean + 6 std` (plus
-/// `limit / rate` when the limiter is on) over all directions, plus a margin.
+/// `buffer_capacity * 12336 bit / rate` when the limiter is on) over all directions, plus a margin.
 pub fn drain_timeout(configs: &[Config]) -> Duration {
     let longest_ns = configs
         .iter()
         .map(|c| {
             let limiter = if c.limiter.activate && c.limiter.rate_bps > 0.0 {
-                c.limiter.limit_bit / c.limiter.rate_bps * 1e9
+                dpds_core::derived_limit_bit(c.buffer_capacity) / c.limiter.rate_bps * 1e9
             } else {
                 0.0
             };

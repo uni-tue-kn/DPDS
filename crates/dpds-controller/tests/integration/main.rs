@@ -41,6 +41,7 @@ mod launch_revalidation;
 mod lcores;
 mod management_guard;
 mod presets;
+mod release;
 mod startup_errors;
 mod stats;
 mod store;

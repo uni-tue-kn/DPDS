@@ -25,7 +25,7 @@ function neverRequired(page: ConfigPage): string[] {
     ...(isLink(page) ? ['Worker lcore'] : ['Description']),
     'Seed', 'Histogram bins', 'Histogram lo', 'Histogram hi', 'Delay distribution', 'Limiter mode', 'Loss model',
     'Reordering', 'Activate correlation', 'Limiter active', 'Delay statistics',
-    'Mean delay unit', 'Delay std unit', 'Half-life period unit', 'Initialization rate unit', 'Rate unit', 'Burst limit unit',
+    'Mean delay unit', 'Delay std unit', 'Half-life period unit', 'Initialization rate unit', 'Rate unit',
     'Histogram lo unit', 'Histogram hi unit',
     ...(isLink(page) ? ['Apply preset'] : []),
   ];
@@ -49,9 +49,9 @@ describe.each(PAGES)('$name: required fields are marked', (page: ConfigPage) => 
     for (const l of neverRequired(page)) expectOptional(ctl(l));
   });
 
-  it('a switch-dependent field that is not required (half-life, limiter rate and limit) is unmarked while its switch is off', async () => {
+  it('a switch-dependent field that is not required (half-life, limiter rate) is unmarked while its switch is off', async () => {
     await page.openNew();
-    for (const l of ['Half-life period', 'Rate', 'Burst limit']) expectOptional(ctl(l));
+    for (const l of ['Half-life period', 'Rate']) expectOptional(ctl(l));
   });
 
   it('counts exactly the right number of markers in the form (no stray markers)', async () => {
@@ -103,14 +103,14 @@ describe.each(PAGES)('$name: conditionally required fields', (page: ConfigPage) 
     expectOptional(ctl('Half-life period'));
   });
 
-  it('limiter rate and burst limit are marked only while the limiter is active; the mode select never', async () => {
+  it('limiter rate is marked only while the limiter is active; the mode select never', async () => {
     const user = await page.openNew();
-    for (const l of ['Rate', 'Burst limit']) expectOptional(ctl(l));
+    expectOptional(ctl('Rate'));
     await user.click(ctl('Limiter active'));
-    for (const l of ['Rate', 'Burst limit']) expectRequired(ctl(l));
+    expectRequired(ctl('Rate'));
     expectOptional(ctl('Limiter mode'));
     await user.click(ctl('Limiter active'));
-    for (const l of ['Rate', 'Burst limit']) expectOptional(ctl(l));
+    expectOptional(ctl('Rate'));
   });
 
   it.each([
@@ -145,14 +145,14 @@ describe.each(PAGES)('$name: conditionally required fields', (page: ConfigPage) 
     await user.click(ctl('Activate correlation'));
     await user.click(ctl('Limiter active'));
     await user.selectOptions(ctl('Loss model'), 'GilbertElliot');
-    // pristine set minus the Random probability, plus half-life, rate, limit and the four Gilbert-Elliot parameters
-    expect(allRequiredMarkers()).toHaveLength(pristineRequired(page).length - 1 + 3 + 4);
+    // pristine set minus the Random probability, plus half-life, rate and the four Gilbert-Elliot parameters
+    expect(allRequiredMarkers()).toHaveLength(pristineRequired(page).length - 1 + 2 + 4);
   });
 
   it('a stored config with switches on and Gilbert-Elliot loss marks the dependent fields', async () => {
     await page.openStored({ ...cfg(), delayer: { ...cfg().delayer, activate_correlation: true }, limiter: { ...cfg().limiter, activate: true },
       loss_model: { type: 'GilbertElliot', p: 0.01, r: 0.2, k: 0.9, h: 0.3, state_is_good: true } });
-    for (const l of ['Half-life period', 'Rate', 'Burst limit', 'Gilbert-Elliot p', 'Gilbert-Elliot r', 'Gilbert-Elliot k', 'Gilbert-Elliot h']) {
+    for (const l of ['Half-life period', 'Rate', 'Gilbert-Elliot p', 'Gilbert-Elliot r', 'Gilbert-Elliot k', 'Gilbert-Elliot h']) {
       expectRequired(ctl(l));
     }
   });
@@ -195,18 +195,17 @@ describe.each(PAGES)('$name: a field that is not required is never refused for b
     expect(d.half_life_period_ns).toBe(0);
   });
 
-  it('emptied rate and limit with the limiter switched off again save; both are sent as 0', async () => {
+  it('an emptied rate with the limiter switched off again saves; it is sent as 0', async () => {
     const user = await page.openNew();
     await ready(user);
     await user.click(ctl('Limiter active'));
     await user.clear(numberField(body(), 'Rate'));
-    await user.clear(numberField(body(), 'Burst limit'));
     await user.click(ctl('Limiter active'));
     await page.save(user);
     const l = page.created().limiter;
     expect(l.activate).toBe(false);
     expect(l.rate_bps).toBe(0);
-    expect(l.limit_bit).toBe(0);
+    expect(Object.keys(l).sort()).toEqual(['activate', 'mode', 'rate_bps']);
   });
 
   it('an emptied half-life with correlation ON is refused (it is marked required)', async () => {

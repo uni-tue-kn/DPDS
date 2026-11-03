@@ -12,8 +12,7 @@
     "limiter": {
         "mode": "Spacer",
         "activate": false,
-        "rate_bps": 100000000000,
-        "limit_bit": 6152000000
+        "rate_bps": 100000000000
     },
     "loss_model": {
         "Random": 0.00

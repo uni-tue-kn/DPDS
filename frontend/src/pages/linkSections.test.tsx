@@ -17,7 +17,7 @@ const CONTENT: Record<string, string[]> = {
     'Delay distribution', 'Mean delay', 'Mean delay unit', 'Delay std', 'Delay std unit', 'Activate correlation',
     'Half-life period', 'Half-life period unit', 'Initialization rate', 'Initialization rate unit',
   ],
-  Limiter: ['Limiter active', 'Limiter mode', 'Rate', 'Rate unit', 'Burst limit', 'Burst limit unit'],
+  Limiter: ['Limiter active', 'Limiter mode', 'Rate', 'Rate unit'],
   Dropper: ['Loss model', 'Random loss probability'],
   Statistics: [
     'Delay statistics', 'Histogram bins', 'Histogram lo', 'Histogram lo unit', 'Histogram hi', 'Histogram hi unit',
@@ -129,7 +129,7 @@ describe('preset editor: what stays outside the subsections', () => {
 
 describe.each(PAGES)('$name: switch dependent fields are disabled, not hidden, and keep their values', (page: ConfigPage) => {
   const halfLife = () => ctl('Half-life period');
-  const limiterFields = ['Limiter mode', 'Rate', 'Rate unit', 'Burst limit', 'Burst limit unit'];
+  const limiterFields = ['Limiter mode', 'Rate', 'Rate unit'];
 
   it('half-life and its unit are disabled while "Activate correlation" is off and enabled while it is on', async () => {
     const user = await page.openNew();
@@ -186,16 +186,14 @@ describe.each(PAGES)('$name: switch dependent fields are disabled, not hidden, a
     await user.click(ctl('Limiter active'));
     await user.selectOptions(ctl('Limiter mode'), 'TokenBucketFilter');
     await typeInto(user, body(), 'Rate', '2.5', 'Gbit/s');
-    await typeInto(user, body(), 'Burst limit', '300', 'kbit');
     await user.click(ctl('Limiter active'));
     await user.click(ctl('Limiter active'));
     expect(ctl('Rate')).toHaveValue(2.5);
-    expect(ctl('Burst limit')).toHaveValue(300);
     expect(ctl('Limiter mode')).toHaveValue('TokenBucketFilter');
     await user.click(ctl('Limiter active'));
     await page.ready(user);
     await page.save(user);
-    expect(page.created().limiter).toEqual({ mode: 'TokenBucketFilter', activate: false, rate_bps: 2500000000, limit_bit: 300000 });
+    expect(page.created().limiter).toEqual({ mode: 'TokenBucketFilter', activate: false, rate_bps: 2500000000 });
   });
 
   it('with the switches on, a stored config has every dependent field enabled', async () => {
@@ -205,13 +203,11 @@ describe.each(PAGES)('$name: switch dependent fields are disabled, not hidden, a
   });
 
   it('with the switches off, a stored config shows its values in disabled fields', async () => {
-    await page.openStored(cfg({ activate_correlation: false, half_life_period_ns: 4000000 }, { activate: false, rate_bps: 5000000000, limit_bit: 64000 }));
+    await page.openStored(cfg({ activate_correlation: false, half_life_period_ns: 4000000 }, { activate: false, rate_bps: 5000000000 }));
     expect(halfLife()).toBeDisabled();
     expect(halfLife()).toHaveValue(4);
     expect(ctl('Rate')).toBeDisabled();
     expect(ctl('Rate')).toHaveValue(5);
-    expect(ctl('Burst limit')).toBeDisabled();
-    expect(ctl('Burst limit')).toHaveValue(64);
   });
 
   it('everything else stays enabled whatever the switches say', async () => {

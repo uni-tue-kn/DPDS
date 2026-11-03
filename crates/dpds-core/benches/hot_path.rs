@@ -151,7 +151,6 @@ impl Case {
                 mode: LimiterMode::Spacer,
                 activate: self.limiter,
                 rate_bps: 200e9,
-                limit_bit: 1e9,
             },
             loss_model: self.loss,
             seed: Some(1),

@@ -1,6 +1,6 @@
 [package]
 name = "dpds-controller"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 publish = false
 authors = ["Etienne Zink <etienne.zink@uni-tuebingen.de>"]

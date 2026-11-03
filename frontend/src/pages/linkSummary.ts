@@ -5,7 +5,8 @@ import type { ConfigDto } from '../api/types';
 
 export const time = (ns: number) => formatUnit(ns, TIME_UNITS, MS);
 export const rate = (bps: number) => formatUnit(bps, RATE_UNITS, GBIT);
-export const size = (bit: number) => formatUnit(bit, SIZE_UNITS, MBIT);
+const size = (bit: number) => formatUnit(bit, SIZE_UNITS, MBIT);
+
 export const pps = (v: number) => formatUnit(v, PPS_UNITS, MPPS);
 
 /** "Normal 10 ms / 1 ms"; the deterministic distribution has no std to show. */
@@ -29,4 +30,15 @@ export function limiterCell(c: ConfigDto): string {
 export function lossCell(c: ConfigDto): string {
   const l = c.loss_model;
   return l.type === 'Random' ? `Random p=${l.p}` : `Gilbert-Elliott p=${l.p}, r=${l.r}, h=${l.h}, k=${l.k}`;
+}
+
+/** dpds-core's frame size for the derived limiter limit: 1518 B frame + 4 B FEC + 20 B L1 overhead. */
+const MAX_FRAME_WIRE_BYTES = 1542;
+
+/** The read-only limiter limit line of the form; the number is left out while the capacity is no valid count. */
+export function derivedLimitText(capacity: string): string {
+  const text = 'Limit: derived from buffer capacity × 1542 B';
+  const n = Number(capacity);
+  if (capacity.trim() === '' || !Number.isInteger(n) || n < 0) return text;
+  return `${text} = ${size(n * MAX_FRAME_WIRE_BYTES * 8)}`;
 }

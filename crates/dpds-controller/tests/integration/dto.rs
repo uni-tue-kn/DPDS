@@ -28,7 +28,6 @@ fn core_config(loss: LossModel, seed: Option<u64>) -> Config {
             mode: LimiterMode::TokenBucketFilter,
             activate: true,
             rate_bps: 1.0e9,
-            limit_bit: 2.0e6,
         },
         loss_model: loss,
         seed,
@@ -49,8 +48,7 @@ fn json_with_random_loss_converts_to_the_core_config() {
     v["delayer"]["distribution"] = json!("LogNormalDistribution");
     v["delayer"]["activate_correlation"] = json!(true);
     v["delayer"]["half_life_period_ns"] = json!(5.0e7);
-    v["limiter"] =
-        json!({"mode":"TokenBucketFilter","activate":true,"rate_bps":1.0e9,"limit_bit":2.0e6});
+    v["limiter"] = json!({"mode":"TokenBucketFilter","activate":true,"rate_bps":1.0e9});
     v["loss_model"] = json!({"type":"Random","p":0.25});
     v["seed"] = json!(7);
     let core = dto_from(v).to_core().unwrap();

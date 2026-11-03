@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import { Offcanvas } from 'react-bootstrap';
 import { Link as RouterLink } from 'react-router';
 import type { PortLabeler } from '../common/portLabel';
-import { pps, rate, size, time } from './linkSummary';
+import { pps, rate, time } from './linkSummary';
 import type { Link } from '../api/types';
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
@@ -70,7 +70,6 @@ export default function LinkInspect({ link, label, onClose }: { link: Link | nul
                 <>
                   <Item name="Limiter mode">{c.limiter.mode}</Item>
                   <Item name="Rate">{rate(c.limiter.rate_bps)}</Item>
-                  <Item name="Burst limit">{size(c.limiter.limit_bit)}</Item>
                 </>
               )}
             </Section>

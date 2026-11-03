@@ -310,14 +310,14 @@ dependencies = [
 
 [[package]]
 name = "dpdk"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "dpdk-sys",
 ]
 
 [[package]]
 name = "dpdk-sys"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "bindgen",
  "cc",
@@ -326,7 +326,7 @@ dependencies = [
 
 [[package]]
 name = "dpds"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "dpdk",
  "dpdk-sys",
@@ -339,7 +339,7 @@ dependencies = [
 
 [[package]]
 name = "dpds-controller"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "axum",
  "clap",
@@ -361,7 +361,7 @@ dependencies = [
 
 [[package]]
 name = "dpds-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "rand",
  "rand_distr",

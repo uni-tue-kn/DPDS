@@ -146,3 +146,32 @@ jobs:
       - uses: actions/checkout@v7
       # Plain bash with stubbed cargo/curl/systemctl; no root or real systemd needed.
       - run: bash packaging/tests/dpds_sh.test.sh
+
+  # The only job with write access: it tags and releases the version in VERSION.md once it is on
+  # main and every check above passed. A version that already has its tag is left alone, so
+  # ordinary merges into main do nothing. The release has generated notes and no build assets.
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [fmt, rust, frontend, packaging]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Create the release for VERSION.md
+        run: |
+          IFS= read -r line < VERSION.md || true
+          if [[ ! $line =~ ^[[:space:]]*([0-9]+\.[0-9]+\.[0-9]+)[[:space:]]*$ ]]; then
+            echo "VERSION.md must start with X.Y.Z, found: $line" >&2
+            exit 1
+          fi
+          tag="v${BASH_REMATCH[1]}"
+          if [[ -n "$(git ls-remote --tags origin "refs/tags/$tag")" ]]; then
+            echo "$tag exists, nothing to release."
+            exit 0
+          fi
+          gh release create "$tag" --target "$GITHUB_SHA" --generate-notes \
+            --title "DPDS $tag" --repo "$GITHUB_REPOSITORY"

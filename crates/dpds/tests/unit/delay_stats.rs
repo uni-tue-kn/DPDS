@@ -36,8 +36,10 @@
 //! ## Range rule (`HistRange::from_config`), the "documented rule"
 //! From `delayer.mean_ns`, `delayer.std_ns` (whatever the distribution) and,
 //! when the limiter is active, the Spacer queueing allowance
-//! `extra = limit_bit / rate_bps * 1e9` ns (a Spacer packet can wait up to a
-//! full limit's worth of bits; the intended delay includes that offset):
+//! `extra = limit / rate_bps * 1e9` ns with the DERIVED limit
+//! `limit = buffer_capacity * 1542 * 8` bit (spec20; `limit_bit` no longer exists;
+//! a Spacer packet can wait up to a full limit's worth of bits; the intended delay
+//! includes that offset):
 //!
 //! ```text
 //! lo = max(0, mean - 6 * std)
@@ -120,14 +122,24 @@ use serde_json::json;
 
 use crate::support::*;
 
-fn cfg(mean: f64, std: f64, limiter: Option<(f64, f64)>) -> dpds_core::Config {
+/// Capacity 10 (derived limit 123_360 bit); `limiter` = the active Spacer's rate.
+fn cfg(mean: f64, std: f64, limiter: Option<f64>) -> dpds_core::Config {
+    cfg_cap(10, mean, std, limiter.map(|r| ("Spacer", r)))
+}
+
+fn cfg_cap(
+    capacity: usize,
+    mean: f64,
+    std: f64,
+    limiter: Option<(&str, f64)>,
+) -> dpds_core::Config {
     config_general(
-        10,
+        capacity,
         false,
         "NormalDistribution",
         mean,
         std,
-        limiter.map(|(r, l)| ("Spacer", r, l)),
+        limiter,
         json!({ "Random": 0.0 }),
     )
 }
@@ -239,12 +251,50 @@ fn mean_minus_six_std_below_zero_is_clamped_at_zero() {
     assert_eq!(range(cfg(1e6, 1e6, None)), (0.0, 27_343.75));
 }
 
+/// The allowance is a floating-point division (123360 / 1e9 * 1e9 is not exact), so the
+/// bin width is compared to 1e-9 relative; the lower edge stays exact.
+fn assert_range(got: (f64, f64), want: (f64, f64)) {
+    assert_eq!(got.0, want.0, "lower edge");
+    assert!(
+        (got.1 - want.1).abs() <= want.1 * 1e-9,
+        "bin width {} vs {}",
+        got.1,
+        want.1
+    );
+}
+
 #[test]
 fn an_active_limiter_widens_the_range_by_its_queueing_allowance() {
-    // limit 1e6 bit at 1e9 bit/s = 1e6 ns of possible Spacer queueing
-    assert_eq!(range(cfg(0.0, 0.0, Some((1e9, 1e6)))), (0.0, 3906.25));
-    // [mean - 6 std, mean + 6 std + 2e5] = [4e5, 1.8e6], width 1.4e6
-    assert_eq!(range(cfg(1e6, 1e5, Some((1e9, 2e5)))), (4e5, 5468.75));
+    // capacity 10: derived limit 123_360 bit at 1e9 bit/s = 123_360 ns of
+    // possible Spacer queueing: [0, 123_360], bin 481.875
+    assert_range(range(cfg(0.0, 0.0, Some(1e9))), (0.0, 481.875));
+    // [mean - 6 std, mean + 6 std + 123_360] = [4e5, 1_723_360], width 1_323_360
+    assert_range(range(cfg(1e6, 1e5, Some(1e9))), (4e5, 5169.375));
+}
+
+#[test]
+fn the_queueing_allowance_follows_the_capacity_and_the_rate() {
+    // twice the capacity: twice the derived limit: [0, 246_720]
+    assert_range(
+        range(cfg_cap(20, 0.0, 0.0, Some(("Spacer", 1e9)))),
+        (0.0, 963.75),
+    );
+    // ten times the rate: a tenth of the allowance: [0, 12_336], bin 48.1875
+    assert_range(
+        range(cfg_cap(10, 0.0, 0.0, Some(("Spacer", 1e10)))),
+        (0.0, 48.1875),
+    );
+    // an inactive limiter adds nothing whatever the capacity
+    assert_eq!(range(cfg_cap(10_000, 0.0, 0.0, None)), (0.0, 3.90625));
+}
+
+#[test]
+fn a_token_bucket_filter_adds_no_allowance_to_the_range() {
+    // the TBF never delays a packet: same window as without a limiter
+    assert_eq!(
+        range(cfg_cap(10, 0.0, 0.0, Some(("TokenBucketFilter", 1e9)))),
+        (0.0, 3.90625)
+    );
 }
 
 #[test]
@@ -255,7 +305,7 @@ fn an_inactive_limiter_does_not_widen_the_range() {
         "NormalDistribution",
         0.0,
         0.0,
-        None, // activate = false, with the helper's default limit 1e9 bit
+        None, // activate = false
         json!({ "Random": 0.0 }),
     );
     assert_eq!(range(c), (0.0, 3.90625));
@@ -325,7 +375,7 @@ fn the_default_spec_is_the_automatic_range() {
     for c in [
         cfg(1e6, 0.0, None),
         cfg(10e6, 1e6, None),
-        cfg(1e6, 1e5, Some((1e9, 2e5))),
+        cfg(1e6, 1e5, Some(1e9)),
     ] {
         assert_eq!(
             from_spec(c, HistogramSpec::default()).unwrap(),
@@ -504,7 +554,8 @@ mod with_feature {
         assert_eq!(tx.offered().len() + free.freed().len(), lens.len());
     }
 
-    /// Spacer 1 bit/ns with a huge limit, deterministic base delay `base`: all
+    /// Spacer 1 bit/ns (capacity 100: derived limit 1_217_600 bit, far above
+    /// what the tests below queue), deterministic base delay `base`: all
     /// packets arrive at now = 0, so packet i is delayed by
     /// `base + sum_{j<i} 8 * (len_j + 24)` ns (the Spacer's backlog).
     fn spacer_cfg(base: f64) -> Config {
@@ -514,8 +565,22 @@ mod with_feature {
             "DeterministicDistribution",
             base,
             0.0,
-            Some(("Spacer", 1e9, 1e12)),
+            Some(("Spacer", 1e9)),
             json!({ "Random": 0.0 }),
+        )
+    }
+
+    /// Capacity 4 (derived limit 49344 bit), Spacer 1 bit/ns, delay 1e6, loss
+    /// model that drops exactly the first packet. Used with 1519-byte packets.
+    fn mixed_limiter_cfg() -> Config {
+        config_general(
+            4,
+            false,
+            "DeterministicDistribution",
+            1_000_000.0,
+            0.0,
+            Some(("Spacer", 1e9)),
+            json!({ "GilbertElliot": [1.0, 0.0, 0.0, 1.0, true] }),
         )
     }
 
@@ -596,28 +661,22 @@ mod with_feature {
     #[test]
     fn only_accepted_packets_enter_the_delay_statistics() {
         // the "mixed" scenario of causes.rs, reduced: one burst at now = 0 of
-        // 5 packets: P1 lost, P2 (delay 1_000_992) and P3 (1_001_984) accepted,
-        // P4, P5 limiter drops. count 2: mean 1001488, std 496.
-        let cfg = config_general(
-            2,
-            false,
-            "DeterministicDistribution",
-            1_000_000.0,
-            0.0,
-            Some(("Spacer", 1e9, 2976.0)),
-            json!({ "GilbertElliot": [1.0, 0.0, 0.0, 1.0, true] }),
-        );
+        // 5 packets of 1519 bytes (12344 bit each), capacity 4 (derived limit
+        // 49344 bit): P1 lost (accounted), P2 (delay 1_012_344) and P3
+        // (1_024_688) accepted, P4, P5 limiter drops (37032 + 12344 > 49344).
+        // count 2: mean 1018516, std 6172.
+        let cfg = mixed_limiter_cfg();
         let stats: &'static Stats = Box::leak(Box::default());
-        drive(cfg, &[100; 5], &[0.0, 5_000_000.0], stats);
+        drive(cfg, &[1519; 5], &[0.0, 5_000_000.0], stats);
         let r = stats.stats_reply(0);
         assert_eq!(uint(&r, "dpds_rejects"), 3);
-        assert_eq!(string(&r, "delay_mean_ns"), "1001488.00");
-        assert_eq!(string(&r, "delay_std_ns"), "496.00");
-        assert_eq!(uint(&r, "delay_min_ns"), 1_000_992);
-        assert_eq!(uint(&r, "delay_max_ns"), 1_001_984);
-        // popped at 5e6: lateness 5e6 - 1000992 and 5e6 - 1001984
-        assert_eq!(string(&r, "lateness_mean_ns"), "3998512.00");
-        assert_eq!(uint(&r, "lateness_max_ns"), 3_999_008);
+        assert_eq!(string(&r, "delay_mean_ns"), "1018516.00");
+        assert_eq!(string(&r, "delay_std_ns"), "6172.00");
+        assert_eq!(uint(&r, "delay_min_ns"), 1_012_344);
+        assert_eq!(uint(&r, "delay_max_ns"), 1_024_688);
+        // popped at 5e6: lateness 5e6 - 1012344 and 5e6 - 1024688
+        assert_eq!(string(&r, "lateness_mean_ns"), "3981484.00");
+        assert_eq!(uint(&r, "lateness_max_ns"), 3_987_656);
         let h = stats.delay_hist_reply();
         let total: u64 =
             bins(&h).iter().sum::<u64>() + uint(&h, "underflow") + uint(&h, "overflow");
@@ -719,26 +778,19 @@ mod with_feature {
 
     #[test]
     fn the_limiter_shifted_delays_stay_inside_the_range_derived_from_the_config() {
-        // Spacer limit 2976 bit, delay 1e6: range [1e6, 1e6 + 2976), bin 11.625;
-        // delays 1_000_992 and 1_001_984 -> bins 85 and 170, nothing out of range.
-        let cfg = config_general(
-            2,
-            false,
-            "DeterministicDistribution",
-            1_000_000.0,
-            0.0,
-            Some(("Spacer", 1e9, 2976.0)),
-            json!({ "GilbertElliot": [1.0, 0.0, 0.0, 1.0, true] }),
-        );
+        // Spacer, capacity 4: derived limit 49344 bit, delay 1e6: range
+        // [1e6, 1e6 + 49344), bin 192.75; delays 1_012_344 and 1_024_688 (see
+        // the "mixed" scenario) -> bins 64 and 128, nothing out of range.
+        let cfg = mixed_limiter_cfg();
         let stats: &'static Stats =
             Box::leak(Box::new(Stats::with_range(HistRange::from_config(&cfg))));
-        drive(cfg, &[100; 5], &[0.0, 5_000_000.0], stats);
+        drive(cfg, &[1519; 5], &[0.0, 5_000_000.0], stats);
         let h = stats.delay_hist_reply();
         assert_eq!(num(&h, "lo_ns"), 1_000_000.0);
-        assert_eq!(num(&h, "bin_ns"), 11.625);
+        assert!((num(&h, "bin_ns") - 192.75).abs() < 1e-6, "{h:?}");
         let b = bins(&h);
-        assert_eq!(b[85], 1);
-        assert_eq!(b[170], 1);
+        assert_eq!(b[64], 1);
+        assert_eq!(b[128], 1);
         assert_eq!(b.iter().sum::<u64>(), 2);
         assert_eq!((uint(&h, "underflow"), uint(&h, "overflow")), (0, 0));
     }

@@ -286,3 +286,70 @@ async fn an_empty_or_invalid_json_body_is_a_400_with_a_message() {
         1
     );
 }
+
+// ---- spec20: `limit_bit` is gone, the limit is derived from the buffer capacity ------------
+
+#[tokio::test]
+async fn a_link_with_limit_bit_is_a_400_naming_the_field_on_create_and_update() {
+    let a = app();
+    let mut body = link_body("x", "net_null0", "net_null0");
+    body["config"]["limiter"]["limit_bit"] = json!(1.0e6);
+    let r = a.post("/api/links", body.clone()).await;
+    assert_eq!(r.status, 400, "{}", r.text());
+    assert!(r.message().contains("limit_bit"), "{}", r.text());
+    assert_eq!(a.get("/api/links").await.json(), json!([]), "stored");
+
+    let id = a.create_link("y", "net_null1", "net_null1").await.json()["id"]
+        .as_u64()
+        .unwrap();
+    let before = a.get(&format!("/api/links/{id}")).await.json();
+    let r = a.put(&format!("/api/links/{id}"), body).await;
+    assert_eq!(r.status, 400, "{}", r.text());
+    assert!(r.message().contains("limit_bit"), "{}", r.text());
+    assert_eq!(a.get(&format!("/api/links/{id}")).await.json(), before);
+}
+
+#[tokio::test]
+async fn a_stored_link_has_no_limit_bit_in_its_limiter() {
+    let a = app();
+    let r = a.create_link("plain", "net_null0", "net_null0").await;
+    assert_eq!(r.status, 201, "{}", r.text());
+    for v in [r.json(), a.get("/api/links").await.json()] {
+        let text = v.to_string();
+        assert!(!text.contains("limit_bit"), "{text}");
+    }
+    let l = a.get("/api/links").await.json();
+    let lim = l[0]["config"]["limiter"].as_object().unwrap();
+    let mut keys: Vec<&str> = lim.keys().map(String::as_str).collect();
+    keys.sort();
+    assert_eq!(keys, ["activate", "mode", "rate_bps"], "{l}");
+}
+
+#[tokio::test]
+async fn the_openapi_document_has_no_limit_bit() {
+    let a = app();
+    let v = a.get("/api/openapi.json").await.json();
+    let text = v.to_string();
+    assert!(
+        !text.contains("limit_bit"),
+        "OpenAPI still documents limit_bit"
+    );
+    let props = v["components"]["schemas"]["LimiterDto"]["properties"]
+        .as_object()
+        .expect("LimiterDto properties");
+    let mut keys: Vec<&str> = props.keys().map(String::as_str).collect();
+    keys.sort();
+    assert_eq!(keys, ["activate", "mode", "rate_bps"]);
+}
+
+#[test]
+fn the_config_dto_rejects_limit_bit_and_does_not_serialize_it() {
+    let mut c = cfg_json(1.0e6, 0.0);
+    c["limiter"]["limit_bit"] = json!(1.0e6);
+    let err = serde_json::from_value::<dpds_controller::dto::ConfigDto>(c)
+        .expect_err("limit_bit must be an unknown field")
+        .to_string();
+    assert!(err.contains("limit_bit"), "{err}");
+    let ok = serde_json::to_value(cfg_dto(1.0e6, 0.0)).unwrap();
+    assert!(!ok.to_string().contains("limit_bit"), "{ok}");
+}

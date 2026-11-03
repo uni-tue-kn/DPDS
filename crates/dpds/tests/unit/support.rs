@@ -253,17 +253,18 @@ pub fn config(capacity: usize, delay_ns: f64, loss: f64) -> Config {
 }
 
 /// As [`config`], with a `reordering` switch and an optional active Spacer
-/// limiter `(rate_bps, limit_bit)`.
+/// limiter at `rate_bps`. The limiter's limit is derived from the capacity
+/// (`capacity * 1542 * 8` bit), there is nothing to configure.
 pub fn config_full(
     capacity: usize,
     reordering: bool,
     delay_ns: f64,
     loss: f64,
-    limiter: Option<(f64, f64)>,
+    limiter: Option<f64>,
 ) -> Config {
-    let (activate, rate_bps, limit_bit) = match limiter {
-        Some((r, l)) => (true, r, l),
-        None => (false, 1e9, 1e9),
+    let (activate, rate_bps) = match limiter {
+        Some(r) => (true, r),
+        None => (false, 1e9),
     };
     serde_json::from_value(serde_json::json!({
         "buffer_capacity": capacity,
@@ -279,8 +280,7 @@ pub fn config_full(
         "limiter": {
             "mode": "Spacer",
             "activate": activate,
-            "rate_bps": rate_bps,
-            "limit_bit": limit_bit
+            "rate_bps": rate_bps
         },
         "loss_model": { "Random": loss }
     }))
@@ -288,7 +288,7 @@ pub fn config_full(
 }
 
 /// The general config builder of the drop-cause / delay-statistics tests.
-/// `limiter` = `(mode, rate_bps, limit_bit)` with `mode` the JSON name
+/// `limiter` = `(mode, rate_bps)` with `mode` the JSON name
 /// (`"Spacer"` / `"TokenBucketFilter"`); `loss` is the JSON of the loss model,
 /// e.g. `json!({"Random": 0.0})` or `json!({"GilbertElliot": [1.0, 0.0, 0.0, 1.0, true]})`.
 pub fn config_general(
@@ -297,12 +297,12 @@ pub fn config_general(
     distribution: &str,
     mean_ns: f64,
     std_ns: f64,
-    limiter: Option<(&str, f64, f64)>,
+    limiter: Option<(&str, f64)>,
     loss: serde_json::Value,
 ) -> Config {
-    let (mode, activate, rate_bps, limit_bit) = match limiter {
-        Some((m, r, l)) => (m, true, r, l),
-        None => ("Spacer", false, 1e9, 1e9),
+    let (mode, activate, rate_bps) = match limiter {
+        Some((m, r)) => (m, true, r),
+        None => ("Spacer", false, 1e9),
     };
     serde_json::from_value(serde_json::json!({
         "buffer_capacity": capacity,
@@ -318,8 +318,7 @@ pub fn config_general(
         "limiter": {
             "mode": mode,
             "activate": activate,
-            "rate_bps": rate_bps,
-            "limit_bit": limit_bit
+            "rate_bps": rate_bps
         },
         "loss_model": loss,
         "seed": 1

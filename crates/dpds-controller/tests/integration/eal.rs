@@ -199,7 +199,6 @@ fn special_core() -> Config {
             mode: LimiterMode::Spacer,
             activate: false,
             rate_bps: 1.0e9,
-            limit_bit: 1.0e6,
         },
         loss_model: LossModel::GilbertElliot(0.01, 0.3, 1.0, 0.5, true),
         seed: Some(9),
@@ -346,6 +345,23 @@ fn links_file_json_histogram_and_delay_stats_only_when_set() {
 }
 
 #[test]
+fn links_file_json_has_no_limit_bit_in_the_limiter_of_a_link() {
+    let links = vec![link_cfg(1, "lim", "net_null0", "net_null0", {
+        let mut c = cfg_json(1.0e6, 0.0);
+        c["limiter"] = json!({"mode": "TokenBucketFilter", "activate": true, "rate_bps": 2.0e9});
+        c
+    })];
+    let d = [plan_dir(0, "lim", "net_null0", "net_null0", 1)];
+    let v = links_file_json(&links, &d).unwrap();
+    let text = v.to_string();
+    assert!(!text.contains("limit_bit"), "{text}");
+    let lim = v["links"][0]["config"]["limiter"].as_object().unwrap();
+    let mut keys: Vec<&str> = lim.keys().map(String::as_str).collect();
+    keys.sort();
+    assert_eq!(keys, ["activate", "mode", "rate_bps"], "{text}");
+}
+
+#[test]
 fn links_file_json_fails_for_an_invalid_config() {
     let l = link_cfg(1, "bad", "net_null0", "net_null0", cfg_json(1.0e6, -1.0));
     let d = [plan_dir(0, "bad", "net_null0", "net_null0", 1)];
@@ -354,10 +370,11 @@ fn links_file_json_fails_for_an_invalid_config() {
 
 // ---- drain timeout -------------------------------------------------------
 
-fn core(mean_ns: f64, std_ns: f64, limiter_on: bool, rate_bps: f64, limit_bit: f64) -> Config {
+/// The limiter's limit is derived: `capacity * 1542 * 8` bit.
+fn core(mean_ns: f64, std_ns: f64, limiter_on: bool, rate_bps: f64, capacity: u64) -> Config {
     let mut v = cfg_json(mean_ns, std_ns);
-    v["limiter"] =
-        json!({"mode":"Spacer","activate":limiter_on,"rate_bps":rate_bps,"limit_bit":limit_bit});
+    v["buffer_capacity"] = json!(capacity);
+    v["limiter"] = json!({"mode":"Spacer","activate":limiter_on,"rate_bps":rate_bps});
     dto_from(v).to_core().unwrap()
 }
 
@@ -367,30 +384,43 @@ fn secs(d: Duration) -> f64 {
 
 #[test]
 fn drain_timeout_is_mean_plus_6_std_plus_5_s() {
-    let t = drain_timeout(&[core(10.0e6, 1.0e6, false, 1.0e9, 1.0e6)]);
+    let t = drain_timeout(&[core(10.0e6, 1.0e6, false, 1.0e9, 1000)]);
     assert!((secs(t) - 5.016).abs() < 1e-6, "{t:?}");
 }
 
 #[test]
 fn drain_timeout_adds_limit_over_rate_only_when_the_limiter_is_on() {
-    let on = drain_timeout(&[core(10.0e6, 0.0, true, 1.0e9, 2.0e6)]); // 2 ms
-    assert!((secs(on) - 5.012).abs() < 1e-6, "{on:?}");
-    let off = drain_timeout(&[core(10.0e6, 0.0, false, 1.0e9, 2.0e9)]);
+    // capacity 1000: 1000 * 1542 * 8 = 12.336 Mbit at 1 Gb/s = 12.336 ms
+    let on = drain_timeout(&[core(10.0e6, 0.0, true, 1.0e9, 1000)]);
+    assert!((secs(on) - 5.022336).abs() < 1e-6, "{on:?}");
+    let off = drain_timeout(&[core(10.0e6, 0.0, false, 1.0e9, 1_000_000_000)]);
     assert!((secs(off) - 5.010).abs() < 1e-6, "{off:?}");
+}
+
+#[test]
+fn drain_timeout_uses_the_derived_limit_of_the_capacity_for_both_modes_of_the_limiter() {
+    // twice the capacity, twice the limiter term
+    let one = drain_timeout(&[core(0.0, 0.0, true, 1.0e9, 1000)]);
+    let two = drain_timeout(&[core(0.0, 0.0, true, 1.0e9, 2000)]);
+    assert!((secs(one) - 5.012336).abs() < 1e-6, "{one:?}");
+    assert!((secs(two) - 5.024672).abs() < 1e-6, "{two:?}");
+    // the rate scales it inversely: 12.336 Mbit at 1 Mb/s = 12.336 s
+    let slow = drain_timeout(&[core(0.0, 0.0, true, 1.0e6, 1000)]);
+    assert!((secs(slow) - 17.336).abs() < 1e-6, "{slow:?}");
 }
 
 #[test]
 fn drain_timeout_is_the_maximum_over_directions() {
     let t = drain_timeout(&[
-        core(1.0e6, 0.0, false, 1.0e9, 1.0e6),
-        core(2.0e9, 1.0e8, false, 1.0e9, 1.0e6), // 2.6 s
-        core(3.0e6, 0.0, false, 1.0e9, 1.0e6),
+        core(1.0e6, 0.0, false, 1.0e9, 1000),
+        core(2.0e9, 1.0e8, false, 1.0e9, 1000), // 2.6 s
+        core(3.0e6, 0.0, false, 1.0e9, 1000),
     ]);
     assert!((secs(t) - 7.6).abs() < 1e-6, "{t:?}");
 }
 
 #[test]
 fn drain_timeout_has_a_margin_even_without_delay() {
-    let t = drain_timeout(&[core(0.0, 0.0, false, 1.0e9, 1.0e6)]);
+    let t = drain_timeout(&[core(0.0, 0.0, false, 1.0e9, 1000)]);
     assert!((secs(t) - 5.0).abs() < 1e-6, "{t:?}");
 }

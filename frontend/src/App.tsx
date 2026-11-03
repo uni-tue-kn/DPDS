@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { Button, Modal, OverlayTrigger, Tooltip } from 'react-bootstrap';
 import { Navigate, NavLink, Route, Routes } from 'react-router';
 import * as api from './api/client';
 import Dashboard from './pages/Dashboard';
@@ -10,6 +11,7 @@ import LinkEditor from './pages/LinkEditor';
 import Links from './pages/Links';
 import Settings from './pages/Settings';
 import { startPolling } from './common/polling';
+import { isUpdateAvailable, RELEASES_URL } from './common/updateCheck';
 import type { OnlineView } from './api/types';
 
 const ONLINE_POLL_MS = 5000;
@@ -33,6 +35,10 @@ const NAV = [
 
 function Sidebar({ theme, onToggle }: { theme: Theme; onToggle: () => void }) {
   const [info, setInfo] = useState<OnlineView>();
+  const [updateAvailable, setUpdateAvailable] = useState(false);
+  const [showUpdateModal, setShowUpdateModal] = useState(false);
+  // The update check runs once per page load, after the first successful /api/online, not once per poll.
+  const checked = useRef(false);
   // Re-polled so "Offline" recovers (and turns back into "Offline" when the controller goes away).
   useEffect(() => {
     let alive = true;
@@ -40,6 +46,16 @@ function Sidebar({ theme, onToggle }: { theme: Theme; onToggle: () => void }) {
       try {
         const o = await api.getOnline();
         if (alive) setInfo(o);
+        if (!checked.current) {
+          checked.current = true;
+          // Not awaited: a slow GitHub must not hold up the /api/online polling.
+          void isUpdateAvailable(o.version).then((update) => {
+            if (alive && update) {
+              setUpdateAvailable(true);
+              setShowUpdateModal(true);
+            }
+          });
+        }
       } catch {
         if (alive) setInfo(undefined);
       }
@@ -78,9 +94,31 @@ function Sidebar({ theme, onToggle }: { theme: Theme; onToggle: () => void }) {
         </a>
         <div className="nav-label" title={info?.dpds_bin}>
           {info ? `v${info.version}` : 'Offline'}
+          {info && updateAvailable && (
+            <OverlayTrigger placement="top" overlay={<Tooltip id="update-available-tooltip">New release available</Tooltip>}>
+              <a
+                href={RELEASES_URL} target="_blank" rel="noopener noreferrer"
+                className="text-danger ms-2" aria-label="New DPDS release available"
+              >
+                <i className="bi bi-arrow-up-circle-fill" aria-hidden="true" />
+              </a>
+            </OverlayTrigger>
+          )}
           {info && !info.telemetry && <span className="badge rounded-pill text-bg-warning ms-2">no telemetry</span>}
         </div>
       </div>
+      <Modal show={showUpdateModal} onHide={() => setShowUpdateModal(false)} centered>
+        <Modal.Header closeButton>
+          <Modal.Title>Update available</Modal.Title>
+        </Modal.Header>
+        <Modal.Body>
+          A new stable DPDS release is available. Update with ./dpds.sh update --stable (see the releases page).
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="secondary" onClick={() => setShowUpdateModal(false)}>Close</Button>
+          <Button variant="primary" href={RELEASES_URL} target="_blank" rel="noopener noreferrer">Open releases</Button>
+        </Modal.Footer>
+      </Modal>
     </div>
   );
 }

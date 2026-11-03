@@ -99,8 +99,7 @@ fn cfg(capacity: u64) -> Value {
         "limiter": {
             "mode": "Spacer",
             "activate": false,
-            "rate_bps": 1e9,
-            "limit_bit": 1e6
+            "rate_bps": 1e9
         },
         "loss_model": { "Random": 0.0 }
     })

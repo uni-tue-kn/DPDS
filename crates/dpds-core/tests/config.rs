@@ -35,8 +35,7 @@ const VALID: &str = r#"{
     "limiter": {
         "mode": "TokenBucketFilter",
         "activate": true,
-        "rate_bps": 1e9,
-        "limit_bit": 4096.0
+        "rate_bps": 1e9
     },
     "loss_model": { "Random": 0.25 }
 }"#;
@@ -62,7 +61,6 @@ fn from_file_parses_a_valid_file_field_by_field() {
     assert!(matches!(cfg.limiter.mode, LimiterMode::TokenBucketFilter));
     assert!(cfg.limiter.activate);
     assert_eq!(cfg.limiter.rate_bps, 1e9);
-    assert_eq!(cfg.limiter.limit_bit, 4096.0);
     assert!(matches!(cfg.loss_model, LossModel::Random(p) if p == 0.25));
 }
 
@@ -178,6 +176,49 @@ fn from_file_accepts_an_integer_json_number_for_the_rate() {
     let json = VALID.replace("2500000.0", "3000000");
     let cfg = Config::from_file(write(&dir, "int.json", &json)).unwrap();
     assert_eq!(cfg.delayer.initialization_rate_pps, 3_000_000.0);
+}
+
+// `limit_bit` is gone: the limiter's limit is derived from the buffer capacity.
+// A leftover field must not be silently ignored (the user would think it still
+// takes effect), so the limiter section rejects it and the error names it.
+
+#[test]
+fn from_file_rejects_a_leftover_limit_bit_naming_the_field() {
+    let dir = tempfile::tempdir().unwrap();
+    let json = VALID.replace(
+        "\"rate_bps\": 1e9",
+        "\"rate_bps\": 1e9,\n        \"limit_bit\": 4096.0",
+    );
+    assert!(json.contains("limit_bit"), "test setup");
+    let err = Config::from_file(write(&dir, "old.json", &json))
+        .expect_err("a config that still has limit_bit must not parse");
+    assert!(matches!(err, ConfigError::Parse(..)), "{err:?}");
+    assert!(
+        err.to_string().contains("limit_bit"),
+        "message {:?} must name the field",
+        err.to_string()
+    );
+}
+
+#[test]
+fn from_file_parses_the_limiter_without_limit_bit() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(!VALID.contains("limit_bit"), "test setup");
+    let cfg = Config::from_file(write(&dir, "new.json", VALID)).unwrap();
+    assert_eq!(cfg.limiter.rate_bps, 1e9);
+}
+
+#[test]
+fn no_shipped_config_json_mentions_limit_bit() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for rel in [
+        "config.example.json",
+        "../../config.json",
+        "../../config.vdev.json",
+    ] {
+        let text = std::fs::read_to_string(root.join(rel)).unwrap();
+        assert!(!text.contains("limit_bit"), "{rel} still has limit_bit");
+    }
 }
 
 #[test]

@@ -44,7 +44,6 @@ fn config(dist: RVDistribution, mean: f64, std: f64, corr: bool, capacity: usize
             mode: LimiterMode::Spacer,
             activate: false,
             rate_bps: 1e9,
-            limit_bit: 1e9,
         },
         loss_model: LossModel::Random(0.0),
         seed: None,

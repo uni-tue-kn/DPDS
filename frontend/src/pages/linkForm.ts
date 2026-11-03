@@ -1,7 +1,7 @@
 // Form model of the link editor: every number is kept as the typed string so inputs can be emptied and
 // retyped; `configToDto` validates and converts back to the wire type.
 import type { ConfigDto, Distribution, LimiterMode, LossModelDto } from '../api/types';
-import { PPS_UNITS, RATE_UNITS, SIZE_UNITS, TIME_UNITS, emptyUnit, fromBase, toBase } from '../common/units';
+import { PPS_UNITS, RATE_UNITS, TIME_UNITS, emptyUnit, fromBase, toBase } from '../common/units';
 import type { Unit, UnitValue } from '../common/units';
 
 export const DISTRIBUTIONS: Distribution[] = [
@@ -9,7 +9,7 @@ export const DISTRIBUTIONS: Distribution[] = [
 ];
 export const LIMITER_MODES: LimiterMode[] = ['Spacer', 'TokenBucketFilter'];
 
-/** Index of each field's default unit (ms, Mpps, Gbit/s, Mbit): what a new form and a zero or empty value show. */
+/** Index of each field's default unit (ms, Mpps, Gbit/s) and of Mbit for the derived limit: what a new form and a zero or empty value show. */
 export const MS = 2;
 export const MPPS = 2;
 export const GBIT = 3;
@@ -25,7 +25,6 @@ export interface ConfigForm {
   limiter_activate: boolean;
   limiter_mode: LimiterMode;
   rate_bps: UnitValue;
-  limit_bit: UnitValue;
   loss_type: LossModelDto['type'];
   random_p: string;
   ge_p: string;
@@ -52,7 +51,6 @@ export function defaultConfigForm(): ConfigForm {
     distribution: 'NormalDistribution', mean_ns: fromBase(1e6, TIME_UNITS, MS), std_ns: fromBase(1e5, TIME_UNITS, MS),
     activate_correlation: false, half_life_period_ns: fromBase(0, TIME_UNITS, MS), initialization_rate_pps: emptyUnit(MPPS),
     limiter_activate: false, limiter_mode: 'Spacer', rate_bps: fromBase(1e10, RATE_UNITS, GBIT),
-    limit_bit: fromBase(12e6, SIZE_UNITS, MBIT),
     loss_type: 'Random', random_p: '0', ge_p: '0.01', ge_r: '0.2', ge_k: '1', ge_h: '0', ge_good: true,
     buffer_capacity: '100000', reordering: false, seed: '', hist_bins: '', hist_lo: emptyUnit(MS), hist_hi: emptyUnit(MS),
     delay_stats: true,
@@ -74,7 +72,6 @@ export function configToForm(c: ConfigDto): ConfigForm {
     limiter_activate: c.limiter.activate,
     limiter_mode: c.limiter.mode,
     rate_bps: fromBase(c.limiter.rate_bps, RATE_UNITS, GBIT),
-    limit_bit: fromBase(c.limiter.limit_bit, SIZE_UNITS, MBIT),
     loss_type: c.loss_model.type,
     buffer_capacity: String(c.buffer_capacity),
     reordering: c.reordering,
@@ -180,7 +177,6 @@ export function configToDto(f: ConfigForm): ConfigDto {
       mode: f.limiter_mode,
       activate: f.limiter_activate,
       rate_bps: unitNum(f.rate_bps, RATE_UNITS, 'Rate', limiterRequired(f)),
-      limit_bit: unitNum(f.limit_bit, SIZE_UNITS, 'Burst limit', limiterRequired(f)),
     },
     loss_model,
     seed: seed(f.seed),

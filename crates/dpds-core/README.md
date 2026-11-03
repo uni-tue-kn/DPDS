@@ -120,15 +120,31 @@ pops packets. Everything is in `dpds_core::buffer` and the crate root:
 | `Delayer::try_new(..)`, `Delayer::try_new_seeded(.., seed)`, `Dropper::new(loss_model)`, `Dropper::with_seed(loss_model, seed)` | The individual stages, usable on their own. |
 
 `PushOutcome` (`dpds_core::buffer`) reports the cause of a rejection by the
-order in which a push is evaluated: the limiter accounts for the packet first
-(also when it is rejected afterwards), then the loss model decides, then the
-capacity is checked. The reported cause is the first that rejects the packet:
-loss model (`Lost`), else limiter (`LimiterDrop`), else capacity (`BufferFull`).
+order in which a push is evaluated: the capacity is checked first (`BufferFull`;
+nothing else is touched, so the delayer, limiter and dropper state and random
+draws are unchanged), then the delay is sampled, the limiter accounts for the
+packet (also when it is rejected afterwards) and the loss model decides. The
+reported cause is the first that rejects the packet: capacity (`BufferFull`),
+else loss model (`Lost`), else limiter (`LimiterDrop`).
 A packet that both the loss model and the limiter reject is therefore `Lost`, so
 counting `LimiterDrop` can under-count the limiter's own rejections while a loss
 model is active. `Accepted.send_time_ns` is the whole-ns send time `front_time`
 reports for the entry (in reordering mode including the 1/64 ns tie offsets).
-`push` and the draws of the random number generators are unchanged.
+
+
+**API change (emulation order, user-authorised):** the capacity check moved from
+last to first, as described above. Previously a buffer-full packet had already
+consumed a delay sample, limiter capacity and a loss draw.
+
+**API change:** `LimiterConfig.limit_bit` is removed (no Rust field; a
+`limit_bit` key in JSON is a parse error naming the field). The limiter's limit,
+for both modes, is derived: `buffer_capacity * MAX_FRAME_WIRE_BYTES * 8` bit with
+`pub const MAX_FRAME_WIRE_BYTES: u32 = 1542` (1518 B maximum Ethernet frame + 4
+FEC bytes + 20 B L1 overhead, as the limiter counts a packet), computed in `f64`
+(`dpds_core::derived_limit_bit(buffer_capacity)`). Exactly `buffer_capacity`
+maximum-size frames fit. It is the Spacer's fill-state limit and the Token Bucket
+Filter's bucket depth (TBF starts full). Every `LimiterConfig { .. }` struct
+literal must drop `limit_bit`.
 
 `BuildError` implements `std::error::Error`; its message names the offending
 parameter (`mean_ns`, `std_ns`, `half_life_period_ns`,
@@ -216,8 +232,7 @@ in [`config.example.json`](config.example.json):
   "limiter": {
     "mode": "TokenBucketFilter",
     "activate": true,
-    "rate_bps": 1000000000.0,
-    "limit_bit": 2000000.0
+    "rate_bps": 1000000000.0
   },
   "loss_model": {
     "GilbertElliot": [0.01, 0.3, 1.0, 0.5, true]
@@ -231,7 +246,7 @@ in [`config.example.json`](config.example.json):
 
 | Field             | Type    | Meaning                                                                 |
 | ----------------- | ------- | ----------------------------------------------------------------------- |
-| `buffer_capacity` | integer | Maximum number of packets held at once; pushes beyond this are dropped. |
+| `buffer_capacity` | integer | Maximum number of packets held at once; pushes beyond this are dropped. Also sets the limiter's limit: `buffer_capacity x 1542 B x 8` bit. |
 | `reordering`      | bool    | `false` = FIFO; `true` = emit in send-time order (min-heap), equal send times keep entry order (see above). |
 | `seed`            | integer or `null` | Optional. Seeds the delay and loss RNGs deterministically; absent = entropy (see Seeding). |
 
@@ -253,7 +268,6 @@ in [`config.example.json`](config.example.json):
 | `mode`      | string | `Spacer` or `TokenBucketFilter`.                                                |
 | `activate`  | bool   | Enable rate limiting. When `false` the limiter is a no-op.                      |
 | `rate_bps`  | float  | Target rate in bits per second.                                                 |
-| `limit_bit` | float  | Spacer: max in-flight backlog in bits. TBF: bucket size (burst budget) in bits. |
 
 **`loss_model`** — a tagged union, one of:
 

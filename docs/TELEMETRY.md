@@ -81,8 +81,8 @@ atomics, cache-line aligned).
 | `rx_full_bursts` | `rx_burst` calls that returned a full `BURST_SIZE` (32) batch: the NIC had at least that much waiting, so intake was the binding constraint. |
 | `dpds_rejects` | Packets the `dpds-core` buffer refused; always `loss_drops + limiter_drops + buffer_full_drops`. They are freed, never sent. |
 | `loss_drops` | Rejected packets dropped by the configured loss model. |
-| `limiter_drops` | Rejected packets the rate limiter refused (the Spacer's backlog would exceed `limit_bit`, or the Token Bucket Filter's budget is used up). |
-| `buffer_full_drops` | Rejected packets that loss model and limiter accepted but that found the buffer holding `buffer_capacity` packets. |
+| `limiter_drops` | Rejected packets the rate limiter refused (the Spacer's backlog would exceed the limiter's limit, or the Token Bucket Filter's budget is used up; the limit is derived from the buffer capacity, `buffer_capacity` x 1542 B x 8). |
+| `buffer_full_drops` | Rejected packets that found the buffer holding `buffer_capacity` packets (checked first: loss model and limiter never saw them). |
 | `pops` | Packets that left the DPDS buffer (their send time had arrived) and went on to TX. |
 | `tx_calls` | `tx_burst` calls with at least one packet. A worker transmits what it popped in the same loop iteration (at most `BURST_SIZE` = 32 packets), so there is at most one call per iteration; `tx_pkts / tx_calls` is the mean batch size. |
 | `tx_pkts` | Packets handed to `tx_burst`. |
@@ -110,20 +110,27 @@ the open one.
 
 ### Drop causes
 
-The buffer evaluates a pushed packet in a fixed order: the limiter accounts for it
-first (also when the packet is rejected afterwards), then the loss model decides,
-then the capacity is checked. The cause that is reported is the first of these that
-rejects the packet, in the order **loss model, limiter, buffer full**:
+**API change (spec20):** the room check moved from last to first (see below), so a
+buffer-full packet is no longer accounted by the limiter or the loss model.
 
-- if the loss model drops the packet it counts as `loss_drops`, whatever the
-  limiter and the buffer would have done. A packet that both the loss model and
-  the limiter reject is therefore a loss, and with a loss model active
-  `limiter_drops` can under-count what the limiter alone would have rejected;
-- else, if the limiter rejects it, `limiter_drops`;
-- else, if the buffer is full, `buffer_full_drops`.
+The buffer evaluates a pushed packet in a fixed order: first it checks for room, and
+a buffer that already holds `buffer_capacity` packets rejects the packet at once
+(`buffer_full_drops`) without touching the delayer, the limiter or the loss model: the
+packet never takes part in the emulation, so nothing is accounted for it. Otherwise
+the delay is sampled, the limiter accounts for the packet (also when it is rejected
+afterwards), the loss model decides, and the limiter's verdict follows. The cause that
+is reported is the first that rejects the packet, in the order **buffer full, loss
+model, limiter**:
 
-The limiter's state advances for lost and buffer-full packets too (existing
-behaviour, unchanged).
+- if the buffer is full, `buffer_full_drops`;
+- else, if the loss model drops the packet it counts as `loss_drops`, whatever the
+  limiter would have done. A packet that both the loss model and the limiter reject
+  is therefore a loss, and with a loss model active `limiter_drops` can under-count
+  what the limiter alone would have rejected;
+- else, if the limiter rejects it, `limiter_drops`.
+
+The limiter's state advances for lost packets too (a lost packet still occupies its
+spacing slot), but not for buffer-full packets.
 
 ### Epochs
 
@@ -242,7 +249,7 @@ The bin index is one subtraction and one multiplication by the reciprocal of
 `--links` file overrides it with the link's `histogram` (`bins`, `lo_ns`, `hi_ns`, each
 optional). The automatic rule, from `delayer.mean_ns`, `delayer.std_ns` (for any
 distribution) and, for an active Spacer, its queueing allowance
-`extra = limit_bit / rate_bps * 1e9` ns (a packet can wait up to a full limit's
+`extra = buffer_capacity * 12336 / rate_bps * 1e9` ns (a packet can wait up to a full limit's
 worth of bits behind the others, and the intended delay includes that wait):
 
 ```
@@ -278,7 +285,7 @@ of DPDK's telemetry socket.
 
 | reason | detail | meaning |
 | --- | --- | --- |
-| `DpdsReject` | `from=dpds,cause=<cause>` | `Buffer::push_outcome` rejected a packet; `<cause>` is `loss` (loss model), `limiter` or `buffer_full`, with the [precedence](#drop-causes) loss, limiter, buffer full. |
+| `DpdsReject` | `from=dpds,cause=<cause>` | `Buffer::push_outcome` rejected a packet; `<cause>` is `loss` (loss model), `limiter` or `buffer_full`, with the [precedence](#drop-causes) buffer full, loss, limiter. |
 | `DescriptorFull` | `from=dpds,to=nic` | A partial `tx_burst`: the NIC's TX descriptor ring was full. |
 | `IMissed` | `from=dpds,count=<n>` | NIC hardware: `imissed` rose, i.e. the NIC's RX ring had no room and dropped packets before software saw them. |
 | `RX_NoMbuf` | `from=dpds,count=<n>` | NIC hardware: `rx_nombuf` rose, no free mbuf in the pool (pool exhausted, which the derived pool size rules out unless mbufs leak). |

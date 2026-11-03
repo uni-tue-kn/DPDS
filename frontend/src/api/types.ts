@@ -27,7 +27,6 @@ export interface LimiterDto {
   mode: LimiterMode;
   activate: boolean;
   rate_bps: number;
-  limit_bit: number;
 }
 
 export type LossModelDto =

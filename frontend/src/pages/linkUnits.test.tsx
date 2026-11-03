@@ -19,12 +19,11 @@ const UNIT_FIELDS: [string, string[]][] = [
   ['Histogram lo', TIME_UNITS],
   ['Histogram hi', TIME_UNITS],
   ['Rate', RATE_UNITS],
-  ['Burst limit', SIZE_UNITS],
   ['Initialization rate', PPS_UNITS],
 ];
 const SECTION_OF: Record<string, string> = {
   'Mean delay': 'Delayer', 'Delay std': 'Delayer', 'Half-life period': 'Delayer', 'Initialization rate': 'Delayer',
-  Rate: 'Limiter', 'Burst limit': 'Limiter', 'Histogram lo': 'Statistics', 'Histogram hi': 'Statistics',
+  Rate: 'Limiter', 'Histogram lo': 'Statistics', 'Histogram hi': 'Statistics',
 };
 const body = () => document.body;
 
@@ -56,7 +55,7 @@ describe.each(PAGES)('$name: unit selects', (page: ConfigPage) => {
     expect(controls[i + 1]).toBe(unitSelect(body(), label));
   });
 
-  it('only those eight fields have a unit select (no unit for capacity, seed, bins or probabilities)', async () => {
+  it('only those seven fields have a unit select (no unit for capacity, seed, bins or probabilities)', async () => {
     await page.openNew();
     expect(screen.getAllByLabelText(/ unit$/)).toHaveLength(UNIT_FIELDS.length);
     for (const none of ['Buffer capacity', 'Seed', 'Histogram bins', 'Random loss probability']) {
@@ -67,7 +66,7 @@ describe.each(PAGES)('$name: unit selects', (page: ConfigPage) => {
   it('no label carries a unit suffix any more', async () => {
     await page.openNew();
     for (const old of ['Mean delay (ns)', 'Delay std (ns)', 'Half-life period (ns)', 'Initialization rate (pps)', 'Rate (bit/s)',
-      'Burst limit (bit)', 'Histogram lo (ns)', 'Histogram hi (ns)']) {
+      'Histogram lo (ns)', 'Histogram hi (ns)']) {
       expect(screen.queryByLabelText(old)).not.toBeInTheDocument();
     }
   });
@@ -90,15 +89,13 @@ describe.each(PAGES)('$name: defaults of a new form', (page: ConfigPage) => {
     }
   });
 
-  it('keeps the old default values: mean 1 ms, std 1e5 ns, rate 10 Gbit/s, limit 12 Mbit, capacity 100000', async () => {
+  it('keeps the old default values: mean 1 ms, std 1e5 ns, rate 10 Gbit/s, capacity 100000', async () => {
     await page.openNew();
     expect(numberField(body(), 'Mean delay')).toHaveValue(1);
     expect(unitOf(body(), 'Mean delay')).toBe('ms');
     expect(shownBase(body(), 'Delay std')).toBe(100000); // 100 us or 0.1 ms: the display is free
     expect(numberField(body(), 'Rate')).toHaveValue(10);
     expect(unitOf(body(), 'Rate')).toBe('Gbit/s');
-    expect(numberField(body(), 'Burst limit')).toHaveValue(12);
-    expect(unitOf(body(), 'Burst limit')).toBe('Mbit');
     expect(numberField(body(), 'Buffer capacity')).toHaveValue(100000);
   });
 
@@ -112,7 +109,6 @@ describe.each(PAGES)('$name: defaults of a new form', (page: ConfigPage) => {
     expect(c.delayer.half_life_period_ns).toBe(0);
     expect(c.delayer.initialization_rate_pps).toBe(10000000); // the helper's rate (TEST_RATE pps)
     expect(c.limiter.rate_bps).toBe(1e10);
-    expect(c.limiter.limit_bit).toBe(12000000);
     expect(c.buffer_capacity).toBe(100000);
     expect(c.histogram ?? null).toBeNull();
   });
@@ -140,9 +136,6 @@ const TIME_CASES: [number, number, string][] = [
 const RATE_CASES: [number, number, string][] = [
   [0, 0, 'Gbit/s'], [999, 999, 'bit/s'], [1500, 1.5, 'kbit/s'], [2500000, 2.5, 'Mbit/s'], [67000000, 67, 'Mbit/s'],
   [1234567000, 1234.567, 'Mbit/s'], [1000000000, 1, 'Gbit/s'], [40000000000, 40, 'Gbit/s'],
-];
-const SIZE_CASES: [number, number, string][] = [
-  [0, 0, 'Mbit'], [500, 500, 'bit'], [64000, 64, 'kbit'], [120000, 120, 'kbit'], [12000000, 12, 'Mbit'], [1500000000, 1.5, 'Gbit'],
 ];
 const PPS_CASES: [number, number, string][] = [
   [1, 1, 'pps'], [1.5, 1.5, 'pps'], [999, 999, 'pps'], [1500, 1.5, 'kpps'], [6543210, 6543.21, 'kpps'], [12500000, 12.5, 'Mpps'],
@@ -182,11 +175,6 @@ describe.each(PAGES)('$name: display unit of a stored value, and the exact round
   it.each(RATE_CASES)('limiter rate %d bit/s is shown as %d %s and saved back unchanged', async (bps, shown, unit) => {
     const c = await roundTrip(cfg({}, { rate_bps: bps }), 'Rate', shown, unit);
     expect(c.limiter.rate_bps).toBe(bps);
-  });
-
-  it.each(SIZE_CASES)('burst limit %d bit is shown as %d %s and saved back unchanged', async (bit, shown, unit) => {
-    const c = await roundTrip(cfg({}, { limit_bit: bit }), 'Burst limit', shown, unit);
-    expect(c.limiter.limit_bit).toBe(bit);
   });
 
   it.each(PPS_CASES)('initialization rate %d pps is shown as %d %s and saved back unchanged', async (pps, shown, unit) => {
@@ -264,15 +252,13 @@ describe.each(PAGES)('$name: changing a unit converts the shown value', (page: C
     ['Rate', 1.5, 'Gbit/s', 'Mbit/s', 1500],
     ['Rate', 0.067, 'Gbit/s', 'Mbit/s', 67],
     ['Rate', 1500, 'Mbit/s', 'Gbit/s', 1.5],
-    ['Burst limit', 12, 'Mbit', 'kbit', 12000],
-    ['Burst limit', 12, 'Mbit', 'Gbit', 0.012],
     ['Initialization rate', 12.5, 'Mpps', 'kpps', 12500],
     ['Initialization rate', 1.5, 'kpps', 'pps', 1500],
     ['Initialization rate', 1500, 'pps', 'Mpps', 0.0015],
   ] as [string, number, string, string, number][])('%s: %d %s converted to %s shows %d', async (label, typed, from, to, shown) => {
     const user = await page.openNew();
-    // Rate and Burst limit are disabled while the limiter is off (v16 contract): switch it on first
-    if (label === 'Rate' || label === 'Burst limit') await user.click(screen.getByLabelText('Limiter active'));
+    // Rate is disabled while the limiter is off (v16 contract): switch it on first
+    if (label === 'Rate') await user.click(screen.getByLabelText('Limiter active'));
     await typeInto(user, body(), label, String(typed), from);
     await pickUnit(user, body(), label, to);
     expect(numberField(body(), label)).toHaveValue(shown);
@@ -348,10 +334,6 @@ const PAYLOAD: [string, string, string, number, Pick, Prep][] = [
   ['Rate', 'Gbit/s', '1.5', 1500000000, (c) => c.limiter.rate_bps, 'limiter'],
   ['Rate', 'Gbit/s', '0.067', 67000000, (c) => c.limiter.rate_bps, 'limiter'], // 0.067 * 1e9 = 67000000.00000001 in floating point
   ['Rate', 'Gbit/s', '0.267', 267000000, (c) => c.limiter.rate_bps, 'limiter'],
-  ['Burst limit', 'bit', '9000', 9000, (c) => c.limiter.limit_bit, 'limiter'],
-  ['Burst limit', 'kbit', '1.2', 1200, (c) => c.limiter.limit_bit, 'limiter'],
-  ['Burst limit', 'Mbit', '12', 12000000, (c) => c.limiter.limit_bit, 'limiter'],
-  ['Burst limit', 'Gbit', '0.001', 1000000, (c) => c.limiter.limit_bit, 'limiter'],
   ['Initialization rate', 'pps', '1.5', 1.5, (c) => c.delayer.initialization_rate_pps, undefined],
   ['Initialization rate', 'kpps', '1500', 1500000, (c) => c.delayer.initialization_rate_pps, undefined],
   ['Initialization rate', 'Mpps', '12.5', 12500000, (c) => c.delayer.initialization_rate_pps, undefined],
@@ -378,7 +360,6 @@ describe.each(PAGES)('$name: payload in base units', (page: ConfigPage) => {
     const c = page.created();
     expect(c.delayer.std_ns).toBe(100000);
     expect(c.limiter.rate_bps).toBe(1e10);
-    expect(c.limiter.limit_bit).toBe(12000000);
     expect(c.delayer.initialization_rate_pps).toBe(10000000);
   });
 });
@@ -397,7 +378,6 @@ describe.each(PAGES)('$name: validation per field (messages name the field, neve
     ['Delay std', /Delay std/, undefined],
     ['Half-life period', /Half-life period/, 'correlation'],
     ['Rate', /\bRate\b/, 'limiter'],
-    ['Burst limit', /Burst limit/, 'limiter'],
     ['Initialization rate', /Initialization rate/, undefined],
     ['Buffer capacity', /Buffer capacity/, undefined],
   ] as [string, RegExp, Prep][])('an empty %s is refused: alert naming the field, no request', async (label, name, prep) => {
@@ -463,14 +443,14 @@ describe.each(PAGES)('$name: validation per field (messages name the field, neve
 });
 
 describe.each(PAGES)('$name: stored values of disabled fields survive the unit handling', (page: ConfigPage) => {
-  it('a disabled field with a stored value is sent back in base units (limiter inactive: 40 Gbit/s, 120 kbit)', async () => {
-    const user = await page.openStored(cfg({}, { activate: false, rate_bps: 40000000000, limit_bit: 120000 }));
+  it('a disabled field with a stored value is sent back in base units (limiter inactive: 40 Gbit/s)', async () => {
+    const user = await page.openStored(cfg({}, { activate: false, rate_bps: 40000000000 }));
     expect(numberField(body(), 'Rate')).toBeDisabled();
     await page.save(user);
     const l = page.updated().limiter;
     expect(l.activate).toBe(false);
     expect(l.rate_bps).toBe(40000000000);
-    expect(l.limit_bit).toBe(120000);
+    expect(Object.keys(l).sort()).toEqual(['activate', 'mode', 'rate_bps']);
   });
 
   it('half-life with correlation off keeps its stored value (2.5 us)', async () => {

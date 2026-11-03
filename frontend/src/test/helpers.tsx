@@ -2,6 +2,25 @@
 // tester's choices where the spec is silent are listed here so the implementer can follow them or ask the coordinator
 // to change them).
 //
+// ## v21 (spec20, user 2026-11-03): the limiter limit is derived, there is no "Burst limit" (supersedes the v16 text below)
+//   - `limit_bit` is gone from the API (`LimiterDto` = {mode, activate, rate_bps}); the controller answers a body that
+//     still has it with 400. dpds-core derives the limit for BOTH modes (Spacer fill-state limit, Token Bucket Filter
+//     bucket depth) as `buffer_capacity x 1542 B x 8 bit` (1542 B = 1518 B maximum frame + 4 FEC + 20 B L1 overhead,
+//     what the limiter counts per maximum frame: exactly `capacity` maximum frames fit).
+//   - The config form has NO "Burst limit" field and no "Burst limit unit" select (every v16 mention of them below is void):
+//     the Limiter subsection holds "Limiter active", "Limiter mode", "Rate" and "Rate unit" as controls, and the unit
+//     selects are now seven. Of the limiter fields only Rate is required (while the limiter is active).
+//   - The Limiter subsection also shows the derived limit READ-ONLY as plain information (not a control, no required
+//     marker), one element whose own text is "Limit: derived from buffer capacity × 1542 B = <value> <unit>" (the
+//     multiplication sign is U+00D7). `<value> <unit>` is capacity x 12336 bit in the editor's display-unit rule
+//     (largest of bit | kbit | Mbit | Gbit with value >= 1 and at most 3 decimals): capacity 100000 -> "1233.6 Mbit",
+//     1000 -> "12.336 Mbit", 321 -> "3959.856 kbit", 1000000 -> "12.336 Gbit". It follows the Buffer capacity field while
+//     it is edited, is shown whatever the mode and the "Limiter active" switch say, and with an empty or invalid capacity
+//     shows no number (never NaN).
+//   - The Links list shows no limit (it never showed it); the inspect panel's Limiter subsection lists "Limiter" and,
+//     only while the limiter is on, "Limiter mode" and "Rate": no "Burst limit" and no replacement item.
+//   - No non-test source file mentions `limit_bit` or "Burst limit" (limitDerived.test.tsx scans them).
+//
 // ## v16: units per field, subsections, no typed ports, visibly required fields (supersedes the v8/v10/v12 label lists)
 // The REST API and the stored values stay in base units (ns, bit/s, bit, pps); only the form shows units.
 // ### Field labels (the unit suffix is gone from the label; the unit lives in a select next to the input)

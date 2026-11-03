@@ -14,15 +14,18 @@ static PLACEHOLDER: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/placeholder
 
 const IMMUTABLE: &str = "public, max-age=31536000, immutable";
 
-/// The app loads only its own files; styles may be inline because React and the UI library set
-/// `style` attributes. There is no inline or `eval`ed script.
+/// The app loads only its own files, plus the release version file from `raw.githubusercontent.com`
+/// (`connect-src`; the browser makes that request, see `frontend/src/common/updateCheck.ts`).
+/// Styles may be inline because React and the UI library set `style` attributes. There is no
+/// inline or `eval`ed script.
 ///
 /// `'unsafe-inline'` in `style-src` stays until it is tried in a real browser. React sets styles
 /// through the CSSOM (`element.style.x = ...`), which a CSP does not block, so a stricter
 /// `style-src 'self'` is likely possible. Try it in a browser (check the console for violations)
 /// before tightening it; nothing here has run in one yet.
 const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
-                   img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; \
+                   img-src 'self' data:; font-src 'self'; \
+                   connect-src 'self' https://raw.githubusercontent.com; object-src 'none'; \
                    base-uri 'self'; form-action 'self'; frame-ancestors 'none'";
 
 /// What answers every GET and HEAD outside `/api`. Cheap to clone.

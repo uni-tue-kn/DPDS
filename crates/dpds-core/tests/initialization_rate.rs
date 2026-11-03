@@ -53,7 +53,6 @@ fn config(corr: bool, half_life_ns: f64, rate_pps: f64, capacity: usize, seed: u
             mode: LimiterMode::Spacer,
             activate: false,
             rate_bps: 1e9,
-            limit_bit: 1e9,
         },
         loss_model: LossModel::Random(0.0),
         seed: Some(seed),

@@ -44,7 +44,6 @@ fn config(loss_model: LossModel, capacity: usize, seed: u64) -> Config {
             mode: LimiterMode::Spacer,
             activate: false,
             rate_bps: 1e9,
-            limit_bit: 1e9,
         },
         loss_model,
         seed: Some(seed),
@@ -192,32 +191,55 @@ fn packets_are_accounted_by_the_limiter_before_the_dropper_drops_them() {
 
 #[test]
 fn a_limiter_rejected_packet_still_steps_the_loss_chain() {
-    // Alternating GE (keep, drop, keep, ...). Spacer limit 1000 bit holds one
-    // 992 bit packet. A is kept (chain -> Bad); B at the same instant is
-    // rejected by the limiter, but the dropper has already been consulted
-    // (Bad -> drop, chain -> Good). C, 2000 ns later when the limiter has
+    // Alternating GE (keep, drop, keep, ...). Capacity 2 gives the Spacer the
+    // derived limit 2 * 1542 * 8 = 24672 bit; a 1519-byte packet is
+    // (1519 + 4 + 20) * 8 = 12344 bit, so only one fits. A is kept (chain ->
+    // Bad); B at the same instant is rejected (by the loss model in Bad and,
+    // independently, by the limiter), and the dropper has been consulted
+    // (Bad -> drop, chain -> Good). C, 20000 ns later when the limiter has
     // drained, meets the chain in Good and is kept. Had B not stepped the
     // chain, C would meet Bad and be dropped.
-    let mut cfg = config(LossModel::GilbertElliot(1.0, 1.0, 1.0, 0.0, true), 8, 1);
+    let mut cfg = config(LossModel::GilbertElliot(1.0, 1.0, 1.0, 0.0, true), 2, 1);
     cfg.limiter.activate = true;
-    cfg.limiter.limit_bit = 1000.0;
     let mut b = Buffer::new(cfg);
-    assert!(b.push(pkt(1), 100, 0.0));
-    assert!(!b.push(pkt(2), 100, 0.0));
-    assert!(b.push(pkt(3), 100, 2000.0));
+    assert!(b.push(pkt(1), 1519, 0.0));
+    assert!(!b.push(pkt(2), 1519, 0.0));
+    assert!(b.push(pkt(3), 1519, 20_000.0));
     assert_eq!(b.len(), 2);
 }
 
 #[test]
-fn a_packet_rejected_for_lack_of_capacity_is_still_accounted_by_the_limiter() {
-    // Characterisation of the current order: limiter and dropper run before
-    // the capacity check. Capacity 1, Spacer 1 bit/ns, 992 bit per packet.
+fn a_packet_rejected_for_lack_of_capacity_is_not_accounted_by_the_limiter_nor_the_dropper() {
+    // The buffer-room check runs first: a packet that finds the buffer full
+    // never reaches the limiter. Capacity 1, Spacer 1 bit/ns, 992 bit per packet.
     let mut cfg = config(LossModel::Random(0.0), 1, 1);
     cfg.limiter.activate = true;
     let mut b = Buffer::new(cfg);
     assert!(b.push(pkt(1), 100, 0.0)); // fill 992
-    assert!(!b.push(pkt(2), 100, 0.0)); // buffer full, but fill becomes 1984
+    assert!(!b.push(pkt(2), 100, 0.0)); // buffer full: fill stays 992
     assert_eq!(b.pop(), Some(pkt(1)));
     assert!(b.push(pkt(3), 100, 0.0));
-    assert_eq!(b.front_time(), Some(1984.0));
+    assert_eq!(b.front_time(), Some(992.0), "fill was 992, not 1984");
+}
+
+#[test]
+fn a_buffer_full_packet_does_not_step_the_loss_chain() {
+    // Alternating GE(p=1, r=1, k=1, h=0): Good keeps and moves to Bad, Bad
+    // drops and moves to Good. Capacity 1. A is kept (chain -> Bad). Three
+    // pushes into the full buffer must not consult the dropper, so the chain
+    // stays in Bad. (Had each of them stepped it, three steps would leave it in
+    // Good and the packet after the pop would be kept.)
+    let ge = LossModel::GilbertElliot(1.0, 1.0, 1.0, 0.0, true);
+    let mut b = Buffer::new(config(ge, 1, 1));
+    assert!(b.push(pkt(1), 100, 0.0));
+    for i in 0..3 {
+        assert_eq!(b.len(), 1);
+        assert!(!b.push(pkt(10 + i), 100, 0.0));
+    }
+    assert_eq!(b.pop(), Some(pkt(1)));
+    assert!(!b.push(pkt(20), 100, 0.0), "chain still in Bad: dropped");
+    assert!(
+        b.push(pkt(21), 100, 0.0),
+        "that drop moved it to Good: kept"
+    );
 }

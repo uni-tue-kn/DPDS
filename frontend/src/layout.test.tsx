@@ -176,7 +176,7 @@ describe('sidebar API documentation link (v16)', () => {
 describe('sidebar server status (F3)', () => {
   it('shows the version once /api/online answers', async () => {
     renderApp('/hints');
-    expect(await screen.findByText(/v0\.1\.0/)).toBeInTheDocument();
+    expect(await screen.findByText(/v1\.0\.0/)).toBeInTheDocument();
   });
 
   it('shows "Offline" while /api/online fails and recovers by itself (re-poll every <= 5 s)', async () => {

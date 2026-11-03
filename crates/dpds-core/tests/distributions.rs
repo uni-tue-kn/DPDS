@@ -54,7 +54,6 @@ fn config(
             mode: LimiterMode::Spacer,
             activate: false,
             rate_bps: 1e9,
-            limit_bit: 1e9,
         },
         loss_model: LossModel::Random(0.0),
         seed: Some(seed),

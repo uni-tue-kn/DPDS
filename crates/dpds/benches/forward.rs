@@ -92,7 +92,6 @@ fn config(distribution: RVDistribution, mean_ns: f64, std_ns: f64, loss: f64) ->
             mode: LimiterMode::Spacer,
             activate: false,
             rate_bps: 1e11,
-            limit_bit: 1e9,
         },
         loss_model: LossModel::Random(loss),
         seed: Some(1),
