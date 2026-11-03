@@ -12,6 +12,8 @@
 //! cargo test --release -p dpds-controller --test integration -- --ignored --test-threads=1
 //! ```
 //!
+//! The frontend serving added in spec v13 is described in the header of [`frontend`].
+//!
 //! The test-facing Rust API, JSON shapes and HTTP contract that the tests assume
 //! are written down in the header of [`common`].
 
@@ -27,6 +29,7 @@ mod eal;
 mod export_import;
 mod fake_telemetry;
 mod fixtures_sanity;
+mod frontend;
 mod hints;
 mod histogram_extras;
 mod histogram_window;

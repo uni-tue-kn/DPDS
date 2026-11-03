@@ -1,6 +1,6 @@
 //! C2 and C5 on the HTTP surface:
 //!
-//! - CORS is OFF by default (the frontend's nginx proxy is same-origin): no
+//! - CORS is OFF by default (the controller serves the frontend itself, same-origin): no
 //!   `access-control-*` header, also not on a preflight. `--cors-origin <origin>`
 //!   (repeatable, env `DPDS_CORS_ORIGIN`) enables it for exactly those origins:
 //!   the header echoes the request's origin if it is listed, never `*`, nothing otherwise.

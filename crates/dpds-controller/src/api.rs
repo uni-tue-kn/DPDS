@@ -29,6 +29,7 @@ use crate::dto::{
     ConfigDto, DelayerDto, DistributionDto, HistogramDto, LimiterDto, LimiterModeDto, LossModelDto,
 };
 use crate::eal::{drain_timeout, eal_argv, links_file_json, EalInput, EalPort};
+use crate::frontend::Frontend;
 use crate::hints::{compute_hints, Hint, Level};
 use crate::host::HostRoots;
 use crate::lcores::{assign_lcores, DirectionPlan};
@@ -59,6 +60,7 @@ pub struct Deps {
 
 struct App {
     deps: Deps,
+    frontend: Frontend,
     stored: Mutex<StoredState>,
     /// Serialises edits, so the (slow) save runs without holding `stored`.
     edits: Mutex<()>,
@@ -207,6 +209,14 @@ pub struct OnlineView {
     /// The `dpds` binary has the `telemetry` feature (needed for start and stats).
     telemetry: bool,
     root: bool,
+}
+
+/// `GET /api/version`.
+#[derive(Serialize, ToSchema)]
+pub struct VersionView {
+    version: String,
+    /// `bundled` when the build embedded a real frontend, `placeholder` when it did not.
+    frontend: String,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -615,6 +625,14 @@ async fn online(State(app): Shared) -> Json<OnlineView> {
         dpds_bin: app.deps.dpds_bin.to_string_lossy().into_owned(),
         telemetry: app.deps.dpds_has_telemetry,
         root: app.deps.is_root,
+    })
+}
+
+#[utoipa::path(get, path = "/api/version", responses((status = 200, body = VersionView)))]
+async fn version(State(app): Shared) -> Json<VersionView> {
+    Json(VersionView {
+        version: env!("CARGO_PKG_VERSION").into(),
+        frontend: app.frontend.kind().into(),
     })
 }
 
@@ -1202,6 +1220,7 @@ async fn import(
     ),
     paths(
         online,
+        version,
         interfaces,
         host_hints,
         list_links,
@@ -1241,6 +1260,7 @@ async fn import(
         DirectionPlan,
         EmulationView,
         OnlineView,
+        VersionView,
         ErrorBody,
         StatsView,
         DirectionStats,
@@ -1261,11 +1281,19 @@ async fn import(
 )]
 struct ApiDoc;
 
-/// Fails if the stored state cannot be loaded (a corrupt file is never reset silently).
+/// The API plus the frontend the build embedded.
 pub fn router(deps: Deps) -> Result<Router, StoreError> {
+    router_with(deps, Frontend::embedded())
+}
+
+/// The API, and `frontend` for every GET and HEAD outside `/api`. Fails if the stored state
+/// cannot be loaded (a corrupt file is never reset silently).
+pub fn router_with(deps: Deps, frontend: Frontend) -> Result<Router, StoreError> {
     let stored = store::load(&deps.state_dir)?;
+    let site = frontend.clone();
     let app = Arc::new(App {
         deps,
+        frontend,
         stored: Mutex::new(stored),
         edits: Mutex::new(()),
         pending_restart: AtomicBool::new(false),
@@ -1275,6 +1303,7 @@ pub fn router(deps: Deps) -> Result<Router, StoreError> {
     });
     let api = Router::new()
         .route("/api/online", get(online))
+        .route("/api/version", get(version))
         .route("/api/interfaces", get(interfaces))
         .route("/api/host/hints", get(host_hints))
         .route("/api/links", get(list_links).post(create_link))
@@ -1298,7 +1327,17 @@ pub fn router(deps: Deps) -> Result<Router, StoreError> {
         .with_state(app);
     Ok(api
         .merge(SwaggerUi::new("/api/docs").url("/api/openapi.json", ApiDoc::openapi()))
-        .fallback(|| async { ApiError::not_found("no such route") })
+        .fallback(move |req: Request| {
+            let site = site.clone();
+            async move {
+                let path = req.uri().path();
+                if path == "/api" || path.starts_with("/api/") {
+                    ApiError::not_found("no such route").into_response()
+                } else {
+                    site.respond(req.method(), path)
+                }
+            }
+        })
         .method_not_allowed_fallback(|| async {
             ApiError(
                 StatusCode::METHOD_NOT_ALLOWED,
@@ -1369,7 +1408,7 @@ async fn host_guard(
 }
 
 /// CORS for exactly `origins` (the request's origin is echoed if listed). Off by
-/// default: the frontend's nginx proxy is same-origin, so [`router`] has no CORS layer.
+/// default: the frontend is served by the controller itself (same origin), so [`router`] has no CORS layer.
 pub fn with_cors(router: Router, origins: Vec<HeaderValue>) -> Router {
     router.layer(
         CorsLayer::new()

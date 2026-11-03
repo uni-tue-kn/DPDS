@@ -113,6 +113,36 @@ fn an_isolated_core_in_a_hole_of_the_online_list_is_skipped() {
 
 // ---- blocking reads do not block the runtime -----------------------------------------------
 
+/// Keeps a FIFO's readers moving until `stop` is set or `deadline` has passed: opens it
+/// `O_RDWR | O_NONBLOCK` (never blocks on Linux, readers or not), writes a line, closes it again,
+/// and repeats. A reader that is already blocked in `open(O_RDONLY)` is woken by the writer; one
+/// that is not there yet gets the next round; the close gives `read_to_string` its EOF. Nothing
+/// in here can wait for a peer, so the release itself cannot hang.
+fn release_fifo(
+    path: std::path::PathBuf,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    deadline: Duration,
+) -> std::thread::JoinHandle<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::sync::atomic::Ordering;
+
+    std::thread::spawn(move || {
+        let started = std::time::Instant::now();
+        while !stop.load(Ordering::Relaxed) && started.elapsed() < deadline {
+            if let Ok(mut w) = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(&path)
+            {
+                let _ = w.write_all(b"0x020000\n");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    })
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn handlers_that_read_sysfs_do_not_block_the_async_workers() {
     // `class` of a NIC is a FIFO nobody writes to: reading it blocks. Two such requests
@@ -140,22 +170,34 @@ async fn handlers_that_read_sysfs_do_not_block_the_async_workers() {
     tokio::spawn(async move {
         let _ = tx.send(router_get(&router, "/api/online").await.status);
     });
-    let got = rx.recv_timeout(Duration::from_secs(3));
+    let got = rx.recv_timeout(Duration::from_secs(10));
 
-    // release the readers whatever happened
-    for _ in 0..2 {
-        if let Ok(mut w) = std::fs::OpenOptions::new().write(true).open(&fifo) {
-            use std::io::Write;
-            let _ = w.write_all(b"0x020000\n");
+    // Release the readers, whatever `got` is. The releaser only ever opens the FIFO
+    // O_RDWR | O_NONBLOCK, so it cannot block; it runs until every handler has returned (or
+    // 60 s, so a bug cannot keep it alive for ever). Releasing later than the check above
+    // matters: earlier, the readers would not be blocked while /api/online is asked.
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let releaser = release_fifo(fifo, stop.clone(), Duration::from_secs(60));
+    let mut unfinished = Vec::new();
+    for (i, b) in blockers.into_iter().enumerate() {
+        // Bounded wait: a handler that never returns fails the test instead of hanging it.
+        if tokio::time::timeout(Duration::from_secs(30), b)
+            .await
+            .is_err()
+        {
+            unfinished.push(i);
         }
     }
-    for b in blockers {
-        let _ = b.await;
-    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    releaser.join().unwrap();
     assert_eq!(
         got,
         Ok(200),
         "/api/online must answer while two handlers wait for a file"
+    );
+    assert!(
+        unfinished.is_empty(),
+        "handlers {unfinished:?} did not return within 30 s after their file was released"
     );
 }
 

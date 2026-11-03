@@ -8,6 +8,7 @@ use std::time::Duration;
 use axum::http::HeaderValue;
 use clap::{Args, Parser, Subcommand};
 use dpds_controller::api::{self, Deps};
+use dpds_controller::frontend::Frontend;
 use dpds_controller::hints::{compute_hints, Level};
 use dpds_controller::host::HostRoots;
 use dpds_controller::store;
@@ -199,17 +200,21 @@ fn serve(a: ServeArgs) -> Result<ExitCode, String> {
             a.dpds_bin.display()
         );
     }
-    let router = api::router(Deps {
-        state_dir: a.host.state_dir.clone(),
-        roots: a.host.roots(),
-        supervisor: supervisor.clone(),
-        telemetry,
-        dpds_bin: a.dpds_bin,
-        runtime_dir: a.runtime_dir,
-        dpds_has_telemetry,
-        // SAFETY: geteuid has no preconditions.
-        is_root: unsafe { libc::geteuid() } == 0,
-    })
+    let frontend = Frontend::embedded();
+    let router = api::router_with(
+        Deps {
+            state_dir: a.host.state_dir.clone(),
+            roots: a.host.roots(),
+            supervisor: supervisor.clone(),
+            telemetry,
+            dpds_bin: a.dpds_bin,
+            runtime_dir: a.runtime_dir,
+            dpds_has_telemetry,
+            // SAFETY: geteuid has no preconditions.
+            is_root: unsafe { libc::geteuid() } == 0,
+        },
+        frontend.clone(),
+    )
     .map_err(|e| e.to_string())?;
     let router = api::with_host_guard(router, &a.allowed_host);
     let router = if origins.is_empty() {
@@ -227,6 +232,14 @@ fn serve(a: ServeArgs) -> Result<ExitCode, String> {
                 .await
                 .map_err(|e| format!("cannot listen on {}: {e}", a.bind))?;
             eprintln!("dpds-controller: listening on {}", a.bind);
+            if frontend.kind() == "bundled" {
+                eprintln!("dpds-controller: serving the bundled frontend at /");
+            } else {
+                eprintln!(
+                    "dpds-controller: serving the placeholder page at /, the frontend is not \
+                     bundled (install it with dpds.sh install, or run npm run build in frontend/)"
+                );
+            }
             axum::serve(listener, router)
                 .with_graceful_shutdown(shutdown_signal())
                 .await

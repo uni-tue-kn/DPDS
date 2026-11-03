@@ -1,4 +1,5 @@
-// REST client of the dpds-controller. Base URL `/api` (same origin: nginx / the Vite dev proxy forward it).
+// REST client of the dpds-controller. Base URL `/api` (same origin: the controller serves the frontend,
+// and the Vite dev proxy forwards it).
 // Every function returns the parsed JSON body. Any non-2xx response rejects with `ApiError`; a network
 // failure rejects with the plain fetch error. Every non-GET request carries `Content-Type: application/json`
 // (the controller answers 415 otherwise), also the body-less start/stop/delete.

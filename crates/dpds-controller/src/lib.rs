@@ -7,6 +7,7 @@ pub mod cdf;
 pub mod discovery;
 pub mod dto;
 pub mod eal;
+pub mod frontend;
 pub mod hints;
 pub mod host;
 pub mod lcores;

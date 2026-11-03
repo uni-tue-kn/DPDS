@@ -1,4 +1,5 @@
-# CI: formatting, clippy and tests for the Rust workspace, the web frontend and dpds.sh.
+# CI: formatting, clippy and tests for the Rust workspace, the web frontend and dpds.sh, plus the
+# frontend build that dpds.sh install downloads.
 name: CI
 
 on:
@@ -122,7 +123,7 @@ jobs:
         working-directory: frontend
     steps:
       - uses: actions/checkout@v7
-      # Node 22 as in frontend/Dockerfile; package.json allows >= 18.18.
+      # Node 22; package.json allows >= 18.18.
       - uses: actions/setup-node@v7
         with:
           node-version: 22
@@ -139,5 +140,89 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-      # Plain bash with stubbed cargo/docker/systemctl; no root or real systemd needed.
+      # Plain bash with stubbed cargo/curl/systemctl; no root or real systemd needed.
       - run: bash packaging/tests/dpds_sh.test.sh
+
+  # The frontend asset is built and published by two jobs, so that the job with write access runs
+  # no checkout and no npm: the build job (read-only token) runs the build tooling and hands the
+  # two files over as a workflow artifact, the publish job (the only one that may write) moves them
+  # into the release. `dpds.sh install` downloads the asset of the checked-out frontend/ tree and
+  # builds the controller with it. The asset is named after the git tree hash of frontend/, so a
+  # push that does not touch frontend/ finds its asset already there and uploads nothing.
+  frontend-asset-build:
+    needs: frontend
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/nightly' || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      asset: ${{ steps.package.outputs.asset }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+      - name: Package
+        id: package
+        run: |
+          tree=$(git rev-parse HEAD:frontend)
+          asset="dpds-frontend-$tree.tar.gz"
+          mkdir "$RUNNER_TEMP/assets"
+          tar -C frontend/dist -czf "$RUNNER_TEMP/assets/$asset" .
+          # Checked by `sha256sum -c` next to the tarball, so the file name has no directory.
+          (cd "$RUNNER_TEMP/assets" && sha256sum "$asset" > "$asset.sha256")
+          echo "asset=$asset" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: frontend-asset
+          path: ${{ runner.temp }}/assets/
+          if-no-files-found: error
+          retention-days: 1
+
+  # Publishes the two files of the build job to the prerelease `frontend-builds`. The release must
+  # not be called `nightly`: that is a branch name. Only this job may write.
+  frontend-asset-publish:
+    needs: frontend-asset-build
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/nightly' || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      ASSET: ${{ needs.frontend-asset-build.outputs.asset }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: frontend-asset
+          path: ${{ runner.temp }}/assets
+      - name: Publish
+        run: |
+          dir="$RUNNER_TEMP/assets"
+          base="https://github.com/$GITHUB_REPOSITORY/releases/download/frontend-builds"
+          # The release is created once. If another run creates it first, the create fails and view succeeds.
+          gh release view frontend-builds --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1 \
+            || gh release create frontend-builds --repo "$GITHUB_REPOSITORY" --prerelease --target "$GITHUB_SHA" \
+                 --title "Frontend builds" \
+                 --notes "Built frontend/dist per frontend/ tree hash, downloaded by dpds.sh install. Created by CI." \
+            || gh release view frontend-builds --repo "$GITHUB_REPOSITORY" > /dev/null
+          # Whether a file exists is asked of the public download URL (HEAD request: 302 if it
+          # exists, 404 if not). Listing the release assets would stop at about 100 of them.
+          # The two files are uploaded one after the other (two commands), tarball first; a
+          # failed run can leave the tarball without its checksum file, which the next run repairs.
+          # --clobber replaces a half-uploaded file of an earlier failed run.
+          if ! curl -fsI -o /dev/null "$base/$ASSET"; then
+            gh release upload frontend-builds "$dir/$ASSET" --clobber --repo "$GITHUB_REPOSITORY"
+            gh release upload frontend-builds "$dir/$ASSET.sha256" --clobber --repo "$GITHUB_REPOSITORY"
+          elif ! curl -fsI -o /dev/null "$base/$ASSET.sha256"; then
+            echo "$ASSET already exists, but its .sha256 file is missing: uploading the .sha256 file."
+            gh release upload frontend-builds "$dir/$ASSET.sha256" --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            echo "$ASSET and its .sha256 file already exist in the release, nothing to upload."
+          fi

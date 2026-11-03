@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
-# dpds.sh - build, install and run the DPDS controller (systemd service) and its web frontend (Docker).
+# dpds.sh - build, install and run the DPDS controller (a systemd service that also serves the web frontend).
 #
 # Usage: ./dpds.sh [--nightly|--stable] [--yes] {check|install|update|start|stop|restart|status|uninstall}
 #
 # The controller (dpds-controller) runs natively on the host as root and starts dpds as its child
-# process. Only the web frontend runs in a container. This script never tunes the host: it does not
-# touch kernel parameters, hugepages, NIC settings or CPU governors. The controller only reports
-# hints (`dpds.sh check`).
+# process. It embeds the web frontend at build time and serves it on its own port. The frontend is
+# built by CI: install and update download the dist matching the checked-out frontend/ tree from
+# the GitHub release `frontend-builds` (dpds-frontend-<tree>.tar.gz plus a .sha256 file), verify
+# it and build the controller with it. The host needs neither Node nor a container runtime. This
+# script never tunes the host: it does not touch kernel parameters, hugepages, NIC settings or CPU
+# governors. The controller only reports hints (`dpds.sh check`).
 #
 # Environment overrides:
 #   DPDS_PREFIX       install prefix, binaries go to $DPDS_PREFIX/bin   (default /usr/local)
@@ -15,12 +18,11 @@
 #   DPDS_SYSTEMD_DIR  where the unit file is installed                   (default /etc/systemd/system)
 #   DPDS_BIND         bind address written into a NEW controller.env     (default 0.0.0.0:8100)
 #   CARGO_TARGET_DIR  cargo target dir the build output is read from     (default <repo>/target)
-#   DPDS_CONTROLLER   where the frontend container proxies /api to; scheme://host:port, no path.
-#                     Default: http://<bind host>:<bind port> from controller.env (127.0.0.1 for a
-#                     wildcard bind, port 8100 without controller.env)
-#   DPDS_FRONTEND_BIND, DPDS_FRONTEND_PORT
-#                     frontend listen address and port; passed through to docker compose
-#                     (defaults 0.0.0.0 and 8080, see docker-compose.yml)
+#   DPDS_FRONTEND_DIST       a frontend dist directory (with index.html) that you built yourself
+#                     (`npm run build` in frontend/); install and update then download nothing and
+#                     build the controller with it. The directory is never modified or removed.
+#   DPDS_FRONTEND_ASSET_URL  base URL of the frontend release assets
+#                     (default https://github.com/uni-tue-kn/DPDS/releases/download/frontend-builds)
 #
 # Exit codes: 0 success, 1 usage error / prerequisite missing / aborted / a step failed.
 
@@ -40,6 +42,13 @@ ETC_DIR="${DPDS_ETC_DIR:-/etc/dpds}"
 STATE_DIR="${DPDS_STATE_DIR:-/var/lib/dpds-controller}"
 SYSTEMD_DIR="${DPDS_SYSTEMD_DIR:-/etc/systemd/system}"
 BIND="${DPDS_BIND:-0.0.0.0:8100}"
+FRONTEND_ASSET_URL="${DPDS_FRONTEND_ASSET_URL:-https://github.com/uni-tue-kn/DPDS/releases/download/frontend-builds}"
+# The build script of the controller runs in the crate directory, so a relative path of the caller
+# is made absolute here, before the script changes into the repository.
+FRONTEND_DIST="${DPDS_FRONTEND_DIST:-}"
+if [[ -n "$FRONTEND_DIST" && "$FRONTEND_DIST" != /* ]]; then
+  FRONTEND_DIST="$PWD/$FRONTEND_DIST"
+fi
 TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
 
 SERVICE="dpds-controller"
@@ -52,6 +61,7 @@ DEFAULT_PORT=8100
 CHANNEL_NIGHTLY=0
 CHANNEL_STABLE=0
 ASSUME_YES=0
+WORK_DIR=""   # temporary download and unpack directory, removed when the script exits
 
 #################
 # Pretty output #
@@ -110,6 +120,13 @@ validate_settings() {
   fi
 }
 
+cleanup() {
+  if [[ -n "$WORK_DIR" ]]; then
+    rm -rf -- "$WORK_DIR"
+  fi
+}
+trap cleanup EXIT
+
 confirm() {
   local answer=""
   printf '%s [y/N] ' "$1"
@@ -159,17 +176,50 @@ require_prerequisites() {
   fi
 }
 
-# Docker is only needed to build and run the frontend image (install, update), not by `check`.
-require_docker() {
-  require_cmd docker
-  if ! docker compose version >/dev/null 2>&1; then
-    error "The docker compose plugin is not available ('docker compose version' failed)."
+# curl, sha256sum and tar fetch and unpack the frontend asset; `check` and a caller-provided
+# DPDS_FRONTEND_DIST need none of them.
+require_frontend_tools() {
+  if [[ -n "$FRONTEND_DIST" ]]; then
+    return 0
+  fi
+  require_cmd curl
+  require_cmd sha256sum
+  require_cmd tar
+}
+
+# A caller-provided DPDS_FRONTEND_DIST must be a built frontend. Checked first by install and
+# update, so that nothing is fetched, built or restarted for a wrong path.
+require_frontend_dist_dir() {
+  if [[ -n "$FRONTEND_DIST" && ! -f "$FRONTEND_DIST/index.html" ]]; then
+    error "DPDS_FRONTEND_DIST=$FRONTEND_DIST has no index.html: point it at a built frontend (npm run build in frontend/ writes frontend/dist) or unset it."
     exit 1
   fi
-  if ! docker info >/dev/null 2>&1; then
-    error "Cannot reach the docker daemon ('docker info' failed). Is it running, and may this user use it?"
-    exit 1
-  fi
+}
+
+# Refuses a tarball that could write outside the directory it is unpacked into: absolute paths,
+# ".." path components, symbolic links and hard links. A name that merely contains two dots
+# (app..min.js) is fine. Nothing is extracted here.
+check_asset_members() {
+  local tarball="$1" asset="$2" line types names
+  types="$(LC_ALL=C tar -tvzf "$tarball")" || { error "Cannot list the contents of $asset."; exit 1; }
+  names="$(LC_ALL=C tar -tzf "$tarball")" || { error "Cannot list the contents of $asset."; exit 1; }
+  while IFS= read -r line; do
+    case "$line" in
+      l*|h*)
+        error "Refusing $asset: it contains a symbolic or hard link ($line)."
+        exit 1 ;;
+    esac
+  done <<<"$types"
+  while IFS= read -r line; do
+    if [[ "$line" == /* ]]; then
+      error "Refusing $asset: it contains the absolute path $line."
+      exit 1
+    fi
+    if [[ "/$line/" == *"/../"* ]]; then
+      error "Refusing $asset: it contains the path $line with a '..' component."
+      exit 1
+    fi
+  done <<<"$names"
 }
 
 ########################################
@@ -180,9 +230,78 @@ build_dpds() {
   cargo build --release -p dpds --features telemetry
 }
 
+# Sets FRONTEND_BUILD_DIST to the frontend dist the controller is built with (empty: none, the
+# controller build then uses frontend/dist if present, else its placeholder page). The dist is the
+# caller's DPDS_FRONTEND_DIST as is, or the CI asset of the checked-out frontend/ tree, unpacked
+# into a temporary directory outside the repository.
+prepare_frontend() {
+  FRONTEND_BUILD_DIST=""
+  if [[ -n "$FRONTEND_DIST" ]]; then
+    info "Using the frontend dist $FRONTEND_DIST"
+    FRONTEND_BUILD_DIST="$FRONTEND_DIST"
+    return 0
+  fi
+
+  local tree base asset dl rc=0
+  tree="$(git rev-parse HEAD:frontend)" || tree=""
+  if [[ ! "$tree" =~ ^[0-9a-f]{40,64}$ ]]; then
+    error "Cannot determine the frontend tree: 'git rev-parse HEAD:frontend' failed."
+    exit 1
+  fi
+  base="${FRONTEND_ASSET_URL%/}"
+  asset="dpds-frontend-$tree.tar.gz"
+  WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/dpds-frontend.XXXXXX")"
+  dl="$WORK_DIR/download"
+  mkdir "$dl" "$WORK_DIR/dist"
+
+  # An https base is never downgraded, not even by a redirect. An explicit http:// base (a local
+  # mirror) is left alone.
+  local -a fetch=(curl -fsSL)
+  if [[ "$base" == https://* ]]; then
+    fetch+=(--proto '=https' --proto-redir '=https')
+  fi
+
+  info "Downloading $asset from $base"
+  "${fetch[@]}" -o "$dl/$asset" "$base/$asset" || rc=$?
+  if (( rc == 0 )); then
+    "${fetch[@]}" -o "$dl/$asset.sha256" "$base/$asset.sha256" || rc=$?
+    if (( rc == 22 )); then
+      error "The checksum file $asset.sha256 is missing at $base, but the tarball exists: CI did not finish uploading $asset."
+      error "Re-run the CI job (frontend-asset-publish) or wait a moment, or set DPDS_FRONTEND_DIST to a locally built frontend dist directory."
+      exit 1
+    fi
+  fi
+  if (( rc == 22 )); then
+    error "The frontend asset $asset is not available at $base (HTTP error, usually 404)."
+    error "CI builds it for each push to nightly or main: push your frontend/ changes and wait for CI, or build the frontend yourself (npm run build in frontend/) and set DPDS_FRONTEND_DIST to its dist directory."
+    exit 1
+  elif (( rc != 0 )); then
+    error "Downloading the frontend asset $asset failed (curl exit code $rc)."
+    error "Check the network, or set DPDS_FRONTEND_DIST to a locally built frontend dist directory."
+    exit 1
+  fi
+
+  if ! (cd "$dl" && sha256sum --check --status "$asset.sha256"); then
+    error "Checksum mismatch: $asset does not match $asset.sha256 (sha256sum failed). Not using it."
+    exit 1
+  fi
+  check_asset_members "$dl/$asset" "$asset"
+  tar -xzf "$dl/$asset" --no-same-owner -C "$WORK_DIR/dist"
+  if [[ ! -f "$WORK_DIR/dist/index.html" ]]; then
+    error "$asset has no index.html at its top level."
+    exit 1
+  fi
+  FRONTEND_BUILD_DIST="$WORK_DIR/dist"
+}
+
+# build_controller [DIST]: DIST is the frontend dist directory to embed.
 build_controller() {
   info "Building dpds-controller"
-  cargo build --release -p dpds-controller
+  if [[ -n "${1:-}" ]]; then
+    DPDS_FRONTEND_DIST="$1" cargo build --release -p dpds-controller
+  else
+    cargo build --release -p dpds-controller
+  fi
 }
 
 # Runs the controller's host check as root (some hints are only readable by root); its exit code
@@ -222,8 +341,9 @@ install_env_file() {
 # Build, host check, confirmation, installation. Prerequisites must have been checked.
 install_flow() {
   validate_settings
+  prepare_frontend
   build_dpds
-  build_controller
+  build_controller "$FRONTEND_BUILD_DIST"
 
   local release_dir="$TARGET_DIR/release" rc=0
   run_host_check "$release_dir/dpds-controller" || rc=$?
@@ -243,10 +363,6 @@ install_flow() {
   install_env_file
   run_privileged install -d -m 0755 "$STATE_DIR"
   run_privileged systemctl daemon-reload
-
-  info "Building the frontend image"
-  export_frontend_env
-  docker compose build
   info "Installed. Start it with: $0 start"
 }
 
@@ -260,7 +376,7 @@ cmd_check() {
   if [[ ! -x "$ctl" ]]; then
     ctl="$TARGET_DIR/release/dpds-controller"
     if [[ ! -x "$ctl" ]]; then
-      build_controller
+      build_controller "$FRONTEND_DIST"
     fi
   fi
   "$ctl" check
@@ -268,25 +384,22 @@ cmd_check() {
 
 cmd_install() {
   require_prerequisites
-  require_docker
+  require_frontend_tools
+  require_frontend_dist_dir
+  if [[ -z "$FRONTEND_DIST" && -n "$(git status --porcelain -- frontend)" ]]; then
+    warn "frontend/ has uncommitted changes. The CI asset of the committed frontend/ is used; to try your local changes, build the frontend (npm run build in frontend/) and set DPDS_FRONTEND_DIST to its dist directory."
+  fi
   install_flow
 }
 
 cmd_start() {
   info "Enabling and starting $SERVICE"
-  run_privileged systemctl enable --now "$SERVICE" || return 1
-  info "Starting the frontend container"
-  export_frontend_env
-  docker compose up -d
+  run_privileged systemctl enable --now "$SERVICE"
 }
 
 cmd_stop() {
-  local rc=0
   info "Disabling and stopping $SERVICE (this drains the delay buffers and can take a while)"
-  run_privileged systemctl disable --now "$SERVICE" || rc=1
-  info "Stopping the frontend container"
-  docker compose down || rc=1
-  return "$rc"
+  run_privileged systemctl disable --now "$SERVICE"
 }
 
 # A failed stop must not leave a running service stopped: start is attempted anyway and the
@@ -326,21 +439,12 @@ controller_address() {
   echo "$host:$port"
 }
 
-# The frontend container proxies /api to DPDS_CONTROLLER; docker compose reads it (and
-# DPDS_FRONTEND_BIND / DPDS_FRONTEND_PORT, which the caller may set) from the environment.
-export_frontend_env() {
-  DPDS_CONTROLLER="${DPDS_CONTROLLER:-http://$(controller_address)}"
-  export DPDS_CONTROLLER
-}
-
 cmd_status() {
   local addr
   addr="$(controller_address)"
   info "Service"
   systemctl status --no-pager "$SERVICE" || true
-  info "frontend container"
-  docker compose ps || true
-  info "Controller API (http://$addr/api/online)"
+  info "Controller API and web frontend (http://$addr/)"
   if command -v curl >/dev/null 2>&1; then
     curl -fsS --max-time 5 "http://$addr/api/online" || warn "Controller API is not reachable."
     echo
@@ -352,7 +456,8 @@ cmd_status() {
 
 cmd_update() {
   require_prerequisites
-  require_docker
+  require_frontend_tools
+  require_frontend_dist_dir
 
   # Refuse before touching anything: a checkout or pull with local changes can fail halfway or
   # silently build something other than the branch.
@@ -387,9 +492,8 @@ cmd_update() {
 }
 
 cmd_uninstall() {
-  info "Stopping $SERVICE and the frontend container"
+  info "Stopping $SERVICE"
   run_privileged systemctl disable --now "$SERVICE" || warn "Could not disable $SERVICE (not installed?)."
-  docker compose down || warn "Could not stop the frontend container."
   info "Removing binaries and unit"
   run_privileged rm -f "$BIN_DIR/dpds" "$BIN_DIR/dpds-controller" "$UNIT_DEST"
   run_privileged systemctl daemon-reload || warn "systemctl daemon-reload failed."
@@ -404,14 +508,16 @@ usage() {
   echo "  --stable     There is no Rust stable release yet; this option only prints that"
   echo "  --yes        Do not ask for confirmation (install, update)"
   echo ""
+  echo "Set DPDS_FRONTEND_DIST to a frontend dist directory you built yourself to skip the download."
+  echo ""
   echo "Commands:"
   echo "  check        Check prerequisites, then print the host hints (dpds-controller check)"
-  echo "  install      Build, run the host check, ask to continue, install binaries, unit and frontend image"
-  echo "  update       git pull nightly, rebuild, reinstall, restart if it was running"
-  echo "  start        Enable and start the controller service and the frontend container"
-  echo "  stop         Disable and stop the controller service and the frontend container"
+  echo "  install      Fetch the CI-built frontend, build, run the host check, ask to continue, install binaries and unit"
+  echo "  update       git pull nightly, rebuild with the matching frontend, reinstall, restart if it was running"
+  echo "  start        Enable and start the controller service (it serves the web frontend)"
+  echo "  stop         Disable and stop the controller service"
   echo "  restart      Stop, then start"
-  echo "  status       Show service, container and API status"
+  echo "  status       Show service and API status"
   echo "  uninstall    Stop and remove binaries and unit (state dir and controller.env are kept)"
 }
 
@@ -450,7 +556,7 @@ main() {
     *) error "Unknown command: $cmd"; usage >&2; exit 1 ;;
   esac
 
-  # cargo, git and docker compose all work on the repository this script lives in.
+  # cargo and git work on the repository this script lives in.
   cd "$REPO_ROOT"
 
   "cmd_$cmd"

@@ -55,7 +55,7 @@ fn absurd_meminfo_hugepage_figures_saturate_instead_of_overflowing() {
     }
 }
 
-// ---- unknown routes and wrong methods are JSON -----------------------------------------
+// ---- unknown /api routes and wrong methods are JSON (paths outside /api are the frontend, see frontend.rs) -----------------------------------------
 
 #[tokio::test]
 async fn unknown_routes_are_a_404_with_a_json_message() {
@@ -64,8 +64,8 @@ async fn unknown_routes_are_a_404_with_a_json_message() {
         ("GET", "/api/nope"),
         ("GET", "/api/links/1/extra"),
         ("POST", "/api/nope"),
-        ("GET", "/nope"),
-        ("GET", "/"),
+        ("GET", "/api"),
+        ("GET", "/api/"),
     ] {
         let r = a.request(method, path, None).await;
         assert_eq!(r.status, 404, "{method} {path}: {}", r.text());

@@ -87,7 +87,7 @@ The emulation logic lives in the reusable library [`dpds-core`](crates/dpds-core
 | Virtual-device operation without hardware (`net_null`, `net_pcap`) | ✅ Available  |
 | Automated end-to-end tests                                       | ✅ Available    |
 | REST controller for configuring, starting and stopping DPDS      | ⚠️ Experimental |
-| React web frontend (Docker)                                      | ⚠️ Experimental |
+| React web frontend (served by the controller)                    | ⚠️ Experimental |
 
 ---
 
@@ -636,22 +636,57 @@ For interactive use there is the controller with a REST API and a web frontend, 
 
 `dpds-controller` stores links and their configuration, discovers the host's
 network interfaces, starts and stops one `dpds` process for all links as its child process, and
-serves live telemetry. A web frontend (nginx and a React app in a Docker container, port 8080) sits on
-top of it. DPDK itself never runs in Docker.
+serves live telemetry. The controller also serves the React web frontend: the built frontend is
+embedded in the `dpds-controller` binary, so one service on one port gives the frontend at
+`http://<host>:<controller port>/` (default port 8100) and the REST API under `/api`. There is no
+Docker, no separate web server and no Node on the host.
 
 `dpds.sh` builds and installs both. It needs Rust (stable works; `--nightly` only selects the `nightly` git branch), clang and
 `ld.lld` of the same LLVM major version as `rustc`, DPDK (`pkg-config --exists libdpdk`), and,
-for `install` and `update`, Docker with the compose plugin and a running daemon (`docker info`).
+for `install` and `update`, `curl`, `sha256sum` and `tar` (to fetch the frontend, see below).
 It checks for them and never installs anything. `update` refuses a working tree with uncommitted
 changes, warns when it switches from another branch, and pulls with `--ff-only`.
+
+The frontend is built by CI, not on the host. For each push to `nightly` or `main`, the
+`frontend-asset-build` and `frontend-asset-publish` jobs of `.github/workflows/ci.yml` build
+`frontend/dist` and upload it to the
+GitHub prerelease `frontend-builds` as `dpds-frontend-<tree>.tar.gz` plus
+`dpds-frontend-<tree>.tar.gz.sha256`, where `<tree>` is `git rev-parse HEAD:frontend`, the git tree
+hash of the `frontend/` directory. `install` and `update` compute `<tree>` for the checked-out
+sources, download both files from
+`https://github.com/uni-tue-kn/DPDS/releases/download/frontend-builds` (override the base URL with
+`DPDS_FRONTEND_ASSET_URL`), verify the checksum, unpack the dist into a temporary directory and
+build the controller with `DPDS_FRONTEND_DIST` pointing at it. Nothing is built or installed if the
+download or the checksum fails. If the asset does not exist yet (you just pushed, or you changed
+`frontend/` locally), wait for CI, or build the frontend yourself and skip the download:
+
+```bash
+(cd frontend && npm ci && npm run build)
+DPDS_FRONTEND_DIST=frontend/dist ./dpds.sh install   # no download; the directory is used as is
+```
+
+Without `DPDS_FRONTEND_DIST`, a plain `cargo build -p dpds-controller` embeds whatever
+`frontend/dist` holds, which may be stale (an older `npm run build`), and otherwise a small
+placeholder page when `frontend/dist` has no `index.html`. `dpds.sh` never relies on that: it always
+passes an explicit directory, either the downloaded asset or your `DPDS_FRONTEND_DIST`. A
+`DPDS_FRONTEND_DIST` without an `index.html` is an error.
+
+Trust model: the `.sha256` file is fetched from the same place as the tarball, so the checksum
+only detects corruption (a truncated or damaged download), not tampering. The authenticity of the
+frontend rests on HTTPS to GitHub (`dpds.sh` refuses to downgrade an https base URL) and on who may
+create releases in the repository. Before unpacking, `dpds.sh` also refuses an archive with absolute
+paths, `..` components or links.
+
+For frontend development, run `npm run dev` in `frontend/` (see `frontend/README.md`): the Vite dev
+server on port 5173 proxies `/api` to a controller on `127.0.0.1:8100` (`DPDS_CONTROLLER` changes that).
 
 ```bash
 ./dpds.sh check      # prerequisites, then the host hints (see below)
 ./dpds.sh install    # build dpds (telemetry) and the controller, host check, install binaries,
-                     # systemd unit, /etc/dpds/controller.env, the frontend image
-./dpds.sh start      # systemctl enable --now dpds-controller, docker compose up -d
-./dpds.sh status     # service, container, GET /api/online
-./dpds.sh stop       # systemctl disable --now dpds-controller, docker compose down
+                     # systemd unit, /etc/dpds/controller.env; fetches the CI-built frontend first
+./dpds.sh start      # systemctl enable --now dpds-controller
+./dpds.sh status     # service, GET /api/online
+./dpds.sh stop       # systemctl disable --now dpds-controller
 ./dpds.sh restart    # stop, then start
 ./dpds.sh update     # git pull nightly, rebuild, reinstall; restarts only if it was running
 ./dpds.sh uninstall  # remove binaries and unit; keeps the state dir and controller.env
@@ -681,9 +716,9 @@ the default; `--stable` only prints that no Rust stable release exists yet.
   [Configuration](#configuration)), including `delayer.initialization_rate_pps`, which is required
   and has no default (400 naming the field when missing, not finite or below 1). Set it to the
   expected packet rate of the link. It is part of presets, export/import and the links file.
-- **Frontend**: `http://<host>:8080` (`DPDS_FRONTEND_PORT`). Pages for the dashboard (start/stop, per-link rates, drop
+- **Frontend**: `http://<host>:<controller port>/`, served by the controller itself. Pages for the dashboard (start/stop, per-link rates, drop
   shares per cause, delay statistics and histogram), links, interfaces, host hints and settings.
-- **REST API**: served by the controller on port 8100 (`/api/...`); the frontend proxies it. The
+- **REST API**: served by the controller on port 8100 (`/api/...`), the same port as the frontend. The
   interactive OpenAPI documentation is at `http://<host>:8100/api/docs`.
 - **Stored state** lives in `/var/lib/dpds-controller` and survives `stop` and `update`.
 - **Presets**: named configs (one per link) stored beside the links (`GET|POST /api/presets`,
@@ -740,27 +775,23 @@ the default; `--stable` only prints that no Rust stable release exists yet.
   authentication. Anyone who can reach the port can start `dpds` with their own (allowlisted)
   configuration. Set `DPDS_BIND` before `install` (for example `DPDS_BIND=127.0.0.1:8100`) or edit
   `DPDS_CONTROLLER_BIND` in `/etc/dpds/controller.env` and restart to restrict it. The frontend
-  port exposes the full API (start/stop included), because nginx proxies all of `/api` and listens
-  on all interfaces. To restrict access, set `DPDS_FRONTEND_BIND=127.0.0.1` as well, together with
-  `DPDS_CONTROLLER_BIND`. Further controller options, set as flags of `dpds-controller serve` or
-  as environment variables in `controller.env`:
+  has no listener of its own: the controller's port serves both the frontend and the full API
+  (start/stop included), so the controller's bind restricts everything. Further controller
+  options, set as flags of `dpds-controller serve` or as environment variables in `controller.env`:
   - `--allowed-host` / `DPDS_ALLOWED_HOST` (repeatable; comma-separated in the variable): the
-    `Host` header of every `/api` request is checked against DNS rebinding. IP literals,
+    `Host` header of every request, the frontend's files included, is checked against DNS rebinding. IP literals,
     `localhost` and the machine's hostname are always allowed; add any other name you use to reach
-    the controller or the frontend, or requests get 421/403.
+    the controller (and so the frontend), or requests get 421/403.
   - `--cors-origin` / `DPDS_CORS_ORIGIN` (repeatable): CORS is off by default. Only the listed
     origins are echoed. `*` and origins with a path or trailing slash are rejected at startup.
 
-`dpds.sh start`, `restart`, `install` and `update` pass these to `docker compose`:
-`DPDS_CONTROLLER` (where the frontend proxies `/api` to, as `http://host:port` without a path;
-default derived from `DPDS_CONTROLLER_BIND` in `controller.env`, a wildcard bind becomes
-`127.0.0.1`), `DPDS_FRONTEND_PORT` (default 8080) and `DPDS_FRONTEND_BIND` (default `0.0.0.0`).
-`dpds.sh status` probes the same bind address.
+`dpds.sh status` probes the controller at the bind address from `controller.env`.
 
 `dpds.sh` reads `DPDS_PREFIX`, `DPDS_ETC_DIR`, `DPDS_STATE_DIR`, `DPDS_SYSTEMD_DIR` and
 `DPDS_BIND` (defaults `/usr/local`, `/etc/dpds`, `/var/lib/dpds-controller`,
 `/etc/systemd/system`, `0.0.0.0:8100`); `DPDS_BIND` only applies when `controller.env` is
-created, which `install` never overwrites.
+created, which `install` never overwrites. `DPDS_FRONTEND_DIST` and `DPDS_FRONTEND_ASSET_URL`
+are described above.
 
 ---
 

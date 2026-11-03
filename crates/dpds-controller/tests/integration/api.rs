@@ -1243,6 +1243,7 @@ async fn openapi_json_documents_every_path() {
         ("/api/emulation", &["get"]),
         ("/api/stats", &["get"]),
         ("/api/stats/{dir}/delay_histogram", &["get"]),
+        ("/api/version", &["get"]),
     ];
     for (path, methods) in expect {
         let p = paths.get(*path).unwrap_or_else(|| {

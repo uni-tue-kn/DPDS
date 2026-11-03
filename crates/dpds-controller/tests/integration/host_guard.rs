@@ -53,6 +53,7 @@ fn all_routes() -> Vec<(&'static str, &'static str, Option<Value>)> {
         ("GET", "/api/emulation", None),
         ("GET", "/api/stats", None),
         ("GET", "/api/stats/0/delay_histogram", None),
+        ("GET", "/api/version", None),
         ("GET", "/api/openapi.json", None),
         ("GET", "/api/docs/", None),
         (

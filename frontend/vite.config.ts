@@ -2,10 +2,11 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
-// Dev server proxies /api to a locally running dpds-controller; in production nginx does.
+// The dev server proxies /api to a running dpds-controller (default bind port 8100). In production the
+// controller serves the built dist/ itself, so there is no proxy.
 export default defineConfig({
   plugins: [react()],
-  server: { proxy: { '/api': 'http://127.0.0.1:8100' } },
+  server: { proxy: { '/api': process.env.DPDS_CONTROLLER ?? 'http://127.0.0.1:8100' } },
   test: {
     environment: 'jsdom',
     globals: true,
