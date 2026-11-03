@@ -1,6 +1,7 @@
-// Static checks of how the frontend is delivered (spec v13) and of leftovers in the source tree (F6).
-// The controller embeds `dist/` and serves it, CI builds it as a release asset, and the Vite dev server
-// proxies /api to a running controller (src/viteConfig.test.ts). These tests read the files as text from the repository
+// Static checks of how the frontend is delivered (spec v13, spec v15) and of leftovers in the source tree (F6).
+// The controller embeds `dist/` and serves it, `dpds.sh install` builds it on the host with Node (spec v15:
+// no CI release asset any more), and the Vite dev server proxies /api to a running controller
+// (src/viteConfig.test.ts). These tests read the files as text from the repository
 // (frontend/ = the directory vitest runs in, its parent is the repository root); nothing is built or
 // started.
 import { execSync } from 'node:child_process';
@@ -57,7 +58,7 @@ describe('index.html works under the controller CSP (default-src self, no inline
   });
 });
 
-describe('.github/workflows/ci.yml: frontend-asset-build and frontend-asset-publish (spec v13, v13b item 1)', () => {
+describe('.github/workflows/ci.yml: no frontend release asset any more (spec v15)', () => {
   const ci = readFileSync(resolve(repoDir, '.github/workflows/ci.yml'), 'utf8');
 
   /** The text of the job `name` (2-space indented key under `jobs:`), up to the next job. */
@@ -69,141 +70,118 @@ describe('.github/workflows/ci.yml: frontend-asset-build and frontend-asset-publ
     if (end < 0) end = lines.length;
     return lines.slice(start, end).join('\n');
   }
-  /** Shell lines of a job with `\`-continued lines joined and comment-only lines dropped. */
-  const logical = (text: string) =>
-    text
-      .replace(/\\\n\s*/g, ' ')
-      .split('\n')
-      .filter((l) => !/^\s*#/.test(l))
-      .join('\n');
-  /** Every `gh release <sub> ...` command up to the next `|`, `&`, `;`, `>` or end of line. */
-  const ghReleaseCommands = (text: string, sub?: string) =>
-    Array.from(logical(text).matchAll(/\bgh release (\w+)[^\n|&;>]*/g))
-      .filter((m) => !sub || m[1] === sub)
-      .map((m) => m[0]);
+  /** The job ids: the 2-space indented keys under `jobs:`. */
+  const jobIds = (() => {
+    const lines = ci.split('\n');
+    const start = lines.findIndex((l) => l === 'jobs:');
+    return lines
+      .slice(start + 1)
+      .map((l) => /^ {2}([\w-]+):\s*$/.exec(l)?.[1])
+      .filter((id): id is string => id !== undefined);
+  })();
 
-  const build = job('frontend-asset-build');
-  const publish = job('frontend-asset-publish');
-
-  it('the old single frontend-asset job is split in two', () => {
-    expect(build).not.toBe('');
-    expect(publish).not.toBe('');
+  it('has the jobs fmt, rust, frontend and packaging and no frontend-asset-* job', () => {
+    expect(jobIds).toEqual(expect.arrayContaining(['fmt', 'rust', 'frontend', 'packaging']));
+    expect(jobIds.filter((id) => /^frontend-asset/.test(id))).toEqual([]);
+    expect(job('frontend-asset-build')).toBe('');
+    expect(job('frontend-asset-publish')).toBe('');
     expect(job('frontend-asset')).toBe('');
   });
 
-  it('build runs after the frontend job, publish after build; both on pushes to nightly and main only', () => {
-    expect(build).toMatch(/^\s+needs:.*\bfrontend\b|^\s+needs:\s*\n(\s+-\s*[\w-]+\s*\n)*\s+-\s*frontend\b/m);
-    expect(publish).toMatch(
-      /^\s+needs:\s*\[?\s*frontend-asset-build\b|^\s+needs:\s*\n(\s+-\s*[\w-]+\s*\n)*\s+-\s*frontend-asset-build\b/m,
-    );
-    for (const [name, text] of [['build', build], ['publish', publish]]) {
-      const cond = (text.match(/^\s+if:\s*(.+)$/m) ?? [])[1] ?? '';
-      expect(cond, `${name} needs an if`).toMatch(/push/);
-      expect(cond).toMatch(/nightly/);
-      expect(cond).toMatch(/\bmain\b/);
-      expect(cond).not.toMatch(/master/);
-    }
-  });
-
-  it('only publish may write: contents: write once in the workflow, in publish; build and the workflow default read', () => {
-    expect(ci.match(/contents:\s*write/g)).toHaveLength(1);
-    expect(publish).toMatch(/permissions:\s*\n\s+contents:\s*write/);
-    expect(build).not.toMatch(/contents:\s*write/);
+  it('is read-only: no contents: write, and the workflow default stays contents: read', () => {
+    expect(ci).not.toMatch(/contents:\s*write/);
     expect(ci).toMatch(/^permissions:\s*\n\s+contents:\s*read/m);
   });
 
-  it('build checks out, builds with npm ci and npm run build, packages tar + sha256 and uploads an artifact', () => {
-    expect(build).toMatch(/actions\/checkout@/);
-    expect(build).toMatch(/npm ci/);
-    expect(build).toMatch(/npm run build/);
-    expect(build).toMatch(/git rev-parse HEAD:frontend/);
-    expect(build).toMatch(/dpds-frontend-/);
-    expect(build).toMatch(/\.tar\.gz/);
-    expect(build).toMatch(/\btar\b[^\n]*dist/);
-    expect(build).toMatch(/sha256sum/);
-    expect(build).toMatch(/\.sha256/);
-    expect(build).toMatch(/actions\/upload-artifact@v\d+\b/);
+  it('publishes nothing: no gh release, no frontend-builds release, no GH_TOKEN, no artifacts', () => {
+    expect(ci).not.toMatch(/\bgh release\b/);
+    expect(ci).not.toMatch(/frontend-builds/);
+    expect(ci).not.toMatch(/GH_TOKEN|GITHUB_TOKEN/);
+    expect(ci).not.toMatch(/actions\/(upload|download)-artifact/);
+    expect(ci).not.toMatch(/--clobber/);
+    expect(ci).not.toMatch(/dpds-frontend-/);
   });
 
-  it('build holds no token and never talks to the release', () => {
-    expect(build).not.toMatch(/GH_TOKEN|GITHUB_TOKEN/);
-    expect(build).not.toMatch(/\bgh\s/);
-    expect(build).not.toMatch(/--clobber/);
+  it('no longer says that dpds.sh downloads the frontend or that it is a release asset', () => {
+    expect(ci).not.toMatch(/frontend-asset|release asset|frontend asset|dpds\.sh install downloads/i);
   });
 
-  it('publish has no checkout and no npm: it only moves the artifact to the release', () => {
-    expect(publish).not.toMatch(/actions\/checkout/);
-    expect(publish).not.toMatch(/\bnpm\b/);
-    expect(publish).not.toMatch(/setup-node/);
-    expect(publish).toMatch(/actions\/download-artifact@v\d+\b/);
+  it('the frontend job runs npm ci, then the typecheck, the tests and npm run build, in frontend/', () => {
+    const frontend = job('frontend');
+    expect(frontend).not.toBe('');
+    expect(frontend).toMatch(/working-directory:\s*frontend/);
+    expect(frontend).toMatch(/npm run build/);
+    const at = (re: RegExp) => frontend.search(re);
+    expect(at(/npm ci/)).toBeGreaterThanOrEqual(0);
+    expect(at(/npm ci/)).toBeLessThan(at(/npm run build/));
+    expect(frontend).toMatch(/tsc --noEmit/);
+    expect(frontend).toMatch(/vitest run/);
   });
 
-  it('upload-artifact and download-artifact are pinned to a major version', () => {
-    expect(ci).toMatch(/uses:\s*actions\/upload-artifact@v\d+\s*$/m);
-    expect(ci).toMatch(/uses:\s*actions\/download-artifact@v\d+\s*$/m);
+  it('the packaging job still runs the dpds.sh tests', () => {
+    expect(job('packaging')).toMatch(/bash packaging\/tests\/dpds_sh\.test\.sh/);
   });
 
-  it('publish uses gh with the GITHUB_TOKEN as GH_TOKEN and names the repository on every release command', () => {
-    expect(publish).toMatch(/GH_TOKEN:\s*\$\{\{\s*secrets\.GITHUB_TOKEN\s*\}\}/);
-    const cmds = ghReleaseCommands(publish);
-    expect(cmds.length).toBeGreaterThanOrEqual(3);
-    for (const c of cmds) expect(c, c).toMatch(/--repo\s+"?\$\{?GITHUB_REPOSITORY\}?"?/);
-  });
-
-  it('publish uses the frontend-builds prerelease, created as view || create --prerelease || view, never a tag named nightly', () => {
-    expect(publish).toMatch(/frontend-builds/);
-    expect(publish).toMatch(/--prerelease/);
-    const text = logical(publish);
-    expect(text).toMatch(/gh release view[^\n]*\|\|\s*gh release create[^\n]*--prerelease[^\n]*\|\|\s*gh release view/);
-    expect(ci).not.toMatch(/gh release \w+\s+['"]?nightly\b/);
-    expect(ci).not.toMatch(/tag_name:\s*nightly/);
-  });
-
-  it('asks the public download URL whether each file exists (curl -fsI), not the asset list of gh release view', () => {
-    const text = logical(publish);
-    expect(text).toMatch(/curl\s+-(?=[a-zA-Z]*f)(?=[a-zA-Z]*I)[a-zA-Z]+/);
-    expect(text).toMatch(/github\.com\/\$\{?GITHUB_REPOSITORY\}?\/releases\/download\/frontend-builds\b/);
-    // `gh release view --json assets` lists at most about 100 assets
-    expect(publish).not.toMatch(/--json\s+assets/);
-    expect(publish).not.toMatch(/\.assets\[\]/);
-  });
-
-  it('skips what is already there', () => {
-    expect(publish).toMatch(/already|exist/i);
-  });
-
-  it('--clobber is used in publish only, on every upload', () => {
-    expect(ci.match(/--clobber/g)?.length ?? 0).toBeGreaterThan(0);
-    expect(ci.match(/--clobber/g)?.length).toBe(publish.match(/--clobber/g)?.length);
-    for (const c of ghReleaseCommands(publish, 'upload')) expect(c, c).toMatch(/--clobber/);
-  });
-
-  /** The files one `gh release upload` command uploads: its arguments minus the tag and options. */
-  function uploadedFiles(cmd: string): string[] {
-    const toks = cmd.split(/\s+/).slice(3); // after: gh release upload
-    const files: string[] = [];
-    for (let i = 0; i < toks.length; i++) {
-      if (toks[i] === '--repo') i++;
-      else if (!toks[i].startsWith('-')) files.push(toks[i]);
-    }
-    return files.slice(1); // the first operand is the release tag
-  }
-
-  it('the tarball and its .sha256 are uploaded by separate gh release upload commands, the tarball first', () => {
-    const uploads = ghReleaseCommands(publish, 'upload');
-    expect(uploads.length).toBeGreaterThanOrEqual(2);
-    for (const c of uploads) expect(uploadedFiles(c), `one file per upload: ${c}`).toHaveLength(1);
-    const isSha = (c: string) => /\.sha256/.test(c);
-    // somewhere a tarball upload is directly followed by the .sha256 upload; one upload call
-    // would send both at once, so the checksum file is no proof that the tarball is complete
-    const pairs = uploads.filter((c, i) => !isSha(c) && uploads[i + 1] !== undefined && isSha(uploads[i + 1]));
-    expect(pairs.length).toBeGreaterThanOrEqual(1);
-    // a .sha256-only upload (repair of a half-uploaded asset) is a third command
-    expect(uploads.filter(isSha).length).toBeGreaterThanOrEqual(2);
+  it('the DPDK comment names the new minimum, not 25.11 (user, 2026-11-03)', () => {
+    expect(ci).not.toMatch(/needs\s*>=\s*25\.11/);
   });
 
   it('the workflow has no Docker left', () => {
     expect(ci).not.toMatch(/docker/i);
+  });
+});
+
+describe('README.md and frontend/README.md: dpds.sh builds the frontend with Node on the host (spec v15)', () => {
+  const readme = readFileSync(resolve(repoDir, 'README.md'), 'utf8');
+  const paragraphs = readme.split(/\n\s*\n/).map((p) => p.replace(/\s+/g, ' '));
+  const enginesMin = (JSON.parse(read('package.json')) as { engines: { node: string } }).engines.node.replace(/^>=\s*/, '');
+
+  it('the engines.node minimum is written as >=X.Y (the README and dpds.sh quote it)', () => {
+    expect(enginesMin).toMatch(/^\d+\.\d+/);
+  });
+
+  it('a paragraph on dpds.sh names Node with the minimum version and npm', () => {
+    const para = paragraphs.find((p) => /dpds\.sh/.test(p) && /\bNode\b/.test(p) && /\bnpm\b/.test(p) && p.includes(enginesMin));
+    expect(para, `no paragraph about dpds.sh, Node ${enginesMin} and npm`).toBeDefined();
+  });
+
+  it('says that npm ci needs network access to the npm registry', () => {
+    expect(readme).toMatch(/npm registry/i);
+  });
+
+  it('says that dpds.sh runs npm ci and npm run build before it builds the controller', () => {
+    const para = paragraphs.find(
+      (p) => /dpds\.sh/.test(p) && /npm ci/.test(p) && /npm run build/.test(p) && !/download|skip/i.test(p),
+    );
+    expect(para, 'no paragraph about dpds.sh running npm ci and npm run build (and not about skipping a download)').toBeDefined();
+    expect(para!.indexOf('npm ci')).toBeLessThan(para!.indexOf('npm run build'));
+  });
+
+  it('has no release-asset, download or trust-model text', () => {
+    expect(readme).not.toMatch(
+      /frontend-builds|frontend-asset|DPDS_FRONTEND_ASSET_URL|\.sha256|sha256sum|release asset|trust model|CI-built|dpds-frontend-<tree>|\.tar\.gz|frontend asset/i,
+    );
+  });
+
+  it('no longer claims that the host needs no Node or lists curl and tar as requirements', () => {
+    expect(readme).not.toMatch(/no Node on the host/i);
+    expect(readme).not.toMatch(/`curl`, `sha256sum` and `tar`/);
+  });
+
+  it('the DPDK requirement is at least 26.07 and 25.11 is gone (user, 2026-11-03)', () => {
+    expect(readme).not.toMatch(/25\.11/);
+    const line = readme.split('\n').find((l) => /\*\*DPDK /.test(l)) ?? '';
+    expect(line).toMatch(/at least 26\.07/);
+  });
+
+  it('frontend/README.md no longer says that CI builds an asset that dpds.sh downloads', () => {
+    expect(read('README.md')).not.toMatch(/release asset|download|uploads it/i);
+  });
+
+  it('frontend/README.md says that dpds.sh install builds the frontend', () => {
+    const paras = read('README.md').split(/\n\s*\n/).map((p) => p.replace(/\s+/g, ' '));
+    const para = paras.find((p) => /dpds\.sh install/.test(p) && /\bbuilds?\b/i.test(p) && /\b(Node|npm)\b/.test(p));
+    expect(para, 'no paragraph about dpds.sh install building the frontend with Node or npm').toBeDefined();
   });
 });
 

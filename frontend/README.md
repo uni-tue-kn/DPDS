@@ -3,8 +3,8 @@
 React + TypeScript + Vite, react-bootstrap, Chart.js; look and layout follow the P4TG GUI. It talks to the
 `dpds-controller` REST API under `/api` (pages: Dashboard, Links, Interfaces, Host hints, Settings).
 
-In production there is nothing to run here: CI builds `dist/` and uploads it as a release asset, `dpds.sh install`
-downloads the asset that matches this directory and the controller embeds it and serves it on its own port at
+In production there is nothing to run here: `dpds.sh install` and `dpds.sh update` build this directory on the host with
+Node and npm (`npm ci`, then `npm run build`), and the controller embeds `dist/` and serves it on its own port at
 `http://<host>:<controller port>/`.
 
 ## Development
@@ -33,6 +33,6 @@ host name other than an IP address, `localhost` or the machine's host name must 
 npm run build      # tsc --noEmit && vite build -> dist/
 ```
 
-`dist/` goes to `/` with the hashed files under `/assets/`. To run the controller with your own build, point the
-controller build at it: `DPDS_FRONTEND_DIST=frontend/dist ./dpds.sh install` (from the repository root, no download then), or let
-`cargo build -p dpds-controller` pick up `frontend/dist` by itself.
+`dist/` goes to `/` with the hashed files under `/assets/`. `dpds.sh install` runs exactly these two steps (`npm ci`,
+`npm run build`) and builds the controller with the result. A plain `cargo build -p dpds-controller` picks up
+`frontend/dist` by itself, or set `DPDS_FRONTEND_DIST` to another built directory for that build.

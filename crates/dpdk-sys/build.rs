@@ -33,7 +33,7 @@ fn main() {
 
     // Emit link directives for all DPDK shared libraries.
     let lib = pkg_config::Config::new()
-        .atleast_version("25.11")
+        .atleast_version("26.07")
         .probe("libdpdk")
         .expect("libdpdk not found via pkg-config; is DPDK installed?");
 

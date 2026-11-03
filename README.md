@@ -216,10 +216,12 @@ EAL and the process exits with status 0.
 
 ### Requirements
 
-- **DPDK 26.07** (found through `pkg-config libdpdk`; the build needs at least 25.11),
+- **DPDK 26.07** (found through `pkg-config libdpdk`; the build needs at least 26.07),
   and for real traffic a DPDK-capable NIC (tested on Mellanox ConnectX)
 - **Rust** (stable toolchain)
 - **clang and lld, with the same LLVM major version as `rustc`** (see [Building](#building))
+- **Node 18.18 or newer and npm**, plus network access to the npm registry, to build the web
+  frontend (only for the controller; see [Controller and web frontend](#️-controller-and-web-frontend))
 - Linux; hugepages for real NICs (not needed for the virtual devices below)
 
 ### Building
@@ -639,51 +641,35 @@ network interfaces, starts and stops one `dpds` process for all links as its chi
 serves live telemetry. The controller also serves the React web frontend: the built frontend is
 embedded in the `dpds-controller` binary, so one service on one port gives the frontend at
 `http://<host>:<controller port>/` (default port 8100) and the REST API under `/api`. There is no
-Docker, no separate web server and no Node on the host.
+Docker and no separate web server.
 
-`dpds.sh` builds and installs both. It needs Rust (stable works; `--nightly` only selects the `nightly` git branch), clang and
-`ld.lld` of the same LLVM major version as `rustc`, DPDK (`pkg-config --exists libdpdk`), and,
-for `install` and `update`, `curl`, `sha256sum` and `tar` (to fetch the frontend, see below).
-It checks for them and never installs anything. `update` refuses a working tree with uncommitted
-changes, warns when it switches from another branch, and pulls with `--ff-only`.
+`dpds.sh` builds and installs both. It needs Rust (stable works; `--nightly` only selects the
+`nightly` git branch), clang and `ld.lld` of the same LLVM major version as `rustc`, DPDK at least 26.07
+(`pkg-config --atleast-version=26.07 libdpdk`), and Node at least 18.18 (the `engines.node` of
+`frontend/package.json`) with npm. `check`, `install` and `update` verify all of them first, list every
+missing or too old tool at once and never install anything. `update` refuses a working tree with
+uncommitted changes, warns when it switches from another branch, and pulls with `--ff-only`.
 
-The frontend is built by CI, not on the host. For each push to `nightly` or `main`, the
-`frontend-asset-build` and `frontend-asset-publish` jobs of `.github/workflows/ci.yml` build
-`frontend/dist` and upload it to the
-GitHub prerelease `frontend-builds` as `dpds-frontend-<tree>.tar.gz` plus
-`dpds-frontend-<tree>.tar.gz.sha256`, where `<tree>` is `git rev-parse HEAD:frontend`, the git tree
-hash of the `frontend/` directory. `install` and `update` compute `<tree>` for the checked-out
-sources, download both files from
-`https://github.com/uni-tue-kn/DPDS/releases/download/frontend-builds` (override the base URL with
-`DPDS_FRONTEND_ASSET_URL`), verify the checksum, unpack the dist into a temporary directory and
-build the controller with `DPDS_FRONTEND_DIST` pointing at it. Nothing is built or installed if the
-download or the checksum fails. If the asset does not exist yet (you just pushed, or you changed
-`frontend/` locally), wait for CI, or build the frontend yourself and skip the download:
+`install` and `update` build the frontend on the host: `dpds.sh` runs `npm ci` and then
+`npm run build` in `frontend/` (this needs network access to the npm registry), checks that
+`frontend/dist/index.html` exists and builds the controller with `DPDS_FRONTEND_DIST` pointing at
+`frontend/dist`, so that the controller embeds the result. A failing npm step stops `dpds.sh` before
+anything is built or installed. In `update` the frontend is built after the `git pull`. The controller
+serves the frontend at `http://<host>:8100/` (the port of its bind address).
 
-```bash
-(cd frontend && npm ci && npm run build)
-DPDS_FRONTEND_DIST=frontend/dist ./dpds.sh install   # no download; the directory is used as is
-```
-
-Without `DPDS_FRONTEND_DIST`, a plain `cargo build -p dpds-controller` embeds whatever
-`frontend/dist` holds, which may be stale (an older `npm run build`), and otherwise a small
-placeholder page when `frontend/dist` has no `index.html`. `dpds.sh` never relies on that: it always
-passes an explicit directory, either the downloaded asset or your `DPDS_FRONTEND_DIST`. A
-`DPDS_FRONTEND_DIST` without an `index.html` is an error.
-
-Trust model: the `.sha256` file is fetched from the same place as the tarball, so the checksum
-only detects corruption (a truncated or damaged download), not tampering. The authenticity of the
-frontend rests on HTTPS to GitHub (`dpds.sh` refuses to downgrade an https base URL) and on who may
-create releases in the repository. Before unpacking, `dpds.sh` also refuses an archive with absolute
-paths, `..` components or links.
+A plain `cargo build -p dpds-controller` embeds whatever `frontend/dist` holds, which may be stale
+(an older `npm run build`), and otherwise a small placeholder page when `frontend/dist` has no
+`index.html`. Set `DPDS_FRONTEND_DIST` to a built directory to embed that one instead (a directory without
+an `index.html` is an error). `dpds.sh` never relies on that: it ignores a `DPDS_FRONTEND_DIST` from
+the caller's environment and always passes the `frontend/dist` it has just built.
 
 For frontend development, run `npm run dev` in `frontend/` (see `frontend/README.md`): the Vite dev
 server on port 5173 proxies `/api` to a controller on `127.0.0.1:8100` (`DPDS_CONTROLLER` changes that).
 
 ```bash
-./dpds.sh check      # prerequisites, then the host hints (see below)
+./dpds.sh check      # prerequisites (Rust, clang/lld, DPDK, Node/npm), then the host hints (see below)
 ./dpds.sh install    # build dpds (telemetry) and the controller, host check, install binaries,
-                     # systemd unit, /etc/dpds/controller.env; fetches the CI-built frontend first
+                     # systemd unit, /etc/dpds/controller.env; builds the frontend (npm) first
 ./dpds.sh start      # systemctl enable --now dpds-controller
 ./dpds.sh status     # service, GET /api/online
 ./dpds.sh stop       # systemctl disable --now dpds-controller
@@ -790,8 +776,7 @@ the default; `--stable` only prints that no Rust stable release exists yet.
 `dpds.sh` reads `DPDS_PREFIX`, `DPDS_ETC_DIR`, `DPDS_STATE_DIR`, `DPDS_SYSTEMD_DIR` and
 `DPDS_BIND` (defaults `/usr/local`, `/etc/dpds`, `/var/lib/dpds-controller`,
 `/etc/systemd/system`, `0.0.0.0:8100`); `DPDS_BIND` only applies when `controller.env` is
-created, which `install` never overwrites. `DPDS_FRONTEND_DIST` and `DPDS_FRONTEND_ASSET_URL`
-are described above.
+created, which `install` never overwrites.
 
 ---
 
