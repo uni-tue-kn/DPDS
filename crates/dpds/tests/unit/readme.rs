@@ -178,3 +178,89 @@ fn the_update_notes_explain_an_invalid_state_file_and_how_to_fix_it() {
         "it says what moving the file away loses: {paragraph}"
     );
 }
+
+// ---- spec21: the release channel ------------------------------------------------------------------
+
+/// The controller section of the README (the heading line, not the table of contents' link).
+fn controller_section(text: &str) -> String {
+    text.split("\n## ")
+        .find(|s| {
+            let heading = s.lines().next().unwrap_or("");
+            heading.contains("Controller and web frontend") && !heading.contains("](")
+        })
+        .expect("controller section")
+        .to_string()
+}
+
+/// Blank-line separated paragraphs with their line breaks joined to single spaces.
+fn paragraphs(text: &str) -> Vec<String> {
+    text.split("\n\n")
+        .map(|p| p.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect()
+}
+
+#[test]
+fn the_readme_documents_dpds_channel_latest_nightly_and_the_flags() {
+    let section = controller_section(&readme());
+    assert!(
+        section.contains("DPDS_CHANNEL"),
+        "the controller section never names DPDS_CHANNEL"
+    );
+    // one paragraph (hard-wrapped lines joined) says what the variable takes, the default and that the flags override it
+    let paragraph = paragraphs(&section.to_lowercase())
+        .into_iter()
+        .find(|p| p.contains("dpds_channel") && p.contains("latest") && p.contains("nightly"))
+        .expect("no paragraph explains DPDS_CHANNEL with latest and nightly");
+    let paragraph = paragraph.as_str();
+    assert!(
+        paragraph.contains("default"),
+        "it must say that latest is the default: {paragraph}"
+    );
+    assert!(
+        paragraph.contains("--nightly") && paragraph.contains("--stable"),
+        "it must name both flags: {paragraph}"
+    );
+    assert!(
+        paragraph.contains("override"),
+        "it must say that the flags override the variable: {paragraph}"
+    );
+    assert!(
+        paragraph.contains("`main`") && paragraph.contains("`nightly`"),
+        "it must name the branches main and nightly: {paragraph}"
+    );
+}
+
+#[test]
+fn the_readme_warns_that_main_holds_the_c_version_until_nightly_is_merged() {
+    let section = controller_section(&readme());
+    let paragraph = paragraphs(&section)
+        .into_iter()
+        .find(|p| p.contains("C version") && p.contains("main"))
+        .expect("no paragraph says that main still holds the C version");
+    assert!(
+        paragraph.contains("--nightly") || paragraph.contains("DPDS_CHANNEL=nightly"),
+        "it must tell to use the nightly channel for now: {paragraph}"
+    );
+}
+
+#[test]
+fn the_readme_no_longer_describes_the_tag_selection_or_nightly_as_the_default() {
+    let text = readme();
+    for gone in [
+        "git fetch --tags",
+        "highest `v*` tag",
+        "git pull nightly",
+        "instead of nightly",
+        "`--nightly` is\nthe default",
+        "`--nightly` is the default",
+    ] {
+        assert!(!text.contains(gone), "README still has {gone:?}");
+    }
+    // the command list shows the channel instead
+    let section = controller_section(&text);
+    assert!(
+        section.contains("DPDS_CHANNEL=nightly ./dpds.sh")
+            || section.contains("./dpds.sh --nightly update"),
+        "the command block shows no nightly update example"
+    );
+}

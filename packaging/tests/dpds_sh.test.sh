@@ -16,20 +16,26 @@
 #     (also for --help, exit 0) mentions no docker, compose, container or image, and (spec v15) no
 #     download, CI-built frontend, release asset or DPDS_FRONTEND_DIST; it mentions Node or npm
 #     (install and update build the frontend on the host).
-#   - --nightly is the default channel and is accepted explicitly.
-#   - --stable (spec v18): install and update use the latest release tag instead of the nightly
-#     branch. After the prerequisites, `git fetch --tags`, then the highest tag matching v* by version
-#     (`git tag --list 'v*' --sort=-v:refname`, first line; v1.10.0 beats v1.9.0, tags such as x2.0.0 or
-#     nightly-build are not releases), then `git checkout <tag>` (a detached HEAD is fine), all in the
-#     repository root and before the frontend build and any cargo build. No `git checkout nightly`, no
-#     `git pull`, no "switching to nightly" warning. update keeps its other rules: a dirty tree is
-#     refused before any git change, the service is restarted only if it was active. A failing
-#     `git fetch` or `git checkout` aborts before any build. With no v* tag: error on stderr that says
-#     "release" and "tag", exit non-zero, no checkout, no build, no npm, no systemctl change.
-#     The other commands do not touch git with --stable. --nightly update/install are unchanged (install
-#     makes no git call at all, update checks out nightly) even when v* tags exist.
-#     The git stub answers `git tag` from STUB_GIT_TAGS (space separated); without --sort it lists
-#     them alphabetically, with --sort=-v:refname by version, highest first.
+#   - Release channel (spec v21, like P4TG's P4TG_CHANNEL): DPDS_CHANNEL is `latest` (the default; also when the variable is
+#     empty or unset) or `nightly`. `--nightly` selects nightly and `--stable` selects latest, both override the variable
+#     (even an invalid one); both flags together: exit non-zero naming both, nothing executed. Any other value (`beta`,
+#     `Nightly`, `main`, ...): exit non-zero, stderr "Invalid DPDS channel '<value>' (expected 'latest' or 'nightly')",
+#     before any git, cargo, npm or systemctl call, for check, install and update.
+#     The channel's branch is `main` for latest and `nightly` for nightly.
+#   - update: after the prerequisites and the dirty-tree refusal, `git fetch`, `git checkout <branch>`,
+#     `git pull --ff-only` (repo root, in this order, each failing step aborts before the frontend, any build and any
+#     systemctl change), then the frontend and cargo builds. A warning names the checked-out branch and the channel's branch
+#     when they differ ("detached" for a detached HEAD) and update switches anyway. No tag lookup: no `git tag`, no
+#     `git fetch --tags`, no checkout of a v* tag (spec v18's --stable tag selection is gone; CI tags every version
+#     that reaches main, so main's head is the latest release).
+#   - install makes only read-only git calls (to find the checked-out branch): no fetch, checkout, pull or tag. When the
+#     checkout is on another branch than the channel's, it warns naming both branches and telling to run `update`, and
+#     installs anyway. A tree without git (a tarball) is not an error. No warning when the branch matches.
+#   - The git stub's current branch is `main` unless STUB_GIT_BRANCH says otherwise (`HEAD` = detached);
+#     STUB_GIT_NOT_A_REPO makes every git call fail like outside a repository; STUB_GIT_TAGS lists tags
+#     (they must not matter).
+#   - `status` (spec v21) also prints the release channel and the branch of the checkout (a line with the word "channel"
+#     and its value, and the branch name; exit 0 even without git).
 #   - `status` (spec v18) prints the installed version taken from the /api/online answer ("version"),
 #     on a line of its own besides the raw answer, also when the key is not the first one. Nothing
 #     reads the version from jq (not on the PATH) or from the repository.
@@ -137,7 +143,7 @@
 #          is unreachable.
 # update   prerequisites first; `systemctl is-active dpds-controller` is queried; a dirty working tree is
 #          refused (error, non-zero, before any checkout/pull/build); a warning names the current branch
-#          (or "detached") when it is not nightly; then `git fetch`, `git checkout nightly`,
+#          (or "detached") when it is not the channel's branch (main, nightly with --nightly); then `git fetch`, `git checkout <branch>`,
 #          `git pull --ff-only` (in the repo root; a failing git call aborts before building);
 #          then the frontend build for the pulled tree and the install flow (same prompt unless
 #          --yes); then, only if the service was active, restart (= stop + start). If it was not
@@ -301,7 +307,7 @@ setup_sandbox() {
   unset STUB_ACTIVE STUB_NO_LIBDPDK STUB_RUSTC_LLVM STUB_CLANG_VERSION STUB_LLD_VERSION \
         STUB_CONTROLLER_RC STUB_CONTROLLER_ERR STUB_CARGO_FAIL STUB_SYSTEMCTL_RC STUB_SYSTEMCTL_FAIL_SUB \
         STUB_GIT_FAIL_SUB STUB_CURL_RC DPDS_BIND STUB_GIT_DIRTY STUB_GIT_DIRTY_FRONTEND STUB_GIT_BRANCH \
-        STUB_GIT_TAGS STUB_ONLINE_JSON STUB_NODE_VERSION STUB_NPM_FAIL_SUB STUB_NPM_NO_INDEX STUB_NPM_BUILD_NOOP STUB_DPDK_VERSION STUB_RUSTC_VERSION \
+        STUB_GIT_TAGS STUB_GIT_NOT_A_REPO DPDS_CHANNEL STUB_ONLINE_JSON STUB_NODE_VERSION STUB_NPM_FAIL_SUB STUB_NPM_NO_INDEX STUB_NPM_BUILD_NOOP STUB_DPDK_VERSION STUB_RUSTC_VERSION \
         DPDS_FRONTEND_DIST DPDS_FRONTEND_ASSET_URL
   mkdir -p "$T/tmp"
   export DPDS_PREFIX="$T/prefix" DPDS_ETC_DIR="$T/etc" DPDS_STATE_DIR="$T/state" DPDS_SYSTEMD_DIR="$T/systemd"
@@ -368,8 +374,9 @@ EOF
 dir=$PWD
 if [ "${1:-}" = -C ]; then dir=$(cd "$2" 2>/dev/null && pwd -P); shift 2; fi
 echo "git $*" >> "$LOG"; echo "git $* @ $dir" >> "$LOG.dirs"
-# current branch: STUB_GIT_BRANCH (default nightly); "HEAD" means a detached HEAD
-br="${STUB_GIT_BRANCH:-nightly}"
+[ -n "${STUB_GIT_NOT_A_REPO:-}" ] && { echo "fatal: not a git repository (or any of the parent directories): .git" >&2; exit 128; }
+# current branch: STUB_GIT_BRANCH (default main, the branch of the default channel); "HEAD" means a detached HEAD
+br="${STUB_GIT_BRANCH:-main}"
 [ -n "${STUB_GIT_FAIL_SUB:-}" ] && [ "${1:-}" = "$STUB_GIT_FAIL_SUB" ] && { echo "fatal: stub git failure" >&2; exit 1; }
 case "${1:-}" in
   rev-parse)
@@ -603,174 +610,392 @@ test_unknown_option_exit1() {
   assert_log_empty
 }
 
-# ------------------------------------------------------------------ tests: spec v18 (--stable = latest release tag)
-RELEASE_TAGS="v1.9.0 v1.10.0 v1.2.0 v0.9.9 x2.0.0 nightly-build"
+# ------------------------------------------------------------------ tests: spec v21 (release channel: DPDS_CHANNEL, --nightly, --stable)
+# latest = branch main (the default), nightly = branch nightly; --nightly / --stable override DPDS_CHANNEL. The git stub's
+# current branch is `main` unless a test sets STUB_GIT_BRANCH, so with the default channel nothing warns about a switch.
 
-test_stable_install_builds_the_highest_release_tag() {
-  export STUB_GIT_TAGS="$RELEASE_TAGS"
-  run_dpds --stable --yes install
-  assert_rc 0 "$ERR"
-  assert_log_has '^git fetch .*--tags|^git fetch --tags'
-  assert_log_has '^git checkout (--detach )?v1\.10\.0$'
-  assert_log_lacks '^git checkout .*(nightly|v1\.9\.0|v1\.2\.0|v0\.9\.9|x2\.0\.0)'
-  assert_log_lacks '^git pull'
-  assert_before '^(rustc|cargo|node|npm|clang|pkg-config) ' '^git fetch'
-  assert_before '^git fetch' '^git checkout'
-  assert_before '^git checkout' '^npm ci'
-  assert_before '^git checkout' '^cargo build'
-  assert_dir_of '^git (fetch|checkout)' "$REPO_ROOT"
-  assert_file_has "$DPDS_PREFIX/bin/dpds-controller" 'STUB-BINARY-dpds-controller'
-  assert_file_has "$DPDS_PREFIX/bin/dpds" 'STUB-BINARY-dpds'
-}
-
-test_stable_update_checks_out_the_highest_release_tag_instead_of_nightly() {
-  fake_install
-  export STUB_GIT_TAGS="$RELEASE_TAGS"
-  run_dpds --stable --yes update
-  assert_rc 0 "$ERR"
-  assert_log_has '^git fetch .*--tags|^git fetch --tags'
-  assert_log_has '^git checkout (--detach )?v1\.10\.0$'
-  assert_log_lacks '^git checkout nightly'
-  assert_log_lacks '^git pull'
-  assert_before '^git fetch' '^git checkout'
-  assert_before '^git checkout' '^npm ci'
-  assert_before '^git checkout' '^cargo build'
-  assert_dir_of '^git (fetch|checkout)' "$REPO_ROOT"
-  ! grep -Ei 'warn' <<<"$OUT$ERR" | grep -qi 'nightly' || fail "a warning talks about switching to nightly: $(grep -Ei warn <<<"$OUT$ERR")"
-  assert_file_has "$DPDS_PREFIX/bin/dpds-controller" 'STUB-BINARY-dpds-controller'
-}
-
-test_stable_update_restarts_only_a_service_that_was_active() {
-  fake_install
-  export STUB_GIT_TAGS="v1.0.0" STUB_ACTIVE=1
-  run_dpds --stable --yes update
-  assert_rc 0 "$ERR"
-  assert_log_has '^systemctl disable --now dpds-controller$'
-  assert_log_has '^systemctl enable --now dpds-controller$'
-  : >"$STUB_LOG"
-  STUB_ACTIVE=0 run_dpds --stable --yes update
-  assert_rc 0 "$ERR"
-  assert_log_lacks '^systemctl (enable|start|restart)'
-}
-
-test_stable_update_refuses_a_dirty_tree_before_any_git_change() {
-  fake_install
-  export STUB_GIT_TAGS="v1.0.0" STUB_GIT_DIRTY=1
-  run_dpds --stable --yes update
-  assert_rc_nonzero
-  grep -Eiq 'uncommitted|dirty|working tree|local changes' <<<"$ERR" || fail "stderr does not explain the dirty tree: $ERR"
-  assert_log_lacks '^git checkout'
-  assert_log_lacks '^cargo build'
-  assert_log_lacks '^systemctl (enable|disable)'
-}
-
-test_stable_update_from_a_detached_release_tag_is_not_blocked_by_a_warning_about_nightly() {
-  fake_install
-  export STUB_GIT_TAGS="v1.0.0 v1.1.0" STUB_GIT_BRANCH=HEAD
-  run_dpds --stable --yes update
-  assert_rc 0 "$ERR"
-  assert_log_has '^git checkout (--detach )?v1\.1\.0$'
-  assert_log_lacks '^git checkout nightly'
-}
-
-test_stable_picks_the_highest_version_not_the_last_or_the_alphabetical_one() {
-  local tags expected
-  for pair in "v2.0.0 v10.0.0 v9.9.9=v10.0.0" "v1.0.0=v1.0.0" "v1.0.9 v1.0.10 v1.0.2=v1.0.10" "v0.0.9 v0.1.0 v0.0.10=v0.1.0"; do
-    tags="${pair%=*}"; expected="${pair#*=}"
-    : >"$STUB_LOG"
-    STUB_GIT_TAGS="$tags" run_dpds --stable --yes install
-    assert_rc 0 "$tags: $ERR"
-    assert_log_has "^git checkout (--detach )?${expected//./\\.}\$"
-  done
-}
-
-test_stable_ignores_tags_that_are_not_releases() {
-  export STUB_GIT_TAGS="x2.0.0 nightly-build 1.99.0 zz v1.0.0"
-  run_dpds --stable --yes install
-  assert_rc 0 "$ERR"
-  assert_log_has '^git checkout (--detach )?v1\.0\.0$'
-}
-
-test_stable_without_a_release_tag_is_a_clear_error_for_install_and_update() {
-  local tags
-  for tags in "" "nightly-build x2.0.0 1.0.0"; do
-    for c in install update; do
-      fake_install
-      : >"$STUB_LOG"
-      STUB_GIT_TAGS="$tags" run_dpds --stable --yes "$c"
-      CTX="$c, tags '$tags'"
-      assert_rc_nonzero "$c"
-      assert_err_has "release"
-      assert_err_has "tag"
-      assert_log_lacks '^git checkout'
-      assert_log_lacks '^git pull'
-      assert_log_lacks '^npm (ci|run|install)'
-      assert_log_lacks '^cargo build'
-      assert_log_lacks '^systemctl (enable|disable|restart|daemon-reload)'
-      ! grep -q 'STUB-BINARY' "$DPDS_PREFIX/bin/dpds-controller" 2>/dev/null || fail "binary replaced by $c"
-    done
-  done
-  CTX=""
-}
-
-test_stable_aborts_before_any_build_when_fetching_tags_fails() {
-  fake_install
-  export STUB_GIT_TAGS="v1.0.0" STUB_GIT_FAIL_SUB=fetch
-  run_dpds --stable --yes update
-  assert_rc_nonzero
-  assert_log_lacks '^git checkout'
-  assert_log_lacks '^cargo build'
-  assert_log_lacks '^systemctl (enable|disable|restart)'
-}
-
-test_stable_aborts_before_any_build_when_the_checkout_fails() {
-  fake_install
-  export STUB_GIT_TAGS="v1.0.0" STUB_GIT_FAIL_SUB=checkout
-  run_dpds --stable --yes update
-  assert_rc_nonzero
-  assert_log_lacks '^npm (ci|run|install)'
-  assert_log_lacks '^cargo build'
-  assert_log_lacks '^systemctl (enable|disable|restart)'
-}
-
-test_stable_leaves_the_other_commands_alone() {
-  local c
-  export STUB_GIT_TAGS="v1.0.0"
-  for c in start stop restart status uninstall; do
-    : >"$STUB_LOG"
-    run_dpds --stable --yes "$c"
-    assert_log_lacks '^git '
-    assert_log_lacks '^(cargo build|npm (ci|run|install))'
-  done
-}
-
-test_nightly_install_makes_no_git_call_even_when_release_tags_exist() {
-  export STUB_GIT_TAGS="$RELEASE_TAGS"
-  run_dpds --yes install
-  assert_rc 0 "$ERR"
-  assert_log_lacks '^git '
-  : >"$STUB_LOG"
-  run_dpds --nightly --yes install
-  assert_rc 0 "$ERR"
-  assert_log_lacks '^git '
-}
-
-test_nightly_update_keeps_following_the_branch_even_when_release_tags_exist() {
-  fake_install
-  export STUB_GIT_TAGS="$RELEASE_TAGS"
-  run_dpds --nightly --yes update
-  assert_rc 0 "$ERR"
-  assert_log_has '^git checkout nightly$'
+# update on a branch: fetch, checkout BRANCH, pull --ff-only, in this order, before the frontend and cargo builds, in the repo root.
+assert_update_follows() {
+  local branch="$1" other
+  assert_log_has '^git fetch'
+  assert_log_has "^git checkout $branch\$"
   assert_log_has '^git pull --ff-only$'
+  assert_log_lacks '^git pull$'
+  for other in main nightly; do
+    [[ "$other" == "$branch" ]] || assert_log_lacks "^git checkout $other\$"
+  done
+  assert_before '^git fetch' "^git checkout $branch\$"
+  assert_before "^git checkout $branch\$" '^git pull --ff-only$'
+  assert_before '^git pull --ff-only$' '^npm ci( |$)'
+  assert_before '^git pull --ff-only$' '^cargo build'
+  assert_dir_of '^git (fetch|checkout|pull)' "$REPO_ROOT"
+  # the tag lookup of spec v18 is gone
+  assert_log_lacks '^git tag'
+  assert_log_lacks '--tags'
   assert_log_lacks '^git checkout (--detach )?v[0-9]'
 }
 
-test_help_describes_stable_as_the_latest_release_tag() {
+# --- which branch ---
+test_update_without_any_channel_setting_follows_main() {
+  fake_install
+  run_dpds --yes update
+  assert_rc 0 "$ERR"
+  assert_update_follows main
+}
+
+test_update_on_the_latest_channel_from_the_environment_follows_main() {
+  fake_install
+  DPDS_CHANNEL=latest run_dpds --yes update
+  assert_rc 0 "$ERR"
+  assert_update_follows main
+}
+
+test_update_on_the_nightly_channel_from_the_environment_follows_nightly() {
+  fake_install
+  export STUB_GIT_BRANCH=nightly DPDS_CHANNEL=nightly
+  run_dpds --yes update
+  assert_rc 0 "$ERR"
+  assert_update_follows nightly
+}
+
+test_stable_flag_is_the_latest_channel_main() {
+  fake_install
+  run_dpds --stable --yes update
+  assert_rc 0 "$ERR"
+  assert_update_follows main
+}
+
+test_nightly_flag_follows_the_nightly_branch() {
+  fake_install
+  export STUB_GIT_BRANCH=nightly
+  run_dpds --nightly --yes update
+  assert_rc 0 "$ERR"
+  assert_update_follows nightly
+}
+
+test_an_empty_channel_variable_means_the_default() {
+  fake_install
+  DPDS_CHANNEL="" run_dpds --yes update
+  assert_rc 0 "$ERR"
+  assert_update_follows main
+}
+
+test_the_flags_override_the_environment_both_ways() {
+  fake_install
+  export STUB_GIT_BRANCH=main
+  DPDS_CHANNEL=nightly run_dpds --stable --yes update
+  assert_rc 0 "$ERR"
+  CTX="DPDS_CHANNEL=nightly --stable" assert_update_follows main
+  : >"$STUB_LOG"
+  export STUB_GIT_BRANCH=nightly
+  DPDS_CHANNEL=latest run_dpds --nightly --yes update
+  assert_rc 0 "$ERR"
+  CTX="DPDS_CHANNEL=latest --nightly" assert_update_follows nightly
+  : >"$STUB_LOG"
+  # the same value as the flag
+  DPDS_CHANNEL=nightly run_dpds --nightly --yes update
+  assert_rc 0 "$ERR"
+  CTX="DPDS_CHANNEL=nightly --nightly" assert_update_follows nightly
+}
+
+test_a_flag_wins_even_over_an_invalid_environment_value() {
+  fake_install
+  export STUB_GIT_BRANCH=nightly
+  DPDS_CHANNEL=beta run_dpds --nightly --yes update
+  assert_rc 0 "$ERR"
+  assert_update_follows nightly
+}
+
+test_both_flags_are_an_error_in_either_order_and_run_nothing() {
+  local args
+  for args in "--nightly --stable" "--stable --nightly"; do
+    : >"$STUB_LOG"
+    # shellcheck disable=SC2086
+    DPDS_CHANNEL=nightly run_dpds $args update
+    CTX="$args" assert_rc_nonzero
+    CTX="$args" assert_err_has "--nightly"
+    CTX="$args" assert_err_has "--stable"
+    CTX="$args" assert_log_empty
+  done
+}
+
+# --- invalid values ---
+test_an_invalid_channel_is_an_error_naming_it_before_any_git_or_build_call() {
+  local v c
+  for v in beta Nightly LATEST main stable master; do
+    for c in check install update; do
+      : >"$STUB_LOG"
+      DPDS_CHANNEL="$v" run_dpds --yes "$c"
+      CTX="DPDS_CHANNEL=$v $c" assert_rc_nonzero
+      CTX="DPDS_CHANNEL=$v $c" assert_err_has "Invalid DPDS channel '$v' (expected 'latest' or 'nightly')"
+      CTX="DPDS_CHANNEL=$v $c" assert_log_lacks '^(git|cargo|npm|systemctl|dpds-controller) '
+      CTX="DPDS_CHANNEL=$v $c" assert_no_file "$DPDS_PREFIX/bin/dpds-controller"
+    done
+  done
+}
+
+# --- update ---
+test_update_refuses_a_dirty_tree_before_any_git_change_on_every_channel() {
+  fake_install
+  export STUB_GIT_DIRTY=1 STUB_GIT_BRANCH=feature-x
+  local args
+  for args in "" "--stable" "--nightly"; do
+    : >"$STUB_LOG"
+    # shellcheck disable=SC2086
+    run_dpds $args --yes update
+    CTX="update $args" assert_rc_nonzero
+    grep -Eiq 'uncommitted|dirty|working tree|local changes' <<<"$ERR" || fail "stderr does not explain the dirty tree: $ERR"
+    CTX="update $args" assert_log_lacks '^git (fetch|checkout|pull)'
+    CTX="update $args" assert_log_lacks '^(cargo build|npm ci)'
+    CTX="update $args" assert_log_lacks '^systemctl (enable|disable)'
+  done
+}
+
+test_a_failing_git_step_stops_update_before_any_build_on_every_channel() {
+  fake_install
+  export STUB_ACTIVE=1
+  local args sub
+  for args in "--stable" "--nightly"; do
+    for sub in fetch checkout pull; do
+      : >"$STUB_LOG"
+      STUB_GIT_FAIL_SUB="$sub" run_dpds $args --yes update
+      CTX="update $args, git $sub fails" assert_rc_nonzero
+      CTX="update $args, git $sub fails" assert_log_lacks '^(cargo build|npm ci|npm run build)'
+      CTX="update $args, git $sub fails" assert_log_lacks '^systemctl (enable|disable|daemon-reload)'
+    done
+  done
+  # a failing fetch stops before the checkout, a failing checkout before the pull
+  : >"$STUB_LOG"
+  STUB_GIT_FAIL_SUB=fetch run_dpds --yes update
+  assert_log_lacks '^git (checkout|pull)'
+  : >"$STUB_LOG"
+  STUB_GIT_FAIL_SUB=checkout run_dpds --yes update
+  assert_log_lacks '^git pull'
+}
+
+test_update_restarts_only_a_service_that_was_active_on_every_channel() {
+  fake_install
+  local args
+  for args in "--stable" "--nightly"; do
+    : >"$STUB_LOG"
+    STUB_ACTIVE=1 run_dpds $args --yes update
+    CTX="active, $args" assert_rc 0 "$ERR"
+    CTX="active, $args" assert_log_has '^systemctl disable --now dpds-controller$'
+    CTX="active, $args" assert_log_has '^systemctl enable --now dpds-controller$'
+    : >"$STUB_LOG"
+    STUB_ACTIVE=0 run_dpds $args --yes update
+    CTX="inactive, $args" assert_rc 0 "$ERR"
+    CTX="inactive, $args" assert_log_lacks '^systemctl (enable|start|restart)'
+  done
+}
+
+test_update_checks_the_prerequisites_before_any_git_call_on_every_channel() {
+  fake_install
+  export STUB_NO_LIBDPDK=1
+  local args
+  for args in "--stable" "--nightly"; do
+    : >"$STUB_LOG"
+    run_dpds $args --yes update
+    CTX="$args" assert_rc_nonzero
+    CTX="$args" assert_log_lacks '^git (fetch|checkout|pull)'
+    CTX="$args" assert_log_lacks '^cargo build'
+  done
+}
+
+# a warning that names the branch the tree is on and the one the channel wants
+assert_branch_warning() { # assert_branch_warning CURRENT TARGET
+  local w; w="$(grep -Ei 'warn' <<<"$OUT$ERR")"
+  grep -qF -- "$1" <<<"$w" || fail "no WARN line names the checked-out branch '$1': $w"
+  grep -qF -- "$2" <<<"$w" || fail "no WARN line names the channel's branch '$2': $w"
+  grep -qi 'branch' <<<"$w" || fail "the WARN line does not talk about a branch: $w"
+}
+
+test_update_warns_when_the_tree_is_on_another_branch_than_the_channel() {
+  fake_install
+  export STUB_GIT_BRANCH=nightly
+  run_dpds --yes update
+  assert_rc 0 "$ERR"
+  assert_branch_warning nightly main
+  assert_log_has '^git checkout main$'
+  : >"$STUB_LOG"
+  export STUB_GIT_BRANCH=main
+  run_dpds --nightly --yes update
+  assert_rc 0 "$ERR"
+  assert_branch_warning main nightly
+  assert_log_has '^git checkout nightly$'
+  : >"$STUB_LOG"
+  export STUB_GIT_BRANCH=feature-x
+  run_dpds --stable --yes update
+  assert_rc 0 "$ERR"
+  assert_branch_warning feature-x main
+}
+
+test_update_warns_about_a_detached_head_and_follows_the_channel() {
+  fake_install
+  export STUB_GIT_BRANCH=HEAD
+  run_dpds --nightly --yes update
+  assert_rc 0 "$ERR"
+  grep -Ei 'warn' <<<"$OUT$ERR" | grep -qi 'detached' || fail "no WARN line mentions a detached HEAD"
+  assert_log_has '^git checkout nightly$'
+}
+
+test_update_on_the_channel_branch_gives_no_branch_warning() {
+  fake_install
+  local args branch
+  for args in "--stable:main" "--nightly:nightly"; do
+    branch="${args#*:}"
+    : >"$STUB_LOG"
+    STUB_GIT_BRANCH="$branch" run_dpds "${args%:*}" --yes update
+    CTX="$args" assert_rc 0 "$ERR"
+    ! grep -Ei 'warn' <<<"$OUT$ERR" | grep -Eqi 'detached|branch' || fail "$args: unexpected branch warning: $(grep -Ei warn <<<"$OUT$ERR")"
+  done
+}
+
+test_the_release_tags_are_not_consulted_any_more() {
+  # CI tags every version that reaches main, so main's head is the latest release: no `git tag`, no `fetch --tags`,
+  # no checkout of a v* tag, whatever tags exist and whatever the channel
+  export STUB_GIT_TAGS="v1.9.0 v1.10.0 v0.9.9"
+  fake_install
+  local args c
+  for args in "--stable" "--nightly" ""; do
+    for c in install update; do
+      : >"$STUB_LOG"
+      # shellcheck disable=SC2086
+      run_dpds $args --yes "$c"
+      CTX="$args $c" assert_rc 0 "$ERR"
+      CTX="$args $c" assert_log_lacks '^git tag'
+      CTX="$args $c" assert_log_lacks '--tags'
+      CTX="$args $c" assert_log_lacks '^git checkout (--detach )?v[0-9]'
+    done
+  done
+}
+
+test_stable_needs_no_release_tag_any_more() {
+  # spec v18 failed "--stable" without a v* tag; now it follows main, tags or not
+  fake_install
+  export STUB_GIT_TAGS=""
+  run_dpds --stable --yes update
+  assert_rc 0 "$ERR"
+  assert_log_has '^git checkout main$'
+  ! grep -Eqi 'release.*tag|tag.*release' <<<"$ERR" || fail "still complains about release tags: $ERR"
+}
+
+# --- install ---
+test_install_never_moves_the_tree_on_any_channel() {
+  local args
+  for args in "" "--stable" "--nightly"; do
+    : >"$STUB_LOG"
+    # shellcheck disable=SC2086
+    run_dpds $args --yes install
+    CTX="install $args" assert_rc 0 "$ERR"
+    CTX="install $args" assert_log_lacks '^git (fetch|checkout|pull|tag|merge|reset|switch|clean|stash)'
+  done
+  : >"$STUB_LOG"
+  DPDS_CHANNEL=nightly run_dpds --yes install
+  assert_rc 0 "$ERR"
+  assert_log_lacks '^git (fetch|checkout|pull|tag|merge|reset|switch|clean|stash)'
+}
+
+test_install_warns_when_the_tree_is_not_on_the_channels_branch_and_still_installs() {
+  # warn only (naming both branches and `update`), do not switch and do not refuse
+  local case_ cur target flag
+  for case_ in "nightly|main|" "main|nightly|--nightly" "feature-x|main|--stable" "feature-x|nightly|--nightly"; do
+    IFS='|' read -r cur target flag <<<"$case_"
+    : >"$STUB_LOG"
+    rm -rf "$DPDS_PREFIX/bin/dpds-controller" "$DPDS_ETC_DIR" "$DPDS_STATE_DIR" "$(installed_unit)"
+    STUB_GIT_BRANCH="$cur" run_dpds $flag --yes install
+    CTX="on $cur, channel branch $target" assert_rc 0 "$ERR"
+    CTX="on $cur, channel branch $target" assert_branch_warning "$cur" "$target"
+    CTX="on $cur, channel branch $target" assert_all_has "update"
+    CTX="on $cur, channel branch $target" assert_exec "$DPDS_PREFIX/bin/dpds-controller"
+    CTX="on $cur, channel branch $target" assert_file "$(installed_unit)"
+  done
+}
+
+test_install_warns_about_a_detached_head_naming_the_channel_branch() {
+  export STUB_GIT_BRANCH=HEAD
+  run_dpds --yes install
+  assert_rc 0 "$ERR"
+  local w; w="$(grep -Ei 'warn' <<<"$OUT$ERR")"
+  grep -qi 'detached' <<<"$w" || fail "no WARN line mentions the detached HEAD: $w"
+  grep -qF 'main' <<<"$w" || fail "the WARN line does not name the channel's branch main: $w"
+  assert_exec "$DPDS_PREFIX/bin/dpds-controller"
+}
+
+test_install_on_the_channel_branch_gives_no_branch_warning() {
+  local args branch
+  for args in ":main" "--stable:main" "--nightly:nightly"; do
+    branch="${args#*:}"
+    : >"$STUB_LOG"
+    # shellcheck disable=SC2086
+    STUB_GIT_BRANCH="$branch" run_dpds ${args%:*} --yes install
+    CTX="$args" assert_rc 0 "$ERR"
+    ! grep -Ei 'warn' <<<"$OUT$ERR" | grep -Eqi 'detached|branch' || fail "$args: unexpected branch warning: $(grep -Ei warn <<<"$OUT$ERR")"
+  done
+  : >"$STUB_LOG"
+  STUB_GIT_BRANCH=nightly DPDS_CHANNEL=nightly run_dpds --yes install
+  assert_rc 0 "$ERR"
+  ! grep -Ei 'warn' <<<"$OUT$ERR" | grep -Eqi 'detached|branch' || fail "env nightly: unexpected branch warning"
+}
+
+test_install_from_a_tree_without_git_still_works() {
+  # a source tarball has no .git: the branch check must not turn into a failure
+  export STUB_GIT_NOT_A_REPO=1
+  run_dpds --yes install
+  assert_rc 0 "$ERR"
+  assert_exec "$DPDS_PREFIX/bin/dpds-controller"
+}
+
+# --- status, usage, other commands ---
+test_status_prints_the_channel_and_the_branch_of_the_checkout() {
+  seed_unit
+  export STUB_GIT_BRANCH=feature-x DPDS_CHANNEL=nightly
+  run_dpds status
+  assert_rc 0 "$ERR"
+  grep -Eqi 'channel' <<<"$OUT" || fail "status does not print the channel: $OUT"
+  grep -Eqi 'channel.*nightly|nightly.*channel' <<<"$OUT" || fail "status does not say the channel is nightly: $OUT"
+  grep -qF 'feature-x' <<<"$OUT" || fail "status does not print the branch of the checkout: $OUT"
+  plain_line_with "7.8.9" || fail "the installed version is gone from status: $OUT"
+}
+
+test_status_names_the_default_channel_latest() {
+  seed_unit
+  run_dpds status
+  assert_rc 0 "$ERR"
+  grep -Eqi 'channel.*latest|latest.*channel' <<<"$OUT" || fail "status does not say the channel is latest: $OUT"
+  grep -Eq '(^|[^[:alnum:]_-])main([^[:alnum:]_-]|$)' <<<"$OUT" || fail "status does not print the branch main: $OUT"
+}
+
+test_status_still_exits_zero_in_a_tree_without_git() {
+  seed_unit
+  export STUB_GIT_NOT_A_REPO=1
+  run_dpds status
+  assert_rc 0 "$ERR"
+  plain_line_with "7.8.9" || fail "the version is gone when git fails: $OUT"
+}
+
+test_help_documents_the_channel() {
   run_dpds --help
   assert_rc 0
-  grep -E -- '--stable' <<<"$OUT" | grep -Eqi 'release|tag' || fail "--help does not tie --stable to a release or tag: $OUT"
-  ! grep -Eqi 'no rust stable release|only prints|not yet|no stable release' <<<"$OUT" || fail "--help still says there is no stable release: $OUT"
-  grep -E -- '--nightly' <<<"$OUT" | grep -qi 'default' || fail "--help no longer says --nightly is the default: $OUT"
+  assert_out_has "DPDS_CHANNEL"
+  grep -Eq -- '--stable' <<<"$OUT" || fail "--help lost --stable"
+  grep -E -- '--stable' <<<"$OUT" | grep -Eqi 'latest|main' || fail "--help does not tie --stable to the latest channel / main: $OUT"
+  grep -E -- '--nightly' <<<"$OUT" | grep -qi 'nightly' || fail "--help does not describe --nightly: $OUT"
+  ! grep -E -- '--nightly' <<<"$OUT" | grep -qi 'default' || fail "--help still calls --nightly the default: $OUT"
+  grep -Ei 'default' <<<"$OUT" | grep -qi 'latest' || fail "--help does not say that latest is the default: $OUT"
+  grep -Eqi "latest.*main|main.*latest" <<<"$OUT" || fail "--help does not say that latest means main: $OUT"
+  ! grep -Eqi 'v\*|git tag|highest|release tag|detached' <<<"$OUT" || fail "--help still talks about release tags: $OUT"
+}
+
+test_the_channel_does_not_change_the_other_commands() {
+  seed_unit
+  fake_install
+  local c
+  for c in check start stop restart status uninstall; do
+    : >"$STUB_LOG"
+    DPDS_CHANNEL=nightly run_dpds --yes "$c"
+    CTX="$c" assert_log_lacks '^git (fetch|checkout|pull|tag)'
+  done
 }
 
 # ------------------------------------------------------------------ tests: spec v18 (status shows the installed version)
@@ -821,8 +1046,11 @@ test_nightly_and_stable_conflict() {
   assert_log_empty
 }
 
-test_nightly_flag_accepted_same_as_default() {
+test_the_channel_flags_are_accepted_by_check() {
   run_dpds --nightly check
+  assert_rc 0
+  assert_out_has "CHECK-OUTPUT-MARKER"
+  run_dpds --stable check
   assert_rc 0
   assert_out_has "CHECK-OUTPUT-MARKER"
 }
@@ -1228,16 +1456,16 @@ test_status_exit_zero_when_everything_is_down() {
 }
 
 # ------------------------------------------------------------------ tests: update
-test_update_pulls_nightly_rebuilds_and_reinstalls() {
+test_update_pulls_main_by_default_rebuilds_and_reinstalls() {
   fake_install
   run_dpds --yes update
   assert_rc 0 "$ERR"
   assert_log_has '^git fetch'
-  assert_log_has '^git checkout nightly$'
+  assert_log_has '^git checkout main$'
   assert_log_has '^git pull --ff-only$'
   assert_log_lacks '^git pull$'
-  assert_before '^git fetch' '^git checkout nightly'
-  assert_before '^git checkout nightly' '^git pull --ff-only'
+  assert_before '^git fetch' '^git checkout main'
+  assert_before '^git checkout main' '^git pull --ff-only'
   assert_before '^git pull --ff-only' '^cargo build'
   assert_dir_of '^git (fetch|checkout|pull)' "$REPO_ROOT"
   assert_log_has '^cargo build .*(-p|--package|--bin)[ =]dpds-controller( |$)'
@@ -1338,9 +1566,9 @@ test_update_warns_when_switching_from_another_branch() {
   run_dpds --yes update
   assert_rc 0 "$ERR"
   assert_all_has "feature-x"
-  assert_all_has "nightly"
+  assert_all_has "main"
   grep -Ei 'warn' <<<"$OUT$ERR" | grep -qF 'feature-x' || fail "no WARN line names the branch feature-x"
-  assert_log_has '^git checkout nightly$'
+  assert_log_has '^git checkout main$'
 }
 
 test_update_warns_about_a_detached_head() {
@@ -1349,10 +1577,10 @@ test_update_warns_about_a_detached_head() {
   run_dpds --yes update
   assert_rc 0 "$ERR"
   grep -Ei 'warn' <<<"$OUT$ERR" | grep -qi 'detached' || fail "no WARN line mentions a detached HEAD"
-  assert_log_has '^git checkout nightly$'
+  assert_log_has '^git checkout main$'
 }
 
-test_update_on_nightly_gives_no_branch_warning() {
+test_update_on_the_default_channels_branch_gives_no_branch_warning() {
   fake_install
   run_dpds --yes update
   assert_rc 0 "$ERR"
@@ -1929,7 +2157,7 @@ test_install_and_update_download_and_unpack_nothing() {
   run_dpds --yes install
   assert_rc 0 "$ERR"
   assert_nothing_downloaded
-  assert_log_lacks '^git '
+  assert_log_lacks '^git (fetch|checkout|pull|tag|merge|reset|switch|clean|stash)'  # spec v21: install only reads the branch
   fake_install
   : >"$STUB_LOG"
   run_dpds --yes update
@@ -1992,7 +2220,7 @@ test_a_dirty_frontend_is_built_as_it_is_without_a_warning() {
   export STUB_GIT_DIRTY_FRONTEND=1
   run_dpds --yes install
   assert_rc 0 "$ERR"
-  assert_log_lacks '^git '
+  assert_log_lacks '^git (fetch|checkout|pull|tag|merge|reset|switch|clean|stash)'  # spec v21: install only reads the branch
   ! grep -Ei 'warn' <<<"$OUT$ERR" | grep -Eqi 'frontend|uncommitted|DPDS_FRONTEND_DIST' || fail "unexpected warning: $(grep -Ei warn <<<"$OUT$ERR")"
   assert_log_has '^npm run build( |$)'
   assert_controller_built_with_repo_dist
@@ -2255,7 +2483,7 @@ test_plain_root_without_sudo_variables_is_refused_too() {
 test_root_is_refused_although_everything_is_installed_and_running() {
   can_become_root || { echo "    SKIP: no passwordless sudo, cannot run the script as root"; return; }
   fake_install
-  export STUB_ACTIVE=1 STUB_GIT_TAGS="v1.0.0"
+  export STUB_ACTIVE=1
   local c
   for c in start stop restart update uninstall; do
     : >"$STUB_LOG"

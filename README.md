@@ -668,8 +668,8 @@ embedded in the `dpds-controller` binary, so one service on one port gives the f
 `http://<host>:<controller port>/` (default port 8100) and the REST API under `/api`. There is no
 Docker and no separate web server.
 
-`dpds.sh` builds and installs both. It needs Rust (stable works; `--nightly` and `--stable` only
-select the git revision, see below), clang and `ld.lld` of the same LLVM major version as `rustc`, DPDK at least 26.07
+`dpds.sh` builds and installs both. It needs Rust (stable works; the channel below only
+selects the git branch), clang and `ld.lld` of the same LLVM major version as `rustc`, DPDK at least 26.07
 (`pkg-config --atleast-version=26.07 libdpdk`), and Node at least 22.22 (the `engines.node` of
 `frontend/package.json`) with npm. `check`, `install` and `update` verify all of them first, list every
 missing or too old tool at once and never install anything. `update` refuses a working tree with
@@ -699,16 +699,28 @@ server on port 5173 proxies `/api` to a controller on `127.0.0.1:8100` (`DPDS_CO
 ./dpds.sh status     # service, GET /api/online and the installed version
 ./dpds.sh stop       # systemctl disable --now dpds-controller
 ./dpds.sh restart    # stop, then start
-./dpds.sh update     # git pull nightly, rebuild, reinstall; restarts only if it was running
-./dpds.sh --stable update  # the same from the latest release tag instead of nightly
+./dpds.sh update     # switch to the channel's branch and pull it, rebuild, reinstall; restarts only if it was running
+./dpds.sh --nightly update # the same on the nightly channel (or DPDS_CHANNEL=nightly ./dpds.sh update)
 ./dpds.sh uninstall  # remove binaries and unit; keeps the state dir and controller.env
 ```
 
-`--yes` skips the question that `install` and `update` ask after the host check. `--nightly` is
-the default and follows the `nightly` branch. `--stable` installs or updates from the latest
-release: `dpds.sh` runs `git fetch --tags`, picks the highest `v*` tag by version and checks it
-out (a detached HEAD), then builds as usual; it stops with an error when there is no release tag
-yet. `status` prints the installed version, as reported by `/api/online`.
+`--yes` skips the question that `install` and `update` ask after the host check. `status` prints the
+channel, the branch of the checkout and the installed version, as reported by `/api/online`.
+
+The release channel is set with the environment variable `DPDS_CHANNEL`, like P4TG's
+`P4TG_CHANNEL`: `latest` (the default) follows the branch `main`, `nightly` follows the branch
+`nightly`. Any other value is an error. The flags `--nightly` (channel `nightly`) and `--stable`
+(channel `latest`) override the variable; giving both is an error. `update` refuses a working tree
+with uncommitted changes, then runs `git fetch`, `git checkout <branch>` and `git pull --ff-only`
+for the channel's branch before it builds anything, and warns when it switches from another branch
+or from a detached HEAD. `install` makes no git call: it builds the tree as it is and warns when
+the checkout is not on the channel's branch (run `update` to switch). Tags `vX.Y.Z` stay for the
+releases page, and `git checkout vX.Y.Z` by hand builds one.
+
+Until `nightly` is merged into `main`, `main` still holds the C version of DPDS, which has no
+controller and no `dpds.sh`. For now use `--nightly` or `DPDS_CHANNEL=nightly` (for example
+`DPDS_CHANNEL=nightly ./dpds.sh update`); the default channel `latest` only makes sense after that
+merge.
 
 An update that changes the format of the stored state can make an old `state.json` invalid: the
 controller then refuses to start, and `dpds.sh install` and `update` report it as an error in the host

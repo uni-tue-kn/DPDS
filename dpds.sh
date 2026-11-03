@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # dpds.sh - build, install and run the DPDS controller (a systemd service that also serves the web frontend).
 #
-# Usage: ./dpds.sh [--nightly|--stable] [--yes] {check|install|update|start|stop|restart|status|uninstall}
+# Usage: [DPDS_CHANNEL=latest|nightly] ./dpds.sh [--nightly|--stable] [--yes] {check|install|update|start|stop|restart|status|uninstall}
 #
 # The controller (dpds-controller) runs natively on the host as root and starts dpds as its child
 # process. It embeds the web frontend at build time and serves it on its own port. install and
@@ -12,10 +12,13 @@
 # and runs the service and never changes host settings. The controller only reports hints
 # (`dpds.sh check`).
 #
-# Channels: --nightly (default) follows the nightly branch. --stable installs or updates from the
-# latest release, the highest v* git tag (a detached HEAD); CI creates those tags on main.
+# Channels (like P4TG's P4TG_CHANNEL): DPDS_CHANNEL is latest (the default) or nightly. latest follows
+# the branch main, nightly the branch nightly. --nightly and --stable override the variable. update
+# switches to the channel's branch (git fetch, checkout, pull --ff-only); install builds the tree as
+# it is and only warns when it is on another branch.
 #
 # Environment overrides:
+#   DPDS_CHANNEL      release channel, latest or nightly                (default latest)
 #   DPDS_PREFIX       install prefix, binaries go to $DPDS_PREFIX/bin   (default /usr/local)
 #   DPDS_ETC_DIR      config dir, holds controller.env                   (default /etc/dpds)
 #   DPDS_STATE_DIR    controller state dir                               (default /var/lib/dpds-controller)
@@ -59,8 +62,10 @@ ENV_FILE="$ETC_DIR/controller.env"
 BIN_DIR="$PREFIX/bin"
 DEFAULT_PORT=8100
 
-CHANNEL_NIGHTLY=0
-CHANNEL_STABLE=0
+# latest follows the branch main, nightly the branch nightly. The flags override DPDS_CHANNEL.
+CHANNEL="${DPDS_CHANNEL:-}"
+CHANNEL_OVERRIDE=""
+CHANNEL_BRANCH=""
 ASSUME_YES=0
 
 #################
@@ -108,6 +113,41 @@ validate_settings() {
     error "DPDS_BIND must look like HOST:PORT, got: $BIND"
     exit 1
   fi
+}
+
+# Resolves the channel (flags override DPDS_CHANNEL, default latest) and its branch.
+resolve_channel() {
+  CHANNEL="${CHANNEL_OVERRIDE:-${CHANNEL:-latest}}"
+  case "$CHANNEL" in
+    latest) CHANNEL_BRANCH="main" ;;
+    nightly) CHANNEL_BRANCH="nightly" ;;
+    *)
+      error "Invalid DPDS channel '$CHANNEL' (expected 'latest' or 'nightly')"
+      exit 1
+      ;;
+  esac
+}
+
+# Prints the checked-out branch, nothing for a detached HEAD. Fails outside a git work tree
+# (a source tarball).
+checkout_branch() {
+  git branch --show-current 2>/dev/null
+}
+
+# warn_branch_mismatch HINT: warns, naming both branches, when the checkout is not on the channel's
+# branch. Silent when it is, and when there is no git work tree.
+warn_branch_mismatch() {
+  local current where
+  current="$(checkout_branch)" || return 0
+  if [[ "$current" == "$CHANNEL_BRANCH" ]]; then
+    return 0
+  fi
+  if [[ -z "$current" ]]; then
+    where="HEAD is detached"
+  else
+    where="The checkout is on branch $current"
+  fi
+  warn "$where, but the $CHANNEL channel follows branch $CHANNEL_BRANCH. $1"
 }
 
 confirm() {
@@ -368,25 +408,6 @@ refuse_dirty_tree() {
   fi
 }
 
-# --stable: check out the highest release tag (v*, sorted by version). The checkout is a detached
-# HEAD, which is fine for building. Aborts when the tags cannot be fetched or none exists.
-checkout_latest_release() {
-  local tags tag
-  info "Fetching the release tags"
-  if ! git fetch --tags; then
-    error "Could not fetch the release tags (git fetch --tags failed)."
-    exit 1
-  fi
-  tags="$(git tag --list 'v*' --sort=-v:refname)"
-  tag="$(first_line "$tags")"
-  if [[ -z "$tag" ]]; then
-    error "No release tag (v*) found in this repository. Use --nightly (the default) or wait for the first release."
-    exit 1
-  fi
-  info "Checking out the latest release $tag"
-  git checkout "$tag"
-}
-
 ########################################
 # Commands                             #
 ########################################
@@ -405,10 +426,7 @@ cmd_check() {
 
 cmd_install() {
   require_prerequisites
-  if (( CHANNEL_STABLE )); then
-    refuse_dirty_tree
-    checkout_latest_release
-  fi
+  warn_branch_mismatch "Installing the tree as it is; run $0 update to switch."
   install_flow
 }
 
@@ -474,8 +492,14 @@ cmd_status() {
   if ! require_installed; then
     return 0
   fi
-  local addr
+  local addr checkout
   addr="$(controller_address)"
+  if checkout="$(checkout_branch)"; then
+    checkout="branch ${checkout:-(detached HEAD)}"
+  else
+    checkout="unknown (not a git work tree)"
+  fi
+  info "Channel: $CHANNEL (branch $CHANNEL_BRANCH), checkout: $checkout"
   info "Service"
   systemctl status --no-pager "$SERVICE" || true
   info "Controller API and web frontend (http://$addr/)"
@@ -500,28 +524,17 @@ cmd_update() {
   require_prerequisites
 
   # Refuse before touching anything.
-  local branch was_active=0
+  local was_active=0
   refuse_dirty_tree
-  if (( ! CHANNEL_STABLE )); then
-    branch="$(git symbolic-ref --short -q HEAD 2>/dev/null)" || branch=""
-    if [[ -z "$branch" ]]; then
-      warn "HEAD is detached; switching to nightly."
-    elif [[ "$branch" != nightly ]]; then
-      warn "Currently on branch $branch; switching to nightly."
-    fi
-  fi
+  warn_branch_mismatch "Switching to $CHANNEL_BRANCH."
 
   if systemctl is-active --quiet "$SERVICE"; then
     was_active=1
   fi
-  if (( CHANNEL_STABLE )); then
-    checkout_latest_release
-  else
-    info "Updating the repository to the nightly branch"
-    git fetch
-    git checkout nightly
-    git pull --ff-only
-  fi
+  info "Updating the repository to the $CHANNEL channel (branch $CHANNEL_BRANCH)"
+  git fetch
+  git checkout "$CHANNEL_BRANCH"
+  git pull --ff-only
   install_flow
   if (( was_active )); then
     info "$SERVICE was running, restarting it"
@@ -541,17 +554,19 @@ cmd_uninstall() {
 }
 
 usage() {
-  echo "Usage: $0 [--nightly|--stable] [--yes] {check|install|update|start|stop|restart|status|uninstall}"
+  echo "Usage: [DPDS_CHANNEL=latest|nightly] $0 [--nightly|--stable] [--yes] {check|install|update|start|stop|restart|status|uninstall}"
+  echo ""
+  echo "Channel: DPDS_CHANNEL is latest (the default, branch main) or nightly (branch nightly)."
   echo ""
   echo "Options:"
-  echo "  --nightly    Use the nightly branch (default)"
-  echo "  --stable     Install or update from the latest release (the highest v* git tag) instead of the nightly branch"
+  echo "  --nightly    Use the nightly channel (branch nightly), overriding DPDS_CHANNEL"
+  echo "  --stable     Use the latest channel (branch main), overriding DPDS_CHANNEL"
   echo "  --yes        Do not ask for confirmation (install, update)"
   echo ""
   echo "Commands:"
   echo "  check        Check the prerequisites (Rust, clang/lld, DPDK $DPDK_MIN, Node/npm), then print the host hints (dpds-controller check)"
   echo "  install      Check prerequisites, build the frontend (npm ci, npm run build) and the binaries, run the host check, ask to continue, install binaries and unit"
-  echo "  update       git pull nightly (or check out the latest release tag with --stable), rebuild the frontend and the binaries, reinstall, restart if it was running"
+  echo "  update       Switch to the channel's branch (git fetch, checkout, pull --ff-only), rebuild the frontend and the binaries, reinstall, restart if it was running"
   echo "  start        Enable and start the controller service (it serves the web frontend)"
   echo "  stop         Disable and stop the controller service"
   echo "  restart      Stop, then start"
@@ -560,15 +575,20 @@ usage() {
 }
 
 main() {
-  local cmd="" arg
+  local cmd="" arg flag=""
   if (( EUID == 0 )); then
     error "Run dpds.sh as your user, not with sudo: it calls sudo itself for the privileged steps; under sudo, root's PATH lacks cargo/rustc/clang."
     exit 1
   fi
   for arg in "$@"; do
     case "$arg" in
-      --nightly) CHANNEL_NIGHTLY=1 ;;
-      --stable) CHANNEL_STABLE=1 ;;
+      --nightly|--stable)
+        if [[ -n "$flag" && "$flag" != "$arg" ]]; then
+          error "--nightly and --stable cannot be combined."
+          exit 1
+        fi
+        flag="$arg"
+        ;;
       --yes|-y) ASSUME_YES=1 ;;
       -h|--help) usage; exit 0 ;;
       -*) error "Unknown option: $arg"; usage >&2; exit 1 ;;
@@ -583,15 +603,17 @@ main() {
     esac
   done
 
-  if (( CHANNEL_NIGHTLY && CHANNEL_STABLE )); then
-    error "--nightly and --stable cannot be combined."
-    exit 1
-  fi
   case "$cmd" in
     check|install|update|start|stop|restart|status|uninstall) ;;
     "") usage >&2; exit 1 ;;
     *) error "Unknown command: $cmd"; usage >&2; exit 1 ;;
   esac
+
+  case "$flag" in
+    --nightly) CHANNEL_OVERRIDE="nightly" ;;
+    --stable) CHANNEL_OVERRIDE="latest" ;;
+  esac
+  resolve_channel
 
   # cargo and git work on the repository this script lives in.
   cd "$REPO_ROOT"
