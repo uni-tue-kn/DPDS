@@ -137,3 +137,43 @@ fn the_check_prints_no_mprq_line_in_text_or_json() {
         }
     }
 }
+
+// ---- spec19 item 4: an unloadable state file ----------------------------------------------
+//
+// `dpds.sh install` tells this failure from ordinary hints by exit code 2 (hints exit 0 or 1)
+// and the message on stderr, so both are pinned here.
+
+#[test]
+fn an_invalid_state_file_exits_two_with_the_error_and_the_advice_on_stderr() {
+    let host = FakeHost::bare_metal();
+    let state = tempfile::tempdir().unwrap();
+    let path = state.path().join(store::STATE_FILE_NAME);
+    std::fs::write(
+        &path,
+        r#"{"links":[],"settings":{"main_lcore":null,"eal_extra_args":[],"poll_interval_ms":500,"mlx5_devargs":"x"},"next_id":1}"#,
+    )
+    .unwrap();
+    for json in [false, true] {
+        let o = run(&host, state.path(), json);
+        let err = String::from_utf8_lossy(&o.stderr).into_owned();
+        assert_eq!(o.status.code(), Some(2), "json={json}: {err}");
+        assert!(err.contains("is not a valid state file"), "{err}");
+        assert!(err.contains(&path.display().to_string()), "{err}");
+        let advice: Vec<&str> = err.lines().skip(1).collect();
+        let advice = advice.join("\n").to_lowercase();
+        assert!(
+            advice.contains("mlx5_devargs"),
+            "key named in the advice: {err}"
+        );
+        assert!(
+            advice.contains("remove") && advice.contains("move"),
+            "both remedies: {err}"
+        );
+        // nothing but hints on stdout, and no hints at all when the state cannot be loaded
+        assert!(lines(&o).is_empty(), "stdout: {:?}", lines(&o));
+    }
+    // the operator's file is untouched
+    assert!(std::fs::read_to_string(&path)
+        .unwrap()
+        .contains("mlx5_devargs"));
+}

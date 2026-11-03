@@ -53,7 +53,7 @@ export default function Links() {
       {links.data && links.data.length > 0 && (
         <Table striped size="sm" responsive>
           <thead className="table-dark">
-            <tr><th>Name</th><th>Interfaces</th><th>Delay</th><th>Reordering</th><th>Limiter</th><th>Loss</th><th /></tr>
+            <tr><th>Name</th><th>Interfaces</th><th>Delay</th><th>Reordering</th><th>Limiter</th><th>Loss</th><th><span className="visually-hidden">Actions</span></th></tr>
           </thead>
           <tbody>
             {links.data.map((l) => (

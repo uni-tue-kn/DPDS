@@ -23,6 +23,22 @@ describe('Links list', () => {
     expect(screen.queryByRole('columnheader', { name: /worker|configuration|summary/i })).not.toBeInTheDocument();
   });
 
+  // spec19 item 7: the empty header of the action column gets a visually hidden "Actions" (screen readers, Bootstrap's
+  // `.visually-hidden`: the text exists but is not painted).
+  it('the action column header carries a visually hidden "Actions" text', async () => {
+    renderApp('/links');
+    await screen.findByText('a-b');
+    const headers = screen.getAllByRole('columnheader');
+    expect(headers).toHaveLength(7);
+    const last = headers[6];
+    expect(last).toHaveAccessibleName('Actions');
+    const hidden = within(last).getByText('Actions');
+    expect(hidden.classList.contains('visually-hidden')).toBe(true);
+    // the other six headers are untouched
+    expect(headers.slice(0, 6).map((h) => h.textContent?.trim())).toEqual(['Name', 'Interfaces', 'Delay', 'Reordering', 'Limiter', 'Loss']);
+    expect(screen.getAllByRole('columnheader', { name: 'Actions' })).toHaveLength(1);
+  });
+
   it('lists one row per link: the name cell holds the name only, the interface cell "ingress → egress" by netdev', async () => {
     api.getLinks.mockResolvedValue([fx.link(), fx.linkRev(), fx.loopLink()]);
     renderApp('/links');
@@ -248,6 +264,25 @@ describe('Links: inspect panel (v16)', () => {
   const group = (dialog: HTMLElement, name: string) => within(dialog).getByRole('group', { name });
   const dts = (g: HTMLElement) => Array.from(g.querySelectorAll('dt')).map((d) => d.textContent?.trim());
 
+  // spec19 item 7: the panel names the distribution like the list's Delay cell ("Normal", never "NormalDistribution").
+  it.each([
+    ['DeterministicDistribution', 'Deterministic'],
+    ['NormalDistribution', 'Normal'],
+    ['LogNormalDistribution', 'LogNormal'],
+    ['GammaDistribution', 'Gamma'],
+    ['UniformDistribution', 'Uniform'],
+  ] as const)('%s is shown as "%s" in the panel, the same word the list uses', async (distribution, short) => {
+    const base = fx.config();
+    const link = fx.link({ config: { ...base, delayer: { ...base.delayer, distribution } } });
+    const { dialog } = await inspect('a-b', [link]);
+    const shown = field(group(dialog, 'Delayer'), 'Delay distribution').textContent?.trim();
+    expect(shown).toBe(short);
+    expect(dialog.textContent).not.toContain('Distribution');
+    // the list row behind the panel starts its Delay cell with the same word
+    const row = screen.getAllByText('a-b')[0].closest('tr') as HTMLElement;
+    expect(within(row).getAllByRole('cell')[2].textContent?.startsWith(short)).toBe(true);
+  });
+
   it('nothing is open before the button is clicked', async () => {
     renderApp('/links');
     await screen.findByText('a-b');
@@ -320,7 +355,7 @@ describe('Links: inspect panel (v16)', () => {
 
     const delayer = group(dialog, 'Delayer');
     expect(dts(delayer)).toEqual(['Delay distribution', 'Mean delay', 'Delay std', 'Correlation', 'Initialization rate']);
-    expect(field(delayer, 'Delay distribution').textContent?.trim()).toBe('NormalDistribution');
+    expect(field(delayer, 'Delay distribution').textContent?.trim()).toBe('Normal'); // spec19: the short name, like the list
     expect(field(delayer, 'Mean delay').textContent?.trim()).toBe('1 \u00b5s'); // 1000 ns
     expect(field(delayer, 'Delay std').textContent?.trim()).toBe('10 ns');
     expect(field(delayer, 'Correlation').textContent?.trim()).toBe('off');
@@ -352,7 +387,7 @@ describe('Links: inspect panel (v16)', () => {
     expect(dts(delayer)).toEqual([
       'Delay distribution', 'Mean delay', 'Delay std', 'Correlation', 'Half-life period', 'Initialization rate',
     ]);
-    expect(field(delayer, 'Delay distribution').textContent?.trim()).toBe('GammaDistribution');
+    expect(field(delayer, 'Delay distribution').textContent?.trim()).toBe('Gamma');
     expect(field(delayer, 'Mean delay').textContent?.trim()).toBe('2.5 \u00b5s');
     expect(field(delayer, 'Delay std').textContent?.trim()).toBe('300 ns');
     expect(field(delayer, 'Correlation').textContent?.trim()).toBe('on');

@@ -9,10 +9,13 @@ const size = (bit: number) => formatUnit(bit, SIZE_UNITS, MBIT);
 
 export const pps = (v: number) => formatUnit(v, PPS_UNITS, MPPS);
 
+/** "Normal" for "NormalDistribution". */
+export const distributionName = (d: ConfigDto['delayer']['distribution']) => d.replace(/Distribution$/, '');
+
 /** "Normal 10 ms / 1 ms"; the deterministic distribution has no std to show. */
 export function delayCell(c: ConfigDto): string {
   const d = c.delayer;
-  const name = d.distribution.replace(/Distribution$/, '');
+  const name = distributionName(d.distribution);
   return d.distribution === 'DeterministicDistribution'
     ? `${name} ${time(d.mean_ns)}`
     : `${name} ${time(d.mean_ns)} / ${time(d.std_ns)}`;

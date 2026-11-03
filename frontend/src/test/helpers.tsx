@@ -140,20 +140,15 @@
 //   and `typeRate(user, rate = TEST_RATE, unit = 'pps')`, which now also selects the unit (default pps, so TEST_RATE
 //   stays 10,000,000 pps = what it always meant).
 //
-// ## v12: port labels everywhere, configurable initialization rate (supersedes the v10 label examples below)
-// - Port label: `<pci> (<netdev>)`, e.g. "0000:65:00.0 (enp101s0f0)", where the netdev comes from `getInterfaces()` (the
-//   interface whose `pci` equals the port string). A port that is not in the list (vdev `net_null0`, an undiscovered
-//   address) or whose interface has `netdev: null` (vfio-bound NIC) shows only the device name. The label is used in
-//   (1) the Links list row "<name>: <ingress label> → <egress label>", (2) the dashboard card title (same format, from
-//   `stats.rx`/`stats.tx`, falling back to the plan's rx/tx), (3) the first column of the dashboard "NIC ports" table (the
-//   port's `name`), (4) the link editor pickers (already, "<label> - <reason>" when unusable), (5) the Interfaces page (pci
-//   and netdev columns, already). The Hints and Settings pages show no ports of their own: hint texts come from the
+// ## v12: configurable initialization rate (its port-label part is superseded by the "Port labels, compact Links list,
+//   inspect panel" block above: ports are shown by their netdev, never as "<pci> (<netdev>)")
+// - Port labels: see that block. The Hints and Settings pages show no ports of their own: hint texts come from the
 //   controller and are printed verbatim, so they do not call `getInterfaces`.
-//   Fixture netdevs are "enp101s0f0" (0000:65:00.0) and "enp101s0f1" (0000:65:00.1); the spec's "ens1f0" is only an example.
 // - `getInterfaces` is called exactly ONCE per page load by the Links page and ONCE per mount by the Dashboard (not per
 //   stats/emulation poll). A rejected call is not an error for these pages: no alert, no warning, plain device names.
 //   A slow or never-resolving call does not delay the cards or rows (they appear with plain names and are relabelled).
-// - Links list loss text uses `formatPct(p * 100)` of common/format.ts: p 0.07 -> "7.00 % loss" (never "7.000000000000001").
+// - Links list loss cell: superseded, it shows the stored numbers ("Random p=0.07", never "0.07000000000000001"), see the
+//   compact Links list block above.
 // - `DelayerDto.initialization_rate_pps: number` (required, wire name as is; src/api/types.ts) and the config form field
 //   "Initialization rate (pps)" in the delay section of EVERY config form (link editor, preset editor), a number input,
 //   shown also while "Activate correlation" is off. A NEW link / preset form starts with the field EMPTY (the user wants
@@ -171,14 +166,13 @@
 //   and `workers` are gone). `ingress == egress` (hairpin) is a valid link. `ExportDocument.version` is the literal 2
 //   and its `links` are `LinkInput[]` in the new shape. `DirectionPlan`/`DirectionStats` keep `{dir, link, rx, tx, ...}`:
 //   dir = link index, link = link name, rx = ingress port, tx = egress port; the API calls still use `dir`.
-// - Links list: the row of a link holds ONE element whose own text is exactly "<name>: <ingress> -> <egress>" (arrow
-//   U+2192, e.g. "a-b: 0000:65:00.0 → 0000:65:00.1"; a hairpin reads "loop: net_null0 → net_null0"). The row also
-//   shows the worker ("auto" without one, else the number). No "Number of ports" / "Directions" notion remains.
+// - Links list: superseded by the table of the "compact Links list" block above (name, interfaces, config cells, actions;
+//   no worker text). What stays: a hairpin reads "net_null0 → net_null0" in its interface cell, and no "Number of ports" /
+//   "Directions" notion remains.
 // - Link editor labels: "Name", select "Ingress", select "Egress" (same option rules as the old port pickers: text =
-//   pci + (netdev) + " - " + reason when unusable, unusable/kernel_route options disabled, a stored non-interface port
-//   such as a vdev stays selectable, no preselection, Save does nothing until both are chosen), typed inputs "Ingress
-//   (typed)" and "Egress (typed)" (same validation and override rule as before; an invalid value -> role=alert whose
-//   text mentions "ingress" resp. "egress", no request), and the optional `<input type="number">` "Worker lcore" (empty ->
+//   netdev [+ " - " + reason] when unusable, unusable/kernel_route options disabled, a stored non-interface port
+//   such as a vdev stays selectable, no preselection, Save does nothing until both are chosen; there are no typed port
+//   inputs any more, see "Ports" in the v16 block), and the optional `<input type="number">` "Worker lcore" (empty ->
 //   null/absent; a number input cannot receive non-numeric text; a value that is not a non-negative integer, e.g. "-1"
 //   or "1.5" -> role=alert mentioning "worker", no request).
 //   The editor loads `getLinks()`. In the Ingress picker every interface that another stored link (not the one being

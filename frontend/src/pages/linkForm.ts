@@ -93,17 +93,28 @@ export function configToForm(c: ConfigDto): ConfigForm {
   return f;
 }
 
+/** A loss probability: a number within [0, 1]. */
+function prob(s: string, label: string): number {
+  const n = num(s, label);
+  if (n < 0 || n > 1) throw new Error(`${label} must be between 0 and 1`);
+  return n;
+}
+
 function num(s: string, label: string): number {
   const n = Number(s);
   if (s.trim() === '' || !Number.isFinite(n)) throw new Error(`${label} must be a number`);
   return n;
 }
 
-/** A unit field in its base unit. Empty is 0 while the field is not required, an error while it is. */
+/**
+ * A unit field in its base unit. Empty is 0 while the field is not required, an error while it is. A
+ * negative value is refused while the field is in use (required); the message names the field only.
+ */
 function unitNum(v: UnitValue, units: Unit[], label: string, required = true): number {
   if (v.text.trim() === '' && !required) return 0;
   const n = toBase(v, units);
   if (n === null) throw new Error(`${label} must be a number`);
+  if (required && n < 0) throw new Error(`${label} must not be negative`);
   return n;
 }
 
@@ -111,7 +122,8 @@ function unitNum(v: UnitValue, units: Unit[], label: string, required = true): n
 function initRate(v: UnitValue): number {
   const label = 'Initialization rate';
   if (v.text.trim() === '') throw new Error(`${label} is required`);
-  const n = unitNum(v, PPS_UNITS, label);
+  const n = toBase(v, PPS_UNITS);
+  if (n === null) throw new Error(`${label} must be a number`);
   if (n < 1) throw new Error(`${label} must be at least 1 pps`);
   return n;
 }
@@ -119,6 +131,12 @@ function initRate(v: UnitValue): number {
 function int(s: string, label: string): number {
   const n = num(s, label);
   if (!Number.isInteger(n)) throw new Error(`${label} must be an integer`);
+  return n;
+}
+
+function nonNegativeInt(s: string, label: string): number {
+  const n = int(s, label);
+  if (n < 0) throw new Error(`${label} must not be negative`);
   return n;
 }
 
@@ -150,20 +168,20 @@ export function portError(port: string): string | null {
 /** Throws an Error naming the offending field. */
 export function configToDto(f: ConfigForm): ConfigDto {
   const loss_model: LossModelDto = f.loss_type === 'Random'
-    ? { type: 'Random', p: num(f.random_p, 'Random loss probability') }
+    ? { type: 'Random', p: prob(f.random_p, 'Random loss probability') }
     : {
       type: 'GilbertElliot',
-      p: num(f.ge_p, 'Gilbert-Elliot p'),
-      r: num(f.ge_r, 'Gilbert-Elliot r'),
-      k: num(f.ge_k, 'Gilbert-Elliot k'),
-      h: num(f.ge_h, 'Gilbert-Elliot h'),
+      p: prob(f.ge_p, 'Gilbert-Elliot p'),
+      r: prob(f.ge_r, 'Gilbert-Elliot r'),
+      k: prob(f.ge_k, 'Gilbert-Elliot k'),
+      h: prob(f.ge_h, 'Gilbert-Elliot h'),
       state_is_good: f.ge_good,
     };
   const bins = optInt(f.hist_bins, 'Histogram bins');
   const lo_ns = f.hist_lo.text.trim() === '' ? null : unitNum(f.hist_lo, TIME_UNITS, 'Histogram lo');
   const hi_ns = f.hist_hi.text.trim() === '' ? null : unitNum(f.hist_hi, TIME_UNITS, 'Histogram hi');
   return {
-    buffer_capacity: int(f.buffer_capacity, 'Buffer capacity'),
+    buffer_capacity: nonNegativeInt(f.buffer_capacity, 'Buffer capacity'),
     reordering: f.reordering,
     delayer: {
       distribution: f.distribution,

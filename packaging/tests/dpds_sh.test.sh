@@ -157,6 +157,28 @@
 #   LimitMEMLOCK=infinity in [Service] (spec v17; dpds locks its memory), Restart=on-failure, [Install] WantedBy=multi-user.target; parses without warnings under
 #   `systemd-analyze verify`.
 #
+# spec v19 (fixes from the first install on a testbed host)
+#   - Root: every command, with any flags, refuses to run when EUID is 0, whether through `sudo` (SUDO_USER set) or as plain
+#     root. At once, before any tool or sudo call and before anything is written: non-zero exit and an error on stderr
+#     that says "Run dpds.sh as your user, not with sudo: it calls sudo itself for the privileged steps; under sudo,
+#     root's PATH lacks cargo/rustc/clang" (the tests look for "as your user", "not with sudo" and "PATH"). Not refused:
+#     a non-root user, even with SUDO_USER left in the environment. The tests become root through `sudo -n` (EUID cannot be
+#     faked); where that is not available they print SKIP. Run the suite itself as a normal user: as root every test would hit
+#     the refusal.
+#   - Not installed: `start`, `restart` and `status` check that the unit file of `install`
+#     ($DPDS_SYSTEMD_DIR/dpds-controller.service) exists. Without it they say "dpds-controller is not installed: run
+#     ./dpds.sh install first" (start and restart on stderr with a non-zero exit, status with exit 0) and show none of
+#     systemctl's own complaints ("does not exist", "not found", "could not be found"). The stub systemctl answers like real
+#     systemd for a missing unit file (enable/start/restart/status/cat/is-enabled/show/list-unit-files), so tests of
+#     start/restart/status call `seed_unit` (or fake_install) first. `stop` and `uninstall` are unchanged.
+#   - Host check of install and update: exit code 2 of `dpds-controller check` means the state file could not be loaded
+#     (message "<path> is not a valid state file: ..." or "cannot read <path>: ..." on the controller's stderr), unlike
+#     the 0/1 of ordinary hints. dpds.sh then reports an ERROR line ("[ERROR]" on stderr) saying the controller will not
+#     start, shows the controller's message, does not call it a hint ("not blockers" / "hints about performance" stay
+#     for ordinary exit 1), and stops with a non-zero exit before the prompt and before anything is installed (update:
+#     before the installed binaries are replaced or the service touched). With --yes it reports the error the same way
+#     and goes on. The stub controller takes STUB_CONTROLLER_RC and STUB_CONTROLLER_ERR (a message for stderr).
+#
 # Sandbox conventions used by this file (PATH contains only stubs + whitelisted base utilities):
 #   Every test runs a COPY of dpds.sh in a sandbox repository ($T/repo, with the unit file,
 #   frontend/package.json, Cargo.toml and crates/dpds-core/Cargo.toml copied from the real tree), so
@@ -259,6 +281,7 @@ echo "dpds-controller $*" >> "${STUB_LOG:?}"
 echo "$0" >> "${STUB_LOG}.ctlpaths"
 if [ "${1:-}" = check ]; then
   echo "CHECK-OUTPUT-MARKER"
+  [ -n "${STUB_CONTROLLER_ERR:-}" ] && echo "$STUB_CONTROLLER_ERR" >&2
   exit "${STUB_CONTROLLER_RC:-0}"
 fi
 exit 0
@@ -276,7 +299,7 @@ setup_sandbox() {
   export STUB_LOG="$T/calls.log"
   : >"$STUB_LOG"; : >"$STUB_LOG.dirs"; : >"$STUB_LOG.sudo"; : >"$STUB_LOG.dist"; : >"$STUB_LOG.docker"
   unset STUB_ACTIVE STUB_NO_LIBDPDK STUB_RUSTC_LLVM STUB_CLANG_VERSION STUB_LLD_VERSION \
-        STUB_CONTROLLER_RC STUB_CARGO_FAIL STUB_SYSTEMCTL_RC STUB_SYSTEMCTL_FAIL_SUB \
+        STUB_CONTROLLER_RC STUB_CONTROLLER_ERR STUB_CARGO_FAIL STUB_SYSTEMCTL_RC STUB_SYSTEMCTL_FAIL_SUB \
         STUB_GIT_FAIL_SUB STUB_CURL_RC DPDS_BIND STUB_GIT_DIRTY STUB_GIT_DIRTY_FRONTEND STUB_GIT_BRANCH \
         STUB_GIT_TAGS STUB_ONLINE_JSON STUB_NODE_VERSION STUB_NPM_FAIL_SUB STUB_NPM_NO_INDEX STUB_NPM_BUILD_NOOP STUB_DPDK_VERSION STUB_RUSTC_VERSION \
         DPDS_FRONTEND_DIST DPDS_FRONTEND_ASSET_URL
@@ -305,9 +328,25 @@ EOF
   make_stub systemctl <<'EOF'
 echo "systemctl $*" >> "$LOG"; echo "systemctl $* @ $PWD" >> "$LOG.dirs"
 sub=""; for a in "$@"; do case $a in -*) ;; *) sub=$a; break;; esac; done
+# spec v19: a unit that is not installed (no $DPDS_SYSTEMD_DIR/dpds-controller.service) answers like real systemd, so a script
+# that passes systemctl's complaint through, or that asks systemctl whether the unit exists, is exercised realistically.
+unit_file="${DPDS_SYSTEMD_DIR:-/nonexistent}/dpds-controller.service"
+if [ ! -f "$unit_file" ]; then
+  case $sub in
+    enable) echo "Failed to enable unit: Unit file dpds-controller.service does not exist." >&2; exit 1;;
+    start|restart|reload-or-restart|try-restart) echo "Failed to $sub dpds-controller.service: Unit dpds-controller.service not found." >&2; exit 5;;
+    status) echo "Unit dpds-controller.service could not be found." >&2; exit 4;;
+    cat) echo "No files found for dpds-controller.service." >&2; exit 1;;
+    is-enabled) echo "Failed to get unit file state for dpds-controller.service: No such file or directory" >&2; exit 1;;
+    show) case " $* " in *" --value "*) echo "not-found";; *) echo "LoadState=not-found";; esac; exit 0;;
+    list-unit-files) printf 'UNIT FILE STATE VENDOR PRESET\n\n0 unit files listed.\n'; exit 0;;
+  esac
+fi
 case $sub in
   is-active) if [ "${STUB_ACTIVE:-0}" = 1 ]; then echo active; exit 0; else echo inactive; exit 3; fi;;
   status) echo "STUB-SYSTEMCTL-STATUS"; exit "${STUB_SYSTEMCTL_RC:-0}";;
+  show) case " $* " in *" --value "*) echo "loaded";; *) echo "LoadState=loaded";; esac; exit 0;;
+  list-unit-files) printf 'UNIT FILE STATE VENDOR PRESET\ndpds-controller.service disabled enabled\n\n1 unit files listed.\n'; exit 0;;
 esac
 [ -n "${STUB_SYSTEMCTL_FAIL_SUB:-}" ] && [ "$sub" = "$STUB_SYSTEMCTL_FAIL_SUB" ] && { echo "Failed: stub" >&2; exit 5; }
 exit "${STUB_SYSTEMCTL_RC:-0}"
@@ -475,7 +514,7 @@ for p in "${pkgs[@]}"; do
 #!/bin/bash
 echo "dpds-controller $*" >> "${STUB_LOG:?}"
 echo "$0" >> "${STUB_LOG}.ctlpaths"
-if [ "${1:-}" = check ]; then echo "CHECK-OUTPUT-MARKER"; exit "${STUB_CONTROLLER_RC:-0}"; fi
+if [ "${1:-}" = check ]; then echo "CHECK-OUTPUT-MARKER"; [ -n "${STUB_CONTROLLER_ERR:-}" ] && echo "$STUB_CONTROLLER_ERR" >&2; exit "${STUB_CONTROLLER_RC:-0}"; fi
 exit 0
 CTL
       echo "# STUB-BINARY-dpds-controller" >>"$out/dpds-controller"
@@ -509,6 +548,13 @@ fake_install() {
   mkdir -p "$DPDS_ETC_DIR" "$DPDS_STATE_DIR"
   printf 'DPDS_CONTROLLER_BIND=0.0.0.0:8100\n' >"$DPDS_ETC_DIR/controller.env"
   echo '{"links":[]}' >"$DPDS_STATE_DIR/links.json"
+  printf '[Service]\nExecStart=%s/bin/dpds-controller serve\n' "$DPDS_PREFIX" >"$DPDS_SYSTEMD_DIR/dpds-controller.service"
+}
+
+# Only the unit file of a finished install (what `systemctl` needs to know the service): start, restart and status refuse
+# to run without it (spec v19).
+seed_unit() {
+  mkdir -p "$DPDS_SYSTEMD_DIR"
   printf '[Service]\nExecStart=%s/bin/dpds-controller serve\n' "$DPDS_PREFIX" >"$DPDS_SYSTEMD_DIR/dpds-controller.service"
 }
 
@@ -732,12 +778,14 @@ test_help_describes_stable_as_the_latest_release_tag() {
 plain_line_with() { grep -v '[{"]' <<<"$OUT" | grep -Fq -- "$1"; }
 
 test_status_prints_the_installed_version_on_its_own_line() {
+  seed_unit  # spec v19: start, restart and status need the installed unit
   run_dpds status
   assert_rc 0 "$ERR"
   plain_line_with "7.8.9" || fail "no plain line shows the version 7.8.9: $OUT"
 }
 
 test_status_finds_the_version_whatever_the_key_order_and_spacing() {
+  seed_unit  # spec v19: start, restart and status need the installed unit
   export STUB_ONLINE_JSON='{"dpds_bin":"/usr/local/bin/dpds","telemetry":true,"version": "3.4.5","root":true}'
   run_dpds status
   assert_rc 0 "$ERR"
@@ -752,6 +800,7 @@ test_status_finds_the_version_whatever_the_key_order_and_spacing() {
 }
 
 test_status_shows_no_version_when_the_api_is_down_and_still_exits_zero() {
+  seed_unit  # spec v19: start, restart and status need the installed unit
   export STUB_CURL_RC=7
   run_dpds status
   assert_rc 0 "$ERR"
@@ -759,6 +808,7 @@ test_status_shows_no_version_when_the_api_is_down_and_still_exits_zero() {
 }
 
 test_status_survives_an_answer_without_a_version() {
+  seed_unit  # spec v19: start, restart and status need the installed unit
   export STUB_ONLINE_JSON='{"telemetry":true}'
   run_dpds status
   assert_rc 0 "$ERR"
@@ -1106,6 +1156,7 @@ test_install_build_failure_installs_nothing() {
 
 # ------------------------------------------------------------------ tests: start/stop/restart/status
 test_start_enables_and_starts_the_service_only() {
+  seed_unit  # spec v19: start, restart and status need the installed unit
   run_dpds start
   assert_rc 0 "$ERR"
   assert_log_has '^systemctl enable --now dpds-controller$'
@@ -1113,6 +1164,7 @@ test_start_enables_and_starts_the_service_only() {
 }
 
 test_start_needs_no_build_tools() {
+  seed_unit  # spec v19: start, restart and status need the installed unit
   local t
   for t in cargo rustc clang ld.lld pkg-config git curl node npm; do remove_stub "$t"; done
   run_dpds start
@@ -1121,6 +1173,7 @@ test_start_needs_no_build_tools() {
 }
 
 test_start_systemctl_failure_propagates() {
+  seed_unit  # spec v19: start, restart and status need the installed unit
   export STUB_SYSTEMCTL_RC=1
   run_dpds start
   assert_rc_nonzero
@@ -1140,12 +1193,14 @@ test_stop_systemctl_failure_propagates() {
 }
 
 test_restart_is_stop_then_start() {
+  seed_unit  # spec v19: start, restart and status need the installed unit
   run_dpds restart
   assert_rc 0 "$ERR"
   assert_before '^systemctl disable --now dpds-controller' '^systemctl enable --now dpds-controller'
 }
 
 test_status_runs_both_probes() {
+  seed_unit  # spec v19: start, restart and status need the installed unit
   run_dpds status
   assert_rc 0 "$ERR"
   assert_log_has '^systemctl .*status.* dpds-controller'
@@ -1155,6 +1210,7 @@ test_status_runs_both_probes() {
 }
 
 test_status_uses_port_from_env_file() {
+  seed_unit  # spec v19: start, restart and status need the installed unit
   mkdir -p "$DPDS_ETC_DIR"
   printf 'DPDS_CONTROLLER_BIND=0.0.0.0:9123\n' >"$DPDS_ETC_DIR/controller.env"
   run_dpds status
@@ -1163,6 +1219,7 @@ test_status_uses_port_from_env_file() {
 }
 
 test_status_exit_zero_when_everything_is_down() {
+  seed_unit  # spec v19: start, restart and status need the installed unit
   export STUB_SYSTEMCTL_RC=3 STUB_CURL_RC=7
   run_dpds status
   assert_rc 0 "$ERR"
@@ -1230,6 +1287,7 @@ test_update_prerequisites_are_checked() {
 write_env_bind() { mkdir -p "$DPDS_ETC_DIR"; printf 'DPDS_CONTROLLER_BIND=%s\n' "$1" >"$DPDS_ETC_DIR/controller.env"; }
 
 test_status_probes_the_configured_bind_address() {
+  seed_unit  # spec v19: start, restart and status need the installed unit
   write_env_bind 10.0.0.5:9123
   run_dpds status
   assert_rc 0 "$ERR"
@@ -1238,6 +1296,7 @@ test_status_probes_the_configured_bind_address() {
 }
 
 test_status_probes_loopback_for_a_wildcard_bind() {
+  seed_unit  # spec v19: start, restart and status need the installed unit
   write_env_bind 0.0.0.0:9123
   run_dpds status
   assert_rc 0 "$ERR"
@@ -1246,6 +1305,7 @@ test_status_probes_loopback_for_a_wildcard_bind() {
 }
 
 test_status_probes_a_loopback_bind_as_is() {
+  seed_unit  # spec v19: start, restart and status need the installed unit
   write_env_bind 127.0.0.1:9000
   run_dpds status
   assert_log_has '^curl .*http://127\.0\.0\.1:9000/api/online'
@@ -1306,6 +1366,7 @@ test_update_pulls_fast_forward_only() {
 }
 
 test_restart_still_starts_when_the_service_stop_fails() {
+  seed_unit  # spec v19: start, restart and status need the installed unit
   export STUB_SYSTEMCTL_FAIL_SUB=disable
   run_dpds restart
   assert_rc_nonzero
@@ -2117,6 +2178,308 @@ test_unit_passes_systemd_analyze_verify() {
   if grep -Eq 'Failed to parse|Unknown (key|section)|Unknown lvalue|ignoring|Invalid|not executable|Failed to load' <<<"$out"; then
     fail "systemd-analyze verify complained: $(tr '\n' '|' <<<"$out")"
   fi
+}
+
+# ------------------------------------------------------------------ tests: spec v19 (testbed fixes)
+#
+# Item 1: dpds.sh refuses to run as root. EUID is a read-only bash variable that no test can fake, and the script may read
+# it through $EUID or `id -u`, so these tests really become root: `sudo -n` (passwordless sudo, as on the CI runner and in
+# the dev container). Without it the tests print a SKIP line and pass vacuously; the report says so. The sandbox is the
+# same as for every test (stubs only, all paths below $T), root just runs the script; afterwards the files root created are
+# handed back to the caller so the cleanup can remove them. `sudo` sets SUDO_USER, which is the observed scenario
+# (`sudo ./dpds.sh install`); the plain-root variant removes the SUDO_* variables again.
+SUDO_PHRASES=("as your user" "not with sudo" "PATH")
+
+can_become_root() { sudo -n true >/dev/null 2>&1; }
+
+# run_dpds_as_root [--no-sudo-vars] ARGS... : like run_dpds, but the script runs with EUID 0.
+run_dpds_as_root() {
+  local unset_args=() v envs=()
+  if [[ "${1:-}" == --no-sudo-vars ]]; then
+    shift
+    unset_args=(-u SUDO_USER -u SUDO_UID -u SUDO_GID -u SUDO_COMMAND)
+  fi
+  while IFS= read -r v; do envs+=("$v=${!v}"); done < <(compgen -e | grep -E '^(STUB_|DPDS_|CARGO_TARGET_DIR$|HOME$)')
+  local errf="$T/stderr" outf="$T/stdout"
+  ( cd "$T/cwd" && sudo -n env "${unset_args[@]}" "${envs[@]}" "PATH=$T/stubs:$T/base" "TMPDIR=$T/tmp" \
+      timeout 60 bash "$SCRIPT" "$@" <"${STDIN:-/dev/null}" >"$outf" 2>"$errf" )
+  RC=$?
+  sudo -n chown -R "$(id -u):$(id -g)" "$T" >/dev/null 2>&1 || true
+  OUT="$(cat "$outf")"; ERR="$(cat "$errf")"
+  [[ ! -s "$STUB_LOG.docker" ]] || fail "dpds.sh called docker: $(tr '\n' '|' <"$STUB_LOG.docker")"
+}
+
+# The refusal: non-zero, the message on stderr, and NOTHING else happened (no tool call, no sudo call, nothing written).
+assert_refused_as_root() {
+  assert_rc_nonzero "$*"
+  local p; for p in "${SUDO_PHRASES[@]}"; do assert_err_has "$p"; done
+  assert_log_empty
+  [[ ! -s "$STUB_LOG.sudo" ]] || fail "the script went on to call sudo: $(tr '\n' '|' <"$STUB_LOG.sudo")"
+  assert_no_file "$DPDS_PREFIX/bin/dpds"
+  assert_no_file "$DPDS_PREFIX/bin/dpds-controller"
+  assert_no_file "$DPDS_ETC_DIR"
+  assert_no_file "$DPDS_STATE_DIR"
+}
+
+test_a_run_under_sudo_is_refused_for_every_command() {
+  can_become_root || { echo "    SKIP: no passwordless sudo, cannot run the script as root"; return; }
+  local c
+  for c in check install update start stop restart status uninstall; do
+    : >"$STUB_LOG"
+    run_dpds_as_root "$c"
+    CTX="sudo $c" assert_refused_as_root "$c"
+  done
+}
+
+test_the_refusal_comes_before_every_flag_and_prompt() {
+  can_become_root || { echo "    SKIP: no passwordless sudo, cannot run the script as root"; return; }
+  local args
+  for args in "--yes install" "--stable update" "--stable --yes install" "--nightly check"; do
+    : >"$STUB_LOG"
+    # shellcheck disable=SC2086
+    run_dpds_as_root $args
+    CTX="sudo $args" assert_refused_as_root "$args"
+  done
+}
+
+test_plain_root_without_sudo_variables_is_refused_too() {
+  can_become_root || { echo "    SKIP: no passwordless sudo, cannot run the script as root"; return; }
+  local c
+  for c in check install start status; do
+    : >"$STUB_LOG"
+    run_dpds_as_root --no-sudo-vars "$c"
+    CTX="root $c" assert_refused_as_root "$c"
+  done
+}
+
+test_root_is_refused_although_everything_is_installed_and_running() {
+  can_become_root || { echo "    SKIP: no passwordless sudo, cannot run the script as root"; return; }
+  fake_install
+  export STUB_ACTIVE=1 STUB_GIT_TAGS="v1.0.0"
+  local c
+  for c in start stop restart update uninstall; do
+    : >"$STUB_LOG"
+    run_dpds_as_root --yes "$c"
+    assert_rc_nonzero "$c"
+    assert_err_has "as your user"
+    assert_log_empty
+  done
+  # nothing was removed or replaced either
+  assert_exec "$DPDS_PREFIX/bin/dpds-controller"
+  assert_file "$(installed_unit)"
+  assert_file "$DPDS_ETC_DIR/controller.env"
+}
+
+test_a_normal_user_with_a_leftover_sudo_user_variable_is_not_refused() {
+  # the refusal is about running as root; SUDO_USER in the environment of a non-root user means nothing
+  if [[ "$(id -u)" == 0 ]]; then echo "    SKIP: the suite itself runs as root"; return; fi
+  seed_unit
+  SUDO_USER=root SUDO_UID=0 run_dpds start
+  assert_rc 0 "$ERR"
+  assert_log_has '^systemctl enable --now dpds-controller$'
+  ! grep -qi 'as your user' <<<"$OUT$ERR" || fail "refused a non-root user: $ERR"
+}
+
+test_the_usage_error_of_a_normal_user_is_unchanged() {
+  # the refusal must not swallow the ordinary argument errors for the user the script is meant for
+  run_dpds frobnicate
+  assert_rc 1
+  assert_all_has "Usage"
+  ! grep -qi 'as your user' <<<"$OUT$ERR" || fail "a sudo message for a normal user: $ERR"
+}
+
+# Item 2: start, restart and status say what to do when the unit is not installed. "Installed" = the unit file of
+# `dpds.sh install` exists in $DPDS_SYSTEMD_DIR (the stub systemctl answers like real systemd for a missing unit: "does not
+# exist", "not found", "could not be found"; none of that may reach the user).
+SYSTEMCTL_COMPLAINTS='does not exist|not found|could not be found|Unit file'
+assert_says_to_install_first() {
+  assert_all_has "dpds-controller is not installed"
+  assert_all_has "install first"
+  grep -Eiq 'dpds\.sh install' <<<"$OUT$ERR" || fail "does not name the command to run (dpds.sh install): $OUT$ERR"
+  ! grep -Eiq "$SYSTEMCTL_COMPLAINTS" <<<"$OUT$ERR" || fail "systemctl's own complaint leaked through: $(grep -Ei "$SYSTEMCTL_COMPLAINTS" <<<"$OUT$ERR" | tr '\n' '|')"
+}
+
+test_start_without_the_unit_says_to_install_first() {
+  run_dpds start
+  assert_rc_nonzero
+  assert_err_has "dpds-controller is not installed"
+  assert_says_to_install_first
+}
+
+test_restart_without_the_unit_says_to_install_first() {
+  run_dpds restart
+  assert_rc_nonzero
+  assert_err_has "dpds-controller is not installed"
+  assert_says_to_install_first
+}
+
+test_status_without_the_unit_says_to_install_first_and_still_exits_zero() {
+  run_dpds status
+  assert_rc 0 "$ERR"
+  assert_says_to_install_first
+}
+
+test_the_install_first_message_is_not_shown_once_the_unit_is_there() {
+  seed_unit
+  local c
+  for c in start restart status; do
+    : >"$STUB_LOG"
+    run_dpds "$c"
+    assert_rc 0 "$c: $ERR"
+    ! grep -qi 'not installed' <<<"$OUT$ERR" || fail "$c: claims it is not installed although the unit file exists: $OUT$ERR"
+  done
+}
+
+test_start_works_right_after_install() {
+  # the unit that install writes is what makes the service "installed"
+  run_dpds --yes install
+  assert_rc 0 "$ERR"
+  : >"$STUB_LOG"
+  run_dpds start
+  assert_rc 0 "$ERR"
+  assert_log_has '^systemctl enable --now dpds-controller$'
+  ! grep -qi 'not installed' <<<"$OUT$ERR" || fail "start after install: $OUT$ERR"
+}
+
+test_start_after_uninstall_says_to_install_first_again() {
+  run_dpds --yes install
+  assert_rc 0 "$ERR"
+  run_dpds uninstall
+  assert_rc 0 "$ERR"
+  : >"$STUB_LOG"
+  run_dpds start
+  assert_rc_nonzero
+  assert_says_to_install_first
+}
+
+test_the_unit_is_looked_for_in_the_configured_systemd_dir() {
+  # a unit in some other directory does not count, one in DPDS_SYSTEMD_DIR does
+  mkdir -p "$T/elsewhere"
+  printf '[Service]\n' >"$T/elsewhere/dpds-controller.service"
+  run_dpds start
+  assert_rc_nonzero
+  assert_says_to_install_first
+  seed_unit
+  run_dpds start
+  assert_rc 0 "$ERR"
+}
+
+# Item 3: an unloadable state file is not a performance hint. The controller exits 2 for it (hints exit 0 or 1) and says
+# "<path>/state.json is not a valid state file: ..." on stderr; dpds.sh recognises it by that exit code and message.
+STATE_ERR='dpds-controller: /var/lib/dpds-controller/state.json is not a valid state file: unknown field `mlx5_devargs`, expected one of `main_lcore`, `eal_extra_args`, `poll_interval_ms` at line 1 column 99'
+STATE_ERR_2='Edit /var/lib/dpds-controller/state.json and remove the key `mlx5_devargs`, or move the file away to start empty (this loses the links and presets).'
+
+# The state file error as an error that will stop the controller, shown with the controller's message.
+assert_state_file_reported_as_error() {
+  assert_err_has "[ERROR]"
+  assert_all_has "is not a valid state file"
+  assert_all_has 'unknown field `mlx5_devargs`'
+  grep -Eiq 'refus|not start|n.t start|cannot start|unable to start|fail(s)? to start|from starting|prevent' <<<"$OUT$ERR" \
+    || fail "does not say that the controller will not start: $OUT$ERR"
+  ! grep -qi 'not blockers' <<<"$OUT$ERR" || fail "still calls the state file error 'not blockers': $OUT$ERR"
+  ! grep -qi 'hints about performance' <<<"$OUT$ERR" || fail "still calls the state file error a performance hint: $OUT$ERR"
+}
+
+test_install_stops_at_a_state_file_the_controller_cannot_load() {
+  export STUB_CONTROLLER_RC=2 STUB_CONTROLLER_ERR="$STATE_ERR"
+  feed $'y\n'   # a prompt would be answered yes: the script must not even ask
+  run_dpds install
+  assert_rc_nonzero
+  assert_state_file_reported_as_error
+  ! grep -Eiq 'continue with the installation|\[y/N\]' <<<"$OUT$ERR" || fail "offered to continue: $OUT"
+  assert_log_has '^cargo build'
+  assert_log_has '^dpds-controller check'
+  assert_no_file "$DPDS_PREFIX/bin/dpds"
+  assert_no_file "$DPDS_PREFIX/bin/dpds-controller"
+  assert_no_file "$(installed_unit)"
+  assert_no_file "$DPDS_ETC_DIR/controller.env"
+  assert_log_lacks '^systemctl'
+}
+
+test_install_with_yes_reports_the_state_file_error_and_goes_on() {
+  export STUB_CONTROLLER_RC=2 STUB_CONTROLLER_ERR="$STATE_ERR"
+  run_dpds --yes install
+  assert_rc 0 "$ERR"
+  assert_state_file_reported_as_error
+  assert_exec "$DPDS_PREFIX/bin/dpds-controller"
+  assert_file "$(installed_unit)"
+  assert_log_has '^systemctl daemon-reload'
+  assert_log_lacks '^systemctl (enable|start|restart)'
+}
+
+test_the_controller_message_is_passed_on_in_full() {
+  export STUB_CONTROLLER_RC=2 STUB_CONTROLLER_ERR="$STATE_ERR
+$STATE_ERR_2"
+  run_dpds --yes install
+  assert_rc 0 "$ERR"
+  assert_all_has "state.json is not a valid state file: unknown field"
+  assert_all_has "remove the key"
+  assert_all_has "this loses the links and presets"
+}
+
+test_a_state_file_the_controller_cannot_even_read_stops_install_as_well() {
+  # exit 2 is the controller's code for "the state could not be loaded", whatever the reason
+  export STUB_CONTROLLER_RC=2 STUB_CONTROLLER_ERR="dpds-controller: cannot read /var/lib/dpds-controller/state.json: Permission denied (os error 13)"
+  feed $'y\n'
+  run_dpds install
+  assert_rc_nonzero
+  assert_err_has "[ERROR]"
+  assert_all_has "cannot read"
+  ! grep -qi 'not blockers' <<<"$OUT$ERR" || fail "called a blocking failure 'not blockers': $OUT$ERR"
+  assert_no_file "$DPDS_PREFIX/bin/dpds-controller"
+  assert_no_file "$(installed_unit)"
+}
+
+test_ordinary_host_hints_are_still_only_hints() {
+  # exit 1 = an error-level hint (no hugepages, no isolation ...): feedback, asked once, never blocking
+  export STUB_CONTROLLER_RC=1
+  feed $'y\n'
+  run_dpds install
+  assert_rc 0 "$ERR"
+  assert_all_has "not blockers"
+  assert_out_has "Continue with the installation"
+  assert_exec "$DPDS_PREFIX/bin/dpds-controller"
+  assert_file "$(installed_unit)"
+  ! grep -q 'is not a valid state file' <<<"$OUT$ERR" || fail "state file text without a state file problem"
+}
+
+test_ordinary_host_hints_do_not_get_the_state_file_error_line() {
+  export STUB_CONTROLLER_RC=1
+  run_dpds --yes install
+  assert_rc 0 "$ERR"
+  ! grep -Eiq 'will not start|from starting|cannot start' <<<"$OUT$ERR" || fail "an ordinary hint is reported as a start blocker: $OUT$ERR"
+}
+
+test_update_stops_at_a_state_file_the_controller_cannot_load_and_leaves_the_service_alone() {
+  fake_install
+  export STUB_ACTIVE=1 STUB_CONTROLLER_RC=2 STUB_CONTROLLER_ERR="$STATE_ERR"
+  feed $'y\n'
+  run_dpds update
+  assert_rc_nonzero
+  assert_state_file_reported_as_error
+  ! grep -Eiq 'continue with the installation|\[y/N\]' <<<"$OUT$ERR" || fail "offered to continue: $OUT"
+  # the installed binaries are the old ones, and the running service was neither stopped nor restarted
+  ! grep -q 'STUB-BINARY' "$DPDS_PREFIX/bin/dpds-controller" || fail "the installed controller was replaced"
+  assert_log_lacks '^systemctl (enable|disable|start|stop|restart|daemon-reload)'
+}
+
+test_update_with_yes_reports_the_state_file_error_and_goes_on() {
+  fake_install
+  export STUB_ACTIVE=1 STUB_CONTROLLER_RC=2 STUB_CONTROLLER_ERR="$STATE_ERR"
+  run_dpds --yes update
+  assert_rc 0 "$ERR"
+  assert_state_file_reported_as_error
+  assert_file_has "$DPDS_PREFIX/bin/dpds-controller" 'STUB-BINARY-dpds-controller'
+  assert_log_has '^systemctl enable --now dpds-controller$'
+}
+
+test_the_standalone_check_passes_the_state_file_failure_through_unchanged() {
+  # `check` stays the plain pass-through of the controller's output and exit code
+  write_controller_stub "$DPDS_PREFIX/bin/dpds-controller"
+  export STUB_CONTROLLER_RC=2 STUB_CONTROLLER_ERR="$STATE_ERR"
+  run_dpds check
+  assert_rc 2
+  assert_all_has "is not a valid state file"
 }
 
 # ------------------------------------------------------------------ runner

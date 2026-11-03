@@ -23,6 +23,8 @@
 #   DPDS_BIND         bind address written into a NEW controller.env     (default 0.0.0.0:8100)
 #   CARGO_TARGET_DIR  cargo target dir the build output is read from     (default <repo>/target)
 #
+# Run it as your user, not with sudo or as root: it calls sudo itself for the privileged steps.
+#
 # Exit codes: 0 success, 1 usage error / prerequisite missing / aborted / a step failed.
 
 set -Eeuo pipefail
@@ -73,9 +75,7 @@ error() { echo "[ERROR] $(ts) $*" >&2; }
 # Helpers                              #
 ########################################
 run_privileged() {
-  if (( EUID == 0 )); then
-    "$@"
-  elif command -v sudo >/dev/null 2>&1; then
+  if command -v sudo >/dev/null 2>&1; then
     sudo "$@"
   else
     error "Root privileges are required to run: $*"
@@ -329,10 +329,18 @@ install_flow() {
 
   local release_dir="$TARGET_DIR/release" rc=0
   run_host_check "$release_dir/dpds-controller" || rc=$?
-  if (( rc != 0 )); then
+  if (( rc == 2 )); then
+    # Exit code 2: the controller could not load its state file (its message is shown above).
+    error "The controller will not start with this state (dpds-controller check exit code 2, see its message above)."
+    if (( ! ASSUME_YES )); then
+      error "Fix the state file as the message says, then run this again. Nothing was installed."
+      exit 1
+    fi
+    warn "Continuing anyway because of --yes."
+  elif (( rc != 0 )); then
     warn "Host check reported problems (exit code $rc). They are hints about performance, not blockers."
   fi
-  if (( ! ASSUME_YES )); then
+  if (( ! ASSUME_YES && rc != 2 )); then
     confirm "Continue with the installation?"
   fi
 
@@ -404,7 +412,17 @@ cmd_install() {
   install_flow
 }
 
+# Fails with a hint to install first when the unit file of `install` is missing, instead of
+# passing on systemctl's "Unit ... does not exist".
+require_installed() {
+  if [[ ! -f "$UNIT_DEST" ]]; then
+    error "$SERVICE is not installed: run ./dpds.sh install first (no $UNIT_DEST)."
+    return 1
+  fi
+}
+
 cmd_start() {
+  require_installed || return 1
   info "Enabling and starting $SERVICE"
   run_privileged systemctl enable --now "$SERVICE"
 }
@@ -417,6 +435,7 @@ cmd_stop() {
 # A failed stop must not leave a running service stopped: start is attempted anyway and the
 # failure is reported through the exit code.
 cmd_restart() {
+  require_installed || return 1
   local rc=0
   cmd_stop || rc=1
   if (( rc )); then
@@ -452,6 +471,9 @@ controller_address() {
 }
 
 cmd_status() {
+  if ! require_installed; then
+    return 0
+  fi
   local addr
   addr="$(controller_address)"
   info "Service"
@@ -539,6 +561,10 @@ usage() {
 
 main() {
   local cmd="" arg
+  if (( EUID == 0 )); then
+    error "Run dpds.sh as your user, not with sudo: it calls sudo itself for the privileged steps; under sudo, root's PATH lacks cargo/rustc/clang."
+    exit 1
+  fi
   for arg in "$@"; do
     case "$arg" in
       --nightly) CHANNEL_NIGHTLY=1 ;;

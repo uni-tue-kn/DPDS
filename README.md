@@ -305,7 +305,8 @@ pool size and socket, and the free path (raw or pktmbuf).
 
 ```bash
 # 3 lcores (main + one worker per link), two NICs inline,
-# a different emulation per direction (link dir0 = port 0 -> port 1):
+# a different emulation per direction (link dir0 = port 0 -> port 1).
+# `,txq_mpw_en=1` is an mlx5 devarg: add it only on mlx5 ports (mlx5 only), not on other drivers.
 sudo ./target/release/dpds -l 0-2 --in-memory -a <PCI0>,txq_mpw_en=1 -a <PCI1>,txq_mpw_en=1 -- \
     --config0 forward.json --config1 return.json
 ```
@@ -708,6 +709,11 @@ the default and follows the `nightly` branch. `--stable` installs or updates fro
 release: `dpds.sh` runs `git fetch --tags`, picks the highest `v*` tag by version and checks it
 out (a detached HEAD), then builds as usual; it stops with an error when there is no release tag
 yet. `status` prints the installed version, as reported by `/api/online`.
+
+An update that changes the format of the stored state can make an old `state.json` invalid: the
+controller then refuses to start, and `dpds.sh install` and `update` report it as an error in the host
+check. Its error names the file and, for an unknown field, the offending key. Edit the file and remove
+that key, or move the file away to start empty, which loses all links and presets.
 
 ### Versions and releases
 

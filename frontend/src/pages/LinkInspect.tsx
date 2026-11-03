@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import { Offcanvas } from 'react-bootstrap';
 import { Link as RouterLink } from 'react-router';
 import type { PortLabeler } from '../common/portLabel';
-import { pps, rate, time } from './linkSummary';
+import { distributionName, pps, rate, time } from './linkSummary';
 import type { Link } from '../api/types';
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
@@ -57,7 +57,7 @@ export default function LinkInspect({ link, label, onClose }: { link: Link | nul
               <Item name="Seed">{c.seed == null ? 'random' : c.seed}</Item>
             </Section>
             <Section title="Delayer">
-              <Item name="Delay distribution">{c.delayer.distribution}</Item>
+              <Item name="Delay distribution">{distributionName(c.delayer.distribution)}</Item>
               <Item name="Mean delay">{time(c.delayer.mean_ns)}</Item>
               <Item name="Delay std">{time(c.delayer.std_ns)}</Item>
               <Item name="Correlation">{onOff(c.delayer.activate_correlation)}</Item>

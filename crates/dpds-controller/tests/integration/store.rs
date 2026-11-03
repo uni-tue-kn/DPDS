@@ -193,3 +193,130 @@ fn a_state_file_with_limit_bit_is_refused_naming_the_file_and_left_untouched() {
     // no migration and no rewrite
     assert_eq!(fs::read(&path).unwrap(), bytes);
 }
+
+// ---- the "not a valid state file" error says what to do (spec19 item 4) -------------------
+//
+// The error keeps its first line (`<path> is not a valid state file: <serde message>`) and gets a
+// second one: edit the named file to remove the offending key (named when serde reports an
+// unknown field), or move the file away to start empty, which loses the links and presets.
+
+/// The text after the first line of a multi-line error message.
+fn after_first_line(msg: &str) -> String {
+    msg.split_once('\n')
+        .map(|(_, rest)| rest.trim().to_string())
+        .unwrap_or_default()
+}
+
+fn load_err(contents: &str) -> (std::path::PathBuf, String) {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join(STATE_FILE_NAME);
+    fs::write(&path, contents).unwrap();
+    let msg = store::load(tmp.path())
+        .err()
+        .unwrap_or_else(|| panic!("{contents:?} must not load"))
+        .to_string();
+    // the file is still the operator's, byte for byte
+    assert_eq!(fs::read_to_string(&path).unwrap(), contents);
+    (path, msg)
+}
+
+#[test]
+fn an_unknown_settings_key_is_named_in_the_second_line_with_both_remedies() {
+    // what zink-dpdk-1 had: a key of an older release that `Settings` now refuses
+    let state = json!({
+        "links": [],
+        "settings": {"main_lcore": null, "eal_extra_args": [], "poll_interval_ms": 500,
+                     "mlx5_devargs": "txq_mpw_en=1"},
+        "next_id": 1
+    });
+    let (path, msg) = load_err(&serde_json::to_string(&state).unwrap());
+    let first = msg.lines().next().unwrap();
+    assert!(
+        first.contains(&path.display().to_string()) && first.contains("is not a valid state file"),
+        "the first line stays: {msg}"
+    );
+    let rest = after_first_line(&msg).to_lowercase();
+    assert!(!rest.is_empty(), "no second line: {msg:?}");
+    assert!(
+        rest.contains("mlx5_devargs"),
+        "the second line must name the offending key: {msg:?}"
+    );
+    assert!(
+        rest.contains(&path.display().to_string().to_lowercase()),
+        "the second line must name the file to edit: {msg:?}"
+    );
+    assert!(
+        rest.contains("remove"),
+        "edit the file and remove the key: {msg:?}"
+    );
+    assert!(
+        rest.contains("move") && rest.contains("empty"),
+        "or move the file away to start empty: {msg:?}"
+    );
+    assert!(
+        rest.contains("links") && rest.contains("presets"),
+        "moving it away loses links and presets, say so: {msg:?}"
+    );
+}
+
+#[test]
+fn an_unknown_key_deep_inside_a_link_config_is_named_too() {
+    let mut cfg = cfg_json(1.0e6, 1.0e5);
+    cfg["limiter"]["limit_bit"] = json!(1.0e6);
+    let state = json!({
+        "links": [{"id": 1, "name": "a", "ingress": "net_null0", "egress": "net_null0",
+                   "config": cfg}],
+        "settings": {"main_lcore": null, "eal_extra_args": [], "poll_interval_ms": 500},
+        "next_id": 2
+    });
+    let (_, msg) = load_err(&serde_json::to_string(&state).unwrap());
+    let rest = after_first_line(&msg);
+    assert!(rest.contains("limit_bit"), "{msg:?}");
+    assert!(rest.to_lowercase().contains("remove"), "{msg:?}");
+}
+
+#[test]
+fn a_state_file_that_is_not_json_gets_the_move_away_advice_without_a_key() {
+    for garbage in ["{not json", "", "[]"] {
+        let (path, msg) = load_err(garbage);
+        let rest = after_first_line(&msg).to_lowercase();
+        assert!(!rest.is_empty(), "{garbage:?}: no second line: {msg:?}");
+        assert!(
+            rest.contains(&path.display().to_string().to_lowercase()),
+            "{garbage:?}: the second line names the file: {msg:?}"
+        );
+        assert!(
+            rest.contains("move") && rest.contains("empty"),
+            "{garbage:?}: {msg:?}"
+        );
+        assert!(
+            rest.contains("links") && rest.contains("presets"),
+            "{garbage:?}: {msg:?}"
+        );
+    }
+}
+
+#[test]
+fn the_advice_is_two_lines_not_a_wall_of_text() {
+    let (_, msg) = load_err("{not json");
+    let n = msg.lines().filter(|l| !l.trim().is_empty()).count();
+    assert_eq!(n, 2, "first line plus one advice line: {msg:?}");
+}
+
+#[test]
+fn a_missing_or_valid_state_file_has_no_advice_line() {
+    // only the "not a valid state file" error gets the second line
+    let tmp = tempfile::tempdir().unwrap();
+    store::save(tmp.path(), &sample()).unwrap();
+    assert!(store::load(tmp.path()).is_ok());
+    // an unreadable path (a directory where the file should be) is a different error
+    let tmp = tempfile::tempdir().unwrap();
+    fs::create_dir(tmp.path().join(STATE_FILE_NAME)).unwrap();
+    let msg = store::load(tmp.path())
+        .expect_err("a directory is not a state file")
+        .to_string();
+    assert!(
+        !msg.contains("is not a valid state file"),
+        "a read error is not a format error: {msg}"
+    );
+}

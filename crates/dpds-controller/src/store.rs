@@ -33,8 +33,22 @@ pub fn load(dir: &Path) -> Result<StoredState, StoreError> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(StoredState::default()),
         Err(e) => return Err(StoreError(format!("cannot read {}: {e}", path.display()))),
     };
-    serde_json::from_slice(&bytes)
-        .map_err(|e| StoreError(format!("{} is not a valid state file: {e}", path.display())))
+    serde_json::from_slice(&bytes).map_err(|e| {
+        let shown = path.display();
+        let fix = match unknown_field(&e.to_string()) {
+            Some(key) => format!("Edit {shown} and remove the key `{key}`, or"),
+            None => "Fix or".to_string(),
+        };
+        StoreError(format!(
+            "{shown} is not a valid state file: {e}\n{fix} move {shown} away to start empty (this loses all links and presets)."
+        ))
+    })
+}
+
+/// The key named by serde's "unknown field `key`, expected ..." message.
+fn unknown_field(message: &str) -> Option<&str> {
+    let rest = message.strip_prefix("unknown field `")?;
+    rest.split_once('`').map(|(key, _)| key)
 }
 
 /// Writes to a temporary file in the same directory, syncs and renames it over
