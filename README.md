@@ -59,9 +59,9 @@ The emulation logic lives in the reusable library [`dpds-core`](crates/dpds-core
 - **Delay:** deterministic, normal, log-normal, gamma or uniform delay distributions, optionally autocorrelated over time (half-life based), with FIFO or send-time (reordering) packet order
 - **Rate limiting:** **Spacer** (spreads packets out in time) or **Token Bucket Filter** (drops packets that exceed a burst budget)
 - **Packet loss:** **Random** (Bernoulli) or **Gilbert–Elliott** (bursty) loss model
-- **Inline or loopback:** two ports (bump-in-the-wire, one emulated link per direction) or one port (loopback)
-- **Independent directions:** one worker lcore, one config file, one mbuf pool and one set of telemetry counters per direction
-- **Several links in one process:** a `--links` file describes any number of one-port or two-port links, each direction with its own config, ports named by PCI address or virtual-device name
+- **Directed links:** a link is one direction, ingress port to egress port, with its own emulation: NIC A -> NIC B, NIC B -> NIC C and NIC C -> NIC A are three links; the classic bump-in-the-wire is two links (A -> B and B -> A); one port can loop back (ingress = egress)
+- **Independent links:** one worker lcore, one config, one mbuf pool and one set of telemetry counters per link
+- **Several links in one process:** a `--links` file describes any number of links, ports named by PCI address or virtual-device name
 - **Reproducible:** optional `seed` for the delay and loss random number generators
 - **Observable:** live statistics over DPDK's telemetry socket (off by default, no cost when off): counters, drops per cause, delay statistics and a delay histogram
 
@@ -75,8 +75,8 @@ The emulation logic lives in the reusable library [`dpds-core`](crates/dpds-core
 | Spacer rate limiter                                              | ✅ Available    |
 | Token Bucket Filter rate limiter                                 | ✅ Available    |
 | Random and Gilbert–Elliott packet loss                           | ✅ Available    |
-| Inline (2 ports) and loopback (1 port) operation                 | ✅ Available    |
-| Separate emulation config per direction                          | ✅ Available    |
+| Directed links (ingress -> egress), ring and hairpin topologies   | ✅ Available    |
+| Separate emulation config per link                               | ✅ Available    |
 | Several links in one process (`--links`), explicit lcores        | ✅ Available    |
 | Drop counters per cause (loss model, limiter, buffer full)       | ✅ Available    |
 | Delay statistics and configurable delay histogram (telemetry)    | ✅ Available    |
@@ -93,27 +93,33 @@ The emulation logic lives in the reusable library [`dpds-core`](crates/dpds-core
 
 ## 🧩 Architecture
 
-DPDS runs **one worker lcore per traffic direction**. Direction `d` is the
-traffic received on port `d`; with two ports it leaves on the other port
-(`d ^ 1`), with one port it loops back out of port 0.
+DPDS runs **one worker lcore per link**. A link is one direction: the traffic
+received on its ingress port leaves on its egress port with the link's
+emulation applied. The picture shows the classic pair, two links (`dir0`: port 0
+-> port 1, `dir1`: port 1 -> port 0); the
+[links file](#several-links-in-one-process---links) allows any directed
+topology, e.g. a ring A -> B -> C -> A over three NICs.
 
 ```
-                    worker lcore 1 (direction 0)
+                    worker lcore 1 (link dir0)
               ┌─────────────────────────────────────┐
 port 0 RX ──► │ rx_burst ─► dpds-core Buffer ─► tx  │ ──► port 1 TX
               └─────────────────────────────────────┘
-                    worker lcore 2 (direction 1)
+                    worker lcore 2 (link dir1)
               ┌─────────────────────────────────────┐
 port 1 RX ──► │ rx_burst ─► dpds-core Buffer ─► tx  │ ──► port 0 TX
               └─────────────────────────────────────┘
                       main lcore: signals, NIC poll, telemetry
 ```
 
-Each direction owns everything on its path: its `dpds-core` `Buffer` (built
-from its **own config file**), its mbuf pool, its telemetry counters and
-epochs. RX queue 0 of port `d` is used only by worker `d`, and TX queue 0 of the
-egress port only by that worker, so the workers share no data-plane state.
-The i-th EAL worker lcore (in EAL order) runs direction i.
+Each link owns everything on its path: its `dpds-core` `Buffer` (built
+from its **own config**), its mbuf pool, its telemetry counters and epochs.
+Every port is the ingress of at most one link and the egress of at most one
+link, so RX queue 0 of a port is used only by the worker of the link that
+receives on it and TX queue 0 only by the worker of the link that transmits on
+it: the workers share no data-plane state. A port that is only an egress is
+never polled. Without explicit lcores the i-th EAL worker lcore (in EAL order)
+runs link i.
 
 One loop iteration of a worker:
 
@@ -137,17 +143,16 @@ models (Random / Gilbert-Elliott).
 
 ### Topology and lcores
 
-| ports | directions | lcores needed | example EAL arg |
-| ----- | ---------- | ------------- | --------------- |
-| 2 (inline, bump-in-the-wire) | 2: port 0 -> port 1 and port 1 -> port 0 | 3 (main + 2 workers) | `-l 0-2` |
-| 1 (loopback) | 1: port 0 -> port 0 | 2 (main + 1 worker) | `-l 0-1` |
+| ports | links | lcores needed | example EAL arg |
+| ----- | ----- | ------------- | --------------- |
+| 2 (inline, bump-in-the-wire) | 2: `dir0` port 0 -> port 1 and `dir1` port 1 -> port 0 | 3 (main + 2 workers) | `-l 0-2` |
+| 1 (loopback) | 1: `dir0` port 0 -> port 0 | 2 (main + 1 worker) | `-l 0-1` |
 
-DPDS needs exactly `1 + number of directions` lcores and exits at startup with an
+DPDS needs exactly `1 + number of links` lcores and exits at startup with an
 error naming the required count otherwise. With `--config*` any port count other
 than 1 or 2 is rejected and `--config1` with only one port is an error. With
-[`--links`](#several-links-in-one-process---links) any number of links of one or
-two ports is allowed: a link of two ports has two directions, a link of one port
-one (a loopback), and every direction gets a worker lcore.
+[`--links`](#several-links-in-one-process---links) any number of links is
+allowed, every link gets a worker lcore.
 
 ### Budgets, rings and pools
 
@@ -155,43 +160,45 @@ one (a loopback), and every direction gets a worker lcore.
 - `NIC_DESCRIPTORS` is 4096: the RX and TX ring size requested per port (the
   driver may clamp or round it; the applied sizes are logged at startup and
   shown by `/dpds/ports`).
-- Each direction has its **own mbuf pool** (`dpds_pool_<d>`), created on the
-  NUMA socket of port `d`. DPDS warns on stderr if the worker lcore of a
-  direction sits on a different socket than its port. The data room is sized for
+- Each link has its **own mbuf pool** (`dpds_pool_<d>`), created on the
+  NUMA socket of its ingress port. DPDS warns on stderr if the worker lcore of a
+  link sits on a different socket than its ingress port. The data room is sized for
   `MTU + 14 + 4` bytes (MTU 1500).
-- **Pool size is derived, not configured.** For every direction,
+- **Pool size is derived, not configured.** For every link,
 
   ```
-  pool size = buffer_capacity + rx_desc(port d) + tx_desc(egress port)
+  pool size = buffer_capacity + rx_desc(ingress port) + tx_desc(egress port)
               + MBUF_CACHE_SIZE * 3 / 2 + 2 * BURST_SIZE
   ```
 
-  `buffer_capacity` is the direction's own config value; `rx_desc` and `tx_desc`
+  `buffer_capacity` is the link's own config value; `rx_desc` and `tx_desc`
   are the ring sizes the drivers apply (`rte_eth_dev_adjust_nb_rx_tx_desc`,
   queried before any pool or port is created); `MBUF_CACHE_SIZE` is 512, so the
   last two terms are 768 (the worker's mempool cache) and 64 (two bursts). The
   pool therefore always holds a full delay buffer plus both rings, so the NIC
   never runs out of mbufs before the DPDS buffer rejects a packet. Example: the
   default `config.json` (`buffer_capacity` 1,000,000) with 4096-descriptor rings
-  gives 1,000,000 + 4096 + 4096 + 768 + 64 = 1,009,024 mbufs per direction. If a
+  gives 1,000,000 + 4096 + 4096 + 768 + 64 = 1,009,024 mbufs per link. If a
   pool cannot be created (e.g. not enough hugepage memory), DPDS exits non-zero
-  naming the direction and the size it tried. The constants are in
+  naming the link's index and the size it tried. A port that is only an
+  egress adds its own `rx_desc` to the pool of the link that transmits on it
+  (its RX ring is filled but never polled). The constants are in
   `crates/dpds/src/consts.rs`.
 - **Hugepage memory.** One mbuf takes about 1.9 KB in the pool (1664 B data
   room + 128 B `rte_mbuf` + the mempool object header; 1920 B measured with
   128-byte cache lines, slightly less with 64-byte lines). The default config
-  therefore needs about 1.8 GiB of hugepages per direction, twice that with two
-  ports. Shrink `buffer_capacity` if that is too much.
+  therefore needs about 1.8 GiB of hugepages per link, twice that with two
+  links. Shrink `buffer_capacity` if that is too much.
 
 ### Packet free path
 
-Dropped packets are freed in bulk. If **both** ports a direction uses (RX port
-`d`, TX egress port) report `MBUF_FAST_FREE` active, the worker frees with the raw
-`rte_mbuf_raw_free_bulk` on the direction's pool, otherwise with
+Dropped packets are freed in bulk. If **both** ports a link uses (ingress and
+egress port) report `MBUF_FAST_FREE` active, the worker frees with the raw
+`rte_mbuf_raw_free_bulk` on the link's pool, otherwise with
 `rte_pktmbuf_free_bulk`. Raw free is safe because the TX port's fast-free flag
-covers the mbufs the NIC did not accept (direct, refcount 1, from the direction's
+covers the mbufs the NIC did not accept (direct, refcount 1, from the link's
 pool), and the mbufs the buffer rejected on RX are single-segment: RX scatter is
-off and the data room fits the largest frame. The choice is logged per direction
+off and the data room fits the largest frame. The choice is logged per link
 at startup (and shown as `dir<d>_raw_free` by `/dpds/ports`). mlx5 withdraws
 `MBUF_FAST_FREE` when MPRQ is enabled (`mprq_en=1`), so keep MPRQ off, see
 [Performance tuning](#-performance-tuning).
@@ -257,32 +264,34 @@ dpds <EAL args...> -- [--config <path>] [--config0 <path>] [--config1 <path>] | 
 
 | Option               | Meaning                                                                                                   |
 | -------------------- | --------------------------------------------------------------------------------------------------------- |
-| `--config <path>`    | Emulation config file for every direction without its own (default `config.json` in the working directory). |
-| `--config0 <path>`   | Config for direction 0 (traffic received on port 0). Overrides `--config`.                                  |
-| `--config1 <path>`   | Config for direction 1 (port 1 -> port 0). Overrides `--config`. Error with only one port.                  |
+| `--config <path>`    | Emulation config file for every link without its own (default `config.json` in the working directory).      |
+| `--config0 <path>`   | Config for link `dir0` (port 0 -> port 1, with one port port 0 -> port 0). Overrides `--config`.            |
+| `--config1 <path>`   | Config for link `dir1` (port 1 -> port 0). Overrides `--config`. Error with only one port.                  |
 | `--links <path>`     | Links file: any number of links, see [Several links](#several-links-in-one-process---links). Cannot be combined with the three `--config*` flags. |
 
-The config of direction `d` is `--config<d>` if given, else `--config`, else
-`config.json`. With `--config*` the ports form one link named `default`. A flag given twice, an unknown flag, a missing value, a bad
+The config of link `dir<d>` is `--config<d>` if given, else `--config`, else
+`config.json`. With `--config*` the probed ports form the links `dir0` and, with
+two ports, `dir1` (the shorthand names; `dir<d>` is also the link's index in
+`/dpds/ports`). A flag given twice, an unknown flag, a missing value, a bad
 config file (invalid distribution or half-life parameters are reported at startup, not as a panic), a
 wrong lcore or port count, a pool that cannot be created, or a port whose link is down
 makes `dpds` exit with a non-zero status and a message on stderr.
 
 At startup DPDS prints, per port: name, applied and requested ring sizes,
-socket, RX/TX burst mode and link; per direction: lcore, ports, config path,
+socket, RX/TX burst mode and link; per link: lcore, ports, config path,
 pool size and socket, and the free path (raw or pktmbuf).
 
 ### Real NICs
 
 ```bash
-# 3 lcores (main + one worker per direction), two NICs inline,
-# a different emulation per direction:
+# 3 lcores (main + one worker per link), two NICs inline,
+# a different emulation per direction (link dir0 = port 0 -> port 1):
 sudo ./target/release/dpds -l 0-2 -a <PCI0> -a <PCI1> -- \
     --config0 forward.json --config1 return.json
 ```
 
 - `-l 0-2` - exactly three lcores for two ports: the main lcore and one worker
-  per direction. One port needs `-l 0-1`.
+  per link. One port needs `-l 0-1`.
 - `-a <PCI>` - NIC PCI address (e.g. `0000:65:00.0`); pass one for loopback,
   two for inline. For mlx5 NICs append driver arguments to it, e.g.
   `-a <PCI0>,txq_mpw_en=1` (Enhanced Multi-Packet Write on TX; already the
@@ -315,97 +324,120 @@ the repository root:
 `config.vdev.json` is `config.json` with `buffer_capacity` 4096, so its
 [derived pool](#budgets-rings-and-pools) of 4096 + 4096 + 4096 + 768 + 64 =
 13,120 mbufs (about 25 MB) fits into `-m 256`. The default `config.json` derives
-about a million mbufs (about 1.8 GiB) per direction; to use it here, raise `-m`
+about a million mbufs (about 1.8 GiB) per link; to use it here, raise `-m`
 accordingly. The second example needs an `in.pcap` in the working directory.
 Stop with `Ctrl-C`.
 
 ### Several links in one process (`--links`)
 
 `--links <file>` replaces the `--config*` flags and describes every link of the
-process in one JSON file: one main lcore plus one worker lcore per direction of
-every link. Starting or stopping DPDS applies to all links at once.
+process in one JSON file: one main lcore plus one worker lcore per link.
+Starting or stopping DPDS applies to all links at once.
+
+A **link is one direction**: packets that arrive on its `ingress` port leave on
+its `egress` port with the link's one config applied. Each port may be the
+ingress of at most one link and the egress of at most one link, but its two
+partners need not be the same. NIC A -> NIC B, NIC B -> NIC C and NIC C -> NIC A
+are three links (a ring); the classic bump-in-the-wire is the two links A -> B
+and B -> A; `ingress == egress` is a loopback on one port.
 
 ```json
 { "links": [
-  { "name": "a-b",
-    "ports": ["<PCI0>", "<PCI1>"],
-    "configs": [ { "...": "Config for <PCI0> -> <PCI1>" },
-                 { "...": "Config for <PCI1> -> <PCI0>" } ],
-    "histograms": [ { "bins": 100, "lo_ns": 0, "hi_ns": 2000000 }, {} ],
-    "lcores": [2, 1],
-    "delay_stats": [true, false] },
-  { "name": "loop",
-    "ports": ["net_null0"],
-    "configs": [ { "...": "Config for net_null0 -> net_null0" } ] }
+  { "name": "a-to-b", "ingress": "<PCI_A>", "egress": "<PCI_B>",
+    "config": { "...": "Config for A -> B" },
+    "lcore": 3,
+    "histogram": { "bins": 100, "lo_ns": 0, "hi_ns": 2000000 },
+    "delay_stats": false },
+  { "name": "b-to-c", "ingress": "<PCI_B>", "egress": "<PCI_C>",
+    "config": { "...": "Config for B -> C" },
+    "lcore": 2 },
+  { "name": "c-to-a", "ingress": "<PCI_C>", "egress": "<PCI_A>",
+    "config": { "...": "Config for C -> A" },
+    "lcore": 1 }
 ] }
 ```
 
-Every `configs` entry is a complete [config](#configuration) (the `"..."` keys
-above stand for its fields). `histograms`, `lcores` and `delay_stats` are optional. A key the format does not know (a typo such as `lcore`) is a startup error naming it.
+The bidirectional pair is the same thing with two entries, with one config per
+direction (use the same config twice for a symmetric link):
+
+```json
+{ "links": [
+  { "name": "forward", "ingress": "<PCI0>", "egress": "<PCI1>", "config": { "...": "Config for <PCI0> -> <PCI1>" } },
+  { "name": "return",  "ingress": "<PCI1>", "egress": "<PCI0>", "config": { "...": "Config for <PCI1> -> <PCI0>" } }
+] }
+```
+
+Every `config` is a complete [config](#configuration) (the `"..."` keys above
+stand for its fields). `lcore`, `histogram` and `delay_stats` are optional. A key
+the format does not know (a typo such as `lcores`, or the keys `ports`,
+`configs`, `histograms` of the removed paired-link format) is a startup error
+naming it.
 
 - **Ports** are DPDK device names: a PCI address as DPDK reports it
   (`0000:65:00.0`) or a virtual device name (`net_null0`, `net_pcap0`). They are
   matched against the probed devices by name, never by port id, so the order of
-  the `-a` / `--vdev` arguments does not matter. A link has one port (a loopback,
-  one direction) or two ports (two directions), and `configs` has exactly one
-  config per port: `configs[0]` is the direction that receives on `ports[0]` and
-  transmits on `ports[1]`, `configs[1]` the other way round. A port belongs to at
-  most one link, and every device DPDK probes must belong to a link (otherwise
-  startup fails naming it: allow only the devices you use).
+  the `-a` / `--vdev` arguments does not matter. A port used as the ingress of two
+  links, or as the egress of two links, is a startup error naming the port and
+  the role. Every device DPDK probes must be used by some link (as ingress, as
+  egress or both), otherwise startup fails naming it: allow only the devices you
+  use. A port that is only an egress is never polled; one that is only an ingress
+  never transmits.
 - **`name`**: 1 to 32 characters of `[A-Za-z0-9_.-]`, unique. It appears in
-  `/dpds/ports` and in error messages.
-- **Directions** are numbered globally in file order: link 0 direction 0, link 0
-  direction 1, link 1 direction 0, and so on; the telemetry commands take this
-  number (`/dpds/stats,<dir>`).
-- **Lcores**: the EAL must have exactly `1 + number of directions` lcores. Without
-  `lcores` the i-th worker lcore (ascending lcore id) runs direction i. With
-  `"lcores": [..]` (one entry per direction of the link) direction i runs exactly
-  on the listed lcore: `[2, 1]` puts the first direction of that link on lcore 2.
-  Either every link has `lcores` or none; the lcores must be distinct, must be
-  EAL worker lcores (not the main lcore) and together must cover every worker
-  lcore. `/dpds/ports` `dir<d>_lcore` reports the lcore actually used. This
-  lets a caller place each direction next to its NIC's NUMA node.
-- **`histograms`** (one entry per direction, same length as `configs`): the range
-  of the [delay histogram](docs/TELEMETRY.md#dpdsdelay_histdir). Every field is
-  optional: `bins` (an integer in 1..=500, default 256), `lo_ns` and `hi_ns` (both
-  >= 0, `lo_ns` < `hi_ns`). A missing field takes the automatic value: the range
-  `mean +- 6 std` of the direction's config, widened by the Spacer's queueing
-  allowance and at least 1 us wide, clamped at 0 (the exact rule is in
-  [docs/TELEMETRY.md](docs/TELEMETRY.md#dpdsdelay_histdir)). The histogram exists
-  only in `--features telemetry` builds.
-- **`delay_stats`** (one boolean per direction, same length as `configs`, default
-  all `true`): `false` switches the delay statistics and the histogram of that
-  direction off. Its worker then records neither the intended delay, the lateness
-  nor the histogram (the loop is the one of the counters only, no per-packet and
-  no per-burst cost); counters, drop causes and first-loss stay. The six
-  `delay_*` / `lateness_*` keys of `/dpds/stats,<dir>` are absent, `/dpds/delay_hist,<dir>`
-  is empty and `/dpds/ports` shows `dir<d>_delay_stats` 0 (see
+  `/dpds/ports` and in error messages. (With `--config*` the links are named
+  `dir0` and `dir1`.)
+- **Link index**: links are numbered in file order; the telemetry commands take
+  this number (`/dpds/stats,<dir>`, the `dir<d>_*` keys of `/dpds/ports`).
+- **`lcore`**: the EAL must have exactly `1 + number of links` lcores. Without
+  `lcore` the i-th worker lcore (ascending lcore id) runs link i. With `lcore`
+  the link runs exactly on the listed lcore. Either every link has `lcore` or
+  none; the lcores must be distinct, must be EAL worker lcores (not the main
+  lcore) and together must cover every worker lcore. `/dpds/ports`
+  `dir<d>_lcore` reports the lcore actually used. This lets a caller place each
+  link next to its ingress NIC's NUMA node.
+- **`histogram`**: the range of the [delay histogram](docs/TELEMETRY.md#dpdsdelay_histdir).
+  Every field is optional: `bins` (an integer in 1..=500, default 256), `lo_ns`
+  and `hi_ns` (both >= 0, `lo_ns` < `hi_ns`). A missing field takes the
+  automatic value: the range `mean +- 6 std` of the link's config, widened by the
+  Spacer's queueing allowance and at least 1 us wide, clamped at 0 (the exact
+  rule is in [docs/TELEMETRY.md](docs/TELEMETRY.md#dpdsdelay_histdir)). The
+  histogram exists only in `--features telemetry` builds.
+- **`delay_stats`** (boolean, default `true`): `false` switches the delay
+  statistics and the histogram of that link off. Its worker then records neither
+  the intended delay, the lateness nor the histogram (the loop is the one of the
+  counters only, no per-packet and no per-burst cost); counters, drop causes and
+  first-loss stay. The six `delay_*` / `lateness_*` keys of `/dpds/stats,<dir>`
+  are absent, `/dpds/delay_hist,<dir>` is empty and `/dpds/ports` shows
+  `dir<d>_delay_stats` 0 (see
   [docs/TELEMETRY.md](docs/TELEMETRY.md#delay-statistics-off)).
-- **Port limit**: `/dpds/ports` must fit DPDK's telemetry dict of 256 entries
-  (`3 + 5 * ports + 10 * directions` keys), so a run has at most 16 ports; more is
-  a startup error naming the maximum 256.
+- **Telemetry limit**: `/dpds/ports` must fit DPDK's telemetry dict of 256
+  entries (`3 + 5 * ports + 10 * links` keys, `ports` = distinct ports): a ring
+  of 16 ports (16 links) fits, 17 does not; 12 one-way links over 24 ports fit,
+  13 do not. More is a startup error naming the maximum 256.
+- **Pools**: every link has its own mbuf pool on the socket of its ingress port.
+  A port that is only an egress still has an RX ring that is filled, so its
+  descriptors are added to the pool of the link that transmits on it.
 
-Any problem in the file (a bad name, a duplicate port, a wrong number of configs,
-lcores, histograms or delay_stats, an unknown key, more than 16 ports, a config with invalid parameters, a port that is not
-probed, a probed port that is in no link, a wrong lcore count) is a clean
-startup error naming the link, port or lcore concerned.
+Any problem in the file (a bad name, a duplicate name, a port twice in the same
+role, an empty port name, an unknown key, a mix of links with and without `lcore`,
+too many ports and links, a config with invalid parameters, a port that is not
+probed, a probed port that no link uses, a wrong lcore count) is a clean startup
+error naming the link, port or lcore concerned.
 
-Example without hardware, two loopback links on two `net_null` devices
-(`-l 0-2`: the main lcore and one worker per direction), run from the repository
-root:
+Example without hardware, a ring of three `net_null` devices (`-l 0-3`: the main
+lcore and one worker per link), run from the repository root:
 
 ```bash
 CONFIG=$(tr -d '\n ' < config.vdev.json)
-printf '{"links":[{"name":"first","ports":["net_null0"],"configs":[%s]},{"name":"second","ports":["net_null1"],"configs":[%s]}]}' \
-    "$CONFIG" "$CONFIG" > /tmp/links.vdev.json
-./target/release/dpds --no-huge -m 256 --no-pci --in-memory -l 0-2 \
-    --vdev=net_null0 --vdev=net_null1 -- --links /tmp/links.vdev.json
+printf '{"links":[{"name":"a-to-b","ingress":"net_null0","egress":"net_null1","config":%s},{"name":"b-to-c","ingress":"net_null1","egress":"net_null2","config":%s},{"name":"c-to-a","ingress":"net_null2","egress":"net_null0","config":%s}]}' \
+    "$CONFIG" "$CONFIG" "$CONFIG" > /tmp/links.vdev.json
+./target/release/dpds --no-huge -m 512 --no-pci --in-memory -l 0-3 \
+    --vdev=net_null0 --vdev=net_null1 --vdev=net_null2 -- --links /tmp/links.vdev.json
 ```
 
 ### Configuration
 
-The emulation behaviour is controlled by one JSON file per direction
-(`--config`, `--config0`, `--config1`). The `config.json` in this repository is a
+The emulation behaviour is controlled by one JSON config per link (a file for
+`--config`, `--config0`, `--config1`, the `config` object of a link in `--links`). The `config.json` in this repository is a
 working default (10 ms normally distributed delay, no rate limit, no loss);
 `config.vdev.json` is the same with a small `buffer_capacity` for the
 [virtual-device examples](#without-hardware-virtual-devices). Example with
@@ -484,10 +516,10 @@ Build with `--features telemetry` to register the commands:
 
 | command | what |
 | --- | --- |
-| `/dpds/stats,<dir>` | Packet counters of direction `<dir>` (numbered as in the [links file](#several-links-in-one-process---links); 0 or 1 with `--config*`) since start (`rx_pkts`, `dpds_rejects` and its causes `loss_drops` / `limiter_drops` / `buffer_full_drops`, `pops`, `tx_sent`, `tx_drops`, ...), gauges, delay statistics (`delay_mean_ns`, `delay_std_ns`, `delay_min_ns`, `delay_max_ns`, `lateness_mean_ns`, `lateness_max_ns`; absent for a direction with `delay_stats` off), first-loss result. |
+| `/dpds/stats,<dir>` | Packet counters of link `<dir>` (its index in the [links file](#several-links-in-one-process---links); 0 or 1 with `--config*`) since start (`rx_pkts`, `dpds_rejects` and its causes `loss_drops` / `limiter_drops` / `buffer_full_drops`, `pops`, `tx_sent`, `tx_drops`, ...), gauges, delay statistics (`delay_mean_ns`, `delay_std_ns`, `delay_min_ns`, `delay_max_ns`, `lateness_mean_ns`, `lateness_max_ns`; absent for a link with `delay_stats` off), first-loss result. |
 | `/dpds/epochs,<dir>` | The same per epoch (a burst of traffic, closed after 500 ms of silence). |
-| `/dpds/delay_hist,<dir>` | Cumulative histogram of the intended delay of the accepted packets (`lo_ns`, `bin_ns`, `num_bins`, `bins`, `underflow`, `overflow`; empty for a direction with `delay_stats` off). |
-| `/dpds/ports` | Port names, descriptor ring sizes (applied and requested), the number of links, and per direction its link, ports (ids and device names), lcore, config path, pool size, free path and whether its delay statistics are on (at most 256 keys, so at most 16 ports). |
+| `/dpds/delay_hist,<dir>` | Cumulative histogram of the intended delay of the accepted packets (`lo_ns`, `bin_ns`, `num_bins`, `bins`, `underflow`, `overflow`; empty for a link with `delay_stats` off). |
+| `/dpds/ports` | Port names, descriptor ring sizes (applied and requested), the number of links, and per link its name, ports (ids and device names), lcore, config path, pool size, free path and whether its delay statistics are on (`3 + 5 * ports + 10 * links` keys, at most 256). |
 | `/nic/hw_first_loss,<port>` | First NIC hardware drop (`imissed`, `rx_nombuf`, ...) seen by the main lcore. |
 | `/nic/epochs,<port>` | Per-epoch NIC `rx_packets` / `imissed` / `rx_port_discards`. |
 
@@ -595,7 +627,7 @@ For interactive use there is the controller with a REST API and a web frontend, 
 
 ## 🖥️ Controller and web frontend
 
-`dpds-controller` stores links and their per-direction configuration, discovers the host's
+`dpds-controller` stores links and their configuration, discovers the host's
 network interfaces, starts and stops one `dpds` process for all links as its child process, and
 serves live telemetry. A web frontend (nginx and a React app in a Docker container, port 8080) sits on
 top of it. DPDK itself never runs in Docker.
@@ -621,24 +653,39 @@ changes, warns when it switches from another branch, and pulls with `--ff-only`.
 `--yes` skips the question that `install` and `update` ask after the host check. `--nightly` is
 the default; `--stable` only prints that no Rust stable release exists yet.
 
-- **Frontend**: `http://<host>:8080` (`DPDS_FRONTEND_PORT`). Pages for the dashboard (start/stop, per-direction rates, drop
+- **Links**: a link is one direction, `ingress` port to `egress` port, with one config
+  (`{name, ingress, egress, config, worker?}`; `GET|POST /api/links`, `GET|PUT|DELETE
+  /api/links/{id}`): packets received on the ingress leave on the egress with the config
+  applied. `ingress` and `egress` may be the same port (hairpin). A port is the ingress of at
+  most one link and the egress of at most one link (409 naming the other link and the port),
+  but its ingress and egress links need not share a partner: A to B, B to C and C to A are
+  three links, and the classic bidirectional pair is two links (A to B and B to A). Each link
+  gets one worker lcore: `worker` if set, else a free isolated core, preferring the NUMA node of
+  the ingress NIC. The links file handed to `dpds` always carries explicit lcores. The link
+  index (the order of `GET /api/links`) is the direction number of the telemetry and of
+  `/api/stats/{dir}/delay_histogram`; per link, rx statistics come from the ingress port and tx
+  statistics from the egress port. Hugepage and isolated-core hints count one pool and one core
+  per link. A state file with the older two-port link shape is refused at startup with an error
+  naming the file; re-create the links.
+- **Frontend**: `http://<host>:8080` (`DPDS_FRONTEND_PORT`). Pages for the dashboard (start/stop, per-link rates, drop
   shares per cause, delay statistics and histogram), links, interfaces, host hints and settings.
 - **REST API**: served by the controller on port 8100 (`/api/...`); the frontend proxies it. The
   interactive OpenAPI documentation is at `http://<host>:8100/api/docs`.
 - **Stored state** lives in `/var/lib/dpds-controller` and survives `stop` and `update`.
-- **Presets**: named per-direction configs stored beside the links (`GET|POST /api/presets`,
+- **Presets**: named configs (one per link) stored beside the links (`GET|POST /api/presets`,
   `GET|PUT|DELETE /api/presets/{id}`; body `{name, description?, config}`). The name has 1 to 64
-  characters and is unique (409); the config is validated like a link direction (400 naming the
+  characters and is unique (409); the config is validated like a link config (400 naming the
   field). Presets are not part of a run, so editing them while `dpds` runs does not set
   `pending_restart`. Preset ids are never reused.
 - **Export and import**: `GET /api/export` returns the whole setup (`format`
-  `dpds-controller-export`, `version` 1, `settings`, `links`, `presets`; no ids, no runtime state).
+  `dpds-controller-export`, `version` 2, `settings`, `links`, `presets`; no ids, no runtime state).
   `POST /api/import` (`?mode=replace`, the only mode) replaces links, presets and settings with such a
   document. It is refused with 409 unless the emulation is `stopped`, checks the whole document
   first (format and version, every link, preset and setting by the rules of the single endpoints,
-  unique names, no port shared between links, unknown keys such as `id` are 400) and applies it
+  unique names, no port reused as ingress or egress, unknown keys such as `id` are 400) and applies it
   all or nothing in one state write. New ids continue the counters. The reply is
-  `{"links": n, "presets": m}`.
+  `{"links": n, "presets": m}`. A version 1 document (links with `ports` and `configs`) is
+  refused with 400.
 - **Delay histogram extras** (`GET /api/stats/{dir}/delay_histogram`): `?window_s=10|60|300` returns
   only the samples of the last n seconds (difference to the poll that is at least n seconds old;
   `window_s` absent or 0 and runs younger than n seconds give the counts since start; `span_ms` is
@@ -714,7 +761,7 @@ created, which `install` never overwrites.
 ## 🛠️ Development
 
 ```
-crates/dpds        The data plane binary: CLI, per-direction worker loop, telemetry
+crates/dpds        The data plane binary: CLI, per-link worker loop, telemetry
 crates/dpds-core   Emulation library: delay, rate limiter, loss, packet buffer
 crates/dpdk        Safe wrapper around the DPDK calls the data plane needs
 crates/dpdk-sys    Raw bindgen bindings to DPDK

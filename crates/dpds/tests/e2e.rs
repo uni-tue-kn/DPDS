@@ -39,12 +39,14 @@
 //!
 //! ## Other tests
 //!
-//! Network topology: direction `d` = traffic received on port `d`, handled by
-//! its own worker lcore, its own config (`--config<d>`), its own mempool and
-//! its own telemetry counters (`/dpds/stats,<d>`). With two ports frames read
+//! Network topology: a link is one direction, ingress port -> egress port, with
+//! its own worker lcore, its own config, its own mempool and its own
+//! telemetry counters (`/dpds/stats,<d>`, d = link index). The `--config*`
+//! shorthand builds the links `dir0` and `dir1`: direction `d` = traffic
+//! received on port `d`, config `--config<d>`; with two ports frames read
 //! from port 0 leave on port 1 and vice versa; with one port they leave on
-//! the port they came in on. The two input files hold a different number of
-//! frames so a mix-up cannot go unnoticed.
+//! the port they came in on (one hairpin link `dir0`). The input files hold
+//! a different number of frames so a mix-up cannot go unnoticed.
 //!
 //! Pool size: there is no `--num-mbufs` (it is a usage error). Direction d's
 //! pool holds `buffer_capacity_d + rx_desc(port d) + tx_desc(port e(d)) + 768 +
@@ -1386,10 +1388,11 @@ mod with_telemetry {
         assert!(p.get("port2_name").is_none(), "{p}");
 
         assert_eq!(u(&p, "num_directions"), 2, "{p}");
-        // the --config mode is one link ("default") of its ports
-        assert_eq!(u(&p, "num_links"), 1, "{p}");
+        // the --config* shorthand with two ports is two links, `dir0`
+        // (p0 -> p1, config0) and `dir1` (p1 -> p0, config1)
+        assert_eq!(u(&p, "num_links"), 2, "{p}");
         for d in 0..2 {
-            assert_eq!(s(&p, &format!("dir{d}_link")), "default", "{p}");
+            assert_eq!(s(&p, &format!("dir{d}_link")), format!("dir{d}"), "{p}");
             assert_eq!(
                 s(&p, &format!("dir{d}_rx_name")),
                 format!("net_pcap{d}"),
@@ -1483,7 +1486,8 @@ mod with_telemetry {
         assert!(p.get("port1_name").is_none(), "{p}");
         assert_eq!(u(&p, "num_directions"), 1, "{p}");
         assert_eq!(u(&p, "num_links"), 1, "{p}");
-        assert_eq!(s(&p, "dir0_link"), "default", "{p}");
+        // the shorthand with one port is the single hairpin link `dir0`
+        assert_eq!(s(&p, "dir0_link"), "dir0", "{p}");
         assert_eq!(s(&p, "dir0_rx_name"), "net_null0", "{p}");
         assert_eq!(s(&p, "dir0_tx_name"), "net_null0", "{p}");
         assert_eq!(u(&p, "dir0_rx_port"), 0, "{p}");
@@ -2405,60 +2409,87 @@ fn the_readme_without_hardware_examples_start_cleanly_and_stop_with_sigint() {
 }
 
 // ---------------------------------------------------------------------------
-// multi-link mode: `--links <file>` (A1), drop causes (A2), delay statistics
-// and histogram (A3)
+// directed links: `--links <file>` (v2), drop causes, delay statistics and
+// histogram
 // ---------------------------------------------------------------------------
 //
-// Test-facing behaviour (see crates/dpds/tests/unit/main.rs for the unit API):
-// - `--links <file>`, JSON `{"links": [{"name", "ports": [device names],
-//   "configs": [Config, ..]}]}`, is mutually exclusive with `--config*`.
+// Test-facing behaviour (see crates/dpds/tests/unit/links.rs for the unit API):
+// - `--links <file>`, JSON `{"links": [{"name", "ingress", "egress", "config",
+//   "lcore"?, "histogram"?, "delay_stats"?}]}`, is mutually exclusive with
+//   `--config*`. A link is ONE direction: packets arriving on `ingress` leave
+//   on `egress` with the link's config.
 // - Ports are DPDK device names (here `net_pcap<i>` / `net_null<i>` vdevs),
-//   resolved by name. Directions are numbered in file order: link 0 dir 0
-//   (ports[0] -> ports[1], configs[0]), link 0 dir 1, link 1 dir 0, ...
-//   A one-port link is a loopback with one direction. `-l` must name exactly
-//   `1 + number of directions` lcores; the i-th worker lcore runs direction i.
-// - `/dpds/ports`: `num_links`, per direction `dir<d>_link`, `dir<d>_rx_name`,
-//   `dir<d>_tx_name`; the `--config` mode reports one link named "default".
+//   resolved by name. Direction index = link index (file order). `ingress ==
+//   egress` is a hairpin. A port is the ingress of at most one link and the
+//   egress of at most one link; every probed port must be used. `-l` must
+//   name exactly `1 + number of links` lcores; the i-th worker lcore runs
+//   link i (or the link's explicit `lcore`, all links or none).
+// - `/dpds/ports`: `num_links` (= `num_directions`), per link `dir<d>_link`,
+//   `dir<d>_rx_name` (ingress), `dir<d>_tx_name` (egress); the `--config*`
+//   shorthand is one link `dir0` (1 port: p0 -> p0) or two links `dir0`
+//   (p0 -> p1, config0) and `dir1` (p1 -> p0, config1). The reply has
+//   `3 + 5 * ports + 10 * links` keys.
 // - `/dpds/stats,<d>`: `loss_drops`, `limiter_drops`, `buffer_full_drops`
 //   (their sum is `dpds_rejects`), `delay_*`/`lateness_*` (numbers, as Uint or
 //   2-decimal strings), first-loss detail "from=dpds,cause=<loss|limiter|buffer_full>".
 // - `/dpds/delay_hist,<d>`: `lo_ns`, `bin_ns` (numbers), `bins` (256 uints),
 //   `underflow`, `overflow`; the range rule is in unit/delay_stats.rs.
 
+/// One link object of the links file: `extra` is `""` or further members,
+/// e.g. `"lcore": 2`.
+fn link_json_extra(name: &str, ingress: &str, egress: &str, config: &str, extra: &str) -> String {
+    let extra = if extra.is_empty() {
+        String::new()
+    } else {
+        format!(", {extra}")
+    };
+    format!(
+        r#"{{ "name": "{name}", "ingress": "{ingress}", "egress": "{egress}", "config": {config}{extra} }}"#
+    )
+}
+
 /// One link object of the links file.
-fn link_json(name: &str, ports: &[&str], configs: &[String]) -> String {
-    format!(
-        r#"{{ "name": "{name}", "ports": [{}], "configs": [{}] }}"#,
-        ports
-            .iter()
-            .map(|p| format!("\"{p}\""))
-            .collect::<Vec<_>>()
-            .join(", "),
-        configs.join(", ")
+fn link_json(name: &str, ingress: &str, egress: &str, config: &str) -> String {
+    link_json_extra(name, ingress, egress, config, "")
+}
+
+/// As [`link_json`] with the optional `"histogram"` object (its JSON text,
+/// e.g. `{"bins": 100}`).
+fn link_json_hist(name: &str, ingress: &str, egress: &str, config: &str, hist: &str) -> String {
+    link_json_extra(
+        name,
+        ingress,
+        egress,
+        config,
+        &format!(r#""histogram": {hist}"#),
     )
 }
 
-/// As [`link_json`] with the optional `"histograms"` array (one JSON object
-/// text per direction, e.g. `{"bins": 100}`).
-fn link_json_hist(name: &str, ports: &[&str], configs: &[String], histograms: &[&str]) -> String {
-    let base = link_json(name, ports, configs);
-    let cut = base.rfind('}').unwrap();
-    format!(
-        r#"{}, "histograms": [{}] }}"#,
-        base[..cut].trim_end(),
-        histograms.join(", ")
+/// As [`link_json`] with an explicit `"lcore"`.
+fn link_json_lcore(name: &str, ingress: &str, egress: &str, config: &str, lcore: u32) -> String {
+    link_json_extra(
+        name,
+        ingress,
+        egress,
+        config,
+        &format!(r#""lcore": {lcore}"#),
     )
 }
 
-/// As [`link_json`] with an explicit `"lcores"` array (one lcore per direction).
-fn link_json_lcores(name: &str, ports: &[&str], configs: &[String], lcores: &[u32]) -> String {
-    let base = link_json(name, ports, configs);
-    let cut = base.rfind('}').unwrap();
-    let list: Vec<String> = lcores.iter().map(u32::to_string).collect();
-    format!(
-        r#"{}, "lcores": [{}] }}"#,
-        base[..cut].trim_end(),
-        list.join(", ")
+/// As [`link_json`] with the optional `"delay_stats"` flag.
+fn link_json_delay_stats(
+    name: &str,
+    ingress: &str,
+    egress: &str,
+    config: &str,
+    flag: bool,
+) -> String {
+    link_json_extra(
+        name,
+        ingress,
+        egress,
+        config,
+        &format!(r#""delay_stats": {flag}"#),
     )
 }
 
@@ -2505,11 +2536,23 @@ fn pcap_out(env: &Env, i: usize) -> PathBuf {
     env.path(&format!("out{i}.pcap"))
 }
 
+/// A number that may be a JSON number or a decimal string.
+#[cfg(feature = "telemetry")]
+fn num(v: &Value, key: &str) -> f64 {
+    match &v[key] {
+        Value::Number(n) => n.as_f64().unwrap(),
+        Value::String(t) => t
+            .parse()
+            .unwrap_or_else(|_| panic!("{key} is not a number in {v}")),
+        other => panic!("{key} is {other:?}, not a number, in {v}"),
+    }
+}
+
 #[test]
-fn links_file_with_two_links_forwards_every_direction_by_its_own_config() {
-    // link "ab": net_pcap0 <-> net_pcap1, link "loop": net_pcap2 (loopback).
-    // dir 0 = ab: pcap0 -> pcap1 (1 ms), dir 1 = ab: pcap1 -> pcap0 (no delay),
-    // dir 2 = loop: pcap2 -> pcap2 (2 ms). `-l 0-3`.
+fn links_file_with_a_pair_and_a_hairpin_forwards_every_link_by_its_own_config() {
+    // the classic bidirectional pair as two links: "a-to-b" net_pcap0 ->
+    // net_pcap1 (1 ms), "b-to-a" net_pcap1 -> net_pcap0 (no delay); plus a
+    // hairpin "loop" on net_pcap2 (2 ms). `-l 0-3`.
     const N: [u32; 3] = [300, 200, 100];
     require_cpus(4);
     let _g = serial();
@@ -2517,11 +2560,18 @@ fn links_file_with_two_links_forwards_every_direction_by_its_own_config() {
         "0-3",
         &[
             link_json(
-                "ab",
-                &["net_pcap0", "net_pcap1"],
-                &[config_json(1_000_000, 0.0), config_json(0, 0.0)],
+                "a-to-b",
+                "net_pcap0",
+                "net_pcap1",
+                &config_json(1_000_000, 0.0),
             ),
-            link_json("loop", &["net_pcap2"], &[config_json(2_000_000, 0.0)]),
+            link_json("b-to-a", "net_pcap1", "net_pcap0", &config_json(0, 0.0)),
+            link_json(
+                "loop",
+                "net_pcap2",
+                "net_pcap2",
+                &config_json(2_000_000, 0.0),
+            ),
         ],
     );
     for (i, n) in N.iter().enumerate() {
@@ -2541,16 +2591,16 @@ fn links_file_with_two_links_forwards_every_direction_by_its_own_config() {
         let p = run.query("/dpds/ports");
         assert_eq!(u(&p, "num_ports"), 3, "{p}");
         assert_eq!(u(&p, "num_directions"), 3, "{p}");
-        assert_eq!(u(&p, "num_links"), 2, "{p}");
+        assert_eq!(u(&p, "num_links"), 3, "one direction per link: {p}");
         for (d, link, rx, tx) in [
-            (0, "ab", "net_pcap0", "net_pcap1"),
-            (1, "ab", "net_pcap1", "net_pcap0"),
+            (0, "a-to-b", "net_pcap0", "net_pcap1"),
+            (1, "b-to-a", "net_pcap1", "net_pcap0"),
             (2, "loop", "net_pcap2", "net_pcap2"),
         ] {
             assert_eq!(s(&p, &format!("dir{d}_link")), link, "{p}");
             assert_eq!(s(&p, &format!("dir{d}_rx_name")), rx, "{p}");
             assert_eq!(s(&p, &format!("dir{d}_tx_name")), tx, "{p}");
-            // the i-th worker lcore runs direction i: `-l 0-3` -> 1, 2, 3
+            // the i-th worker lcore runs link i: `-l 0-3` -> 1, 2, 3
             assert_eq!(u(&p, &format!("dir{d}_lcore")), 1 + d as u64, "{p}");
             assert!(
                 s(&p, &format!("dir{d}_config")).contains("links.json"),
@@ -2558,6 +2608,7 @@ fn links_file_with_two_links_forwards_every_direction_by_its_own_config() {
             );
         }
         assert!(p.get("dir3_link").is_none(), "{p}");
+        assert_eq!(p.as_object().unwrap().len(), 3 + 5 * 3 + 10 * 3, "{p}");
         // names and ids agree
         for d in 0..3 {
             let rx_id = u(&p, &format!("dir{d}_rx_port"));
@@ -2584,7 +2635,7 @@ fn links_file_with_two_links_forwards_every_direction_by_its_own_config() {
             }
             assert_eq!(s(&st, "first_loss_reason"), "Clean", "dir {d}: {st}");
         }
-        // each direction has its own delay: 1 ms, none, 2 ms
+        // each link has its own delay: 1 ms, none, 2 ms
         for (d, delay) in [(0, 1_000_000.0), (1, 0.0), (2, 2_000_000.0)] {
             let st = run.query(&format!("/dpds/stats,{d}"));
             let mean = num(&st, "delay_mean_ns");
@@ -2597,34 +2648,273 @@ fn links_file_with_two_links_forwards_every_direction_by_its_own_config() {
 
     run.signal(libc::SIGINT);
     assert_clean_exit(run.wait_exit(), &run);
-    assert!(
-        read_pcap(&outs[1]) == frames(0, N[0]),
-        "link ab, direction 0"
-    );
-    assert!(
-        read_pcap(&outs[0]) == frames(1, N[1]),
-        "link ab, direction 1"
-    );
-    assert!(read_pcap(&outs[2]) == frames(2, N[2]), "the loopback link");
+    assert!(read_pcap(&outs[1]) == frames(0, N[0]), "link a-to-b");
+    assert!(read_pcap(&outs[0]) == frames(1, N[1]), "link b-to-a");
+    assert!(read_pcap(&outs[2]) == frames(2, N[2]), "the hairpin link");
 }
 
-/// A number that may be a JSON number or a decimal string.
-#[cfg(feature = "telemetry")]
-fn num(v: &Value, key: &str) -> f64 {
-    match &v[key] {
-        Value::Number(n) => n.as_f64().unwrap(),
-        Value::String(t) => t
-            .parse()
-            .unwrap_or_else(|_| panic!("{key} is not a number in {v}")),
-        other => panic!("{key} is {other:?}, not a number, in {v}"),
+#[test]
+fn a_ring_of_three_ports_forwards_each_link_by_its_own_config_with_exact_counts() {
+    // The user's example: A = net_pcap0, B = net_pcap1, C = net_pcap2 and the
+    // links A -> B (1 ms), B -> C (100 % loss), C -> A (2 ms). Every port is
+    // the ingress of one link and the egress of another. `-l 0-3`.
+    //   out1 (B) must hold exactly in0 (N[0] frames), out0 (A) exactly in2
+    //   (N[2] frames) and out2 (C) nothing, whichever port id each device got.
+    const N: [u32; 3] = [300, 200, 100];
+    require_cpus(4);
+    for reverse_creation in [false, true] {
+        let _g = serial();
+        let mut env = links_env(
+            "0-3",
+            &[
+                link_json(
+                    "a-to-b",
+                    "net_pcap0",
+                    "net_pcap1",
+                    &config_json(1_000_000, 0.0),
+                ),
+                link_json("b-to-c", "net_pcap1", "net_pcap2", &config_json(0, 1.0)),
+                link_json(
+                    "c-to-a",
+                    "net_pcap2",
+                    "net_pcap0",
+                    &config_json(2_000_000, 0.0),
+                ),
+            ],
+        );
+        let order: [usize; 3] = if reverse_creation {
+            [2, 1, 0]
+        } else {
+            [0, 1, 2]
+        };
+        for i in order {
+            add_pcap_port(&mut env, i, &frames(i as u8, N[i]));
+        }
+        let outs: Vec<PathBuf> = (0..3).map(|i| pcap_out(&env, i)).collect();
+        let mut run = env.spawn();
+        wait_frames(&mut run, &outs[1], N[0] as usize);
+        wait_frames(&mut run, &outs[0], N[2] as usize);
+        wait_rx(&mut run, 1, N[1] as u64);
+        thread::sleep(Duration::from_millis(700));
+
+        #[cfg(feature = "telemetry")]
+        {
+            let p = run.query("/dpds/ports");
+            assert_eq!(u(&p, "num_ports"), 3, "{p}");
+            assert_eq!(u(&p, "num_directions"), 3, "{p}");
+            assert_eq!(u(&p, "num_links"), 3, "{p}");
+            assert_eq!(
+                p.as_object().unwrap().len(),
+                3 + 5 * 3 + 10 * 3,
+                "3 + 5 * ports + 10 * links keys: {p}"
+            );
+            let id_of = |name: &str| {
+                (0..3)
+                    .find(|i| s(&p, &format!("port{i}_name")) == name)
+                    .unwrap_or_else(|| panic!("{name} not in {p}"))
+            };
+            for (d, link, rx, tx) in [
+                (0, "a-to-b", "net_pcap0", "net_pcap1"),
+                (1, "b-to-c", "net_pcap1", "net_pcap2"),
+                (2, "c-to-a", "net_pcap2", "net_pcap0"),
+            ] {
+                assert_eq!(s(&p, &format!("dir{d}_link")), link, "{p}");
+                assert_eq!(s(&p, &format!("dir{d}_rx_name")), rx, "{p}");
+                assert_eq!(s(&p, &format!("dir{d}_tx_name")), tx, "{p}");
+                assert_eq!(u(&p, &format!("dir{d}_rx_port")), id_of(rx), "{p}");
+                assert_eq!(u(&p, &format!("dir{d}_tx_port")), id_of(tx), "{p}");
+                assert_eq!(u(&p, &format!("dir{d}_lcore")), 1 + d as u64, "{p}");
+            }
+            // A -> B: lossless, ~1 ms
+            let st = run.query("/dpds/stats,0");
+            assert_eq!(u(&st, "rx_pkts"), N[0] as u64, "{st}");
+            assert_eq!(u(&st, "tx_sent"), N[0] as u64, "{st}");
+            assert_eq!(u(&st, "dpds_rejects"), 0, "{st}");
+            let mean = num(&st, "delay_mean_ns");
+            assert!((999_999.0..=1_000_000.0).contains(&mean), "{st}");
+            // B -> C: 100 % loss, every frame counted as a loss drop
+            let st = run.query("/dpds/stats,1");
+            assert_eq!(u(&st, "rx_pkts"), N[1] as u64, "{st}");
+            assert_eq!(u(&st, "loss_drops"), N[1] as u64, "{st}");
+            assert_eq!(u(&st, "dpds_rejects"), N[1] as u64, "{st}");
+            assert_eq!(u(&st, "tx_sent"), 0, "{st}");
+            // C -> A: lossless, ~2 ms
+            let st = run.query("/dpds/stats,2");
+            assert_eq!(u(&st, "rx_pkts"), N[2] as u64, "{st}");
+            assert_eq!(u(&st, "tx_sent"), N[2] as u64, "{st}");
+            assert_eq!(u(&st, "dpds_rejects"), 0, "{st}");
+            let mean = num(&st, "delay_mean_ns");
+            assert!((1_999_999.0..=2_000_000.0).contains(&mean), "{st}");
+            // the NIC counters agree: port B received nothing it did not send on
+            for (name, rx, tx) in [
+                ("net_pcap0", N[0], N[2]),
+                ("net_pcap1", N[1], N[0]),
+                ("net_pcap2", N[2], 0),
+            ] {
+                let eth = run.query(&format!("/ethdev/stats,{}", id_of(name)));
+                assert_eq!(u(&eth, "ipackets"), rx as u64, "{name}: {eth}");
+                assert_eq!(u(&eth, "opackets"), tx as u64, "{name}: {eth}");
+            }
+        }
+
+        run.signal(libc::SIGINT);
+        assert_clean_exit(run.wait_exit(), &run);
+        assert!(
+            read_pcap(&outs[1]) == frames(0, N[0]),
+            "A -> B carries exactly A's frames (reverse_creation={reverse_creation})"
+        );
+        assert!(
+            read_pcap(&outs[0]) == frames(2, N[2]),
+            "C -> A carries exactly C's frames (reverse_creation={reverse_creation})"
+        );
+        assert_eq!(
+            read_pcap(&outs[2]).len(),
+            0,
+            "B -> C loses everything (reverse_creation={reverse_creation})"
+        );
     }
 }
 
 #[test]
-fn directions_follow_the_link_file_order_not_the_port_id_order() {
-    // The link lists net_pcap1 first. Its first config (100 % loss) is for
-    // net_pcap1 -> net_pcap0, the second (lossless) for net_pcap0 -> net_pcap1,
-    // whichever port id the two devices got (vdev creation order is varied).
+fn a_lossless_ring_of_three_delivers_every_stream_exactly_once() {
+    // no loss anywhere: each of the three streams comes out on the next port
+    // and nowhere else, byte for byte (A -> B, B -> C, C -> A)
+    const N: [u32; 3] = [257, 64, 1000];
+    require_cpus(4);
+    let _g = serial();
+    let mut env = links_env(
+        "0-3",
+        &[
+            link_json("a-to-b", "net_pcap0", "net_pcap1", &config_json(0, 0.0)),
+            link_json("b-to-c", "net_pcap1", "net_pcap2", &config_json(0, 0.0)),
+            link_json("c-to-a", "net_pcap2", "net_pcap0", &config_json(0, 0.0)),
+        ],
+    );
+    for (i, n) in N.iter().enumerate() {
+        add_pcap_port(&mut env, i, &frames(i as u8, *n));
+    }
+    let outs: Vec<PathBuf> = (0..3).map(|i| pcap_out(&env, i)).collect();
+    let mut run = env.spawn();
+    run.wait_until("all frames in the output pcaps", START_TIMEOUT, |_| {
+        outs.iter().map(|p| read_pcap(p).len()).sum::<usize>() >= N.iter().sum::<u32>() as usize
+    });
+    thread::sleep(Duration::from_millis(700)); // duplicates or stragglers would show up here
+    run.signal(libc::SIGINT);
+    assert_clean_exit(run.wait_exit(), &run);
+    assert!(read_pcap(&outs[1]) == frames(0, N[0]), "A -> B");
+    assert!(read_pcap(&outs[2]) == frames(1, N[1]), "B -> C");
+    assert!(read_pcap(&outs[0]) == frames(2, N[2]), "C -> A");
+}
+
+#[test]
+fn a_hairpin_link_sends_the_frames_back_out_of_the_port_they_came_in_on() {
+    const N: u32 = 400;
+    require_cpus(2);
+    let _g = serial();
+    let mut env = links_env(
+        "0-1",
+        &[link_json(
+            "hp",
+            "net_pcap0",
+            "net_pcap0",
+            &config_json(1_000_000, 0.0),
+        )],
+    );
+    add_pcap_port(&mut env, 0, &frames(0, N));
+    let out0 = pcap_out(&env, 0);
+    let mut run = env.spawn();
+    wait_frames(&mut run, &out0, N as usize);
+    thread::sleep(Duration::from_millis(700));
+
+    #[cfg(feature = "telemetry")]
+    {
+        let p = run.query("/dpds/ports");
+        assert_eq!(u(&p, "num_ports"), 1, "{p}");
+        assert_eq!(u(&p, "num_directions"), 1, "{p}");
+        assert_eq!(u(&p, "num_links"), 1, "{p}");
+        assert_eq!(s(&p, "dir0_link"), "hp", "{p}");
+        assert_eq!(s(&p, "dir0_rx_name"), "net_pcap0", "{p}");
+        assert_eq!(s(&p, "dir0_tx_name"), "net_pcap0", "{p}");
+        assert_eq!(u(&p, "dir0_rx_port"), 0, "{p}");
+        assert_eq!(u(&p, "dir0_tx_port"), 0, "{p}");
+        assert_eq!(p.as_object().unwrap().len(), 3 + 5 + 10, "{p}");
+        let st = run.query("/dpds/stats,0");
+        assert_eq!(u(&st, "rx_pkts"), N as u64, "{st}");
+        assert_eq!(u(&st, "tx_sent"), N as u64, "{st}");
+        assert_eq!(u(&st, "dpds_rejects"), 0, "{st}");
+    }
+
+    run.signal(libc::SIGINT);
+    assert_clean_exit(run.wait_exit(), &run);
+    assert!(read_pcap(&out0) == frames(0, N));
+}
+
+#[test]
+fn a_port_used_only_as_egress_works_and_is_never_polled() {
+    // One link net_pcap0 -> net_pcap1. net_pcap1 is only an egress: its input
+    // file holds frames nobody may read (no link has it as ingress), and
+    // nothing leaves on net_pcap0 (it is only an ingress).
+    const N: u32 = 300;
+    const M: u32 = 50;
+    require_cpus(2);
+    let _g = serial();
+    let mut env = links_env(
+        "0-1",
+        &[link_json(
+            "one-way",
+            "net_pcap0",
+            "net_pcap1",
+            &config_json(0, 0.0),
+        )],
+    );
+    add_pcap_port(&mut env, 0, &frames(0, N));
+    add_pcap_port(&mut env, 1, &frames(1, M));
+    let (out0, out1) = (pcap_out(&env, 0), pcap_out(&env, 1));
+    let mut run = env.spawn();
+    wait_frames(&mut run, &out1, N as usize);
+    thread::sleep(Duration::from_millis(700));
+
+    #[cfg(feature = "telemetry")]
+    {
+        let p = run.query("/dpds/ports");
+        assert_eq!(u(&p, "num_ports"), 2, "both probed ports are listed: {p}");
+        assert_eq!(u(&p, "num_directions"), 1, "{p}");
+        assert_eq!(u(&p, "num_links"), 1, "{p}");
+        assert_eq!(s(&p, "dir0_link"), "one-way", "{p}");
+        assert_eq!(s(&p, "dir0_rx_name"), "net_pcap0", "{p}");
+        assert_eq!(s(&p, "dir0_tx_name"), "net_pcap1", "{p}");
+        assert!(p.get("dir1_link").is_none(), "{p}");
+        assert_eq!(p.as_object().unwrap().len(), 3 + 5 * 2 + 10, "{p}");
+        let st = run.query("/dpds/stats,0");
+        assert_eq!(u(&st, "rx_pkts"), N as u64, "{st}");
+        assert_eq!(u(&st, "tx_sent"), N as u64, "{st}");
+        // the egress-only port's RX queue is not polled: it received nothing
+        let eth1 = run.query("/ethdev/stats,1");
+        assert_eq!(u(&eth1, "ipackets"), 0, "{eth1}");
+        assert_eq!(u(&eth1, "opackets"), N as u64, "{eth1}");
+        let eth0 = run.query("/ethdev/stats,0");
+        assert_eq!(u(&eth0, "ipackets"), N as u64, "{eth0}");
+        assert_eq!(u(&eth0, "opackets"), 0, "{eth0}");
+    }
+
+    run.signal(libc::SIGINT);
+    assert_clean_exit(run.wait_exit(), &run);
+    assert!(
+        read_pcap(&out1) == frames(0, N),
+        "exactly the ingress stream"
+    );
+    assert_eq!(
+        read_pcap(&out0).len(),
+        0,
+        "nothing leaves on the ingress-only port"
+    );
+}
+
+#[test]
+fn links_follow_the_file_order_not_the_port_id_order() {
+    // The file lists net_pcap1 -> net_pcap0 first (100 % loss) and net_pcap0 ->
+    // net_pcap1 second (lossless), whichever port id the two devices got
+    // (vdev creation order is varied).
     const N0: u32 = 200;
     const N1: u32 = 300;
     require_cpus(3);
@@ -2632,11 +2922,10 @@ fn directions_follow_the_link_file_order_not_the_port_id_order() {
         let _g = serial();
         let mut env = links_env(
             "0-2",
-            &[link_json(
-                "ba",
-                &["net_pcap1", "net_pcap0"],
-                &[config_json(0, 1.0), config_json(0, 0.0)],
-            )],
+            &[
+                link_json("ba", "net_pcap1", "net_pcap0", &config_json(0, 1.0)),
+                link_json("ab", "net_pcap0", "net_pcap1", &config_json(0, 0.0)),
+            ],
         );
         if reverse_creation {
             add_pcap_port(&mut env, 1, &frames(1, N1));
@@ -2647,17 +2936,18 @@ fn directions_follow_the_link_file_order_not_the_port_id_order() {
         }
         let (out0, out1) = (pcap_out(&env, 0), pcap_out(&env, 1));
         let mut run = env.spawn();
-        // direction 1 = net_pcap0 -> net_pcap1, lossless
+        // link 1 = net_pcap0 -> net_pcap1, lossless
         wait_frames(&mut run, &out1, N0 as usize);
         thread::sleep(Duration::from_millis(700));
 
         #[cfg(feature = "telemetry")]
         {
             let p = run.query("/dpds/ports");
-            assert_eq!(u(&p, "num_links"), 1, "{p}");
+            assert_eq!(u(&p, "num_links"), 2, "{p}");
             assert_eq!(s(&p, "dir0_link"), "ba", "{p}");
             assert_eq!(s(&p, "dir0_rx_name"), "net_pcap1", "{p}");
             assert_eq!(s(&p, "dir0_tx_name"), "net_pcap0", "{p}");
+            assert_eq!(s(&p, "dir1_link"), "ab", "{p}");
             assert_eq!(s(&p, "dir1_rx_name"), "net_pcap0", "{p}");
             assert_eq!(s(&p, "dir1_tx_name"), "net_pcap1", "{p}");
             let id_of = |name: &str| {
@@ -2668,7 +2958,8 @@ fn directions_follow_the_link_file_order_not_the_port_id_order() {
             assert_eq!(u(&p, "dir0_rx_port"), id_of("net_pcap1"), "{p}");
             assert_eq!(u(&p, "dir0_tx_port"), id_of("net_pcap0"), "{p}");
             assert_eq!(u(&p, "dir1_rx_port"), id_of("net_pcap0"), "{p}");
-            // direction 0 saw the 300 frames of net_pcap1 and lost them all
+            assert_eq!(u(&p, "dir1_tx_port"), id_of("net_pcap1"), "{p}");
+            // link 0 saw the 300 frames of net_pcap1 and lost them all
             let d0 = run.query("/dpds/stats,0");
             assert_eq!(u(&d0, "rx_pkts"), N1 as u64, "{d0}");
             assert_eq!(u(&d0, "loss_drops"), N1 as u64, "{d0}");
@@ -2683,30 +2974,27 @@ fn directions_follow_the_link_file_order_not_the_port_id_order() {
         assert_clean_exit(run.wait_exit(), &run);
         assert!(
             read_pcap(&out1) == frames(0, N0),
-            "net_pcap0 -> net_pcap1 uses the second config (reverse_creation={reverse_creation})"
+            "net_pcap0 -> net_pcap1 uses the second link (reverse_creation={reverse_creation})"
         );
         assert_eq!(
             read_pcap(&out0).len(),
             0,
-            "net_pcap1 -> net_pcap0 uses the first config, 100 % loss (reverse_creation={reverse_creation})"
+            "net_pcap1 -> net_pcap0 uses the first link, 100 % loss (reverse_creation={reverse_creation})"
         );
     }
 }
 
 #[test]
-fn a_net_null_loopback_link_runs_next_to_a_pcap_link() {
+fn a_net_null_hairpin_link_runs_next_to_a_pcap_pair() {
     const N: u32 = 50;
     require_cpus(4);
     let _g = serial();
     let mut env = links_env(
         "0-3",
         &[
-            link_json("nul", &["net_null2"], &[config_json(0, 0.0)]),
-            link_json(
-                "ab",
-                &["net_pcap0", "net_pcap1"],
-                &[config_json(0, 0.0), config_json(0, 0.0)],
-            ),
+            link_json("nul", "net_null2", "net_null2", &config_json(0, 0.0)),
+            link_json("a-to-b", "net_pcap0", "net_pcap1", &config_json(0, 0.0)),
+            link_json("b-to-a", "net_pcap1", "net_pcap0", &config_json(0, 0.0)),
         ],
     );
     add_pcap_port(&mut env, 0, &frames(0, N));
@@ -2720,13 +3008,13 @@ fn a_net_null_loopback_link_runs_next_to_a_pcap_link() {
     #[cfg(feature = "telemetry")]
     {
         let p = run.query("/dpds/ports");
-        // the loopback link is direction 0 (file order), then ab's two
+        // the hairpin link is direction 0 (file order), then the pair
         assert_eq!(s(&p, "dir0_link"), "nul", "{p}");
         assert_eq!(s(&p, "dir0_rx_name"), "net_null2", "{p}");
         assert_eq!(s(&p, "dir0_tx_name"), "net_null2", "{p}");
-        assert_eq!(s(&p, "dir1_link"), "ab", "{p}");
-        assert_eq!(s(&p, "dir2_link"), "ab", "{p}");
-        assert_eq!(u(&p, "num_links"), 2, "{p}");
+        assert_eq!(s(&p, "dir1_link"), "a-to-b", "{p}");
+        assert_eq!(s(&p, "dir2_link"), "b-to-a", "{p}");
+        assert_eq!(u(&p, "num_links"), 3, "{p}");
         run.wait_until("net_null traffic on direction 0", START_TIMEOUT, |r| {
             r.try_query("/dpds/stats,0")
                 .is_some_and(|v| u(&v, "rx_pkts") > 0 && u(&v, "tx_sent") > 0)
@@ -2758,21 +3046,25 @@ mod links_telemetry {
     }
 
     #[test]
-    fn drop_causes_are_counted_per_direction_and_the_first_loss_names_the_cause() {
-        // dir 0: 100 % loss. dir 1: a buffer of 8 packets and a delay nothing
-        // leaves within (5 s; SIGINT drains it): all frames after the first 8
-        // find the buffer full.
+    fn drop_causes_are_counted_per_link_and_the_first_loss_names_the_cause() {
+        // link 0 (net_pcap0 -> net_pcap1): 100 % loss. link 1 (net_pcap1 ->
+        // net_pcap0): a buffer of 8 packets and a delay nothing leaves within
+        // (5 s; SIGINT drains it): all frames after the first 8 find the buffer full.
         const N0: u32 = 100;
         const N1: u32 = 100;
         require_cpus(3);
         let _g = serial();
         let mut env = links_env(
             "0-2",
-            &[link_json(
-                "ab",
-                &["net_pcap0", "net_pcap1"],
-                &[config_json(0, 1.0), config_json_cap(5_000_000_000, 0.0, 8)],
-            )],
+            &[
+                link_json("a-to-b", "net_pcap0", "net_pcap1", &config_json(0, 1.0)),
+                link_json(
+                    "b-to-a",
+                    "net_pcap1",
+                    "net_pcap0",
+                    &config_json_cap(5_000_000_000, 0.0, 8),
+                ),
+            ],
         );
         add_pcap_port(&mut env, 0, &frames(0, N0));
         add_pcap_port(&mut env, 1, &frames(1, N1));
@@ -2844,14 +3136,19 @@ mod links_telemetry {
 
     #[test]
     fn limiter_drops_are_counted_and_the_histogram_covers_the_spacer_queueing() {
-        // Loopback link with a Spacer that admits three 64-byte frames at one
+        // Hairpin link with a Spacer that admits three 64-byte frames at one
         // instant (see config_spacer_three): of 100 frames 3 are accepted.
         const N: u32 = 100;
         require_cpus(2);
         let _g = serial();
         let mut env = links_env(
             "0-1",
-            &[link_json("l", &["net_pcap0"], &[config_spacer_three()])],
+            &[link_json(
+                "l",
+                "net_pcap0",
+                "net_pcap0",
+                &config_spacer_three(),
+            )],
         );
         add_pcap_port(&mut env, 0, &frames(0, N));
         let out0 = pcap_out(&env, 0);
@@ -2897,7 +3194,7 @@ mod links_telemetry {
 
     #[test]
     fn the_delay_histogram_has_the_documented_shape_for_a_deterministic_and_a_normal_delay() {
-        // dir 0: deterministic 2 ms, 500 frames. dir 1: Normal(5 ms, 0.5 ms),
+        // link 0: deterministic 2 ms, 500 frames. link 1: Normal(5 ms, 0.5 ms),
         // 2000 frames, seeded. Both lossless with a big buffer.
         const N0: u32 = 500;
         const N1: u32 = 2000;
@@ -2905,14 +3202,20 @@ mod links_telemetry {
         let _g = serial();
         let mut env = links_env(
             "0-2",
-            &[link_json(
-                "ab",
-                &["net_pcap0", "net_pcap1"],
-                &[
-                    config_json(2_000_000, 0.0),
-                    config_dist("NormalDistribution", 5_000_000, 500_000),
-                ],
-            )],
+            &[
+                link_json(
+                    "a-to-b",
+                    "net_pcap0",
+                    "net_pcap1",
+                    &config_json(2_000_000, 0.0),
+                ),
+                link_json(
+                    "b-to-a",
+                    "net_pcap1",
+                    "net_pcap0",
+                    &config_dist("NormalDistribution", 5_000_000, 500_000),
+                ),
+            ],
         );
         add_pcap_port(&mut env, 0, &frames(0, N0));
         add_pcap_port(&mut env, 1, &frames(1, N1));
@@ -3018,7 +3321,7 @@ mod links_telemetry {
         let again = bins_of(&run.query("/dpds/delay_hist,1"));
         assert!(again.iter().zip(&b1).all(|(a, b)| a >= b));
 
-        // bad direction params are error replies, like /dpds/stats
+        // bad link params are error replies, like /dpds/stats
         for bad in ["", ",2", ",x", ",-1", ",", ",0,1"] {
             let reply = run.try_query(&format!("/dpds/delay_hist{bad}"));
             assert!(
@@ -3033,9 +3336,9 @@ mod links_telemetry {
 
 #[cfg(feature = "telemetry")]
 #[test]
-fn a_custom_histogram_per_direction_sets_bins_and_range() {
-    // dir 0: deterministic 2 ms with 100 bins over [1_999_000, 2_001_000)
-    // (20 ns each). dir 1: Normal(5 ms, 0.5 ms) with only `bins` given: 50 bins
+fn a_custom_histogram_per_link_sets_bins_and_range() {
+    // link 0: deterministic 2 ms with 100 bins over [1_999_000, 2_001_000)
+    // (20 ns each). link 1: Normal(5 ms, 0.5 ms) with only `bins` given: 50 bins
     // over the automatic range [2 ms, 8 ms) (120 us each).
     const N0: u32 = 300;
     const N1: u32 = 1500;
@@ -3043,18 +3346,22 @@ fn a_custom_histogram_per_direction_sets_bins_and_range() {
     let _g = serial();
     let mut env = links_env(
         "0-2",
-        &[link_json_hist(
-            "ab",
-            &["net_pcap0", "net_pcap1"],
-            &[
-                config_json(2_000_000, 0.0),
-                config_dist("NormalDistribution", 5_000_000, 500_000),
-            ],
-            &[
+        &[
+            link_json_hist(
+                "a-to-b",
+                "net_pcap0",
+                "net_pcap1",
+                &config_json(2_000_000, 0.0),
                 r#"{ "bins": 100, "lo_ns": 1999000, "hi_ns": 2001000 }"#,
+            ),
+            link_json_hist(
+                "b-to-a",
+                "net_pcap1",
+                "net_pcap0",
+                &config_dist("NormalDistribution", 5_000_000, 500_000),
                 r#"{ "bins": 50 }"#,
-            ],
-        )],
+            ),
+        ],
     );
     add_pcap_port(&mut env, 0, &frames(0, N0));
     add_pcap_port(&mut env, 1, &frames(1, N1));
@@ -3094,6 +3401,84 @@ fn a_custom_histogram_per_direction_sets_bins_and_range() {
 }
 
 // ---------------------------------------------------------------------------
+// the --config shorthand: dir0 (and dir1)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "telemetry")]
+#[test]
+fn the_shorthand_with_two_ports_is_two_links_dir0_with_config0_and_dir1_with_config1() {
+    // `--config0` is the link dir0 net_pcap0 -> net_pcap1 (100 % loss),
+    // `--config1` the link dir1 net_pcap1 -> net_pcap0 (lossless).
+    const N0: u32 = 120;
+    const N1: u32 = 90;
+    require_cpus(3);
+    let _g = serial();
+    let env = dir_env(
+        &config_json(0, 0.0),
+        Some(&config_json(0, 1.0)),
+        Some(&config_json(0, 0.0)),
+        &frames(0, N0),
+        &frames(1, N1),
+    );
+    let (out0, out1) = (pcap_out(&env, 0), pcap_out(&env, 1));
+    let mut run = env.spawn();
+    wait_frames(&mut run, &out0, N1 as usize);
+    wait_rx(&mut run, 0, N0 as u64);
+    thread::sleep(Duration::from_millis(500));
+
+    let p = run.query("/dpds/ports");
+    assert_eq!(u(&p, "num_directions"), 2, "{p}");
+    assert_eq!(u(&p, "num_links"), 2, "two links: {p}");
+    assert_eq!(s(&p, "dir0_link"), "dir0", "{p}");
+    assert_eq!(s(&p, "dir1_link"), "dir1", "{p}");
+    assert_eq!(s(&p, "dir0_rx_name"), "net_pcap0", "{p}");
+    assert_eq!(s(&p, "dir0_tx_name"), "net_pcap1", "{p}");
+    assert_eq!(s(&p, "dir1_rx_name"), "net_pcap1", "{p}");
+    assert_eq!(s(&p, "dir1_tx_name"), "net_pcap0", "{p}");
+    assert!(s(&p, "dir0_config").ends_with("cfg0.json"), "{p}");
+    assert!(s(&p, "dir1_config").ends_with("cfg1.json"), "{p}");
+    assert_eq!(p.as_object().unwrap().len(), 3 + 5 * 2 + 10 * 2, "{p}");
+    let d0 = run.query("/dpds/stats,0");
+    assert_eq!(u(&d0, "loss_drops"), N0 as u64, "config0 loses: {d0}");
+    let d1 = run.query("/dpds/stats,1");
+    assert_eq!(u(&d1, "tx_sent"), N1 as u64, "config1 is lossless: {d1}");
+
+    run.signal(libc::SIGINT);
+    assert_clean_exit(run.wait_exit(), &run);
+    assert_eq!(read_pcap(&out1).len(), 0, "dir0 (config0) loses everything");
+    assert!(
+        read_pcap(&out0) == frames(1, N1),
+        "dir1 (config1) is lossless"
+    );
+}
+
+#[cfg(feature = "telemetry")]
+#[test]
+fn the_shorthand_with_one_port_is_the_single_hairpin_link_dir0() {
+    require_cpus(2);
+    let _g = serial();
+    let mut env = Env::new(&config_json(0, 0.0));
+    env.vdevs.push("net_null0".into());
+    let cfg0 = env.write_config("cfg0.json", &config_json(0, 0.0));
+    env.extra_app_args = vec!["--config0".into(), cfg0.display().to_string()];
+    let mut run = env.spawn();
+    let p = run.query("/dpds/ports");
+    assert_eq!(u(&p, "num_links"), 1, "{p}");
+    assert_eq!(u(&p, "num_directions"), 1, "{p}");
+    assert_eq!(s(&p, "dir0_link"), "dir0", "{p}");
+    assert_eq!(s(&p, "dir0_rx_name"), "net_null0", "{p}");
+    assert_eq!(s(&p, "dir0_tx_name"), "net_null0", "{p}");
+    assert_eq!(
+        s(&p, "dir0_config"),
+        cfg0.display().to_string(),
+        "config0 wins: {p}"
+    );
+    assert!(p.get("dir1_link").is_none(), "{p}");
+    run.signal(libc::SIGINT);
+    assert_clean_exit(run.wait_exit(), &run);
+}
+
+// ---------------------------------------------------------------------------
 // --links: startup errors must be clean error exits that name the problem
 // ---------------------------------------------------------------------------
 
@@ -3101,64 +3486,63 @@ fn a_custom_histogram_per_direction_sets_bins_and_range() {
 fn links_with_the_wrong_lcore_count_names_the_requirement() {
     require_cpus(4);
     let _g = serial();
-    // a 2-port link is 2 directions: 3 lcores, not 2
+    // two links are 2 workers: 3 lcores, not 2
     let mut env = links_env(
         "0-1",
-        &[link_json(
-            "ab",
-            &["net_pcap0", "net_pcap1"],
-            &[config_json(0, 0.0), config_json(0, 0.0)],
-        )],
-    );
-    add_pcap_port(&mut env, 0, &frames(0, 1));
-    add_pcap_port(&mut env, 1, &frames(1, 1));
-    let out = expect_failure(&env);
-    assert!(out.contains("2 ports need 3 lcores, e.g. -l 0-2"), "{out}");
-
-    // a 2-port link plus a loopback link: 3 directions, so `-l 0-2` is too few
-    let mut env = links_env(
-        "0-2",
         &[
-            link_json(
-                "ab",
-                &["net_pcap0", "net_pcap1"],
-                &[config_json(0, 0.0), config_json(0, 0.0)],
-            ),
-            link_json("loop", &["net_null2"], &[config_json(0, 0.0)]),
+            link_json("a-to-b", "net_pcap0", "net_pcap1", &config_json(0, 0.0)),
+            link_json("b-to-a", "net_pcap1", "net_pcap0", &config_json(0, 0.0)),
         ],
     );
     add_pcap_port(&mut env, 0, &frames(0, 1));
     add_pcap_port(&mut env, 1, &frames(1, 1));
-    env.vdevs.push("net_null2".into());
     let out = expect_failure(&env);
-    assert!(out.contains("3 ports need 4 lcores, e.g. -l 0-3"), "{out}");
+    assert!(out.contains("3 lcores, e.g. -l 0-2"), "{out}");
 
-    // ... and too many is an error as well
+    // a ring of three links needs `-l 0-3`; `-l 0-2` is too few
+    let mut env = links_env(
+        "0-2",
+        &[
+            link_json("a-to-b", "net_null0", "net_null1", &config_json(0, 0.0)),
+            link_json("b-to-c", "net_null1", "net_null2", &config_json(0, 0.0)),
+            link_json("c-to-a", "net_null2", "net_null0", &config_json(0, 0.0)),
+        ],
+    );
+    for i in 0..3 {
+        env.vdevs.push(format!("net_null{i}"));
+    }
+    let out = expect_failure(&env);
+    assert!(out.contains("4 lcores, e.g. -l 0-3"), "{out}");
+
+    // ... and too many is an error as well (a hairpin is one link)
     let mut env = links_env(
         "0-3",
-        &[link_json("loop", &["net_null0"], &[config_json(0, 0.0)])],
+        &[link_json(
+            "loop",
+            "net_null0",
+            "net_null0",
+            &config_json(0, 0.0),
+        )],
     );
     env.vdevs.push("net_null0".into());
     let out = expect_failure(&env);
-    assert!(out.contains("1 port needs 2 lcores, e.g. -l 0-1"), "{out}");
+    assert!(out.contains("2 lcores, e.g. -l 0-1"), "{out}");
 }
 
 #[test]
 fn explicit_lcores_in_descending_order_are_honoured_literally() {
-    // `-l 0-2`: the workers are 1 and 2, the link asks for direction 0 on 2 and
-    // direction 1 on 1 (the opposite of the default ascending assignment).
+    // `-l 0-2`: the workers are 1 and 2, link 0 asks for lcore 2 and link 1 for
+    // lcore 1 (the opposite of the default ascending assignment).
     const N0: u32 = 120;
     const N1: u32 = 80;
     require_cpus(3);
     let _g = serial();
     let mut env = links_env(
         "0-2",
-        &[link_json_lcores(
-            "ab",
-            &["net_pcap0", "net_pcap1"],
-            &[config_json(0, 0.0), config_json(0, 0.0)],
-            &[2, 1],
-        )],
+        &[
+            link_json_lcore("a-to-b", "net_pcap0", "net_pcap1", &config_json(0, 0.0), 2),
+            link_json_lcore("b-to-a", "net_pcap1", "net_pcap0", &config_json(0, 0.0), 1),
+        ],
     );
     add_pcap_port(&mut env, 0, &frames(0, N0));
     add_pcap_port(&mut env, 1, &frames(1, N1));
@@ -3193,43 +3577,52 @@ fn bad_explicit_lcores_are_clean_exits_naming_the_problem() {
     require_cpus(3);
     let _g = serial();
     let cfg = || config_json(0, 0.0);
-    let two = |lcores: &[u32]| {
-        link_json_lcores("ab", &["net_null0", "net_null1"], &[cfg(), cfg()], lcores)
+    let two = |a: u32, b: u32| {
+        [
+            link_json_lcore("a-to-b", "net_null0", "net_null1", &cfg(), a),
+            link_json_lcore("b-to-a", "net_null1", "net_null0", &cfg(), b),
+        ]
     };
 
-    // the main lcore (0) cannot run a direction
-    let out = links_failure(&[two(&[0, 1])], 2, "0-2");
+    // the main lcore (0) cannot run a link
+    let out = links_failure(&two(0, 1), 2, "0-2");
     assert!(out.contains("main"), "main lcore\n{out}");
 
     // an lcore that is not an EAL worker
-    let out = links_failure(&[two(&[1, 9])], 2, "0-2");
+    let out = links_failure(&two(1, 9), 2, "0-2");
     assert!(
         out.contains('9') && out.contains("worker"),
         "not a worker\n{out}"
     );
 
     // the same lcore twice
-    let out = links_failure(&[two(&[1, 1])], 2, "0-2");
+    let out = links_failure(&two(1, 1), 2, "0-2");
     assert!(out.contains("lcore"), "duplicate\n{out}");
 
-    // lcores of the wrong length
+    // an array instead of one lcore (the v1 per-direction shape)
     let out = links_failure(
-        &[link_json_lcores("one", &["net_null0"], &[cfg()], &[1, 2])],
+        &[link_json_extra(
+            "one",
+            "net_null0",
+            "net_null0",
+            &cfg(),
+            r#""lcore": [1]"#,
+        )],
         1,
         "0-1",
     );
-    assert!(out.contains("one"), "length\n{out}");
+    assert!(!out.is_empty(), "array: a clean error exit\n{out}");
 
-    // some links with lcores, some without
+    // some links with an lcore, some without: all or none
     let out = links_failure(
         &[
-            link_json_lcores("with", &["net_null0"], &[cfg()], &[1]),
-            link_json("without", &["net_null1"], &[cfg()]),
+            link_json_lcore("with", "net_null0", "net_null1", &cfg(), 1),
+            link_json("without", "net_null1", "net_null0", &cfg()),
         ],
         2,
         "0-2",
     );
-    assert!(out.contains("lcores"), "mixing\n{out}");
+    assert!(out.contains("lcore"), "mixing\n{out}");
 }
 
 #[test]
@@ -3239,7 +3632,12 @@ fn links_excludes_config_flags_with_a_usage_error() {
     for flag in ["--config", "--config0", "--config1"] {
         let mut env = links_env(
             "0-1",
-            &[link_json("loop", &["net_null0"], &[config_json(0, 0.0)])],
+            &[link_json(
+                "loop",
+                "net_null0",
+                "net_null0",
+                &config_json(0, 0.0),
+            )],
         );
         env.vdevs.push("net_null0".into());
         let cfg = env.config.display().to_string();
@@ -3252,7 +3650,7 @@ fn links_excludes_config_flags_with_a_usage_error() {
 }
 
 /// `--links` with the given `links` JSON array text, vdevs `net_null<i>` for
-/// `0..null_ports`, and `-l 0-<lcores>`; runs until it fails and returns the
+/// `0..null_ports`, and `-l <lcores>`; runs until it fails and returns the
 /// output.
 fn links_failure(links: &[String], null_ports: usize, lcores: &str) -> String {
     let mut env = links_env(lcores, links);
@@ -3268,69 +3666,135 @@ fn links_file_errors_are_clean_exits_naming_the_problem() {
     let _g = serial();
     let cfg = || config_json(0, 0.0);
 
-    // a port that no probed device has
+    // an ingress that no probed device has
     let out = links_failure(
-        &[link_json(
-            "ab",
-            &["net_null0", "net_null9"],
-            &[cfg(), cfg()],
-        )],
+        &[link_json("ab", "net_null9", "net_null0", &cfg())],
         1,
-        "0-2",
+        "0-1",
     );
-    assert!(out.contains("net_null9"), "unknown port\n{out}");
+    assert!(out.contains("net_null9"), "unknown ingress\n{out}");
 
-    // a probed port that no link uses
-    let out = links_failure(&[link_json("l", &["net_null0"], &[cfg()])], 2, "0-1");
+    // an egress that no probed device has
+    let out = links_failure(
+        &[link_json("ab", "net_null0", "net_null9", &cfg())],
+        1,
+        "0-1",
+    );
+    assert!(out.contains("net_null9"), "unknown egress\n{out}");
+
+    // a probed port that no link uses (neither as ingress nor as egress)
+    let out = links_failure(
+        &[link_json("l", "net_null0", "net_null0", &cfg())],
+        2,
+        "0-1",
+    );
     assert!(out.contains("net_null1"), "unused probed port\n{out}");
 
-    // a port in two links
+    // a probed port used by a link as egress only is NOT unused
+    // (covered by a_port_used_only_as_egress_works_and_is_never_polled)
+
+    // a port that is the ingress of two links
     let out = links_failure(
         &[
-            link_json("a", &["net_null0"], &[cfg()]),
-            link_json("b", &["net_null0"], &[cfg()]),
+            link_json("a", "net_null0", "net_null1", &cfg()),
+            link_json("b", "net_null0", "net_null2", &cfg()),
+        ],
+        3,
+        "0-2",
+    );
+    assert!(out.contains("net_null0"), "ingress twice\n{out}");
+    assert!(out.contains("ingress"), "ingress twice\n{out}");
+
+    // a port that is the egress of two links
+    let out = links_failure(
+        &[
+            link_json("a", "net_null0", "net_null2", &cfg()),
+            link_json("b", "net_null1", "net_null2", &cfg()),
+        ],
+        3,
+        "0-2",
+    );
+    assert!(out.contains("net_null2"), "egress twice\n{out}");
+    assert!(out.contains("egress"), "egress twice\n{out}");
+
+    // a port that is ingress twice and egress twice
+    let out = links_failure(
+        &[
+            link_json("a", "net_null0", "net_null0", &cfg()),
+            link_json("b", "net_null0", "net_null0", &cfg()),
         ],
         1,
         "0-2",
     );
-    assert!(out.contains("net_null0"), "port in two links\n{out}");
+    assert!(out.contains("net_null0"), "ingress and egress twice\n{out}");
 
-    // configs count differs from the ports count
+    // a hairpin plus a link that uses the same port as ingress
     let out = links_failure(
-        &[link_json("mismatch", &["net_null0"], &[cfg(), cfg()])],
-        1,
-        "0-1",
+        &[
+            link_json("hp", "net_null0", "net_null0", &cfg()),
+            link_json("x", "net_null0", "net_null1", &cfg()),
+        ],
+        2,
+        "0-2",
     );
-    assert!(out.contains("mismatch"), "configs count\n{out}");
+    assert!(out.contains("net_null0"), "hairpin plus ingress\n{out}");
+
+    // an empty ingress or egress
+    let out = links_failure(&[link_json("blank", "", "net_null0", &cfg())], 1, "0-1");
+    assert!(out.contains("blank"), "empty ingress\n{out}");
+    let out = links_failure(&[link_json("blank2", "net_null0", "", &cfg())], 1, "0-1");
+    assert!(out.contains("blank2"), "empty egress\n{out}");
 
     // bad and duplicate link names
     let out = links_failure(
-        &[link_json("bad name!", &["net_null0"], &[cfg()])],
+        &[link_json("bad name!", "net_null0", "net_null0", &cfg())],
         1,
         "0-1",
     );
     assert!(out.contains("bad name!"), "bad name\n{out}");
     let out = links_failure(
         &[
-            link_json("same", &["net_null0"], &[cfg()]),
-            link_json("same", &["net_null1"], &[cfg()]),
+            link_json("same", "net_null0", "net_null0", &cfg()),
+            link_json("same", "net_null1", "net_null1", &cfg()),
         ],
         2,
         "0-2",
     );
     assert!(out.contains("same"), "duplicate name\n{out}");
     let long = "x".repeat(33);
-    let out = links_failure(&[link_json(&long, &["net_null0"], &[cfg()])], 1, "0-1");
+    let out = links_failure(
+        &[link_json(&long, "net_null0", "net_null0", &cfg())],
+        1,
+        "0-1",
+    );
     assert!(out.contains(&long), "name over 32 characters\n{out}");
 
     // a link config with invalid parameters names the link (and the parameter)
     let out = links_failure(
-        &[link_json("badcfg", &["net_null0"], &[config_bad_params()])],
+        &[link_json(
+            "badcfg",
+            "net_null0",
+            "net_null0",
+            &config_bad_params(),
+        )],
         1,
         "0-1",
     );
     assert!(out.contains("badcfg"), "the link is named\n{out}");
     assert_names_bad_params(&out);
+}
+
+#[test]
+fn the_v1_link_shape_is_a_clean_exit_naming_the_unknown_key() {
+    require_cpus(2);
+    let _g = serial();
+    let v1 = format!(
+        r#"{{ "name": "old", "ports": ["net_null0"], "configs": [{}] }}"#,
+        config_json(0, 0.0)
+    );
+    let out = links_failure(&[v1], 1, "0-1");
+    assert!(out.contains("ports"), "the unknown key is named\n{out}");
+    assert!(out.to_lowercase().contains("unknown"), "{out}");
 }
 
 #[test]
@@ -3350,27 +3814,29 @@ fn bad_histogram_settings_are_clean_exits_naming_the_link() {
         let out = links_failure(
             &[link_json_hist(
                 "histlink",
-                &["net_null0"],
-                &[cfg()],
-                &[hist],
+                "net_null0",
+                "net_null0",
+                &cfg(),
+                hist,
             )],
             1,
             "0-1",
         );
         assert!(out.contains("histlink"), "{what}: the link is named\n{out}");
     }
-    // the array must have one entry per direction
+    // the histogram is one object per link, not the v1 array
     let out = links_failure(
         &[link_json_hist(
             "lenlink",
-            &["net_null0"],
-            &[cfg()],
-            &["{}", "{}"],
+            "net_null0",
+            "net_null0",
+            &cfg(),
+            "[{}]",
         )],
         1,
         "0-1",
     );
-    assert!(out.contains("lenlink"), "{out}");
+    assert!(!out.is_empty(), "{out}");
 }
 
 #[test]
@@ -3379,7 +3845,12 @@ fn a_missing_or_malformed_links_file_is_an_error_exit_not_a_crash() {
     let _g = serial();
     let mut env = links_env(
         "0-1",
-        &[link_json("loop", &["net_null0"], &[config_json(0, 0.0)])],
+        &[link_json(
+            "loop",
+            "net_null0",
+            "net_null0",
+            &config_json(0, 0.0),
+        )],
     );
     env.vdevs.push("net_null0".into());
     env.links = Some(env.path("does-not-exist.json"));
@@ -3395,20 +3866,8 @@ fn a_missing_or_malformed_links_file_is_an_error_exit_not_a_crash() {
 }
 
 // ---------------------------------------------------------------------------
-// fix round (spec v6): D1 unknown keys, D2 dict limit, D5 delay statistics off
+// unknown keys, the telemetry dict limit, delay statistics off
 // ---------------------------------------------------------------------------
-
-/// As [`link_json`] with the optional `"delay_stats"` array (one flag per direction).
-fn link_json_delay_stats(name: &str, ports: &[&str], configs: &[String], flags: &[bool]) -> String {
-    let base = link_json(name, ports, configs);
-    let cut = base.rfind('}').unwrap();
-    let list: Vec<String> = flags.iter().map(bool::to_string).collect();
-    format!(
-        r#"{}, "delay_stats": [{}] }}"#,
-        base[..cut].trim_end(),
-        list.join(", ")
-    )
-}
 
 #[test]
 fn an_unknown_key_in_the_links_file_is_a_clean_exit_naming_it() {
@@ -3416,17 +3875,18 @@ fn an_unknown_key_in_the_links_file_is_a_clean_exit_naming_it() {
     let _g = serial();
     let cfg = || config_json(0, 0.0);
 
-    // a typo of an optional link key (`lcore` for `lcores`)
-    let typo = link_json("l", &["net_null0"], &[cfg()]).replacen('{', r#"{ "lcore": [1],"#, 1);
+    // a typo of an optional link key (`lcores` for `lcore`)
+    let typo = link_json_extra("l", "net_null0", "net_null0", &cfg(), r#""lcores": [1]"#);
     let out = links_failure(&[typo], 1, "0-1");
-    assert!(out.contains("lcore"), "link level\n{out}");
+    assert!(out.contains("lcores"), "link level\n{out}");
 
-    // a typo in a histogram entry
+    // a typo in the histogram object
     let hist = link_json_hist(
         "l",
-        &["net_null0"],
-        &[cfg()],
-        &[r#"{ "bins": 10, "lo": 5 }"#],
+        "net_null0",
+        "net_null0",
+        &cfg(),
+        r#"{ "bins": 10, "lo": 5 }"#,
     );
     let out = links_failure(&[hist], 1, "0-1");
     assert!(out.contains("lo"), "histogram level\n{out}");
@@ -3436,13 +3896,13 @@ fn an_unknown_key_in_the_links_file_is_a_clean_exit_naming_it() {
     );
 
     // a typo at the top level
-    let mut env = links_env("0-1", &[link_json("l", &["net_null0"], &[cfg()])]);
+    let mut env = links_env("0-1", &[link_json("l", "net_null0", "net_null0", &cfg())]);
     env.vdevs.push("net_null0".into());
     let bad = env.write_config(
         "top-level-typo.json",
         &format!(
             r#"{{ "links": [{}], "lnks": [] }}"#,
-            link_json("l", &["net_null0"], &[cfg()])
+            link_json("l", "net_null0", "net_null0", &cfg())
         ),
     );
     env.links = Some(bad);
@@ -3452,7 +3912,7 @@ fn an_unknown_key_in_the_links_file_is_a_clean_exit_naming_it() {
 
 #[test]
 fn a_links_file_over_the_telemetry_dict_limit_is_a_clean_exit_naming_the_maximum() {
-    // 17 loopback links = 17 ports = 17 directions: 3 + 5 * 17 + 10 * 17 = 258 keys in
+    // 17 hairpin links = 17 ports = 17 links: 3 + 5 * 17 + 10 * 17 = 258 keys in
     // /dpds/ports, over DPDK's 256. The file is validated before any port is probed
     // or the lcores are counted, so one vdev and `-l 0-1` do not matter.
     require_cpus(2);
@@ -3461,8 +3921,24 @@ fn a_links_file_over_the_telemetry_dict_limit_is_a_clean_exit_naming_the_maximum
         .map(|i| {
             link_json(
                 &format!("l{i}"),
-                &[&format!("net_null{i}")],
-                &[config_json(0, 0.0)],
+                &format!("net_null{i}"),
+                &format!("net_null{i}"),
+                &config_json(0, 0.0),
+            )
+        })
+        .collect();
+    let out = links_failure(&links, 1, "0-1");
+    assert!(out.contains("256"), "the maximum is named\n{out}");
+
+    // 13 one-way links over 26 ports: 3 + 5 * 26 + 10 * 13 = 263 keys. (12 one-way
+    // links, 3 + 120 + 120 = 243, fit: unit/links.rs.)
+    let links: Vec<String> = (0..13)
+        .map(|i| {
+            link_json(
+                &format!("w{i}"),
+                &format!("net_null{}", 2 * i),
+                &format!("net_null{}", 2 * i + 1),
+                &config_json(0, 0.0),
             )
         })
         .collect();
@@ -3472,19 +3948,28 @@ fn a_links_file_over_the_telemetry_dict_limit_is_a_clean_exit_naming_the_maximum
 
 #[test]
 fn delay_stats_off_in_the_links_file_still_forwards_and_counts() {
-    // dir 0 (pcap0 -> pcap1, delay_stats off) and dir 1 (pcap1 -> pcap0, on): both
-    // forward every frame; with telemetry only dir 1 has delay statistics.
+    // link 0 (pcap0 -> pcap1, delay_stats off) and link 1 (pcap1 -> pcap0, on):
+    // both forward every frame; with telemetry only link 1 has delay statistics.
     const N: [u32; 2] = [200, 150];
     require_cpus(3);
     let _g = serial();
     let mut env = links_env(
         "0-2",
-        &[link_json_delay_stats(
-            "ab",
-            &["net_pcap0", "net_pcap1"],
-            &[config_json(1_000_000, 0.0), config_json(2_000_000, 0.0)],
-            &[false, true],
-        )],
+        &[
+            link_json_delay_stats(
+                "a-to-b",
+                "net_pcap0",
+                "net_pcap1",
+                &config_json(1_000_000, 0.0),
+                false,
+            ),
+            link_json(
+                "b-to-a",
+                "net_pcap1",
+                "net_pcap0",
+                &config_json(2_000_000, 0.0),
+            ),
+        ],
     );
     for (i, n) in N.iter().enumerate() {
         add_pcap_port(&mut env, i, &frames(i as u8, *n));
@@ -3561,20 +4046,20 @@ fn delay_stats_off_in_the_links_file_still_forwards_and_counts() {
 
     run.signal(libc::SIGINT);
     assert_clean_exit(run.wait_exit(), &run);
-    assert!(read_pcap(&outs[1]) == frames(0, N[0]), "direction 0");
-    assert!(read_pcap(&outs[0]) == frames(1, N[1]), "direction 1");
+    assert!(read_pcap(&outs[1]) == frames(0, N[0]), "link 0");
+    assert!(read_pcap(&outs[0]) == frames(1, N[1]), "link 1");
 }
 
 #[cfg(feature = "telemetry")]
 #[test]
-fn delay_stats_default_to_on_and_ports_reports_the_switch_of_every_direction() {
+fn delay_stats_default_to_on_and_ports_reports_the_switch_of_every_link() {
     require_cpus(3);
     let _g = serial();
     let mut env = links_env(
         "0-2",
         &[
-            link_json("a", &["net_null0"], &[config_json(0, 0.0)]),
-            link_json_delay_stats("b", &["net_null1"], &[config_json(0, 0.0)], &[false]),
+            link_json("a", "net_null0", "net_null0", &config_json(0, 0.0)),
+            link_json_delay_stats("b", "net_null1", "net_null1", &config_json(0, 0.0), false),
         ],
     );
     env.vdevs.push("net_null0".into());
@@ -3590,18 +4075,23 @@ fn delay_stats_default_to_on_and_ports_reports_the_switch_of_every_direction() {
 }
 
 #[test]
-fn a_bad_delay_stats_array_is_a_clean_exit_naming_the_link() {
+fn a_bad_delay_stats_value_is_a_clean_exit() {
     require_cpus(2);
     let _g = serial();
+    // the v1 per-direction array form is gone: `delay_stats` is one bool
     let out = links_failure(
-        &[link_json_delay_stats(
+        &[link_json_extra(
             "flaglink",
-            &["net_null0"],
-            &[config_json(0, 0.0)],
-            &[true, false],
+            "net_null0",
+            "net_null0",
+            &config_json(0, 0.0),
+            r#""delay_stats": [true]"#,
         )],
         1,
         "0-1",
     );
-    assert!(out.contains("flaglink"), "{out}");
+    assert!(
+        out.to_lowercase().contains("bool"),
+        "a bool is expected\n{out}"
+    );
 }

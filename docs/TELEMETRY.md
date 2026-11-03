@@ -2,8 +2,8 @@
 
 Everything DPDS exposes over DPDK's telemetry socket. It follows preof's
 telemetry design (same counters, epochs, first-loss reasons, wire shapes), kept
-per traffic direction: every direction has its own worker lcore and its own
-counter set (and, with `--links`, belongs to a named link). The source of truth for the exact wire format
+per link: a link is one direction (ingress port -> egress port) and has its own
+worker lcore, its own counter set and a name. The source of truth for the exact wire format
 is `crates/dpds/src/counters.rs`, `first_loss.rs` and `stats.rs`; this file
 explains what each field means.
 
@@ -53,21 +53,19 @@ echo '/dpds/stats,0' | dpdk-telemetry.py -f <file-prefix>
 
 | command | what |
 | --- | --- |
-| `/dpds/stats,<dir>` | Counters of direction `<dir>`, cumulative since start, the delay statistics, plus that direction's whole-run first-loss result. |
-| `/dpds/epochs,<dir>` | The same counters per epoch (deltas) and gauges per epoch (maxima), plus per-epoch first loss, for direction `<dir>`. |
-| `/dpds/delay_hist,<dir>` | The cumulative histogram of the intended delay of direction `<dir>`. |
-| `/dpds/ports` | Static: device name and descriptor ring sizes of each port, the number of links, and the layout of each direction. |
+| `/dpds/stats,<dir>` | Counters of link `<dir>`, cumulative since start, the delay statistics, plus that link's whole-run first-loss result. |
+| `/dpds/epochs,<dir>` | The same counters per epoch (deltas) and gauges per epoch (maxima), plus per-epoch first loss, for link `<dir>`. |
+| `/dpds/delay_hist,<dir>` | The cumulative histogram of the intended delay of link `<dir>`. |
+| `/dpds/ports` | Static: device name and descriptor ring sizes of each port, the number of links, and the layout of each link. |
 | `/nic/hw_first_loss,<port>` | First NIC hardware drop seen by the main lcore on port `<port>` (`0` or `1`). |
 | `/nic/epochs,<port>` | Per-epoch NIC `rx_packets` / `imissed` / `rx_port_discards` of port `<port>`. |
 
-Directions are numbered globally. With `--links` in file order: link 0 direction 0
-(`ports[0]` -> `ports[1]`), link 0 direction 1, link 1 direction 0, and so on (a
-one-port link has one direction); `/dpds/ports` gives each direction's link, ports
-and lcore. With `--config*` there is one link named `default` and direction `d` is
-the traffic received on port `d`; its egress port is `d ^ 1` with two ports and
-port 0 with one port. `<dir>` must be the index of an existing direction. A
+`<dir>` is the index of a link, its position in the `--links` file; `/dpds/ports`
+gives each link's name, ports and lcore. With `--config*` the links are `dir0`
+(port 0 -> port 1, or port 0 -> port 0 with one port) and, with two ports, `dir1`
+(port 1 -> port 0). `<dir>` must be the index of an existing link. A
 missing, non-numeric or out-of-range `<dir>` or `<port>` returns an empty reply.
-`<port>` is a DPDK port id (as in `/dpds/ports`), not a direction.
+`<port>` is a DPDK port id (as in `/dpds/ports`), not a link index.
 
 ## `/dpds/stats,<dir>` and epochs
 
@@ -99,7 +97,7 @@ atomics, cache-line aligned).
 | `delay_min_ns`, `delay_max_ns` | Smallest and largest intended delay, uints (truncated ns). |
 | `lateness_mean_ns`, `lateness_max_ns` | Mean (string) and maximum (uint) of how late popped packets left. |
 
-The six delay and lateness keys are absent for a direction whose link has
+The six delay and lateness keys are absent for a link with
 `"delay_stats": false` ([Delay statistics off](#delay-statistics-off)).
 
 A packet that is neither delayed nor lost satisfies
@@ -204,10 +202,9 @@ buffer, cost several times as much.
 
 ### Delay statistics off
 
-Each direction can switch the delay statistics and the histogram off with the
-per-direction `"delay_stats": [true|false, ..]` array of its link in the
-`--links` file (one flag per direction, default all `true`; see the README).
-For a direction with `false`:
+Each link can switch the delay statistics and the histogram off with its
+`"delay_stats": true|false` key in the `--links` file (default `true`; see the
+README). For a link with `false`:
 
 - the worker does not record the intended delay, the lateness or the histogram.
   `forward::run` picks the loop without them once, before it starts, so the
@@ -226,7 +223,7 @@ A consumer checks `dir<d>_delay_stats` once, or tests for the absent keys.
 ## `/dpds/delay_hist,<dir>`
 
 A cumulative linear histogram of the intended delay (as defined above) of every
-accepted packet of direction `<dir>`, since start. Fields:
+accepted packet of link `<dir>`, since start. Fields:
 
 | field | meaning |
 | --- | --- |
@@ -241,8 +238,8 @@ Every accepted packet is in exactly one of the bins, `underflow` or `overflow`.
 The bin index is one subtraction and one multiplication by the reciprocal of
 `bin_ns` computed at startup (no division per packet).
 
-**Range.** The range is fixed at startup, from the direction's config unless the
-`--links` file overrides it with `histograms` (`bins`, `lo_ns`, `hi_ns`, each
+**Range.** The range is fixed at startup, from the link's config unless the
+`--links` file overrides it with the link's `histogram` (`bins`, `lo_ns`, `hi_ns`, each
 optional). The automatic rule, from `delayer.mean_ns`, `delayer.std_ns` (for any
 distribution) and, for an active Spacer, its queueing allowance
 `extra = limit_bit / rate_bps * 1e9` ns (a packet can wait up to a full limit's
@@ -270,7 +267,7 @@ Keep the histogram out of frequent polls: the reply holds up to 500 counts, abou
 reached 20 digits (500 x 21 characters with the comma), below the 16384-byte reply limit
 of DPDK's telemetry socket.
 
-**Switched off.** A direction with `"delay_stats": false` has no histogram:
+**Switched off.** A link with `"delay_stats": false` has no histogram:
 `/dpds/delay_hist,<dir>` returns an empty reply, like for a bad `<dir>` (see
 [Delay statistics off](#delay-statistics-off)).
 
@@ -296,36 +293,46 @@ ones answer "which traffic burst broke first".
 ## `/dpds/ports`
 
 Static, read once at startup (also printed once to stdout at startup). Port keys:
-`num_ports` (at most 16, see the size limit below), then per port index `i`:
+`num_ports` (the distinct ports of the links, see the size limit below), then per port index `i`:
 `port<i>_name` (device name, e.g.
 a PCI address or `net_pcap0`), `port<i>_rx_ring` and `port<i>_tx_ring` (descriptor
 ring sizes the driver **applied**), `port<i>_rx_ring_requested` and
 `port<i>_tx_ring_requested` (what DPDS asked for, 4096; the driver may clamp it
 or round it down, so compare the two). Port indices are DPDK's port ids.
 
-Direction keys: `num_directions` (equal to `num_ports`: a one-port link has one
-direction, a two-port link two), `num_links`, then per direction `d` (see
-[Commands](#commands) for the numbering):
+Link keys: `num_directions` and `num_links` (both the number of links, the file
+order; the key is kept twice), then per link `d` (its index, see
+[Commands](#commands)):
 
 | key | meaning |
 | --- | --- |
-| `dir<d>_rx_port` | DPDK port id the direction receives on. |
-| `dir<d>_tx_port` | Port id it transmits on (the same one for a loopback link). |
-| `dir<d>_lcore` | EAL lcore id of the direction's worker (the listed `lcores` entry, or the i-th worker lcore). |
-| `dir<d>_config` | Where the direction's config comes from (string): its config file, or the links file. |
-| `dir<d>_pool_size` | Mbufs in the direction's pool, derived from `buffer_capacity` and the applied RX/TX descriptor counts. |
+| `dir<d>_rx_port` | DPDK port id the direction receives on (the link's ingress). |
+| `dir<d>_tx_port` | Port id it transmits on (its egress; the same one for a loopback link). |
+| `dir<d>_lcore` | EAL lcore id of the direction's worker (the link's `lcore`, or the i-th worker lcore). |
+| `dir<d>_config` | Where the link's config comes from (string): its config file, or the links file. |
+| `dir<d>_pool_size` | Mbufs in the link's pool, derived from `buffer_capacity` and the applied RX/TX descriptor counts (plus the egress port's RX ring if that port is no link's ingress). |
 | `dir<d>_raw_free` | `1` if the worker frees with `rte_mbuf_raw_free_bulk` (both ports report `MBUF_FAST_FREE`), `0` if with `rte_pktmbuf_free_bulk`. |
-| `dir<d>_link` | Name of the link the direction belongs to (string; `default` without `--links`). |
-| `dir<d>_rx_name` | DPDK device name of the receiving port (string), the entry of the links file. |
-| `dir<d>_tx_name` | DPDK device name of the transmitting port (string). |
-| `dir<d>_delay_stats` | `1` if the direction records [delay statistics](#delay-statistics-off) and the histogram, `0` if its link switched them off. |
+| `dir<d>_link` | Name of the link (string; `dir<d>` itself with `--config*`). |
+| `dir<d>_rx_name` | DPDK device name of the receiving (ingress) port (string), the entry of the links file. |
+| `dir<d>_tx_name` | DPDK device name of the transmitting (egress) port (string). |
+| `dir<d>_delay_stats` | `1` if the link records [delay statistics](#delay-statistics-off) and the histogram, `0` if its link switched them off. |
+
+**Examples.** A ring of three NICs A, B, C in this order (links `a-to-b`,
+`b-to-c`, `c-to-a`, port ids 0, 1, 2) reports `num_ports` 3, `num_links` 3 and
+`dir0_link` `a-to-b` (`dir0_rx_name` A, `dir0_tx_name` B, `dir0_rx_port` 0,
+`dir0_tx_port` 1), `dir1_link` `b-to-c` (1 -> 2), `dir2_link` `c-to-a`
+(2 -> 0): 3 + 15 + 30 = 48 keys. The classic bidirectional pair is two links over
+the same two ports, `dir0` 0 -> 1 and `dir1` 1 -> 0 (3 + 10 + 20 = 33 keys); a
+loopback on one port is one link with `dir0_rx_port` = `dir0_tx_port`.
 
 **Size limit.** DPDK's telemetry dict holds at most 256 entries
 (`RTE_TEL_MAX_DICT_ENTRIES`), and this reply has `3 + 5 * ports + 10 *
-directions` of them (the 3 are `num_ports`, `num_directions`, `num_links`).
-With one direction per port that is 15 keys per port, so **at most 16 ports**
-(243 keys) fit; 17 would need 258. DPDS checks this when it reads the links file
-and exits with an error naming the maximum (256), before anything is probed.
+links` of them (`ports` = distinct ports; the 3 are `num_ports`, `num_directions`,
+`num_links`). A ring (one link per port) costs 15 keys per port, so a ring of 16
+ports (243 keys) fits and 17 would need 258; 12 one-way links over 24 ports fit
+(243 keys), 13 over 26 ports need 263; 16 loopback links fit, 17 do not. DPDS
+checks this when it reads the links file and exits with an error naming the
+maximum (256), before anything is probed.
 
 ## `/nic/hw_first_loss,<port>`
 

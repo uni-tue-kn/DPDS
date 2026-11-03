@@ -46,19 +46,31 @@ async fn valid_pci_and_vdev_names_are_accepted() {
     .enumerate()
     {
         let a = app();
-        let r = a.create_link(&format!("l{i}"), &[port]).await;
+        // as a hairpin (ingress and egress) and as the egress of a link from a vdev
+        let r = a.create_link(&format!("l{i}"), port, port).await;
         assert_eq!(r.status, 201, "{port}: {}", r.text());
+        let a = app();
+        let r = a.create_link(&format!("m{i}"), "net_null9", port).await;
+        assert_eq!(r.status, 201, "{port} as egress: {}", r.text());
     }
 }
 
 #[tokio::test]
 async fn pci_addresses_are_stored_in_lower_case_and_conflict_across_case() {
     let a = app();
-    let r = a.create_link("up", &["0000:B3:00.0"]).await;
+    let r = a.create_link("up", "0000:B3:00.0", "0000:B3:00.1").await;
     assert_eq!(r.status, 201, "{}", r.text());
-    assert_eq!(r.json()["ports"], json!(["0000:b3:00.0"]));
-    let r = a.create_link("again", &["0000:b3:00.0"]).await;
+    assert_eq!(r.json()["ingress"], "0000:b3:00.0");
+    assert_eq!(r.json()["egress"], "0000:b3:00.1");
+    // the same ingress in another case is the same port: 409 naming the first link
+    let r = a.create_link("again", "0000:b3:00.0", "0000:b3:00.2").await;
     assert_eq!(r.status, 409, "{}", r.text());
+    assert!(r.message().contains("up"), "{}", r.text());
+    let r = a
+        .create_link("again2", "0000:b3:00.3", "0000:B3:00.1")
+        .await;
+    assert_eq!(r.status, 409, "{}", r.text());
+    assert!(r.message().contains("up"), "{}", r.text());
 }
 
 const BAD_PORTS: &[&str] = &[
@@ -113,13 +125,32 @@ const BAD_PORTS: &[&str] = &[
 
 #[tokio::test]
 async fn invalid_port_names_are_a_400_naming_the_value_on_create() {
+    // control: valid ports in the same body shape are accepted
+    assert_eq!(
+        app()
+            .create_link("ok", "net_null0", "net_null1")
+            .await
+            .status,
+        201
+    );
     for bad in BAD_PORTS {
         let a = app();
-        let r = a.create_link("x", &[bad]).await;
-        assert_eq!(r.status, 400, "{bad:?}: {}", r.text());
-        let m = r.message();
-        if !bad.trim().is_empty() {
-            assert!(m.contains(bad.trim()) || m.contains("port"), "{bad:?}: {m}");
+        for as_ingress in [true, false] {
+            let r = if as_ingress {
+                a.create_link("x", bad, "net_null1").await
+            } else {
+                a.create_link("x", "net_null1", bad).await
+            };
+            assert_eq!(
+                r.status,
+                400,
+                "{bad:?} (ingress {as_ingress}): {}",
+                r.text()
+            );
+            let m = r.message();
+            if !bad.trim().is_empty() {
+                assert!(m.contains(bad.trim()) || m.contains("port"), "{bad:?}: {m}");
+            }
         }
         assert_eq!(
             a.get("/api/links").await.json(),
@@ -130,9 +161,9 @@ async fn invalid_port_names_are_a_400_naming_the_value_on_create() {
 }
 
 #[tokio::test]
-async fn invalid_port_names_are_a_400_on_update_and_in_the_second_port() {
+async fn invalid_port_names_are_a_400_on_update_as_ingress_and_as_egress() {
     let a = app();
-    let id = a.create_link("x", &["net_null0"]).await.json()["id"]
+    let id = a.create_link("x", "net_null0", "net_null0").await.json()["id"]
         .as_u64()
         .unwrap();
     for bad in [
@@ -143,18 +174,28 @@ async fn invalid_port_names_are_a_400_on_update_and_in_the_second_port() {
         "net_null0,size=64",
     ] {
         let r = a
-            .put(&format!("/api/links/{id}"), link_body("x", &[bad]))
+            .put(
+                &format!("/api/links/{id}"),
+                link_body("x", bad, "net_null0"),
+            )
             .await;
-        assert_eq!(r.status, 400, "{bad:?}");
+        assert_eq!(r.status, 400, "ingress {bad:?}");
         r.message();
-        let r = a.create_link("two", &["net_null1", bad]).await;
-        assert_eq!(r.status, 400, "second port {bad:?}");
+        let r = a
+            .put(
+                &format!("/api/links/{id}"),
+                link_body("x", "net_null0", bad),
+            )
+            .await;
+        assert_eq!(r.status, 400, "egress {bad:?}");
+        r.message();
+        let r = a.create_link("two", "net_null1", bad).await;
+        assert_eq!(r.status, 400, "egress of a new link {bad:?}");
     }
     // the stored link is unchanged
-    assert_eq!(
-        a.get(&format!("/api/links/{id}")).await.json()["ports"],
-        json!(["net_null0"])
-    );
+    let v = a.get(&format!("/api/links/{id}")).await.json();
+    assert_eq!(v["ingress"], "net_null0");
+    assert_eq!(v["egress"], "net_null0");
 }
 
 // ---- eal_extra_args ----------------------------------------------------------
@@ -314,12 +355,12 @@ async fn the_mprq_refusal_names_mprq() {
 #[tokio::test]
 async fn buffer_capacity_up_to_two_to_the_31_is_valid_above_it_is_a_400() {
     let a = app();
-    let mut body = link_body("big", &["net_null0"]);
-    body["configs"][0]["buffer_capacity"] = json!(2_147_483_648u64);
+    let mut body = link_body("big", "net_null0", "net_null0");
+    body["config"]["buffer_capacity"] = json!(2_147_483_648u64);
     assert_eq!(a.post("/api/links", body).await.status, 201);
     for over in [2_147_483_649u64, 4_294_967_296, u64::MAX] {
-        let mut body = link_body("bigger", &["net_null1"]);
-        body["configs"][0]["buffer_capacity"] = json!(over);
+        let mut body = link_body("bigger", "net_null1", "net_null1");
+        body["config"]["buffer_capacity"] = json!(over);
         let r = a.post("/api/links", body).await;
         assert_eq!(r.status, 400, "{over}: {}", r.text());
         assert!(r.message().contains("buffer_capacity"), "{over}");

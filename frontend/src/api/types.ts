@@ -51,15 +51,15 @@ export interface ConfigDto {
   delay_stats?: boolean;
 }
 
+/** One direction: packets arriving on `ingress` leave on `egress` (DPDK device names) with `config` applied. */
 export interface Link {
   id: number;
   name: string;
-  /** One port (loopback, one direction) or two ports (two directions). DPDK device names. */
-  ports: string[];
-  /** One config per port, i.e. per direction (ports[0] -> ports[1] first). */
-  configs: ConfigDto[];
-  /** Optional worker lcore per direction; null/absent = automatic. */
-  workers?: number[] | null;
+  ingress: string;
+  egress: string;
+  config: ConfigDto;
+  /** Worker lcore; null/absent = automatic. */
+  worker?: number | null;
 }
 
 export type LinkInput = Omit<Link, 'id'>;
@@ -250,7 +250,7 @@ export type PresetInput = Omit<Preset, 'id'>;
 /** `GET /api/export`: no ids, no runtime state. */
 export interface ExportDocument {
   format: 'dpds-controller-export';
-  version: 1;
+  version: 2;
   settings: Settings;
   links: LinkInput[];
   presets: PresetInput[];

@@ -3,26 +3,29 @@
 //!
 //! ```json
 //! { "links": [
-//!   { "name": "a-b", "ports": ["0000:65:00.0", "0000:65:00.1"],
-//!     "configs": [ <Config for ports[0] -> ports[1]>, <Config for ports[1] -> ports[0]> ],
-//!     "histograms": [ {"bins": 100, "lo_ns": 0, "hi_ns": 2e6}, {} ],   (optional)
-//!     "lcores": [2, 1],                                                (optional)
-//!     "delay_stats": [true, false] },                                  (optional)
-//!   { "name": "loop", "ports": ["net_null0"], "configs": [ <Config> ] }
+//!   { "name": "a-to-b", "ingress": "0000:65:00.0", "egress": "0000:65:00.1",
+//!     "config": { <dpds_core::Config> },
+//!     "lcore": 3,                                                (optional)
+//!     "histogram": {"bins": 100, "lo_ns": 0, "hi_ns": 2e6},      (optional)
+//!     "delay_stats": true },                                     (optional)
+//!   { "name": "loop", "ingress": "net_null0", "egress": "net_null0", "config": { <Config> } }
 //! ] }
 //! ```
 //!
-//! Ports are DPDK device names (PCI address or vdev name). A link has one
-//! port (a loopback, one direction) or two (two directions), exactly one
-//! config per port. Directions are numbered globally in file order.
+//! A link is one direction: packets that arrive on the `ingress` port leave on
+//! the `egress` port with the link's one config. Ports are DPDK device names
+//! (PCI address or vdev name). `ingress == egress` (a hairpin on one port) is
+//! allowed. Across all links a port is the ingress of at most one link and the
+//! egress of at most one link, so every RX queue and every TX queue has exactly
+//! one worker. The direction index is the link's index in the file.
 //!
-//! `delay_stats` has one flag per direction (default all `true`): `false`
-//! switches the intended-delay / lateness statistics and the delay histogram
-//! of that direction off (counters and drop causes stay). A key the format
-//! does not know is an error naming it.
+//! `lcore` is all-or-none across the links. `delay_stats: false` switches the
+//! intended-delay / lateness statistics and the delay histogram of that link
+//! off (counters and drop causes stay). A key the format does not know (the
+//! old `ports`, `configs`, `lcores`, `histograms` too) is an error naming it.
 //!
 //! `/dpds/ports` must fit DPDK's 256-key telemetry dict (`3 + 5 * ports + 10 *
-//! directions` keys), which limits a run to 16 ports.
+//! links` keys, `ports` = distinct ports named by the links).
 
 use std::collections::HashSet;
 use std::fmt;
@@ -41,18 +44,17 @@ pub const MAX_NAME_LEN: usize = 32;
 #[derive(Debug, Clone)]
 pub struct LinkSpec {
     pub name: String,
-    /// DPDK device names, 1 or 2.
-    pub ports: Vec<String>,
-    /// One config per port: `configs[k]` is the direction that receives on
-    /// `ports[k]` (and transmits on the other port, or on the same one).
-    pub configs: Vec<Config>,
-    /// Explicit worker lcore per direction, if the file gives any.
-    pub lcores: Option<Vec<u32>>,
-    /// One entry per direction, `HistogramSpec::default()` if the file has none.
-    pub histograms: Vec<HistogramSpec>,
-    /// One entry per direction: whether it records delay statistics
-    /// (`true` if the file has none).
-    pub delay_stats: Vec<bool>,
+    /// DPDK device name of the port the link receives on.
+    pub ingress: String,
+    /// DPDK device name of the port the link transmits on.
+    pub egress: String,
+    pub config: Config,
+    /// Explicit worker lcore, if the file gives any.
+    pub lcore: Option<u32>,
+    /// `HistogramSpec::default()` if the file has none.
+    pub histogram: HistogramSpec,
+    /// Whether the link records delay statistics (`true` if the file has none).
+    pub delay_stats: bool,
 }
 
 /// A problem with the links file or with how it fits the probed ports and
@@ -82,11 +84,12 @@ struct RawFile {
 #[serde(deny_unknown_fields)]
 struct RawLink {
     name: String,
-    ports: Vec<String>,
-    configs: Vec<Config>,
-    histograms: Option<Vec<RawHistogram>>,
-    lcores: Option<Vec<u32>>,
-    delay_stats: Option<Vec<bool>>,
+    ingress: String,
+    egress: String,
+    config: Config,
+    lcore: Option<u32>,
+    histogram: Option<RawHistogram>,
+    delay_stats: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -115,7 +118,8 @@ pub fn parse_links(json: &str) -> Result<Vec<LinkSpec>, LinksError> {
     }
 
     let mut names = HashSet::new();
-    let mut ports = HashSet::new();
+    let mut ingresses = HashSet::new();
+    let mut egresses = HashSet::new();
     let mut lcores = HashSet::new();
     let mut links = Vec::new();
     for raw in raw.links {
@@ -128,117 +132,72 @@ pub fn parse_links(json: &str) -> Result<Vec<LinkSpec>, LinksError> {
         if !names.insert(name.clone()) {
             return err(format!("duplicate link name '{name}'"));
         }
-        if !matches!(raw.ports.len(), 1 | 2) {
-            return err(format!(
-                "link '{name}': a link has 1 or 2 ports, found {}",
-                raw.ports.len()
-            ));
-        }
-        if raw.configs.len() != raw.ports.len() {
-            return err(format!(
-                "link '{name}': {} ports need {} configs (one per direction), found {}",
-                raw.ports.len(),
-                raw.ports.len(),
-                raw.configs.len()
-            ));
-        }
-        for port in &raw.ports {
+        for (role, port, seen) in [
+            ("ingress", &raw.ingress, &mut ingresses),
+            ("egress", &raw.egress, &mut egresses),
+        ] {
             if port.is_empty() {
-                return err(format!("link '{name}': a port name is empty"));
+                return err(format!("link '{name}': the {role} port name is empty"));
             }
-            if !ports.insert(port.clone()) {
+            if !seen.insert(port.clone()) {
                 return err(format!(
-                    "port '{port}' is listed more than once (link '{name}'); a port belongs to \
-                     at most one link and appears once"
+                    "port '{port}' is the {role} of more than one link (link '{name}'): a port \
+                     is the ingress of at most one link and the egress of at most one link"
                 ));
             }
         }
 
-        let directions = raw.configs.len();
-        let histograms = match raw.histograms {
-            None => vec![HistogramSpec::default(); directions],
-            Some(h) if h.len() != directions => {
-                return err(format!(
-                    "link '{name}': histograms has {} entries, the link has {directions} \
-                     directions",
-                    h.len()
-                ))
-            }
-            Some(h) => {
-                let mut specs = Vec::new();
-                for (k, h) in h.into_iter().enumerate() {
-                    let spec = HistogramSpec {
-                        bins: h.bins,
-                        lo_ns: h.lo_ns,
-                        hi_ns: h.hi_ns,
-                    };
-                    spec.validate()
-                        .map_err(|e| LinksError(format!("link '{name}', direction {k}: {e}")))?;
-                    specs.push(spec);
-                }
-                specs
-            }
-        };
+        let histogram = raw
+            .histogram
+            .map_or_else(HistogramSpec::default, |h| HistogramSpec {
+                bins: h.bins,
+                lo_ns: h.lo_ns,
+                hi_ns: h.hi_ns,
+            });
+        histogram
+            .validate()
+            .map_err(|e| LinksError(format!("link '{name}': {e}")))?;
 
-        let delay_stats = match raw.delay_stats {
-            None => vec![true; directions],
-            Some(flags) if flags.len() != directions => {
+        if let Some(lcore) = raw.lcore {
+            if !lcores.insert(lcore) {
                 return err(format!(
-                    "link '{name}': delay_stats has {} entries, the link has {directions} \
-                     directions",
-                    flags.len()
-                ))
-            }
-            Some(flags) => flags,
-        };
-
-        if let Some(l) = &raw.lcores {
-            if l.len() != directions {
-                return err(format!(
-                    "link '{name}': lcores has {} entries, the link has {directions} directions",
-                    l.len()
+                    "lcore {lcore} is listed more than once (link '{name}'): every link needs \
+                     its own lcore"
                 ));
-            }
-            for &lcore in l {
-                if !lcores.insert(lcore) {
-                    return err(format!(
-                        "lcore {lcore} is listed more than once (link '{name}'): every \
-                         direction needs its own lcore"
-                    ));
-                }
             }
         }
 
         links.push(LinkSpec {
             name,
-            ports: raw.ports,
-            configs: raw.configs,
-            lcores: raw.lcores,
-            histograms,
-            delay_stats,
+            ingress: raw.ingress,
+            egress: raw.egress,
+            config: raw.config,
+            lcore: raw.lcore,
+            histogram,
+            delay_stats: raw.delay_stats.unwrap_or(true),
         });
     }
 
-    // `/dpds/ports` has 3 + 5 keys per port + 10 per direction (a link has as
-    // many directions as ports).
-    let ports = num_directions(&links);
-    let keys = 3 + 5 * ports + 10 * ports;
+    // `/dpds/ports` has 3 + 5 keys per distinct port + 10 per link.
+    let ports = distinct_ports(&links).len();
+    let keys = 3 + 5 * ports + 10 * links.len();
     if keys > MAX_TELEMETRY_DICT_ENTRIES {
         return err(format!(
-            "{ports} ports are too many: the /dpds/ports telemetry reply needs 3 + 5 * ports + \
-             10 * directions = {keys} keys, DPDK's dict holds at most \
-             {MAX_TELEMETRY_DICT_ENTRIES} (at most 16 ports)"
+            "{ports} ports and {} links are too many: the /dpds/ports telemetry reply needs 3 + \
+             5 * ports + 10 * links = {keys} keys, DPDK's dict holds at most \
+             {MAX_TELEMETRY_DICT_ENTRIES}",
+            links.len()
         ));
     }
 
-    if links.iter().any(|l| l.lcores.is_some()) && links.iter().any(|l| l.lcores.is_none()) {
+    if links.iter().any(|l| l.lcore.is_some()) && links.iter().any(|l| l.lcore.is_none()) {
         let missing: Vec<&str> = links
             .iter()
-            .filter(|l| l.lcores.is_none())
+            .filter(|l| l.lcore.is_none())
             .map(|l| l.name.as_str())
             .collect();
         return err(format!(
-            "either every link has \"lcores\" or none: missing for link(s) {missing:?}"
+            "either every link has \"lcore\" or none: missing for link(s) {missing:?}"
         ));
     }
     Ok(links)
@@ -251,112 +210,111 @@ pub fn load_links(path: &Path) -> Result<Vec<LinkSpec>, LinksError> {
     parse_links(&text).map_err(|e| LinksError(format!("{}: {e}", path.display())))
 }
 
-/// The number of directions (= worker lcores) of `links`: one per port.
-pub fn num_directions(links: &[LinkSpec]) -> usize {
-    links.iter().map(|l| l.ports.len()).sum()
+/// The distinct ports named by `links`.
+fn distinct_ports(links: &[LinkSpec]) -> HashSet<&str> {
+    links
+        .iter()
+        .flat_map(|l| [l.ingress.as_str(), l.egress.as_str()])
+        .collect()
 }
 
-/// One direction, resolved against the probed ports.
+/// One link (= direction), resolved against the probed ports.
 #[derive(Debug, Clone)]
 pub struct LinkDirection {
-    /// Index of the link in the file.
+    /// Index of the link in the file (= the direction index).
     pub link: usize,
     pub rx_port: u16,
     pub tx_port: u16,
     pub config: Config,
     pub histogram: HistogramSpec,
-    /// Whether the direction records delay statistics.
+    /// Whether the link records delay statistics.
     pub delay_stats: bool,
-    /// The worker lcore that runs the direction.
+    /// The worker lcore that runs the link.
     pub lcore: u32,
 }
 
-/// Numbers the directions in file order (link by link: `ports[0] -> ports[1]`
-/// with `configs[0]`, then `ports[1] -> ports[0]` with `configs[1]`; a
-/// one-port link is a single loopback direction), maps the device names to
-/// port ids with `probed` (`(device name, port id)` of every probed ethdev) and
-/// assigns the worker lcores: the listed ones, or the i-th of `workers`
-/// (ascending, main lcore excluded) to direction i.
+/// Maps the device names to port ids with `probed` (`(device name, port id)` of
+/// every probed ethdev), returns one direction per link in file order
+/// (`rx_port` = ingress, `tx_port` = egress) and assigns the worker lcores: the
+/// listed ones, or the i-th of `workers` (ascending, main lcore excluded) to
+/// link i.
 pub fn resolve_directions(
     links: &[LinkSpec],
     probed: &[(String, u16)],
     main_lcore: u32,
     workers: &[u32],
 ) -> Result<Vec<LinkDirection>, LinksError> {
-    let id_of = |name: &str| probed.iter().find(|(n, _)| n == name).map(|(_, id)| *id);
+    let id_of = |link: &LinkSpec, role: &str, port: &str| {
+        probed
+            .iter()
+            .find(|(n, _)| n == port)
+            .map(|(_, id)| *id)
+            .ok_or_else(|| {
+                let names: Vec<&str> = probed.iter().map(|(n, _)| n.as_str()).collect();
+                LinksError(format!(
+                    "link '{}': {role} port '{port}' is not a probed DPDK device (probed: \
+                     {names:?}); allow it with -a / --vdev",
+                    link.name
+                ))
+            })
+    };
 
     let mut directions = Vec::new();
     for (index, link) in links.iter().enumerate() {
-        let mut ids = Vec::new();
-        for port in &link.ports {
-            let Some(id) = id_of(port) else {
-                let names: Vec<&str> = probed.iter().map(|(n, _)| n.as_str()).collect();
-                return err(format!(
-                    "link '{}': port '{port}' is not a probed DPDK device (probed: {names:?}); \
-                     allow it with -a / --vdev",
-                    link.name
-                ));
-            };
-            ids.push(id);
-        }
-        for (k, config) in link.configs.iter().enumerate() {
-            directions.push(LinkDirection {
-                link: index,
-                rx_port: ids[k],
-                tx_port: ids[(k + 1) % ids.len()],
-                config: *config,
-                histogram: link.histograms.get(k).copied().unwrap_or_default(),
-                delay_stats: link.delay_stats.get(k).copied().unwrap_or(true),
-                lcore: 0,
-            });
-        }
+        directions.push(LinkDirection {
+            link: index,
+            rx_port: id_of(link, "ingress", &link.ingress)?,
+            tx_port: id_of(link, "egress", &link.egress)?,
+            config: link.config,
+            histogram: link.histogram,
+            delay_stats: link.delay_stats,
+            lcore: 0,
+        });
     }
+    let used = distinct_ports(links);
     for (name, _) in probed {
-        if !links.iter().any(|l| l.ports.contains(name)) {
+        if !used.contains(name.as_str()) {
             return err(format!(
-                "port '{name}' is probed but belongs to no link; every probed port must be in a \
-                 link (or not be allowed with -a / --vdev)"
+                "port '{name}' is probed but no link uses it as ingress or egress; every probed \
+                 port must be used (or not be allowed with -a / --vdev)"
             ));
         }
     }
 
-    if links.iter().any(|l| l.lcores.is_some()) {
-        if links.iter().any(|l| l.lcores.is_none()) {
-            return err("either every link has \"lcores\" or none");
+    if links.iter().any(|l| l.lcore.is_some()) {
+        if links.iter().any(|l| l.lcore.is_none()) {
+            return err("either every link has \"lcore\" or none");
         }
-        let listed = links.iter().flat_map(|l| {
-            l.lcores
-                .iter()
-                .flatten()
-                .map(move |&lcore| (l.name.as_str(), lcore))
-        });
-        for (d, (link, lcore)) in listed.enumerate() {
+        for (dir, link) in directions.iter_mut().zip(links) {
+            let lcore = link.lcore.unwrap_or_default();
             if lcore == main_lcore {
                 return err(format!(
-                    "link '{link}': lcore {lcore} is the main lcore, it cannot run a direction"
+                    "link '{}': lcore {lcore} is the main lcore, it cannot run a link",
+                    link.name
                 ));
             }
             if !workers.contains(&lcore) {
                 return err(format!(
-                    "link '{link}': lcore {lcore} is not an EAL worker lcore (workers: \
-                     {workers:?}, main lcore {main_lcore})"
+                    "link '{}': lcore {lcore} is not an EAL worker lcore (workers: \
+                     {workers:?}, main lcore {main_lcore})",
+                    link.name
                 ));
             }
-            directions[d].lcore = lcore;
+            dir.lcore = lcore;
         }
         if let Some(unused) = workers
             .iter()
             .find(|w| !directions.iter().any(|d| d.lcore == **w))
         {
             return err(format!(
-                "worker lcore {unused} is not used by any direction: \"lcores\" must name every \
-                 EAL worker lcore ({workers:?}), one per direction"
+                "worker lcore {unused} is not used by any link: \"lcore\" must name every EAL \
+                 worker lcore ({workers:?}), one per link"
             ));
         }
     } else {
         if workers.len() != directions.len() {
             return err(format!(
-                "{} directions need {} worker lcores, found {workers:?}",
+                "{} links need {} worker lcores, found {workers:?}",
                 directions.len(),
                 directions.len()
             ));

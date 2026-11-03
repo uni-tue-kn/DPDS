@@ -1,11 +1,12 @@
 //! K2 (spec v8): `GET /api/export` and `POST /api/import[?mode=replace]`.
 //!
-//! Contract (spec text): the export is `{"format": "dpds-controller-export", "version": 1,
-//! "settings", "links": [{name, ports, configs, workers}], "presets": [{name, description,
-//! config}]}`, without ids and runtime state. Import refuses with 409 unless the emulation
+//! Contract (spec text, v10): the export is `{"format": "dpds-controller-export", "version": 2,
+//! "settings", "links": [{name, ingress, egress, config, worker}], "presets": [{name, description,
+//! config}]}`, without ids and runtime state. A version 1 document (the paired-link shape) is a
+//! 400 whose message says so. Import refuses with 409 unless the emulation
 //! is `stopped`, validates the whole document first (format/version, every link, preset and
-//! setting by the rules of the individual endpoints, unique names, ports not shared between
-//! links), applies it atomically (all or nothing), assigns new ids and replies with the
+//! setting by the rules of the individual endpoints, unique names, a port at most once as
+//! ingress and at most once as egress), applies it atomically (all or nothing), assigns new ids and replies with the
 //! stored summary `{links: n, presets: m}`. Unknown keys are a 400, `mode=replace` is the
 //! only mode.
 //!
@@ -16,8 +17,9 @@
 //! - the 409 covers every state but `stopped` (starting, running, stopping AND failed:
 //!   the spec says "not stopped");
 //! - duplicate names inside the document are a 400 (a 409 is also accepted, the spec only
-//!   says "validates ... unique names"); shared ports are a 400 (stated by the coordinator);
-//! - `workers` is absent or null in the export when a link has none, and optional on import;
+//!   says "validates ... unique names"); a port reused as ingress (or egress) is a 400 naming the
+//!   port (stated by the coordinator for the paired model; the status is carried over);
+//! - `worker` is absent or null in the export when a link has none, and optional on import;
 //! - a request that is invalid AND arrives while running is not tested (which error wins is open).
 
 use crate::common::*;
@@ -36,16 +38,19 @@ fn settings_doc() -> Value {
            "eal_extra_args": ["--no-huge", "-m", "256"], "poll_interval_ms": 250})
 }
 
-/// A valid import document: two links (one with workers), two presets.
+/// A valid import document: three links (the pair `ab`/`ba`, the first with a worker, and a
+/// hairpin), two presets.
 fn doc() -> Value {
     json!({
         "format": FORMAT,
-        "version": 1,
+        "version": 2,
         "settings": settings_doc(),
         "links": [
-            {"name": "ab", "ports": [NIC0, NIC1],
-             "configs": [cfg_json(1.0e6, 1.0e5), cfg_json(2.0e6, 0.0)], "workers": [2, 6]},
-            {"name": "loop", "ports": ["net_null0"], "configs": [cfg_json(5.0e5, 1.0e4)]}
+            {"name": "ab", "ingress": NIC0, "egress": NIC1,
+             "config": cfg_json(1.0e6, 1.0e5), "worker": 2},
+            {"name": "ba", "ingress": NIC1, "egress": NIC0, "config": cfg_json(2.0e6, 0.0)},
+            {"name": "loop", "ingress": "net_null0", "egress": "net_null0",
+             "config": cfg_json(5.0e5, 1.0e4)}
         ],
         "presets": [
             {"name": "sat", "description": "geo", "config": cfg_json(2.5e8, 1.0e6)},
@@ -84,8 +89,13 @@ async fn state_of(a: &TestApp) -> (Value, Value, Value, Option<Vec<u8>>) {
 
 /// Some existing setup, so that "nothing changed" is observable.
 async fn populate(a: &TestApp) {
-    assert_eq!(a.create_link("old-a", &[NIC0, NIC1]).await.status, 201);
-    assert_eq!(a.create_link("old-b", &["net_null5"]).await.status, 201);
+    assert_eq!(a.create_link("old-a", NIC0, NIC1).await.status, 201);
+    assert_eq!(
+        a.create_link("old-b", "net_null5", "net_null5")
+            .await
+            .status,
+        201
+    );
     for n in ["old-p1", "old-p2"] {
         let r = a
             .post(
@@ -122,7 +132,7 @@ async fn the_export_of_an_empty_controller_is_the_documented_skeleton() {
         "{v}"
     );
     assert_eq!(v["format"], FORMAT);
-    assert_eq!(v["version"], 1);
+    assert_eq!(v["version"], 2);
     assert_eq!(v["links"], json!([]));
     assert_eq!(v["presets"], json!([]));
     assert_eq!(v["settings"], a.get("/api/settings").await.json());
@@ -149,10 +159,11 @@ async fn the_export_has_no_ids_and_no_runtime_state() {
         assert!(l.get("id").is_none(), "link with an id: {l}");
         let keys: BTreeSet<&str> = l.as_object().unwrap().keys().map(String::as_str).collect();
         assert!(
-            keys.is_subset(&BTreeSet::from(["name", "ports", "configs", "workers"]))
-                && ["name", "ports", "configs"]
-                    .iter()
-                    .all(|k| keys.contains(k)),
+            keys.is_subset(&BTreeSet::from([
+                "name", "ingress", "egress", "config", "worker",
+            ])) && ["name", "ingress", "egress", "config"]
+                .iter()
+                .all(|k| keys.contains(k)),
             "{l}"
         );
     }
@@ -241,16 +252,23 @@ async fn import_into_an_empty_controller_stores_everything_and_reports_the_count
     let a = app();
     let r = import(&a, doc()).await;
     assert_eq!(r.status, 200, "{}", r.text());
-    assert_eq!(r.json(), json!({"links": 2, "presets": 2}));
+    assert_eq!(r.json(), json!({"links": 3, "presets": 2}));
     let links = a.get("/api/links").await.json();
     assert_eq!(links[0]["name"], "ab");
-    assert_eq!(links[0]["workers"], json!([2, 6]));
-    assert_eq!(links[1]["name"], "loop");
-    assert!(absent(&links[1], "workers"));
+    assert_eq!(links[0]["ingress"], NIC0);
+    assert_eq!(links[0]["egress"], NIC1);
+    assert_eq!(links[0]["worker"], 2);
+    assert_eq!(links[1]["name"], "ba");
+    assert_eq!(links[1]["ingress"], NIC1);
+    assert_eq!(links[1]["egress"], NIC0);
+    assert!(absent(&links[1], "worker"));
     assert_eq!(
-        links[0]["configs"][1],
+        links[1]["config"],
         serde_json::to_value(cfg_dto(2.0e6, 0.0)).unwrap()
     );
+    assert_eq!(links[2]["name"], "loop");
+    assert_eq!(links[2]["ingress"], "net_null0");
+    assert_eq!(links[2]["egress"], "net_null0");
     let presets = a.get("/api/presets").await.json();
     assert_eq!(presets[0]["name"], "sat");
     assert_eq!(presets[0]["description"], "geo");
@@ -278,7 +296,10 @@ async fn import_replaces_links_presets_and_settings() {
             .map(|x| x["name"].as_str().unwrap().to_string())
             .collect()
     };
-    assert_eq!(names(&a.get("/api/links").await.json()), ["ab", "loop"]);
+    assert_eq!(
+        names(&a.get("/api/links").await.json()),
+        ["ab", "ba", "loop"]
+    );
     assert_eq!(names(&a.get("/api/presets").await.json()), ["sat", "lan"]);
     assert_eq!(a.get("/api/settings").await.json(), settings_doc());
 }
@@ -287,7 +308,7 @@ async fn import_replaces_links_presets_and_settings() {
 async fn an_empty_document_clears_links_and_presets() {
     let a = app();
     populate(&a).await;
-    let d = json!({"format": FORMAT, "version": 1, "settings": settings_doc(),
+    let d = json!({"format": FORMAT, "version": 2, "settings": settings_doc(),
                    "links": [], "presets": []});
     let r = import(&a, d).await;
     assert_eq!(r.status, 200, "{}", r.text());
@@ -305,7 +326,7 @@ async fn mode_replace_is_accepted_and_is_the_default() {
     assert_eq!(r.status, 200, "{}", r.text());
     assert_eq!(
         a.get("/api/links").await.json().as_array().unwrap().len(),
-        2
+        3
     );
 }
 
@@ -342,7 +363,10 @@ async fn imported_ids_are_new_and_the_counters_go_on_above_them() {
     );
     assert_eq!(links.len(), links.iter().collect::<BTreeSet<_>>().len());
     // later creates continue above the imported ids
-    let l = a.create_link("later", &["net_null9"]).await.json();
+    let l = a
+        .create_link("later", "net_null9", "net_null9")
+        .await
+        .json();
     assert!(l["id"].as_u64().unwrap() > max(&links));
     let p = a
         .post(
@@ -367,7 +391,7 @@ async fn an_import_is_persisted_and_survives_a_router_rebuild() {
         (&after.0, &after.1, &after.2)
     );
     let v: Value = serde_json::from_slice(&before.3.unwrap()).unwrap();
-    assert_eq!(v["links"].as_array().unwrap().len(), 2);
+    assert_eq!(v["links"].as_array().unwrap().len(), 3);
     assert_eq!(v["presets"].as_array().unwrap().len(), 2);
 }
 
@@ -387,8 +411,8 @@ async fn export_then_import_then_export_is_identical_modulo_ids() {
     let a = app();
     // a setup built through the individual endpoints
     populate(&a).await;
-    let mut body = link_body("w", &["net_null7"]);
-    body["workers"] = json!([3]);
+    let mut body = link_body("w", "net_null7", "net_null7");
+    body["worker"] = json!(3);
     assert_eq!(a.post("/api/links", body).await.status, 201);
     let mut c = cfg_json(3.0e6, 3.0e5);
     c["delayer"]["distribution"] = json!("LogNormalDistribution");
@@ -420,13 +444,36 @@ async fn export_then_import_then_export_is_identical_modulo_ids() {
 async fn pci_ports_are_normalised_to_lower_case_like_on_the_links_endpoint() {
     let a = app();
     let mut d = doc();
-    d["links"][0]["ports"] = json!([NIC0.to_uppercase(), NIC1.to_uppercase()]);
+    d["links"][0]["ingress"] = json!(NIC0.to_uppercase());
+    d["links"][0]["egress"] = json!(NIC1.to_uppercase());
     let r = import(&a, d).await;
     assert_eq!(r.status, 200, "{}", r.text());
-    assert_eq!(
-        a.get("/api/links").await.json()[0]["ports"],
-        json!([NIC0, NIC1])
-    );
+    let l = a.get("/api/links").await.json();
+    assert_eq!(l[0]["ingress"], NIC0);
+    assert_eq!(l[0]["egress"], NIC1);
+}
+
+#[tokio::test]
+async fn a_three_link_ring_and_a_hairpin_survive_export_and_import() {
+    let a = app();
+    for (n, i, e) in [
+        ("a-to-b", NIC0, NIC1),
+        ("b-to-c", NIC1, INTEL),
+        ("c-to-a", INTEL, NIC0),
+        ("loop", "net_null0", "net_null0"),
+    ] {
+        assert_eq!(a.create_link(n, i, e).await.status, 201, "{n}");
+    }
+    let e1 = export(&a).await;
+    assert_eq!(e1["version"], 2);
+    assert_eq!(e1["links"].as_array().unwrap().len(), 4);
+    assert_eq!(e1["links"][1]["ingress"], NIC1);
+    assert_eq!(e1["links"][1]["egress"], INTEL);
+    let b = app();
+    let r = import(&b, e1.clone()).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(r.json(), json!({"links": 4, "presets": 0}));
+    assert_eq!(export(&b).await, e1);
 }
 
 // ---- import: refused while the emulation is not stopped ---------------------------------------
@@ -481,7 +528,7 @@ fn bad_documents() -> Vec<(&'static str, Value)> {
     add("missing format", &|d| {
         d.as_object_mut().unwrap().remove("format");
     });
-    add("version 2", &|d| d["version"] = json!(2));
+    add("version 3", &|d| d["version"] = json!(3));
     add("version 0", &|d| d["version"] = json!(0));
     add("version as string", &|d| d["version"] = json!("1"));
     add("missing version", &|d| {
@@ -498,43 +545,59 @@ fn bad_documents() -> Vec<(&'static str, Value)> {
         d["settings"]["surprise"] = json!(1)
     });
     add("unknown key in a link config", &|d| {
-        d["links"][1]["configs"][0]["seeed"] = json!(1)
+        d["links"][1]["config"]["seeed"] = json!(1)
+    });
+    add("a link in the paired (v1) shape", &|d| {
+        d["links"][2] = json!({"name": "old", "ports": ["net_null1"],
+                               "configs": [cfg_json(1.0e6, 0.0)]})
+    });
+    add("a link with both shapes", &|d| {
+        d["links"][2]["ports"] = json!(["net_null0"])
+    });
+    add("a link without a config", &|d| {
+        d["links"][2].as_object_mut().unwrap().remove("config");
+    });
+    add("a link without an ingress", &|d| {
+        d["links"][2].as_object_mut().unwrap().remove("ingress");
+    });
+    add("a link without an egress", &|d| {
+        d["links"][2].as_object_mut().unwrap().remove("egress");
+    });
+    add("a worker that is a list", &|d| {
+        d["links"][0]["worker"] = json!([2, 6])
     });
     add("unknown key in a preset config", &|d| {
         d["presets"][0]["config"]["mean_nss"] = json!(1)
     });
     // the second link / preset is the broken one: the first, valid one must not be stored
     add("invalid config in the second link", &|d| {
-        d["links"][1]["configs"][0]["delayer"]["mean_ns"] = json!(-1.0)
+        d["links"][1]["config"]["delayer"]["mean_ns"] = json!(-1.0)
     });
     add("loss probability above 1", &|d| {
-        d["links"][0]["configs"][1]["loss_model"] = json!({"type": "Random", "p": 2.0})
+        d["links"][0]["config"]["loss_model"] = json!({"type": "Random", "p": 2.0})
     });
     add("invalid link name", &|d| {
         d["links"][1]["name"] = json!("bad name!")
     });
     add("empty link name", &|d| d["links"][0]["name"] = json!(""));
-    add("three ports", &|d| {
-        d["links"][0]["ports"] = json!([NIC0, NIC1, INTEL])
+    add("empty ingress", &|d| d["links"][1]["ingress"] = json!(""));
+    add("ingress with devargs", &|d| {
+        d["links"][2]["ingress"] = json!("net_null0,iface=eth0")
     });
-    add("no ports", &|d| d["links"][1]["ports"] = json!([]));
-    add("port with devargs", &|d| {
-        d["links"][1]["ports"] = json!(["net_null0,iface=eth0"])
+    add("egress with devargs", &|d| {
+        d["links"][2]["egress"] = json!("net_pcap0")
     });
-    add("same port twice in a link", &|d| {
-        d["links"][0]["ports"] = json!([NIC0, NIC0])
+    add("port reused as ingress", &|d| {
+        d["links"][2]["ingress"] = json!(NIC0)
     });
-    add("config count != port count", &|d| {
-        d["links"][0]["configs"] = json!([cfg_json(1.0e6, 0.0)])
+    add("port reused as egress", &|d| {
+        d["links"][2]["egress"] = json!(NIC1)
     });
-    add("workers count != port count", &|d| {
-        d["links"][0]["workers"] = json!([2])
+    add("port reused as ingress, other case", &|d| {
+        d["links"][2]["ingress"] = json!(NIC0.to_uppercase())
     });
-    add("port shared between links", &|d| {
-        d["links"][1]["ports"] = json!([NIC1])
-    });
-    add("port shared between links, other case", &|d| {
-        d["links"][1]["ports"] = json!([NIC0.to_uppercase()])
+    add("port reused as egress, other case", &|d| {
+        d["links"][2]["egress"] = json!(NIC0.to_uppercase())
     });
     add("empty preset name", &|d| {
         d["presets"][1]["name"] = json!("")
@@ -589,6 +652,8 @@ async fn an_invalid_document_is_a_400_and_nothing_changes() {
 
 #[tokio::test]
 async fn an_invalid_document_into_an_empty_controller_stores_nothing() {
+    // control: the unmodified document is valid
+    assert_eq!(import(&app(), doc()).await.status, 200);
     let a = app();
     for (label, d) in bad_documents() {
         assert_eq!(import(&a, d).await.status, 400, "{label}");
@@ -609,8 +674,16 @@ async fn bad_documents_do_not_burn_ids() {
     }
     // nothing was applied, so the first link gets the same id as on a fresh controller
     let fresh = app();
-    let want = fresh.create_link("x", &["net_null0"]).await.json()["id"].clone();
-    let got = a.create_link("x", &["net_null0"]).await.json()["id"].clone();
+    let want = fresh
+        .create_link("x", "net_null0", "net_null0")
+        .await
+        .json()["id"]
+        .clone();
+    let got = a.create_link("x", "net_null0", "net_null0").await.json()["id"].clone();
+    assert!(
+        want.is_u64(),
+        "control: the link must be created, got {want}"
+    );
     assert_eq!(got, want);
 }
 
@@ -618,11 +691,15 @@ async fn bad_documents_do_not_burn_ids() {
 async fn the_message_of_a_rejected_part_names_it() {
     let a = app();
     let mut d = doc();
-    d["links"][1]["configs"][0]["delayer"]["mean_ns"] = json!(-1.0);
+    d["links"][1]["config"]["delayer"]["mean_ns"] = json!(-1.0);
     assert!(import(&a, d).await.message().contains("mean_ns"));
+    // a port reused as ingress / as egress names the port
     let mut d = doc();
-    d["links"][1]["ports"] = json!([NIC1]);
+    d["links"][2]["ingress"] = json!(NIC1);
     assert!(import(&a, d).await.message().contains(NIC1));
+    let mut d = doc();
+    d["links"][2]["egress"] = json!(NIC0);
+    assert!(import(&a, d).await.message().contains(NIC0));
     let mut d = doc();
     d["format"] = json!("nope");
     assert!(import(&a, d).await.message().contains("format"));
@@ -656,7 +733,6 @@ async fn names_of_the_replaced_setup_do_not_conflict_with_the_document() {
     populate(&a).await;
     let mut d = doc();
     d["links"][0]["name"] = json!("old-a");
-    d["links"][0]["ports"] = json!([NIC0, NIC1]);
     d["presets"][0]["name"] = json!("old-p1");
     let r = import(&a, d).await;
     assert_eq!(r.status, 200, "{}", r.text());
@@ -748,4 +824,68 @@ async fn openapi_documents_export_and_import() {
         params.contains("mode"),
         "the mode query parameter is documented: {params}"
     );
+}
+
+// ---- version 1 (paired links) ------------------------------------------------------------
+
+/// A complete version 1 export, as the previous controller produced it.
+fn v1_doc() -> Value {
+    json!({
+        "format": FORMAT,
+        "version": 1,
+        "settings": settings_doc(),
+        "links": [
+            {"name": "ab", "ports": [NIC0, NIC1],
+             "configs": [cfg_json(1.0e6, 1.0e5), cfg_json(2.0e6, 0.0)], "workers": [2, 6]},
+            {"name": "loop", "ports": ["net_null0"], "configs": [cfg_json(5.0e5, 1.0e4)]}
+        ],
+        "presets": [{"name": "sat", "description": "geo", "config": cfg_json(2.5e8, 1.0e6)}]
+    })
+}
+
+#[tokio::test]
+async fn a_version_1_document_is_a_400_with_a_message_about_the_version() {
+    let a = app();
+    populate(&a).await;
+    let before = state_of(&a).await;
+    let r = import(&a, v1_doc()).await;
+    assert_eq!(r.status, 400, "{}", r.text());
+    let m = r.message().to_lowercase();
+    assert!(
+        m.contains("version"),
+        "the message must say that the version is the problem, not just an unknown field: {m}"
+    );
+    assert!(
+        m.contains('1') && m.contains('2'),
+        "names version 1 and the expected 2: {m}"
+    );
+    assert_eq!(state_of(&a).await, before, "nothing may change");
+}
+
+#[tokio::test]
+async fn a_version_1_document_with_no_links_is_refused_too() {
+    // the header alone decides: the old document had `version: 1`
+    let a = app();
+    let d = json!({"format": FORMAT, "version": 1, "settings": settings_doc(),
+                   "links": [], "presets": []});
+    let r = import(&a, d).await;
+    assert_eq!(r.status, 400, "{}", r.text());
+    assert!(
+        r.message().to_lowercase().contains("version"),
+        "{}",
+        r.text()
+    );
+}
+
+#[tokio::test]
+async fn a_version_2_document_with_a_v1_link_shape_is_a_400() {
+    assert_eq!(import(&app(), doc()).await.status, 200); // control
+    let a = app();
+    let mut d = doc();
+    d["links"][0] = json!({"name": "ab", "ports": [NIC0, NIC1],
+                           "configs": [cfg_json(1.0e6, 1.0e5), cfg_json(2.0e6, 0.0)]});
+    let r = import(&a, d).await;
+    assert_eq!(r.status, 400, "{}", r.text());
+    r.message();
+    assert_eq!(a.get("/api/links").await.json(), json!([]));
 }

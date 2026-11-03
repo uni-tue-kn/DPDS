@@ -54,7 +54,7 @@ describe('api client (real module)', () => {
   });
 
   it('createLink POSTs the JSON body with a JSON content type', async () => {
-    const input = { name: 'a-b', ports: ['0000:65:00.0'], configs: [fx.config()], workers: null };
+    const input = { name: 'a-b', ingress: '0000:65:00.0', egress: '0000:65:00.1', config: fx.config(), worker: null };
     reply(201, { id: 5, ...input });
     await expect(client.createLink(input)).resolves.toMatchObject({ id: 5 });
     const { url, init } = lastCall();
@@ -65,7 +65,7 @@ describe('api client (real module)', () => {
   });
 
   it('updateLink PUTs to /api/links/{id}', async () => {
-    const input = { name: 'x', ports: ['net_null0'], configs: [fx.config()], workers: [3] };
+    const input = { name: 'x', ingress: 'net_null0', egress: 'net_null0', config: fx.config(), worker: 3 };
     reply(200, { id: 7, ...input });
     await client.updateLink(7, input);
     const { url, init } = lastCall();

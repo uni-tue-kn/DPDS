@@ -1,4 +1,4 @@
-//! Lcore assignment (B7): one main lcore, one worker lcore per direction.
+//! Lcore assignment (B7): one main lcore, one worker lcore per link.
 
 use std::fmt;
 
@@ -8,7 +8,8 @@ use utoipa::ToSchema;
 use crate::host::{fmt_cpus, is_vdev, HostRoots};
 use crate::model::StoredState;
 
-/// One direction of a link: traffic received on `rx`, sent on `tx`, handled by `lcore`.
+/// A link as planned: traffic received on `rx` (the ingress), sent on `tx` (the
+/// egress), handled by `lcore`. `dir` is the link's index in stored order.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct DirectionPlan {
     pub dir: u32,
@@ -39,7 +40,21 @@ fn err<T>(m: String) -> Result<T, LcoreError> {
     Err(LcoreError(m))
 }
 
-/// One direction before its lcore is known.
+/// Directions numbered in link order: the link is the direction.
+fn directions(state: &StoredState) -> Vec<Pending> {
+    state
+        .links
+        .iter()
+        .map(|l| Pending {
+            link: l.name.clone(),
+            rx: l.ingress.clone(),
+            tx: l.egress.clone(),
+            pinned: l.worker,
+        })
+        .collect()
+}
+
+/// One link before its lcore is known.
 struct Pending {
     link: String,
     rx: String,
@@ -47,28 +62,9 @@ struct Pending {
     pinned: Option<u32>,
 }
 
-/// Directions numbered globally in link order: a one-port link has one (rx = tx),
-/// a two-port link has ports[0] -> ports[1] and ports[1] -> ports[0].
-fn directions(state: &StoredState) -> Vec<Pending> {
-    let mut out = Vec::new();
-    for l in &state.links {
-        let n = l.ports.len();
-        for (i, rx) in l.ports.iter().enumerate() {
-            out.push(Pending {
-                link: l.name.clone(),
-                rx: rx.clone(),
-                tx: l.ports[(i + 1) % n].clone(),
-                pinned: l.workers.as_ref().and_then(|w| w.get(i).copied()),
-            });
-        }
-    }
-    out
-}
-
-/// Plans lcores for the stored links. Per-link `workers` overrides are used
-/// literally (any order, any online core except the main lcore); the other
-/// directions get free isolated cores, the lowest id first, preferring the NUMA
-/// node of the receiving NIC.
+/// Plans lcores for the stored links. Per-link `worker` overrides are used
+/// literally (any online core except the main lcore); the other links get free
+/// isolated cores, the lowest id first, preferring the NUMA node of the ingress NIC.
 pub fn assign_lcores(roots: &HostRoots, state: &StoredState) -> Result<Assignment, LcoreError> {
     let online = roots.online_cpus();
     let isolated = roots.isolated_cpus();
@@ -82,18 +78,6 @@ pub fn assign_lcores(roots: &HostRoots, state: &StoredState) -> Result<Assignmen
         },
     };
 
-    for l in &state.links {
-        if let Some(w) = &l.workers {
-            if w.len() != l.ports.len() {
-                return err(format!(
-                    "link {}: {} worker override(s) for {} direction(s)",
-                    l.name,
-                    w.len(),
-                    l.ports.len()
-                ));
-            }
-        }
-    }
     let mut dirs = directions(state);
 
     let mut used = vec![main_lcore];
@@ -129,7 +113,7 @@ pub fn assign_lcores(roots: &HostRoots, state: &StoredState) -> Result<Assignmen
     let needed = dirs.iter().filter(|d| d.pinned.is_none()).count();
     if needed > free.len() {
         return err(format!(
-            "{needed} direction(s) need an isolated core but only {} are available (isolated cores: {}; set isolcpus, or pin cores with the worker override)",
+            "{needed} link(s) need an isolated core but only {} are available (isolated cores: {}; set isolcpus, or pin cores with the worker override)",
             free.len(),
             if isolated.is_empty() { "none".to_string() } else { fmt_cpus(&isolated) },
         ));

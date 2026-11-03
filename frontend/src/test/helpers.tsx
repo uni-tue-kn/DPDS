@@ -1,6 +1,39 @@
-// Test helpers + THE FRONTEND CONTRACT the tests assume (spec v5 part D + v6; the tester's choices where the
-// spec is silent are listed here so the implementer can follow them or ask the coordinator to change them).
+// Test helpers + THE FRONTEND CONTRACT the tests assume (spec v5 part D + v6 + v10 directed links; the tester's
+// choices where the spec is silent are listed here so the implementer can follow them or ask the coordinator to
+// change them).
 //
+// ## v10: directed links (supersedes every "two ports / two configs / Direction d" statement below)
+// A link is ONE direction: `interface Link { id: number; name: string; ingress: string; egress: string;
+//   config: ConfigDto; worker?: number | null }` and `LinkInput = Omit<Link, 'id'>` (src/api/types.ts; `ports`, `configs`
+//   and `workers` are gone). `ingress == egress` (hairpin) is a valid link. `ExportDocument.version` is the literal 2
+//   and its `links` are `LinkInput[]` in the new shape. `DirectionPlan`/`DirectionStats` keep `{dir, link, rx, tx, ...}`:
+//   dir = link index, link = link name, rx = ingress port, tx = egress port; the API calls still use `dir`.
+// - Links list: the row of a link holds ONE element whose own text is exactly "<name>: <ingress> -> <egress>" (arrow
+//   U+2192, e.g. "a-b: 0000:65:00.0 → 0000:65:00.1"; a hairpin reads "loop: net_null0 → net_null0"). The row also
+//   shows the worker ("auto" without one, else the number). No "Number of ports" / "Directions" notion remains.
+// - Link editor labels: "Name", select "Ingress", select "Egress" (same option rules as the old port pickers: text =
+//   pci + (netdev) + " - " + reason when unusable, unusable/kernel_route options disabled, a stored non-interface port
+//   such as a vdev stays selectable, no preselection, Save does nothing until both are chosen), typed inputs "Ingress
+//   (typed)" and "Egress (typed)" (same validation and override rule as before; an invalid value -> role=alert whose
+//   text mentions "ingress" resp. "egress", no request), and the optional `<input type="number">` "Worker lcore" (empty ->
+//   null/absent; a number input cannot receive non-numeric text; a value that is not a non-negative integer, e.g. "-1"
+//   or "1.5" -> role=alert mentioning "worker", no request).
+//   The editor loads `getLinks()`. In the Ingress picker every interface that another stored link (not the one being
+//   edited) uses as INGRESS is `disabled`, its option text containing "already used as ingress by" + that link's name;
+//   likewise the Egress picker and "already used as egress by". A port used as egress elsewhere stays enabled in the
+//   Ingress picker (ring A->B, B->C) and vice versa; ingress == egress is allowed. Interfaces that are unusable keep
+//   their own reason. Typed values are not checked against other links (the controller answers 409, shown as an alert).
+//   A failing `getLinks` must not break the editor (no port is then disabled).
+//   Exactly ONE config form: `<fieldset>` (role group) whose legend starts with "Link configuration", with the same
+//   field labels as before, "Apply preset" and "Save as preset" inside it; validation messages name the field label
+//   (e.g. "Buffer capacity"), no "Direction d" prefix. Save -> `createLink({name, ingress, egress, config, worker})` /
+//   `updateLink(id, ...)` (no `ports`/`configs`/`workers` keys), then /links.
+// - Dashboard: a card `data-testid="direction-card-<dir>"` per entry of `stats.directions` whose title text is
+//   "<link>: <rx> -> <tx>" (e.g. "a-b: 0000:65:00.0 → 0000:65:00.1"); the text "Direction" does not appear in the title.
+//   Everything else (stats, charts, `getDelayHistogram(dir)` by the direction index) is unchanged.
+// - Export/import: the export document has `version: 2`; the UI passes documents through untouched (also an old
+//   `version: 1` one: the controller rejects it with 400 and the UI shows that message).
+
 // Toolchain: react-router-dom 6 (v7 needs Node >= 20), react-bootstrap + bootstrap 5, chart.js via
 // react-chartjs-2 (mocked in tests: histogram = `Bar`, rate/drop charts = `Line`), plain CSS (no sass).
 // The API module `src/api/client.ts` (see its header) is mocked globally; fixtures in `fixtures.ts`.
@@ -54,7 +87,7 @@
 //   The sidebar re-polls `getOnline` at least every 5 s (serially) so "Offline" turns into "v<version>".
 // - v7 F4: rate/drop/histogram charts are wrapped in `role="img"` elements with a non-empty `aria-label` (rate label
 //   differs per direction); the emulation error box is `role="alert"`; `state-badge` sits in `aria-live="polite"` (or
-//   role=status); direction cards read "Direction d: <rx> → <tx>" (d 0-based, no link name between).
+//   role=status); (v10: cards read "<link>: <rx> → <tx>", see above).
 // - `data-testid="stale-indicator"` with text /stale/i iff the emulation state is `running` AND `stats.stale` AND
 //   `stats.age_ms != null` (v7 F1; the stopped payload `{directions:[],ports:[],stale:true}` shows nothing).
 // - Histogram per direction card: `<Bar>` (`data-testid="chart-bar"`, data.labels.length == bins.length,
@@ -96,7 +129,7 @@
 // ### API types (add to src/api/types.ts; names are the tester's choice, the JSON names are K1-K3 of spec8)
 //   interface Preset { id: number; name: string; description?: string | null; config: ConfigDto }
 //   type PresetInput = Omit<Preset, 'id'>;
-//   interface ExportDocument { format: 'dpds-controller-export'; version: 1; settings: Settings;
+//   interface ExportDocument { format: 'dpds-controller-export'; version: 2; settings: Settings;
 //     links: LinkInput[]; presets: PresetInput[] }          // no ids anywhere
 //   interface ImportSummary { links: number; presets: number }
 //   HistogramView gains (all optional so an old controller still works; the UI must tolerate their absence):
@@ -130,12 +163,12 @@
 //   the same validation as the link editor; an empty description is sent as null/absent) then navigate to /presets.
 //   Empty name or an invalid config -> role=alert, no request. API error -> role=alert with the message, stays, values kept.
 // ### Link editor additions (presetsInEditor.test.tsx)
-//   Inside each direction's fieldset: a select labelled "Apply preset" (first option = placeholder, then one option per
+//   Inside the link's config fieldset: a select labelled "Apply preset" (first option = placeholder, then one option per
 //   preset whose text is EXACTLY the preset name; none besides the placeholder when there are no presets). Choosing
-//   a preset copies ALL its fields into that direction's form only. A failing getPresets must not break the editor.
-//   Inside each direction's fieldset: a button "Save as preset" -> modal role=dialog with inputs "Preset name" and
+//   a preset copies ALL its fields into the form (not name, ingress, egress, worker). A failing getPresets must not break the editor.
+//   Inside the fieldset: a button "Save as preset" -> modal role=dialog with inputs "Preset name" and
 //   "Description" and buttons "Save preset" / "Cancel"; Save -> createPreset({name, description, config}) with the
-//   CURRENT form values of that direction (validated like Save; invalid -> alert, no request); success closes the
+//   CURRENT form values (validated like Save; invalid -> alert, no request); success closes the
 //   dialog, role=status /saved/i, and the new preset shows up in the "Apply preset" selects; API error (409...) ->
 //   role=alert INSIDE the dialog, dialog stays open. Empty name -> no request.
 // ### Settings additions (settingsSetup.test.tsx)

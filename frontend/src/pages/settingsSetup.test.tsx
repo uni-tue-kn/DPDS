@@ -95,7 +95,14 @@ describe('Settings: export setup', () => {
     await waitFor(() => expect(created).toHaveLength(1));
     const parsed = JSON.parse(await readBlob(created[0])) as ExportDocument;
     expect(parsed.format).toBe('dpds-controller-export');
-    expect(parsed.version).toBe(1);
+    expect(parsed.version).toBe(2);
+    // v10: links are directed, one config each; no `ports` / `configs` / `workers` arrays
+    expect(parsed.links.length).toBeGreaterThan(0);
+    for (const l of parsed.links) {
+      expect(Object.keys(l)).toEqual(expect.arrayContaining(['name', 'ingress', 'egress', 'config']));
+      expect(Object.keys(l)).not.toContain('ports');
+      expect(Object.keys(l)).not.toContain('configs');
+    }
   });
 
   it('shows the API error and downloads nothing when the export fails', async () => {
@@ -164,11 +171,11 @@ describe('Settings: import setup', () => {
   });
 
   it('shows the API 400 message (validation of the document)', async () => {
-    api.importSetup.mockRejectedValue(new ApiError(400, 'links[0].configs[1].delayer.std_ns must be >= 0'));
+    api.importSetup.mockRejectedValue(new ApiError(400, 'links[0].config.delayer.std_ns must be >= 0'));
     const user = await open();
     await upload(user);
     await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Confirm import' }));
-    await waitFor(() => expect(alertTexts()).toContain('links[0].configs[1].delayer.std_ns must be >= 0'));
+    await waitFor(() => expect(alertTexts()).toContain('links[0].config.delayer.std_ns must be >= 0'));
     expect(screen.queryByText(/imported/i)).not.toBeInTheDocument();
   });
 
@@ -201,6 +208,32 @@ describe('Settings: import setup', () => {
     await upload(user, doc);
     await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Confirm import' }));
     expect(api.importSetup).toHaveBeenCalledWith(doc);
+  });
+
+  it('posts a version 2 document with directed links untouched (Confirm -> importSetup(doc))', async () => {
+    const doc = fx.exportDoc();
+    expect(doc.version).toBe(2);
+    const user = await open();
+    await upload(user, doc);
+    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Confirm import' }));
+    expect(api.importSetup).toHaveBeenCalledTimes(1);
+    const posted = api.importSetup.mock.calls[0][0];
+    expect(posted.version).toBe(2);
+    expect(posted.links[0]).toMatchObject({ name: 'a-b', ingress: '0000:65:00.0', egress: '0000:65:00.1' });
+  });
+
+  it('a version 1 file is not second-guessed by the UI: the controller\'s 400 message is shown', async () => {
+    const v1 = {
+      ...fx.exportDoc(), version: 1,
+      links: [{ name: 'a-b', ports: ['0000:65:00.0', '0000:65:00.1'], configs: [fx.config(), fx.config2()], workers: null }],
+    };
+    api.importSetup.mockRejectedValue(new ApiError(400, 'export version 1 is not supported, expected version 2'));
+    const user = await open();
+    await upload(user, v1);
+    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Confirm import' }));
+    expect(api.importSetup).toHaveBeenCalledWith(v1);
+    await waitFor(() => expect(alertTexts()).toContain('export version 1 is not supported, expected version 2'));
+    expect(screen.queryByText(/imported/i)).not.toBeInTheDocument();
   });
 
   it('does not double-post when Confirm is clicked twice quickly', async () => {

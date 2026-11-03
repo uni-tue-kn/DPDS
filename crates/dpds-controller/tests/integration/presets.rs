@@ -407,7 +407,7 @@ async fn presets_need_a_json_content_type_and_obey_the_body_limit() {
 #[tokio::test]
 async fn presets_can_be_edited_while_running_without_a_pending_restart() {
     let a = app();
-    assert_eq!(a.create_link("ab", &[NIC0, NIC1]).await.status, 201);
+    assert_eq!(a.create_link("ab", NIC0, NIC1).await.status, 201);
     assert_eq!(a.post("/api/emulation/start", json!({})).await.status, 202);
     let p = create(&a, "live").await;
     let id = id_of(&p);
@@ -494,11 +494,11 @@ async fn state_json_carries_the_presets_array() {
 #[tokio::test]
 async fn an_old_state_file_without_presets_loads_as_no_presets() {
     let mut a = app();
-    // exactly what the controller wrote before v8
+    // what the controller wrote before v8, with the link in the directed (v2) shape
     let old = json!({
         "links": [{
-            "id": 3, "name": "ab", "ports": [NIC0, NIC1],
-            "configs": [cfg_json(1.0e6, 1.0e5), cfg_json(1.0e6, 1.0e5)]
+            "id": 3, "name": "ab", "ingress": NIC0, "egress": NIC1,
+            "config": cfg_json(1.0e6, 1.0e5)
         }],
         "settings": {"main_lcore": null, "mlx5_devargs": "txq_mpw_en=1",
                      "eal_extra_args": [], "poll_interval_ms": 500},
@@ -517,14 +517,14 @@ async fn an_old_state_file_without_presets_loads_as_no_presets() {
     // presets work from here on and the link id counter is intact
     let p = create(&a, "first").await;
     assert_eq!(list(&a).await, vec![p]);
-    let l = a.create_link("cd", &["net_null0"]).await.json();
+    let l = a.create_link("cd", "net_null0", "net_null1").await.json();
     assert_eq!(l["id"], 4);
 }
 
 #[tokio::test]
 async fn presets_do_not_touch_links_or_settings() {
     let a = app();
-    assert_eq!(a.create_link("ab", &[NIC0, NIC1]).await.status, 201);
+    assert_eq!(a.create_link("ab", NIC0, NIC1).await.status, 201);
     let links = a.get("/api/links").await.json();
     let settings = a.get("/api/settings").await.json();
     let p = create(&a, "x").await;

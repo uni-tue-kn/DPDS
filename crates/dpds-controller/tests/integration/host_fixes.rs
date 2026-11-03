@@ -19,13 +19,10 @@ fn an_absurd_buffer_capacity_makes_the_hugepage_need_saturate_not_wrap() {
     let host = FakeHost::bare_metal(); // 2 x 2048 x 2 MiB free
     let mut cfg = cfg_json(1.0e6, 0.0);
     cfg["buffer_capacity"] = json!(u64::MAX);
-    let mut links = vec![
-        link(1, "a", &["net_null0"], None),
-        link(2, "b", &["net_null1"], None),
+    let links = vec![
+        link_cfg(1, "a", "net_null0", "net_null0", cfg.clone()),
+        link_cfg(2, "b", "net_null1", "net_null1", cfg.clone()),
     ];
-    for l in &mut links {
-        l.configs = vec![dto_from(cfg.clone())];
-    }
     let hints = hints_json(&host, &state_with(links));
     assert_eq!(
         hint(&hints, "hugepages")["level"],
@@ -74,8 +71,8 @@ fn isolated_cores_that_are_offline_are_never_assigned() {
     let a = assign_lcores(
         &h.roots(),
         &state_with(vec![
-            link(1, "a", &["net_null0"], None),
-            link(2, "b", &["net_null1"], None),
+            link(1, "a", "net_null0", "net_null0", None),
+            link(2, "b", "net_null1", "net_null1", None),
         ]),
     )
     .unwrap();
@@ -86,9 +83,9 @@ fn isolated_cores_that_are_offline_are_never_assigned() {
     let e = assign_lcores(
         &h.roots(),
         &state_with(vec![
-            link(1, "a", &["net_null0"], None),
-            link(2, "b", &["net_null1"], None),
-            link(3, "c", &["net_null2"], None),
+            link(1, "a", "net_null0", "net_null0", None),
+            link(2, "b", "net_null1", "net_null1", None),
+            link(3, "c", "net_null2", "net_null2", None),
         ]),
     )
     .unwrap_err()
@@ -104,8 +101,8 @@ fn an_isolated_core_in_a_hole_of_the_online_list_is_skipped() {
     let a = assign_lcores(
         &h.roots(),
         &state_with(vec![
-            link(1, "a", &["net_null0"], None),
-            link(2, "b", &["net_null1"], None),
+            link(1, "a", "net_null0", "net_null0", None),
+            link(2, "b", "net_null1", "net_null1", None),
         ]),
     )
     .unwrap();
@@ -167,7 +164,7 @@ async fn handlers_that_read_sysfs_do_not_block_the_async_workers() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_concurrent_starts_launch_exactly_once() {
     let a = TestApp::new(FakeHost::bare_metal());
-    a.create_link("l", &["net_null0"]).await;
+    a.create_link("l", "net_null0", "net_null0").await;
     // the supervisor needs 300 ms to take the plan: the window in which a second
     // start could pass the state check
     a.supervisor.set_start_delay(Duration::from_millis(300));

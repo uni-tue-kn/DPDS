@@ -195,12 +195,12 @@ fn an_upper_device_without_a_route_does_not_guard_the_nic() {
 
 // ---- hints, check, start ---------------------------------------------------
 
-fn state_using(ports: &[&str]) -> dpds_controller::model::StoredState {
-    state_with(vec![link(1, "l", ports, None)])
+fn state_using(ingress: &str, egress: &str) -> dpds_controller::model::StoredState {
+    state_with(vec![link(1, "l", ingress, egress, None)])
 }
 
-fn mgmt_hints(host: &FakeHost, ports: &[&str]) -> Vec<Value> {
-    hints_json(host, &state_using(ports))
+fn mgmt_hints(host: &FakeHost, ingress: &str, egress: &str) -> Vec<Value> {
+    hints_json(host, &state_using(ingress, egress))
         .as_array()
         .unwrap()
         .iter()
@@ -212,7 +212,7 @@ fn mgmt_hints(host: &FakeHost, ports: &[&str]) -> Vec<Value> {
 #[test]
 fn a_stored_link_on_the_management_nic_gives_one_error_hint_naming_it() {
     let h = FakeHost::bare_metal();
-    let found = mgmt_hints(&h, &[MGMT, NIC1]);
+    let found = mgmt_hints(&h, MGMT, NIC1);
     assert_eq!(found.len(), 1, "{found:?}");
     assert_eq!(found[0]["level"], "error");
     let text = format!("{} {}", found[0]["title"], found[0]["detail"]);
@@ -220,11 +220,23 @@ fn a_stored_link_on_the_management_nic_gives_one_error_hint_naming_it() {
 }
 
 #[test]
+fn the_management_nic_is_guarded_as_egress_and_as_a_hairpin_too() {
+    let h = FakeHost::bare_metal();
+    for (i, e) in [(NIC1, MGMT), (MGMT, MGMT)] {
+        let found = mgmt_hints(&h, i, e);
+        assert_eq!(found.len(), 1, "{i} -> {e}: {found:?}");
+        assert_eq!(found[0]["level"], "error");
+        let text = format!("{} {}", found[0]["title"], found[0]["detail"]);
+        assert!(text.contains(MGMT), "{i} -> {e}: {text}");
+    }
+}
+
+#[test]
 fn the_hint_covers_bond_and_ipv6_routes_too() {
     let h = host();
     h.master_link("ens1f0", "bond0");
     h.routes6(&[("bond0", DEFAULT6, 0)]);
-    let found = mgmt_hints(&h, &[NIC0, NIC1]);
+    let found = mgmt_hints(&h, NIC0, NIC1);
     assert_eq!(found.len(), 1, "{found:?}");
     assert_eq!(found[0]["level"], "error");
     assert!(found[0]["detail"].as_str().unwrap().contains(NIC0));
@@ -233,10 +245,10 @@ fn the_hint_covers_bond_and_ipv6_routes_too() {
 #[test]
 fn no_error_hint_when_no_stored_link_uses_a_routed_nic() {
     let h = FakeHost::bare_metal(); // MGMT is routed, but unused
-    assert!(mgmt_hints(&h, &[NIC0, NIC1])
+    assert!(mgmt_hints(&h, NIC0, NIC1)
         .iter()
         .all(|x| x["level"] != "error"));
-    assert!(mgmt_hints(&h, &["net_null0"])
+    assert!(mgmt_hints(&h, "net_null0", "net_null0")
         .iter()
         .all(|x| x["level"] != "error"));
     let all = hints_json(&h, &Default::default());
@@ -251,7 +263,7 @@ fn no_error_hint_when_no_stored_link_uses_a_routed_nic() {
 fn check_exits_one_and_names_the_management_nic() {
     let h = FakeHost::bare_metal();
     let state = tempfile::tempdir().unwrap();
-    store::save(state.path(), &state_using(&[MGMT, NIC1])).unwrap();
+    store::save(state.path(), &state_using(MGMT, NIC1)).unwrap();
     let o = Command::new(env!("CARGO_BIN_EXE_dpds-controller"))
         .arg("check")
         .arg("--sysfs-root")
@@ -274,7 +286,7 @@ fn app() -> TestApp {
 #[tokio::test]
 async fn start_with_a_link_on_the_management_nic_is_a_409_and_spawns_nothing() {
     let a = app();
-    assert_eq!(a.create_link("m", &[MGMT, NIC1]).await.status, 201);
+    assert_eq!(a.create_link("m", MGMT, NIC1).await.status, 201);
     let r = a.post("/api/emulation/start", json!({})).await;
     assert_eq!(r.status, 409, "{}", r.text());
     assert!(r.message().contains(MGMT), "the port is named");
@@ -283,12 +295,22 @@ async fn start_with_a_link_on_the_management_nic_is_a_409_and_spawns_nothing() {
 }
 
 #[tokio::test]
+async fn start_with_a_link_whose_egress_is_the_management_nic_is_a_409() {
+    let a = app();
+    assert_eq!(a.create_link("m", NIC1, MGMT).await.status, 201);
+    let r = a.post("/api/emulation/start", json!({})).await;
+    assert_eq!(r.status, 409, "{}", r.text());
+    assert!(r.message().contains(MGMT), "the port is named");
+    assert!(a.supervisor.plans().is_empty());
+}
+
+#[tokio::test]
 async fn start_refuses_an_mlx5_port_whose_bond_carries_a_route() {
     let host = FakeHost::bare_metal();
     host.master_link("ens1f0", "bond0");
     host.routes6(&[("bond0", DEFAULT6, 0)]);
     let a = TestApp::new(host);
-    assert_eq!(a.create_link("b", &[NIC0, NIC1]).await.status, 201);
+    assert_eq!(a.create_link("b", NIC0, NIC1).await.status, 201);
     let r = a.post("/api/emulation/start", json!({})).await;
     assert_eq!(r.status, 409, "{}", r.text());
     assert!(r.message().contains(NIC0));
@@ -298,21 +320,21 @@ async fn start_refuses_an_mlx5_port_whose_bond_carries_a_route() {
 #[tokio::test]
 async fn start_still_works_on_unrouted_nics_and_vdevs() {
     let a = app();
-    a.create_link("ok", &[NIC0, NIC1]).await;
+    a.create_link("ok", NIC0, NIC1).await;
     assert_eq!(a.post("/api/emulation/start", json!({})).await.status, 202);
     let a = app();
-    a.create_link("v", &["net_null0"]).await;
+    a.create_link("v", "net_null0", "net_null0").await;
     assert_eq!(a.post("/api/emulation/start", json!({})).await.status, 202);
 }
 
 #[tokio::test]
 async fn creating_and_updating_a_link_with_a_management_port_is_allowed() {
     let a = app();
-    let r = a.create_link("m", &[MGMT, NIC1]).await;
+    let r = a.create_link("m", MGMT, NIC1).await;
     assert_eq!(r.status, 201, "{}", r.text());
     let id = r.json()["id"].as_u64().unwrap();
     let r = a
-        .put(&format!("/api/links/{id}"), link_body("m2", &[NIC1, MGMT]))
+        .put(&format!("/api/links/{id}"), link_body("m2", NIC1, MGMT))
         .await;
     assert_eq!(r.status, 200, "{}", r.text());
 }

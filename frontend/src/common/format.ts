@@ -49,7 +49,7 @@ export function formatCount(v?: number | null): string {
   return v == null ? NA : v.toLocaleString('en-US');
 }
 
-/** "Direction 0: rx → tx": the one label the dashboard and the link editor share (0-based like the API). */
-export function directionLabel(dir: number, rx?: string | null, tx?: string | null): string {
-  return `Direction ${dir}: ${rx || '?'} → ${tx || '?'}`;
+/** "name: ingress → egress": the one label the dashboard and the links list share. */
+export function linkLabel(name?: string | null, ingress?: string | null, egress?: string | null): string {
+  return `${name || '?'}: ${ingress || '?'} → ${egress || '?'}`;
 }

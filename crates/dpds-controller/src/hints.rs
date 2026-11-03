@@ -76,14 +76,15 @@ struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
-    fn directions(&self) -> usize {
-        self.state.links.iter().map(|l| l.ports.len()).sum()
-    }
-
     /// Discovered NICs used by the stored links.
     fn used_nics(&self) -> Vec<&Interface> {
         let mut used: Vec<&Interface> = Vec::new();
-        for port in self.state.links.iter().flat_map(|l| &l.ports) {
+        for port in self
+            .state
+            .links
+            .iter()
+            .flat_map(|l| [&l.ingress, &l.egress])
+        {
             if let Some(i) = find(&self.interfaces, port) {
                 if !used.iter().any(|u| u.pci == i.pci) {
                     used.push(i);
@@ -129,7 +130,7 @@ fn drain(ctx: &Ctx) -> Option<Hint> {
         .links
         .iter()
         .filter_map(|l| {
-            let configs: Vec<_> = l.configs.iter().filter_map(|c| c.to_core().ok()).collect();
+            let configs: Vec<_> = l.config.to_core().ok().into_iter().collect();
             let t = drain_timeout(&configs);
             (t > Duration::from_secs(DRAIN_WARN_S))
                 .then(|| format!("{} ({} s)", l.name, t.as_secs()))
@@ -226,7 +227,7 @@ fn isolation(ctx: &Ctx) -> Hint {
 fn isolated_cores(ctx: &Ctx) -> Hint {
     let title = "Isolated cores";
     let isolated = ctx.roots.isolated_cpus();
-    let dirs = ctx.directions();
+    let dirs = ctx.state.links.len();
     if dirs == 0 {
         return if isolated.is_empty() {
             hint(
@@ -234,7 +235,7 @@ fn isolated_cores(ctx: &Ctx) -> Hint {
                 Level::Info,
                 title,
                 "no cores are isolated and no links are stored yet".into(),
-                "Isolate one core per direction of your links.",
+                "Isolate one core per link.",
             )
         } else {
             hint(
@@ -260,7 +261,7 @@ fn isolated_cores(ctx: &Ctx) -> Hint {
                 .filter(|c| !isolated.contains(c))
                 .collect();
             if outside.is_empty() {
-                hint("isolated_cores", Level::Ok, title, format!("{dirs} direction(s) run on isolated cores"), "")
+                hint("isolated_cores", Level::Ok, title, format!("{dirs} link(s) run on isolated cores"), "")
             } else {
                 hint("isolated_cores", Level::Warn, title, format!("worker core(s) {} are not isolated", fmt_cpus(&outside)), "Pin only isolated cores as workers.")
             }
@@ -319,7 +320,7 @@ fn hugepages(ctx: &Ctx) -> Hint {
         .state
         .links
         .iter()
-        .flat_map(|l| &l.configs)
+        .map(|l| &l.config)
         .map(|c| {
             (c.buffer_capacity as u64)
                 .saturating_add(POOL_EXTRA)
@@ -406,8 +407,8 @@ fn numa(ctx: &Ctx) -> Hint {
             known = true;
             if nic != cpu {
                 remote.push(format!(
-                    "direction {} on core {} (node {cpu}) receives on {} (node {nic})",
-                    d.dir, d.lcore, d.rx
+                    "link {} on core {} (node {cpu}) receives on {} (node {nic})",
+                    d.link, d.lcore, d.rx
                 ));
             }
         }

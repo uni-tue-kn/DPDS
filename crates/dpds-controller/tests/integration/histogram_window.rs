@@ -104,16 +104,25 @@ struct Rig {
     _dirs: tempfile::TempDir,
 }
 
-/// Link `a-b`, direction 0 Deterministic(150 ns) (all expected mass in bin 1 of 0..400 / 100),
-/// direction 1 Normal.
+/// Links `a-to-b` (direction 0, Deterministic(150 ns): all expected mass in bin 1 of 0..400 / 100)
+/// and `b-to-a` (direction 1, Normal).
 fn rig() -> Rig {
     let dir = tempfile::tempdir().unwrap();
-    let mut l = link(1, "a-b", &[NIC0, NIC1], None);
-    l.configs = vec![
-        dto_from(cfg("DeterministicDistribution", 150.0, 0.0)),
-        dto_from(cfg("NormalDistribution", 150.0, 30.0)),
-    ];
-    store::save(dir.path(), &state_with(vec![l])).unwrap();
+    let l0 = link_cfg(
+        1,
+        "a-to-b",
+        NIC0,
+        NIC1,
+        cfg("DeterministicDistribution", 150.0, 0.0),
+    );
+    let l1 = link_cfg(
+        2,
+        "b-to-a",
+        NIC1,
+        NIC0,
+        cfg("NormalDistribution", 150.0, 30.0),
+    );
+    store::save(dir.path(), &state_with(vec![l0, l1])).unwrap();
     let clock = ClockTelemetry::new();
     let router = api::router(Deps {
         state_dir: dir.path().to_path_buf(),

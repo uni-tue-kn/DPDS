@@ -70,36 +70,28 @@ pub fn eal_argv(i: &EalInput) -> Vec<String> {
     argv
 }
 
-/// The `--links` file: `dpds_core::Config` JSON per direction, the explicit
-/// lcore of every direction and, if any direction has histogram settings, a
-/// `histograms` array (`{}` for directions without) and, if any direction has
-/// delay statistics off, a `delay_stats` array of booleans.
+/// The `--links` file (v2): one entry per link with its `dpds_core::Config` JSON and the
+/// explicit lcore of its direction plan; `histogram` only when the link has histogram
+/// settings and `delay_stats: false` only when delay statistics are off.
 pub fn links_file_json(links: &[Link], directions: &[DirectionPlan]) -> Result<Value, DtoError> {
     let mut out = Vec::with_capacity(links.len());
     for l in links {
-        let mut configs = Vec::with_capacity(l.configs.len());
-        for c in &l.configs {
-            let core = c.to_core()?;
-            configs.push(serde_json::to_value(core).map_err(|e| DtoError::new(e.to_string()))?);
-        }
-        let lcores: Vec<u32> = directions
-            .iter()
-            .filter(|d| d.link == l.name)
-            .map(|d| d.lcore)
-            .collect();
+        let core = l.config.to_core()?;
+        let config = serde_json::to_value(core).map_err(|e| DtoError::new(e.to_string()))?;
         let mut entry = json!({
             "name": l.name,
-            "ports": l.ports,
-            "configs": configs,
-            "lcores": lcores,
+            "ingress": l.ingress,
+            "egress": l.egress,
+            "config": config,
         });
-        if l.configs.iter().any(|c| !c.delay_stats) {
-            let on: Vec<bool> = l.configs.iter().map(|c| c.delay_stats).collect();
-            entry["delay_stats"] = json!(on);
+        if let Some(d) = directions.iter().find(|d| d.link == l.name) {
+            entry["lcore"] = json!(d.lcore);
         }
-        if l.configs.iter().any(|c| c.histogram.is_some()) {
-            let hists: Vec<Value> = l.configs.iter().map(histogram_json).collect();
-            entry["histograms"] = Value::Array(hists);
+        if !l.config.delay_stats {
+            entry["delay_stats"] = json!(false);
+        }
+        if l.config.histogram.is_some() {
+            entry["histogram"] = histogram_json(&l.config);
         }
         out.push(entry);
     }

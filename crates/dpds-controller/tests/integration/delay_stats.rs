@@ -1,8 +1,8 @@
 //! C7: the per-direction `delay_stats` switch in the controller.
 //!
 //! - `ConfigDto` gets `delay_stats: bool` (default true when absent), kept by the API
-//!   and the store, and written into the links file as `"delay_stats": [bool, ..]` per
-//!   link (one entry per direction; when every direction is on the key may be absent);
+//!   and the store, and written into the v2 links file as `"delay_stats": false` of a link
+//!   (one direction per link; when the link has it on the key may be absent or `true`);
 //! - `/dpds/ports` reports `dir<d>_delay_stats` (0/1; absent in older builds = on);
 //!   `/api/stats` gives every direction a `delay_stats` bool and, for an off direction,
 //!   no `delay_*` / `lateness_*` values (absent or null) while counters, rates and
@@ -52,13 +52,14 @@ fn delay_stats_default_to_true_and_roundtrip_when_false() {
 #[tokio::test]
 async fn the_api_keeps_delay_stats_per_direction() {
     let a = TestApp::new(FakeHost::bare_metal());
-    let mut body = link_body("ab", &[NIC0, NIC1]);
-    body["configs"][1]["delay_stats"] = json!(false);
+    let mut body = link_body("a-to-b", NIC0, NIC1);
+    body["config"]["delay_stats"] = json!(false);
     let r = a.post("/api/links", body).await;
     assert_eq!(r.status, 201, "{}", r.text());
     let v = r.json();
-    assert!(on(&v["configs"][0]), "{v}");
-    assert_eq!(v["configs"][1]["delay_stats"], false, "{v}");
+    assert_eq!(v["config"]["delay_stats"], false, "{v}");
+    let r2 = a.create_link("b-to-a", NIC1, NIC0).await;
+    assert!(on(&r2.json()["config"]), "{}", r2.text());
     let id = v["id"].as_u64().unwrap();
     assert_eq!(a.get(&format!("/api/links/{id}")).await.json(), v);
     // survives a controller restart
@@ -67,53 +68,43 @@ async fn the_api_keeps_delay_stats_per_direction() {
     assert_eq!(a.get(&format!("/api/links/{id}")).await.json(), v);
 }
 
-fn plans(link: &str) -> Vec<DirectionPlan> {
-    (0..2)
-        .map(|d| DirectionPlan {
-            dir: d,
-            link: link.into(),
-            rx: format!("net_null{d}"),
-            tx: format!("net_null{}", 1 - d),
-            lcore: 2 + d,
-        })
-        .collect()
+fn plan(dir: u32, link: &str, rx: &str, tx: &str, lcore: u32) -> DirectionPlan {
+    DirectionPlan {
+        dir,
+        link: link.into(),
+        rx: rx.into(),
+        tx: tx.into(),
+        lcore,
+    }
+}
+
+fn is_on(v: &Value) -> bool {
+    v.is_null() || *v == json!(true)
 }
 
 #[test]
-fn the_links_file_carries_the_switch_per_direction() {
-    let mut l = link(1, "ab", &["net_null0", "net_null1"], None);
+fn the_links_file_carries_the_switch_per_link() {
     let mut off = cfg_json(1.0e6, 0.0);
     off["delay_stats"] = json!(false);
-    l.configs[1] = dto_from(off);
-    let v = links_file_json(&[l], &plans("ab")).unwrap();
-    assert_eq!(v["links"][0]["delay_stats"], json!([true, false]), "{v}");
-
-    // two links, the second all on
-    let a = link(1, "ab", &["net_null0", "net_null1"], None);
-    let mut b = link(2, "c", &["net_null2"], None);
-    let mut off = cfg_json(1.0e6, 0.0);
-    off["delay_stats"] = json!(false);
-    b.configs[0] = dto_from(off);
-    let mut p = plans("ab");
-    p.push(DirectionPlan {
-        dir: 2,
-        link: "c".into(),
-        rx: "net_null2".into(),
-        tx: "net_null2".into(),
-        lcore: 4,
-    });
-    let v = links_file_json(&[a, b], &p).unwrap();
-    let first = &v["links"][0]["delay_stats"];
-    assert!(first.is_null() || *first == json!([true, true]), "{v}");
-    assert_eq!(v["links"][1]["delay_stats"], json!([false]), "{v}");
+    let a = link_cfg(1, "a-to-b", "net_null0", "net_null1", off);
+    let b = link(2, "b-to-a", "net_null1", "net_null0", None);
+    let c = link(3, "loop", "net_null2", "net_null2", None);
+    let p = vec![
+        plan(0, "a-to-b", "net_null0", "net_null1", 2),
+        plan(1, "b-to-a", "net_null1", "net_null0", 3),
+        plan(2, "loop", "net_null2", "net_null2", 4),
+    ];
+    let v = links_file_json(&[a, b, c], &p).unwrap();
+    assert_eq!(v["links"][0]["delay_stats"], json!(false), "{v}");
+    assert!(is_on(&v["links"][1]["delay_stats"]), "{v}");
+    assert!(is_on(&v["links"][2]["delay_stats"]), "{v}");
 }
 
 #[test]
 fn an_all_on_link_writes_no_false() {
-    let l = link(1, "ab", &["net_null0", "net_null1"], None);
-    let v = links_file_json(&[l], &plans("ab")).unwrap();
-    let f = &v["links"][0]["delay_stats"];
-    assert!(f.is_null() || *f == json!([true, true]), "{v}");
+    let l = link(1, "a-to-b", "net_null0", "net_null1", None);
+    let v = links_file_json(&[l], &[plan(0, "a-to-b", "net_null0", "net_null1", 2)]).unwrap();
+    assert!(is_on(&v["links"][0]["delay_stats"]), "{v}");
 }
 
 #[tokio::test]
@@ -152,7 +143,7 @@ fn port(bytes: u64) -> PortSample {
     }
 }
 
-/// Direction 0 on, direction 1 off, like a `dpds` started with `"delay_stats": [true, false]`.
+/// Link 0 (dir 0) with delay stats on, link 1 (dir 1) with `"delay_stats": false`.
 fn off_snapshot(uptime_step: u64) -> Snapshot {
     let mut s = snapshot(
         [

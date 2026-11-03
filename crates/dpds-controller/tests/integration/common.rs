@@ -24,8 +24,10 @@
 //!     pub struct HostRoots { pub sysfs: PathBuf, pub procfs: PathBuf }
 //! }
 //! pub mod model {       // stored state (B1); all: Clone + Debug + Default(where stated) + Serialize + Deserialize
-//!     pub struct Link { pub id: u32, pub name: String, pub ports: Vec<String>,
-//!                       pub configs: Vec<ConfigDto>, pub workers: Option<Vec<u32>> }
+//!     // spec v10 (directed links): ONE direction per link, ingress port -> egress port.
+//!     // The tests build `Link` through serde (see `link()` below), so only the JSON names matter.
+//!     pub struct Link { pub id: u32, pub name: String, pub ingress: String, pub egress: String,
+//!                       pub config: ConfigDto, pub worker: Option<u32> }
 //!     pub struct Settings { pub main_lcore: Option<u32>, pub mlx5_devargs: String,
 //!                           pub eal_extra_args: Vec<String>, pub poll_interval_ms: u64 }
 //!     // Default: None, "txq_mpw_en=1", [], 500
@@ -69,18 +71,18 @@
 //!     pub struct Assignment { pub main_lcore: u32, pub directions: Vec<DirectionPlan> }
 //!     pub struct LcoreError; // Display
 //!     pub fn assign_lcores(roots: &HostRoots, state: &StoredState) -> Result<Assignment, LcoreError>;
-//!     // Directions numbered globally in link order (link0 dir0, link0 dir1, link1 dir0 ...);
-//!     // two-port link: dir0 rx=ports[0] tx=ports[1], dir1 the reverse; one port: rx=tx=port.
-//!     // Amendment 2: assignments are literal, in ANY order (e.g. override [7,2] => dir0 on 7, dir1 on 2;
-//!     // NUMA-preferred picks are not re-sorted). The links file carries them explicitly.
+//!     // spec v10: one direction per link, `dir` = link index in stored order, rx = ingress, tx = egress,
+//!     // lcore = the link's `worker` override or a free isolated core, preferring the NUMA node of the
+//!     // INGRESS NIC. Assignments are literal and never re-sorted. The links file carries them explicitly.
 //! }
 //! pub mod eal {         // B3 pure functions
 //!     pub struct EalPort { pub name: String, pub driver: Option<String> } // driver = kernel driver of a PCI port
 //!     pub struct EalInput { pub main_lcore: u32, pub worker_lcores: Vec<u32>, pub ports: Vec<EalPort>,
 //!                           pub mlx5_devargs: String, pub eal_extra_args: Vec<String>, pub links_file: PathBuf }
 //!     pub fn eal_argv(i: &EalInput) -> Vec<String>;               // argv WITHOUT the binary name
-//!     // {"links":[{"name","ports","configs":[..],"lcores":[..]}]}: `lcores` of link L = the `lcore` of
-//!     // every entry of `directions` whose `link == L.name`, in direction order (same length as `configs`).
+//!     // links file v2: {"links":[{"name","ingress","egress","config":{..},"lcore":n,
+//!     //   "histogram"?:{..}, "delay_stats"?:false}]}: `lcore` of link L = the `lcore` of the entry of
+//!     //   `directions` whose `link == L.name`. `delay_stats` only when off, `histogram` only when set.
 //!     pub fn links_file_json(links: &[Link], directions: &[DirectionPlan]) -> Result<serde_json::Value, DtoError>;
 //!     pub fn drain_timeout(configs: &[dpds_core::Config]) -> Duration;
 //! }
@@ -129,8 +131,8 @@
 //! - POST /api/emulation/start and /stop: 202 with the `/api/emulation` body.
 //!   Start with no links or a failing lcore assignment: 400. Start while
 //!   starting/running/stopping, stop while stopped/failed: 409.
-//! - Validation error: 400, conflict (duplicate link name, port already used
-//!   by another link): 409, unknown id / unknown direction: 404. Malformed or
+//! - Validation error: 400, conflict (duplicate link name, port already used as ingress (or as
+//!   egress) by another link; the message names that link): 409, unknown id / unknown direction: 404. Malformed or
 //!   incomplete JSON bodies: 400 or 422. Every error body is `{"message": str}`.
 //! - Settings: `poll_interval_ms == 0` => 400; `mlx5_devargs` containing
 //!   `mprq_en` => 400 (the controller never sets MPRQ).
@@ -623,14 +625,25 @@ pub fn dto_from(v: Value) -> ConfigDto {
     serde_json::from_value(v).expect("config JSON must deserialize")
 }
 
-pub fn link(id: u32, name: &str, ports: &[&str], workers: Option<Vec<u32>>) -> Link {
-    Link {
-        id,
-        name: name.into(),
-        ports: ports.iter().map(|p| p.to_string()).collect(),
-        configs: ports.iter().map(|_| cfg_dto(1.0e6, 1.0e5)).collect(),
-        workers,
+/// A stored link built through serde (so tests do not depend on the Rust field types):
+/// `ingress` -> `egress`, the default config (Normal 1 ms / 0.1 ms) and an optional worker lcore.
+pub fn link(id: u32, name: &str, ingress: &str, egress: &str, worker: Option<u32>) -> Link {
+    let mut v = json!({
+        "id": id, "name": name, "ingress": ingress, "egress": egress,
+        "config": cfg_json(1.0e6, 1.0e5),
+    });
+    if let Some(w) = worker {
+        v["worker"] = json!(w);
     }
+    serde_json::from_value(v).expect("a v2 link must deserialize into `Link`")
+}
+
+/// Like [`link`] with an explicit config JSON and no worker override.
+pub fn link_cfg(id: u32, name: &str, ingress: &str, egress: &str, config: Value) -> Link {
+    serde_json::from_value(json!({
+        "id": id, "name": name, "ingress": ingress, "egress": egress, "config": config,
+    }))
+    .expect("a v2 link must deserialize into `Link`")
 }
 
 pub fn state_with(links: Vec<Link>) -> StoredState {
@@ -1033,9 +1046,9 @@ impl TestApp {
         self.request("DELETE", path, None).await
     }
 
-    /// POST /api/links with `{name, ports, configs}` (one default config per port).
-    pub async fn create_link(&self, name: &str, ports: &[&str]) -> Reply {
-        let body = link_body(name, ports);
+    /// POST /api/links with `{name, ingress, egress, config}` (default config).
+    pub async fn create_link(&self, name: &str, ingress: &str, egress: &str) -> Reply {
+        let body = link_body(name, ingress, egress);
         self.post("/api/links", body).await
     }
 }
@@ -1068,9 +1081,8 @@ pub async fn router_get(router: &axum::Router, path: &str) -> Reply {
     send(router, req).await
 }
 
-pub fn link_body(name: &str, ports: &[&str]) -> Value {
-    let configs: Vec<Value> = ports.iter().map(|_| cfg_json(1.0e6, 1.0e5)).collect();
-    json!({ "name": name, "ports": ports, "configs": configs })
+pub fn link_body(name: &str, ingress: &str, egress: &str) -> Value {
+    json!({ "name": name, "ingress": ingress, "egress": egress, "config": cfg_json(1.0e6, 1.0e5) })
 }
 
 // ---------------------------------------------------------------------------
@@ -1094,14 +1106,14 @@ pub struct PortSample {
     pub rx_nombuf: u64,
 }
 
-/// Two ports (0, 1), two directions of link `a-b` (dir0: port 0 -> 1).
+/// Two ports (0, 1), two links `a-to-b` (dir0: port 0 -> 1) and `b-to-a` (dir1: port 1 -> 0).
 pub fn snapshot(dirs: [DirSample; 2], ports: [PortSample; 2]) -> Snapshot {
     let ports_reply = json!({
-        "num_ports": 2, "num_links": 1, "num_directions": 2,
+        "num_ports": 2, "num_links": 2, "num_directions": 2,
         "port0_name": "0000:17:00.0", "port1_name": "0000:65:00.0",
-        "dir0_link": "a-b", "dir0_rx_name": "0000:17:00.0", "dir0_tx_name": "0000:65:00.0",
+        "dir0_link": "a-to-b", "dir0_rx_name": "0000:17:00.0", "dir0_tx_name": "0000:65:00.0",
         "dir0_rx_port": 0, "dir0_tx_port": 1, "dir0_lcore": 2,
-        "dir1_link": "a-b", "dir1_rx_name": "0000:65:00.0", "dir1_tx_name": "0000:17:00.0",
+        "dir1_link": "b-to-a", "dir1_rx_name": "0000:65:00.0", "dir1_tx_name": "0000:17:00.0",
         "dir1_rx_port": 1, "dir1_tx_port": 0, "dir1_lcore": 6,
     });
     let dir_json = |d: &DirSample| {

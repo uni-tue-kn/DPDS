@@ -673,7 +673,7 @@ mod with_feature {
                 dir(0, 1, 1, "/etc/d0.json", 1_048_575, true),
                 dir(1, 0, 2, "d1.json", 2_000, false),
             ],
-            1,
+            2,
         );
         assert_eq!(uint(&r, "num_ports"), 2);
         assert_eq!(string(&r, "port0_name"), "0000:65:00.1");
@@ -687,8 +687,9 @@ mod with_feature {
         assert_eq!(uint(&r, "port1_rx_ring_requested"), 4096);
         assert_eq!(uint(&r, "port1_tx_ring_requested"), 4095);
 
+        // a link is one direction: `num_links` equals `num_directions`
         assert_eq!(uint(&r, "num_directions"), 2);
-        assert_eq!(uint(&r, "num_links"), 1);
+        assert_eq!(uint(&r, "num_links"), 2);
         assert_eq!(string(&r, "dir0_link"), "link0");
         assert_eq!(string(&r, "dir0_rx_name"), "rx0");
         assert_eq!(string(&r, "dir0_tx_name"), "tx1");
@@ -771,15 +772,15 @@ mod with_feature {
         let r = ports_reply(
             &[port("x", 1, 1, 1, 1), port("y", 1, 1, 1, 1)],
             &[dir(0, 1, 1, "a", 1, true), dir(1, 0, 2, "b", 1, true)],
-            1,
+            2,
         );
         assert!(r.iter().all(|(k, _)| k.len() < 64));
     }
 
     #[test]
-    fn ports_reply_of_a_multi_link_setup_names_link_and_devices_per_direction() {
-        // link "a-b": ports 1 and 0 listed in that order (dir 0: port 1 -> port 0,
-        // dir 1: port 0 -> port 1); link "loop": port 2, one direction.
+    fn ports_reply_of_a_ring_names_link_and_devices_per_link() {
+        // ring A -> B, B -> C, C -> A over port ids 2, 0, 1 (ids are not in link
+        // order); every link is one direction with its own ingress/egress.
         let mk = |rx, tx, link: &str, rxn: &str, txn: &str| DirectionInfo {
             link: link.into(),
             rx_name: rxn.into(),
@@ -793,19 +794,19 @@ mod with_feature {
                 port("net_null2", 1, 1, 1, 1),
             ],
             &[
-                mk(1, 0, "a-b", "net_pcap1", "net_pcap0"),
-                mk(0, 1, "a-b", "net_pcap0", "net_pcap1"),
-                mk(2, 2, "loop", "net_null2", "net_null2"),
+                mk(2, 0, "a-to-b", "net_null2", "net_pcap0"),
+                mk(0, 1, "b-to-c", "net_pcap0", "net_pcap1"),
+                mk(1, 2, "c-to-a", "net_pcap1", "net_null2"),
             ],
-            2,
+            3,
         );
         assert_eq!(uint(&r, "num_ports"), 3);
         assert_eq!(uint(&r, "num_directions"), 3);
-        assert_eq!(uint(&r, "num_links"), 2);
+        assert_eq!(uint(&r, "num_links"), 3, "one direction per link");
         for (d, link, rxn, txn) in [
-            (0, "a-b", "net_pcap1", "net_pcap0"),
-            (1, "a-b", "net_pcap0", "net_pcap1"),
-            (2, "loop", "net_null2", "net_null2"),
+            (0, "a-to-b", "net_null2", "net_pcap0"),
+            (1, "b-to-c", "net_pcap0", "net_pcap1"),
+            (2, "c-to-a", "net_pcap1", "net_null2"),
         ] {
             assert_eq!(string(&r, &format!("dir{d}_link")), link);
             assert_eq!(string(&r, &format!("dir{d}_rx_name")), rxn);
@@ -813,11 +814,35 @@ mod with_feature {
         }
         assert_eq!(
             uint(&r, "dir0_rx_port"),
-            1,
-            "the listed order, not the port-id order"
+            2,
+            "the link's ingress, not the port-id order"
         );
-        assert_eq!(r.len(), 1 + 3 * 5 + 2 + 3 * 10);
+        assert_eq!(uint(&r, "dir0_tx_port"), 0);
+        assert_eq!(uint(&r, "dir2_tx_port"), 2);
+        assert_eq!(r.len(), 3 + 3 * 5 + 3 * 10);
         assert!(r.iter().all(|(k, _)| k.len() < 64));
+    }
+
+    #[test]
+    fn ports_reply_of_one_way_links_has_more_ports_than_links() {
+        // two links a -> b and c -> d over four ports: 3 + 5 * 4 + 10 * 2 keys
+        let r = ports_reply(
+            &[
+                port("a", 1, 1, 1, 1),
+                port("b", 1, 1, 1, 1),
+                port("c", 1, 1, 1, 1),
+                port("d", 1, 1, 1, 1),
+            ],
+            &[
+                dir(0, 1, 1, "links.json", 1, false),
+                dir(2, 3, 2, "links.json", 1, false),
+            ],
+            2,
+        );
+        assert_eq!(uint(&r, "num_ports"), 4);
+        assert_eq!(uint(&r, "num_directions"), 2);
+        assert_eq!(uint(&r, "num_links"), 2);
+        assert_eq!(r.len(), 3 + 5 * 4 + 10 * 2);
     }
 
     #[test]
@@ -841,7 +866,7 @@ mod with_feature {
         let r = ports_reply(
             &[port("a", 1, 1, 1, 1), port("b", 1, 1, 1, 1)],
             &[dir(0, 1, 1, "c.json", 1, false), off],
-            1,
+            2,
         );
         assert_eq!(uint(&r, "dir0_delay_stats"), 1);
         assert_eq!(uint(&r, "dir1_delay_stats"), 0);
@@ -851,8 +876,9 @@ mod with_feature {
     #[test]
     fn ports_reply_has_three_plus_five_per_port_plus_ten_per_direction_keys() {
         // RTE_TEL_MAX_DICT_ENTRIES is 256: this is the formula `--links`
-        // validation (tests/unit/links.rs, "dict limit") must use. With
-        // one direction per port, 16 ports fit (243 keys) and 17 do not (258).
+        // validation (tests/unit/links.rs, "dict limit") must use: 3 + 5 per
+        // distinct port + 10 per link. In a ring (one link per port) 16 ports
+        // fit (243 keys) and 17 do not (258).
         for (n_ports, fits) in [(1usize, true), (2, true), (16, true), (17, false)] {
             let ports: Vec<PortInfo> = (0..n_ports)
                 .map(|i| port(&format!("p{i}"), 1, 1, 1, 1))

@@ -25,7 +25,7 @@ export function config(over: Partial<ConfigDto> = {}): ConfigDto {
   };
 }
 
-/** Second direction: everything different from `config()`. */
+/** Second config: everything different from `config()`. */
 export function config2(): ConfigDto {
   return {
     buffer_capacity: 5000,
@@ -66,23 +66,34 @@ export function preset(over: Partial<Preset> = {}): Preset {
 export function exportDoc(over: Partial<ExportDocument> = {}): ExportDocument {
   return {
     format: 'dpds-controller-export',
-    version: 1,
+    version: 2,
     settings: settings(),
-    links: [{ name: 'a-b', ports: ['0000:65:00.0', '0000:65:00.1'], configs: [config(), config2()], workers: null }],
+    links: [
+      { name: 'a-b', ingress: '0000:65:00.0', egress: '0000:65:00.1', config: config(), worker: null },
+      { name: 'b-a', ingress: '0000:65:00.1', egress: '0000:65:00.0', config: config2(), worker: 5 },
+    ],
     presets: [{ name: 'wan', description: 'Typical WAN', config: config3() }],
     ...over,
   };
 }
 
+/** One directed link (spec v10): ingress port -> egress port with one config. */
 export function link(over: Partial<Link> = {}): Link {
   return {
-    id: 1, name: 'a-b', ports: ['0000:65:00.0', '0000:65:00.1'], configs: [config(), config2()],
-    workers: null, ...over,
+    id: 1, name: 'a-b', ingress: '0000:65:00.0', egress: '0000:65:00.1', config: config(), worker: null, ...over,
   };
 }
 
+/** The reverse direction of `link()` as its own link, with the "everything different" config. */
+export function linkRev(over: Partial<Link> = {}): Link {
+  return {
+    id: 3, name: 'b-a', ingress: '0000:65:00.1', egress: '0000:65:00.0', config: config2(), worker: null, ...over,
+  };
+}
+
+/** Hairpin: ingress == egress. */
 export function loopLink(over: Partial<Link> = {}): Link {
-  return { id: 2, name: 'loop', ports: ['net_null0'], configs: [config()], workers: null, ...over };
+  return { id: 2, name: 'loop', ingress: 'net_null0', egress: 'net_null0', config: config(), worker: null, ...over };
 }
 
 export function iface(over: Partial<Interface> = {}): Interface {
@@ -131,7 +142,7 @@ export function settings(over: Partial<Settings> = {}): Settings {
 export function plan(): DirectionPlan[] {
   return [
     { dir: 0, link: 'a-b', rx: '0000:65:00.0', tx: '0000:65:00.1', lcore: 3 },
-    { dir: 1, link: 'a-b', rx: '0000:65:00.1', tx: '0000:65:00.0', lcore: 4 },
+    { dir: 1, link: 'b-a', rx: '0000:65:00.1', tx: '0000:65:00.0', lcore: 4 },
   ];
 }
 
@@ -151,7 +162,7 @@ export function counters(over: Partial<Counters> = {}): Counters {
 
 export function dirStats(dir: number, over: Partial<DirectionStats> = {}): DirectionStats {
   return {
-    dir, link: 'a-b', rx: dir === 0 ? '0000:65:00.0' : '0000:65:00.1', tx: dir === 0 ? '0000:65:00.1' : '0000:65:00.0',
+    dir, link: dir === 0 ? 'a-b' : 'b-a', rx: dir === 0 ? '0000:65:00.0' : '0000:65:00.1', tx: dir === 0 ? '0000:65:00.1' : '0000:65:00.0',
     rx_pps: 1234567, tx_pps: 1200000, rx_bps: 9.5e9, tx_bps: 8.25e9,
     loss_pct: 0.5, limiter_pct: 1.25, buffer_full_pct: 2.5, nic_tx_pct: 0.1, nic_rx_pct: 0.75,
     delay_stats: true,

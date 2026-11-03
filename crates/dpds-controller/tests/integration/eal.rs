@@ -164,25 +164,18 @@ fn links_file_path_is_the_last_argument() {
     );
 }
 
-#[test]
-fn links_file_json_has_the_dpds_format() {
-    let mut ge = link(2, "loop", &["net_null0"], None);
-    ge.configs[0] = dto_from({
-        let mut v = cfg_json(2.0e6, 0.0);
-        v["delayer"]["distribution"] = json!("DeterministicDistribution");
-        v["loss_model"] = json!({"type":"GilbertElliot","p":0.01,"r":0.3,"k":1.0,"h":0.5});
-        v["seed"] = json!(9);
-        v
-    });
-    let links = vec![link(1, "a-b", &[NIC0, NIC1], Some(vec![2, 6])), ge];
-    let dirs = vec![
-        plan_dir(0, "a-b", NIC0, NIC1, 7),
-        plan_dir(1, "a-b", NIC1, NIC0, 2),
-        plan_dir(2, "loop", "net_null0", "net_null0", 3),
-    ];
-    let v = links_file_json(&links, &dirs).unwrap();
+/// The dpds_core::Config behind `cfg_json(2.0e6, 0.0)` with the Deterministic delay,
+/// Gilbert-Elliot loss and seed 9 that `special_cfg()` produces.
+fn special_cfg() -> serde_json::Value {
+    let mut v = cfg_json(2.0e6, 0.0);
+    v["delayer"]["distribution"] = json!("DeterministicDistribution");
+    v["loss_model"] = json!({"type":"GilbertElliot","p":0.01,"r":0.3,"k":1.0,"h":0.5});
+    v["seed"] = json!(9);
+    v
+}
 
-    let expected_cfg = Config {
+fn special_core() -> Config {
+    Config {
         buffer_capacity: 100000,
         reordering: false,
         delayer: DelayerConfig {
@@ -200,30 +193,124 @@ fn links_file_json_has_the_dpds_format() {
         },
         loss_model: LossModel::GilbertElliot(0.01, 0.3, 1.0, 0.5, true),
         seed: Some(9),
-    };
-    assert_eq!(v["links"].as_array().unwrap().len(), 2);
-    assert_eq!(v["links"][0]["name"], "a-b");
-    assert_eq!(v["links"][0]["ports"], json!([NIC0, NIC1]));
-    assert_eq!(v["links"][0]["configs"].as_array().unwrap().len(), 2);
-    assert_eq!(v["links"][1]["name"], "loop");
-    assert_eq!(v["links"][1]["ports"], json!(["net_null0"]));
-    // configs are exactly dpds_core::Config's own JSON (what dpds parses)
+    }
+}
+
+#[test]
+fn links_file_json_is_v2_one_entry_per_directed_link() {
+    let links = vec![
+        link(1, "a-to-b", NIC0, NIC1, Some(2)),
+        link(2, "b-to-a", NIC1, NIC0, None),
+        link_cfg(3, "loop", "net_null0", "net_null0", special_cfg()),
+    ];
+    let dirs = vec![
+        plan_dir(0, "a-to-b", NIC0, NIC1, 7),
+        plan_dir(1, "b-to-a", NIC1, NIC0, 2),
+        plan_dir(2, "loop", "net_null0", "net_null0", 3),
+    ];
+    let mut v = links_file_json(&links, &dirs).unwrap();
+    // `delay_stats` is optional and defaults to true: an explicit `true` is the same file
+    for l in v["links"].as_array_mut().unwrap() {
+        if l["delay_stats"] == json!(true) {
+            l.as_object_mut().unwrap().remove("delay_stats");
+        }
+    }
+
+    assert_eq!(v["links"].as_array().unwrap().len(), 3);
+    let default_cfg = serde_json::to_value(cfg_dto(1.0e6, 1.0e5).to_core().unwrap()).unwrap();
+    // exact JSON: the file dpds parses (config = dpds_core::Config's own JSON, the lcore of the
+    // direction plan literally, no controller-only keys)
     assert_eq!(
-        v["links"][1]["configs"][0],
-        serde_json::to_value(expected_cfg).unwrap()
+        v,
+        json!({ "links": [
+            { "name": "a-to-b", "ingress": NIC0, "egress": NIC1,
+              "config": default_cfg.clone(), "lcore": 7 },
+            { "name": "b-to-a", "ingress": NIC1, "egress": NIC0,
+              "config": default_cfg.clone(), "lcore": 2 },
+            { "name": "loop", "ingress": "net_null0", "egress": "net_null0",
+              "config": serde_json::to_value(special_core()).unwrap(), "lcore": 3 },
+        ]})
     );
-    // explicit per-direction lcores, literally as assigned (here descending: [7, 2])
-    assert_eq!(v["links"][0]["lcores"], json!([7, 2]));
-    assert_eq!(v["links"][1]["lcores"], json!([3]));
-    // `workers` is controller-only and must not leak into the dpds file
-    assert!(v["links"][0].get("workers").is_none());
-    assert!(v["links"][0].get("id").is_none());
+}
+
+#[test]
+fn links_file_json_has_none_of_the_v1_keys() {
+    let l = vec![link(1, "a-to-b", NIC0, NIC1, Some(2))];
+    let d = [plan_dir(0, "a-to-b", NIC0, NIC1, 2)];
+    let v = links_file_json(&l, &d).unwrap();
+    for k in [
+        "ports",
+        "configs",
+        "lcores",
+        "histograms",
+        "workers",
+        "worker",
+        "id",
+    ] {
+        assert!(
+            v["links"][0].get(k).is_none(),
+            "`{k}` must not be in a v2 link: {v}"
+        );
+    }
+}
+
+#[test]
+fn lcores_are_taken_by_link_name_from_the_direction_plan_in_any_order() {
+    // links in one order, plans in another: the lcore is looked up by link name
+    let links = vec![
+        link(1, "first", NIC0, NIC1, None),
+        link(2, "second", NIC1, NIC0, None),
+    ];
+    let dirs = vec![
+        plan_dir(1, "second", NIC1, NIC0, 2),
+        plan_dir(0, "first", NIC0, NIC1, 7),
+    ];
+    let v = links_file_json(&links, &dirs).unwrap();
+    assert_eq!(v["links"][0]["name"], "first");
+    assert_eq!(v["links"][0]["lcore"], 7);
+    assert_eq!(v["links"][1]["name"], "second");
+    assert_eq!(v["links"][1]["lcore"], 2);
+}
+
+#[test]
+fn links_file_json_histogram_and_delay_stats_only_when_set() {
+    let mut off = cfg_json(1.0e6, 1.0e5);
+    off["delay_stats"] = json!(false);
+    off["histogram"] = json!({"bins": 64, "lo_ns": 0.0, "hi_ns": 2.0e6});
+    let mut bins_only = cfg_json(1.0e6, 1.0e5);
+    bins_only["histogram"] = json!({"bins": 100});
+    let links = vec![
+        link(1, "plain", NIC0, NIC1, None),
+        link_cfg(2, "off", NIC1, NIC0, off),
+        link_cfg(3, "bins", INTEL, INTEL, bins_only),
+    ];
+    let dirs = vec![
+        plan_dir(0, "plain", NIC0, NIC1, 2),
+        plan_dir(1, "off", NIC1, NIC0, 3),
+        plan_dir(2, "bins", INTEL, INTEL, 6),
+    ];
+    let v = links_file_json(&links, &dirs).unwrap();
+    let l = &v["links"];
+    assert!(l[0].get("histogram").is_none(), "{v}");
+    assert!(
+        l[0].get("delay_stats").is_none() || l[0]["delay_stats"] == json!(true),
+        "{v}"
+    );
+    assert_eq!(l[1]["delay_stats"], json!(false));
+    assert_eq!(l[1]["histogram"]["bins"], 64);
+    assert_close(f(&l[1]["histogram"], "lo_ns"), 0.0);
+    assert_close(f(&l[1]["histogram"], "hi_ns"), 2.0e6);
+    assert_eq!(l[2]["histogram"]["bins"], 100);
+    assert!(
+        l[2]["histogram"].get("lo_ns").is_none_or(|x| x.is_null()),
+        "{v}"
+    );
+    assert!(l[2].get("delay_stats").is_none() || l[2]["delay_stats"] == json!(true));
 }
 
 #[test]
 fn links_file_json_fails_for_an_invalid_config() {
-    let mut l = link(1, "bad", &["net_null0"], None);
-    l.configs[0] = cfg_dto(1.0e6, -1.0);
+    let l = link_cfg(1, "bad", "net_null0", "net_null0", cfg_json(1.0e6, -1.0));
     let d = [plan_dir(0, "bad", "net_null0", "net_null0", 1)];
     assert!(links_file_json(&[l], &d).is_err());
 }

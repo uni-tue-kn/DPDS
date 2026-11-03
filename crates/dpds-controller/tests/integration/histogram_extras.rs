@@ -20,8 +20,8 @@
 //!   in the underflow. `expected_model` is `"exact"` or, with `activate_correlation`,
 //!   `"normal_approximation"` (Normal(mean, std)). With an active limiter
 //!   `expected_note == "excludes limiter queueing delay"`, otherwise it is absent or null.
-//! - Direction `d` uses the config of the global direction `d`: link `a-b` (the link the fake
-//!   telemetry names) config 0 is direction 0, config 1 is direction 1.
+//! - Direction `d` uses the config of the link with index `d`: link `a-to-b` (stored first) is
+//!   direction 0, link `b-to-a` (stored second) is direction 1, the two links the fake telemetry names.
 //!
 //! Every expected number below was computed with Python's `math` (erf for Normal and
 //! LogNormal, the closed-form Erlang CDF for Gamma with integer shape, the linear CDF for
@@ -35,9 +35,9 @@ pub const TOTAL: u64 = 10_000;
 
 pub fn app_with(c0: Value, c1: Value) -> TestApp {
     let mut a = TestApp::new(FakeHost::bare_metal());
-    let mut l = link(1, "a-b", &[NIC0, NIC1], None);
-    l.configs = vec![dto_from(c0), dto_from(c1)];
-    dpds_controller::store::save(a.state_dir.path(), &state_with(vec![l])).unwrap();
+    let l0 = link_cfg(1, "a-to-b", NIC0, NIC1, c0);
+    let l1 = link_cfg(2, "b-to-a", NIC1, NIC0, c1);
+    dpds_controller::store::save(a.state_dir.path(), &state_with(vec![l0, l1])).unwrap();
     a.restart();
     a
 }
@@ -85,7 +85,7 @@ fn zero_port() -> PortSample {
     }
 }
 
-/// Telemetry of the two directions of link `a-b` with the given histograms.
+/// Telemetry of the two links `a-to-b` and `b-to-a` with the given histograms.
 pub fn snap(h0: Value, h1: Value) -> Snapshot {
     let mut s = snapshot([zero_dir(), zero_dir()], [zero_port(), zero_port()]);
     s.hists = vec![h0, h1];

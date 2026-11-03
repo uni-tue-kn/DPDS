@@ -161,12 +161,12 @@ fn mutating(link_id: u64) -> Vec<(&'static str, String, Value)> {
         (
             "POST",
             "/api/links".into(),
-            link_body("new", &["net_null5"]),
+            link_body("new", "net_null5", "net_null5"),
         ),
         (
             "PUT",
             format!("/api/links/{link_id}"),
-            link_body("renamed", &["net_null0"]),
+            link_body("renamed", "net_null0", "net_null0"),
         ),
         ("PUT", "/api/settings".into(), valid_settings()),
         ("POST", "/api/emulation/start".into(), json!({})),
@@ -177,7 +177,7 @@ fn mutating(link_id: u64) -> Vec<(&'static str, String, Value)> {
 #[tokio::test]
 async fn a_non_json_content_type_is_a_415_with_a_message_on_every_mutating_endpoint() {
     let a = app();
-    let id = a.create_link("l", &["net_null0"]).await.json()["id"]
+    let id = a.create_link("l", "net_null0", "net_null0").await.json()["id"]
         .as_u64()
         .unwrap();
     let before_links = a.get("/api/links").await.json();
@@ -244,7 +244,9 @@ async fn json_content_types_with_parameters_and_suffixes_are_accepted() {
                 "POST",
                 "/api/links",
                 Some(ct),
-                link_body("x", &["net_null0"]).to_string().into_bytes(),
+                link_body("x", "net_null0", "net_null0")
+                    .to_string()
+                    .into_bytes(),
             )
             .await;
         assert_eq!(r.status, 201, "{ct}: {}", r.text());
@@ -279,7 +281,10 @@ async fn an_oversized_body_is_a_413_with_a_json_message() {
         r.message();
     }
     // the service still works afterwards
-    assert_eq!(a.create_link("fine", &["net_null0"]).await.status, 201);
+    assert_eq!(
+        a.create_link("fine", "net_null0", "net_null0").await.status,
+        201
+    );
 }
 
 // ---- OpenAPI ---------------------------------------------------------------

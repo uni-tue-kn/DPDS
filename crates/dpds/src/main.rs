@@ -1,12 +1,13 @@
 //! DPDS: DPDK-based network-link emulator. See the README for usage.
 //!
-//! One worker lcore per direction (each with its own config, buffer and
-//! mempool; a direction is the traffic received on one port): the EAL main
-//! lcore handles signals and polls the NIC hardware counters; every worker
-//! lcore runs RX -> DPDS -> TX (`dpds::forward::run`). The directions come from
-//! the `--links` file (links of one or two ports, ports named by their DPDK
-//! device name) or, with `--config*`, from the one or two probed ports (one
-//! link named `default`, direction `d` = traffic received on port `d`).
+//! One worker lcore per link (each with its own config, buffer and mempool; a
+//! link is one direction: the traffic received on its ingress port leaves on
+//! its egress port): the EAL main lcore handles signals and polls the NIC
+//! hardware counters; every worker lcore runs RX -> DPDS -> TX
+//! (`dpds::forward::run`). The links come from the `--links` file (ports named
+//! by their DPDK device name) or, with `--config*`, from the one or two probed
+//! ports: one port is a hairpin link `dir0`, two ports are the links `dir0`
+//! (port 0 -> port 1) and `dir1` (port 1 -> port 0).
 
 use std::error::Error;
 use std::process::ExitCode;
@@ -22,7 +23,7 @@ use dpds::consts::{HW_STATS_POLL_INTERVAL_MS, MBUF_CACHE_SIZE, MTU, NIC_DESCRIPT
 use dpds::delay_stats::HistRange;
 use dpds::forward;
 use dpds::io::{NicRx, NicTx, PktmbufFree, RawFree};
-use dpds::links::{load_links, num_directions, resolve_directions, LinkSpec};
+use dpds::links::{load_links, resolve_directions, LinkSpec};
 use dpds::quit::QUIT;
 use dpds::setup::{required_mbufs, validate_lcore_count, validate_port_count};
 use dpds::stats::{
@@ -32,9 +33,6 @@ use dpds::stats::{
 use dpds::worker::Worker;
 use dpds_core::buffer::Buffer;
 use dpds_core::Config;
-
-/// Name of the single link of the `--config*` mode.
-const DEFAULT_LINK: &str = "default";
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -93,7 +91,7 @@ struct Direction {
     raw_free: bool,
 }
 
-/// One mempool of `num_mbufs` per direction on the socket of its RX port (the
+/// One mempool of `num_mbufs` per link on the socket of its ingress port (the
 /// socket of the calling lcore if the port reports none). Leaked: the ports'
 /// queue handles and the workers need `'static` access.
 fn create_pool(
@@ -179,32 +177,33 @@ fn poll_nics(
 
 // ── Main flow ────────────────────────────────────────────────────────────────
 
-/// The links of the run, where each direction's config comes from, and (with
-/// `--config*`) a label per direction for error messages.
+/// The links of the run and where each link's config comes from.
 struct Layout {
     links: Vec<LinkSpec>,
-    /// Per direction: the config file, or the links file.
+    /// Per link: the config file, or the links file.
     sources: Vec<String>,
 }
 
-/// The `--config*` mode: one link named `default` over the probed ports, direction
-/// `d` = traffic received on port `d`, with its own config file.
-fn default_link(cli: &dpds::cli::Cli, probed: &[(String, u16)]) -> Result<Layout> {
+/// The `--config*` mode: one port is the link `dir0` from the port to itself,
+/// two ports are `dir0` (port 0 -> port 1) and `dir1` (port 1 -> port 0), each
+/// with its own config file.
+fn shorthand_links(cli: &dpds::cli::Cli, probed: &[(String, u16)]) -> Result<Layout> {
     validate_port_count(probed.len())?;
     let paths = cli.direction_configs(probed.len())?;
-    let configs = paths
-        .iter()
-        .map(|path| Config::from_file(path).map_err(Box::<dyn Error>::from))
-        .collect::<Result<Vec<_>>>()?;
+    let mut links = Vec::new();
+    for (d, path) in paths.iter().enumerate() {
+        links.push(LinkSpec {
+            name: format!("dir{d}"),
+            ingress: probed[d].0.clone(),
+            egress: probed[(d + 1) % probed.len()].0.clone(),
+            config: Config::from_file(path).map_err(Box::<dyn Error>::from)?,
+            lcore: None,
+            histogram: Default::default(),
+            delay_stats: true,
+        });
+    }
     Ok(Layout {
-        links: vec![LinkSpec {
-            name: DEFAULT_LINK.into(),
-            ports: probed.iter().map(|(name, _)| name.clone()).collect(),
-            histograms: vec![Default::default(); configs.len()],
-            delay_stats: vec![true; configs.len()],
-            configs,
-            lcores: None,
-        }],
+        links,
         sources: paths.iter().map(|p| p.display().to_string()).collect(),
     })
 }
@@ -233,13 +232,12 @@ fn run() -> Result<()> {
         .collect::<std::result::Result<_, dpdk::DpdkError>>()?;
     let layout = match links_file {
         Some((path, links)) => {
-            let sources = vec![path.display().to_string(); num_directions(&links)];
+            let sources = vec![path.display().to_string(); links.len()];
             Layout { links, sources }
         }
-        None => default_link(&cli, &probed)?,
+        None => shorthand_links(&cli, &probed)?,
     };
-    let num_dirs = num_directions(&layout.links);
-    validate_lcore_count(lcore_count(), num_dirs)?;
+    validate_lcore_count(lcore_count(), layout.links.len())?;
     let workers: Vec<u32> = foreach_worker().collect();
     let dirs = resolve_directions(&layout.links, &probed, main_lcore(), &workers)?;
 
@@ -248,7 +246,7 @@ fn run() -> Result<()> {
     let mut ranges = Vec::new();
     for (d, dir) in dirs.iter().enumerate() {
         let label = if cli.links.is_some() {
-            format!("link '{}', direction {d}", layout.links[dir.link].name)
+            format!("link '{}'", layout.links[dir.link].name)
         } else {
             layout.sources[d].clone()
         };
@@ -273,29 +271,35 @@ fn run() -> Result<()> {
         })
         .collect::<std::result::Result<_, _>>()?;
 
-    // One pool per direction, then every port with the pool of the direction
-    // that receives on it (every port receives for exactly one direction).
+    // One pool per link, then every port with the pool of the link that
+    // receives on it. A port that is only an egress is never polled, but its
+    // RX ring is still filled: it takes the pool of the link that transmits on
+    // it, and that pool grows by the ring.
+    let mut pool_of_port = vec![None; port_ids.len()];
+    for (d, dir) in dirs.iter().enumerate() {
+        pool_of_port[dir.rx_port as usize] = Some(d);
+    }
     let mut pools = Vec::new();
     let mut pool_sizes = Vec::new();
     for (d, (dir, buffer)) in dirs.iter().zip(&buffers).enumerate() {
-        let size = required_mbufs(
+        let mut size = required_mbufs(
             buffer.capacity(),
             applied[dir.rx_port as usize].0,
             applied[dir.tx_port as usize].1,
         );
+        if pool_of_port[dir.tx_port as usize].is_none() {
+            pool_of_port[dir.tx_port as usize] = Some(d);
+            size += applied[dir.tx_port as usize].0 as u64;
+        }
         pools.push(create_pool(d, dir.rx_port, size)?);
         pool_sizes.push(size as u32);
-    }
-    let mut pool_of_port = vec![0usize; port_ids.len()];
-    for (d, dir) in dirs.iter().enumerate() {
-        pool_of_port[dir.rx_port as usize] = d;
     }
     // On an early return the already started ports are dropped, which stops them.
     let mut ports = Vec::new();
     for &id in &port_ids {
         let port = Port::init(
             id,
-            pools[pool_of_port[id as usize]].0,
+            pools[pool_of_port[id as usize].ok_or("a probed port belongs to no link")?].0,
             NIC_DESCRIPTORS,
             NIC_DESCRIPTORS,
             1,

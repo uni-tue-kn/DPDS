@@ -32,7 +32,7 @@ use crate::eal::{drain_timeout, eal_argv, links_file_json, EalInput, EalPort};
 use crate::hints::{compute_hints, Hint, Level};
 use crate::host::HostRoots;
 use crate::lcores::{assign_lcores, DirectionPlan};
-use crate::model::{Link, Preset, Settings, StoredState};
+use crate::model::{Link, Preset, Settings, StoredState, MAX_NAME_CHARS};
 use crate::stats::{
     compute_stats, delay_histogram, delay_stats_on, uptime_ms, Clamped, Counters, DirectionStats,
     ExpectedModel, HistogramView, Percentiles, PortStats, StatsView,
@@ -227,11 +227,14 @@ pub struct EmulationView {
 #[derive(Deserialize, ToSchema)]
 pub struct LinkInput {
     name: String,
-    /// One port (loopback) or two ports.
-    ports: Vec<String>,
-    /// One config per port, i.e. per direction.
-    configs: Vec<ConfigDto>,
-    workers: Option<Vec<u32>>,
+    /// DPDK device name packets are received on (PCI address or vdev).
+    ingress: String,
+    /// DPDK device name packets leave on; may equal `ingress` (hairpin). A port is
+    /// the ingress of at most one link and the egress of at most one link.
+    egress: String,
+    config: ConfigDto,
+    /// Worker lcore; automatic when absent.
+    worker: Option<u32>,
 }
 
 /// Body of `POST /api/presets` and `PUT /api/presets/{id}`.
@@ -258,10 +261,11 @@ pub struct ExportSettings {
 #[serde(deny_unknown_fields)]
 pub struct ExportLink {
     name: String,
-    ports: Vec<String>,
-    configs: Vec<ConfigDto>,
+    ingress: String,
+    egress: String,
+    config: ConfigDto,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    workers: Option<Vec<u32>>,
+    worker: Option<u32>,
 }
 
 /// A preset of an export document: [`PresetInput`], unknown keys refused.
@@ -281,7 +285,7 @@ pub struct ExportPreset {
 pub struct ExportDoc {
     /// Always `dpds-controller-export`.
     format: String,
-    /// Always 1.
+    /// Always 2 (version 1 had two-port links).
     version: u32,
     settings: ExportSettings,
     links: Vec<ExportLink>,
@@ -296,66 +300,64 @@ pub struct ImportSummary {
 }
 
 const EXPORT_FORMAT: &str = "dpds-controller-export";
+const EXPORT_VERSION: u32 = 2;
 const MAX_PRESET_NAME_CHARS: usize = 64;
 
 // ---- helpers -----------------------------------------------------------------
 
 fn valid_name(n: &str) -> bool {
     !n.is_empty()
-        && n.len() <= 32
+        && n.len() <= MAX_NAME_CHARS
         && n.bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
 }
 
-/// Validates a link and returns its ports, normalised (PCI addresses in lower case).
-fn validate_link(input: &LinkInput, others: &[&Link]) -> Result<Vec<String>, ApiError> {
+/// Validates a link and returns its ingress and egress, normalised (PCI addresses
+/// in lower case).
+fn validate_link(input: &LinkInput, others: &[&Link]) -> Result<(String, String), ApiError> {
     if !valid_name(&input.name) {
-        return Err(ApiError::bad(
-            "link name must be 1 to 32 characters of A-Z a-z 0-9 _ . -",
-        ));
-    }
-    let n = input.ports.len();
-    if !(1..=2).contains(&n) {
-        return Err(ApiError::bad("a link has one port (loopback) or two ports"));
-    }
-    let ports = input
-        .ports
-        .iter()
-        .map(|p| validate::port_name(p).map_err(ApiError::bad))
-        .collect::<Result<Vec<_>, _>>()?;
-    if n == 2 && ports[0] == ports[1] {
-        return Err(ApiError::bad("the two ports of a link must differ"));
-    }
-    if input.configs.len() != n {
         return Err(ApiError::bad(format!(
-            "{} config(s) for {n} port(s): one config per direction is required",
-            input.configs.len()
+            "link name must be 1 to {MAX_NAME_CHARS} characters of A-Z a-z 0-9 _ . -"
         )));
     }
-    if input.workers.as_ref().is_some_and(|w| w.len() != n) {
-        return Err(ApiError::bad(format!(
-            "workers must list one lcore per direction ({n})"
+    let ingress = validate::port_name(&input.ingress).map_err(ApiError::bad)?;
+    let egress = validate::port_name(&input.egress).map_err(ApiError::bad)?;
+    input
+        .config
+        .to_core()
+        .map_err(|e| ApiError::bad(format!("config: {e}")))?;
+    if let Some(o) = others.iter().find(|o| o.name == input.name) {
+        return Err(ApiError::conflict(format!(
+            "a link named {} already exists",
+            o.name
         )));
     }
-    for (i, c) in input.configs.iter().enumerate() {
-        c.to_core()
-            .map_err(|e| ApiError::bad(format!("configs[{i}]: {e}")))?;
-    }
+    check_ports_free(&input.name, &ingress, &egress, others)?;
+    Ok((ingress, egress))
+}
+
+/// A port is the ingress of at most one link and the egress of at most one link.
+fn check_ports_free(
+    name: &str,
+    ingress: &str,
+    egress: &str,
+    others: &[&Link],
+) -> Result<(), ApiError> {
     for o in others {
-        if o.name == input.name {
+        if o.ingress == ingress {
             return Err(ApiError::conflict(format!(
-                "a link named {} already exists",
-                input.name
+                "port {ingress} is already the ingress of link {} (link {name})",
+                o.name
             )));
         }
-        if let Some(p) = ports.iter().find(|p| o.ports.contains(p)) {
+        if o.egress == egress {
             return Err(ApiError::conflict(format!(
-                "port {p} is already used by link {}",
+                "port {egress} is already the egress of link {} (link {name})",
                 o.name
             )));
         }
     }
-    Ok(ports)
+    Ok(())
 }
 
 fn parse_id(kind: &str, s: &str) -> Result<u32, ApiError> {
@@ -492,12 +494,7 @@ impl App {
                 return launched.get(d).cloned();
             }
         }
-        self.stored()
-            .links
-            .iter()
-            .flat_map(|l| &l.configs)
-            .nth(d)
-            .cloned()
+        self.stored().links.get(d).map(|l| l.config.clone())
     }
 
     fn launch_plan(&self) -> Result<(LaunchPlan, u32, Vec<ConfigDto>), ApiError> {
@@ -507,18 +504,29 @@ impl App {
         }
         // the state file may have been edited by hand or written by an older
         // version: what reaches dpds' command line passes the same rules as an edit
-        for port in stored.links.iter().flat_map(|l| &l.ports) {
-            validate::port_name(port).map_err(ApiError::bad)?;
+        for (i, l) in stored.links.iter().enumerate() {
+            validate::port_name(&l.ingress).map_err(ApiError::bad)?;
+            validate::port_name(&l.egress).map_err(ApiError::bad)?;
+            let before: Vec<&Link> = stored.links[..i].iter().collect();
+            check_ports_free(&l.name, &l.ingress, &l.egress, &before)?;
         }
         validate::mlx5_devargs(&stored.settings.mlx5_devargs).map_err(ApiError::bad)?;
         validate::eal_extra_args(&stored.settings.eal_extra_args).map_err(ApiError::bad)?;
         let interfaces = discover(&self.deps.roots);
-        for port in stored.links.iter().flat_map(|l| &l.ports) {
-            if let Some(i) = find(&interfaces, port).filter(|i| i.kernel_route) {
+        let mut ports: Vec<EalPort> = Vec::new();
+        for port in stored.links.iter().flat_map(|l| [&l.ingress, &l.egress]) {
+            let found = find(&interfaces, port);
+            if let Some(i) = found.filter(|i| i.kernel_route) {
                 return Err(ApiError::conflict(format!(
                     "port {port} cannot be used: {}",
                     i.reason.as_deref().unwrap_or("it carries a kernel route")
                 )));
+            }
+            if !ports.iter().any(|p| p.name == *port) {
+                ports.push(EalPort {
+                    name: port.clone(),
+                    driver: found.and_then(|i| i.driver.clone()),
+                });
             }
         }
         let assignment = assign_lcores(&self.deps.roots, &stored)
@@ -528,18 +536,8 @@ impl App {
         let configs = stored
             .links
             .iter()
-            .flat_map(|l| &l.configs)
-            .map(|c| c.to_core().map_err(|e| ApiError::bad(e.to_string())))
+            .map(|l| l.config.to_core().map_err(|e| ApiError::bad(e.to_string())))
             .collect::<Result<Vec<_>, _>>()?;
-        let ports: Vec<EalPort> = stored
-            .links
-            .iter()
-            .flat_map(|l| &l.ports)
-            .map(|name| EalPort {
-                name: name.clone(),
-                driver: find(&interfaces, name).and_then(|i| i.driver.clone()),
-            })
-            .collect();
         let mut workers: Vec<u32> = assignment.directions.iter().map(|d| d.lcore).collect();
         workers.sort_unstable();
         let links_file = self.deps.runtime_dir.join("links.json");
@@ -561,11 +559,7 @@ impl App {
             main_lcore: assignment.main_lcore,
             drain_timeout: drain_timeout(&configs),
         };
-        let dtos = stored
-            .links
-            .iter()
-            .flat_map(|l| l.configs.clone())
-            .collect();
+        let dtos = stored.links.iter().map(|l| l.config.clone()).collect();
         Ok((plan, assignment.main_lcore, dtos))
     }
 }
@@ -619,13 +613,14 @@ async fn create_link(
 ) -> Result<(StatusCode, Json<Link>), ApiError> {
     let link = app
         .update(true, move |s| {
-            let ports = validate_link(&input, &s.links.iter().collect::<Vec<_>>())?;
+            let (ingress, egress) = validate_link(&input, &s.links.iter().collect::<Vec<_>>())?;
             let link = Link {
                 id: s.next_id,
                 name: input.name,
-                ports,
-                configs: input.configs,
-                workers: input.workers,
+                ingress,
+                egress,
+                config: input.config,
+                worker: input.worker,
             };
             s.next_id += 1;
             s.links.push(link.clone());
@@ -670,16 +665,17 @@ async fn update_link(
             if !s.links.iter().any(|l| l.id == id) {
                 return Err(ApiError::not_found(format!("no link {id}")));
             }
-            let ports = validate_link(
+            let (ingress, egress) = validate_link(
                 &input,
                 &s.links.iter().filter(|l| l.id != id).collect::<Vec<_>>(),
             )?;
             let link = Link {
                 id,
                 name: input.name,
-                ports,
-                configs: input.configs,
-                workers: input.workers,
+                ingress,
+                egress,
+                config: input.config,
+                worker: input.worker,
             };
             for l in &mut s.links {
                 if l.id == id {
@@ -836,7 +832,7 @@ async fn stats(State(app): Shared) -> Json<StatsView> {
 #[utoipa::path(
     get, path = "/api/stats/{dir}/delay_histogram",
     params(
-        ("dir" = u32, Path, description = "direction"),
+        ("dir" = u32, Path, description = "link index, in the order of GET /api/links"),
         ("window_s" = Option<u32>, Query, description = "0 (default, since start), 10, 60 or 300: only the samples of the last n seconds")
     ),
     responses((status = 200, body = HistogramView), (status = 400, body = ErrorBody), (status = 404, body = ErrorBody))
@@ -1010,7 +1006,7 @@ async fn export(State(app): Shared) -> Json<ExportDoc> {
     let s = app.stored();
     Json(ExportDoc {
         format: EXPORT_FORMAT.into(),
-        version: 1,
+        version: EXPORT_VERSION,
         settings: ExportSettings {
             main_lcore: s.settings.main_lcore,
             mlx5_devargs: s.settings.mlx5_devargs.clone(),
@@ -1022,9 +1018,10 @@ async fn export(State(app): Shared) -> Json<ExportDoc> {
             .iter()
             .map(|l| ExportLink {
                 name: l.name.clone(),
-                ports: l.ports.clone(),
-                configs: l.configs.clone(),
-                workers: l.workers.clone(),
+                ingress: l.ingress.clone(),
+                egress: l.egress.clone(),
+                config: l.config.clone(),
+                worker: l.worker,
             })
             .collect(),
         presets: s
@@ -1039,6 +1036,17 @@ async fn export(State(app): Shared) -> Json<ExportDoc> {
     })
 }
 
+/// Refuses a document of another version before its parts are parsed, so that an old
+/// document gets a message about the version, not about an unknown link field.
+fn check_version(raw: &serde_json::Value) -> Result<(), ApiError> {
+    match raw.get("version").and_then(serde_json::Value::as_u64) {
+        Some(v) if v != u64::from(EXPORT_VERSION) => Err(ApiError::bad(format!(
+            "version = {v}: only version {EXPORT_VERSION} is supported (version 1 had links between two ports; re-create them as one link per direction, ingress to egress)"
+        ))),
+        _ => Ok(()),
+    }
+}
+
 /// Validates the whole document and replaces links, presets and settings of `s` by it,
 /// with new ids from the counters of `s`. On an error `s` is unchanged.
 fn apply_import(s: &mut StoredState, doc: ExportDoc) -> Result<(), ApiError> {
@@ -1046,12 +1054,6 @@ fn apply_import(s: &mut StoredState, doc: ExportDoc) -> Result<(), ApiError> {
         return Err(ApiError::bad(format!(
             "format = {:?}: expected {EXPORT_FORMAT:?}",
             doc.format
-        )));
-    }
-    if doc.version != 1 {
-        return Err(ApiError::bad(format!(
-            "version = {}: only version 1 is supported",
-            doc.version
         )));
     }
     let settings = Settings {
@@ -1065,18 +1067,20 @@ fn apply_import(s: &mut StoredState, doc: ExportDoc) -> Result<(), ApiError> {
     for (i, l) in doc.links.into_iter().enumerate() {
         let input = LinkInput {
             name: l.name,
-            ports: l.ports,
-            configs: l.configs,
-            workers: l.workers,
+            ingress: l.ingress,
+            egress: l.egress,
+            config: l.config,
+            worker: l.worker,
         };
-        let ports = validate_link(&input, &links.iter().collect::<Vec<_>>())
+        let (ingress, egress) = validate_link(&input, &links.iter().collect::<Vec<_>>())
             .map_err(|e| e.in_document(&format!("links[{i}]")))?;
         links.push(Link {
             id: s.next_id + u32::try_from(i).unwrap_or(u32::MAX),
             name: input.name,
-            ports,
-            configs: input.configs,
-            workers: input.workers,
+            ingress,
+            egress,
+            config: input.config,
+            worker: input.worker,
         });
     }
     let mut presets: Vec<Preset> = Vec::new();
@@ -1110,13 +1114,16 @@ fn apply_import(s: &mut StoredState, doc: ExportDoc) -> Result<(), ApiError> {
 async fn import(
     State(app): Shared,
     RawQuery(query): RawQuery,
-    ApiJson(doc): ApiJson<ExportDoc>,
+    ApiJson(raw): ApiJson<serde_json::Value>,
 ) -> Result<Json<ImportSummary>, ApiError> {
     if let Some(mode) = query_param(query.as_deref(), "mode").filter(|m| *m != "replace") {
         return Err(ApiError::bad(format!(
             "mode = {mode:?}: only mode=replace is supported"
         )));
     }
+    check_version(&raw)?;
+    let doc: ExportDoc = serde_json::from_value(raw)
+        .map_err(|e| ApiError::bad(format!("invalid request body: {e}")))?;
     // start and stop hold this lock too: the emulation cannot leave `stopped` during the import
     let _step = app.lifecycle.lock().await;
     let state = app.deps.supervisor.status().state;

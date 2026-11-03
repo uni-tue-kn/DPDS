@@ -4,7 +4,6 @@ import type { ConfigForm } from './linkForm';
 import type { Preset } from '../api/types';
 
 interface Props {
-  index: number;
   title: string;
   value: ConfigForm;
   onChange: (next: ConfigForm) => void;
@@ -14,9 +13,9 @@ interface Props {
   onSaveAsPreset?: () => void;
 }
 
-/** One `<fieldset>` per direction; ids are prefixed with the direction so labels stay unique on the page. */
-export default function DirectionForm({ index, title, value, onChange, presets, onSaveAsPreset }: Props) {
-  const id = (name: string) => `d${index}-${name}`;
+/** The config form of one link: a `<fieldset>` named by `title`. */
+export default function ConfigFieldset({ title, value, onChange, presets, onSaveAsPreset }: Props) {
+  const id = (name: string) => `cfg-${name}`;
   const set = <K extends keyof ConfigForm>(key: K, v: ConfigForm[K]) => onChange({ ...value, [key]: v });
 
   const text = (key: keyof ConfigForm, label: string, type: 'number' | 'text' = 'number', hint?: string) => (

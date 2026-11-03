@@ -27,9 +27,7 @@ fn drain_hints(hints: &Value) -> (Vec<Value>, String) {
 }
 
 fn with_config(id: u32, name: &str, port: &str, cfg: Value) -> Link {
-    let mut l = link(id, name, &[port], None);
-    l.configs = vec![dto_from(cfg)];
-    l
+    link_cfg(id, name, port, port, cfg)
 }
 
 /// Limiter on at `rate_bps` with `limit_bit` of buffer: the drain takes limit / rate.
@@ -51,7 +49,7 @@ fn a_slow_limiter_link_gets_a_warning_naming_the_link_and_the_systemd_limit() {
             "net_null0",
             limited(1.0e6, 1.0e3, 12.0e6, true),
         ),
-        link(2, "quick", &["net_null1"], None),
+        link(2, "quick", "net_null1", "net_null1", None),
     ]);
     let (found, text) = drain_hints(&hints_json(&host, &state));
     assert!(!found.is_empty(), "no drain_timeout hint");
@@ -65,6 +63,26 @@ fn a_slow_limiter_link_gets_a_warning_naming_the_link_and_the_systemd_limit() {
 }
 
 #[test]
+fn a_slow_link_is_judged_on_its_own_config_not_its_partner_in_a_pair() {
+    // a bidirectional pair is two links: only the slow direction is named
+    let host = FakeHost::bare_metal();
+    let state = state_with(vec![
+        link_cfg(
+            1,
+            "slow-dir",
+            NIC0,
+            NIC1,
+            limited(1.0e6, 1.0e3, 12.0e6, true),
+        ),
+        link(2, "fast-dir", NIC1, NIC0, None),
+    ]);
+    let (found, text) = drain_hints(&hints_json(&host, &state));
+    assert!(!found.is_empty());
+    assert!(text.contains("slow-dir"), "{text}");
+    assert!(!text.contains("fast-dir"), "{text}");
+}
+
+#[test]
 fn a_long_delay_alone_triggers_it_and_each_slow_link_is_named() {
     let host = FakeHost::bare_metal();
     let state = state_with(vec![
@@ -75,7 +93,7 @@ fn a_long_delay_alone_triggers_it_and_each_slow_link_is_named() {
             "net_null1",
             limited(1.0e6, 1.0e3, 12.0e6, true),
         ),
-        link(3, "quick", &["net_null2"], None),
+        link(3, "quick", "net_null2", "net_null2", None),
     ]);
     let (found, text) = drain_hints(&hints_json(&host, &state));
     assert!(!found.is_empty());
@@ -108,8 +126,11 @@ fn normal_links_and_an_inactive_limiter_give_no_hint() {
     let host = FakeHost::bare_metal();
     for state in [
         StoredState::default(),
-        state_with(vec![link(1, "a", &["net_null0"], None)]),
-        state_with(vec![link(1, "ab", &[NIC0, NIC1], None)]),
+        state_with(vec![link(1, "a", "net_null0", "net_null0", None)]),
+        state_with(vec![
+            link(1, "a-to-b", NIC0, NIC1, None),
+            link(2, "b-to-a", NIC1, NIC0, None),
+        ]),
         // the limiter is off: its limit / rate does not count (like in drain_timeout)
         state_with(vec![with_config(
             1,
@@ -133,8 +154,8 @@ fn normal_links_and_an_inactive_limiter_give_no_hint() {
 #[tokio::test]
 async fn the_hint_is_served_by_the_api() {
     let a = TestApp::new(FakeHost::bare_metal());
-    let mut body = link_body("crawler", &["net_null0"]);
-    body["configs"][0]["limiter"] =
+    let mut body = link_body("crawler", "net_null0", "net_null1");
+    body["config"]["limiter"] =
         json!({"mode": "Spacer", "activate": true, "rate_bps": 1.0e3, "limit_bit": 12.0e6});
     assert_eq!(a.post("/api/links", body).await.status, 201);
     let (found, text) = drain_hints(&a.get("/api/host/hints").await.json());
@@ -145,7 +166,12 @@ async fn the_hint_is_served_by_the_api() {
     );
 
     let b = TestApp::new(FakeHost::bare_metal());
-    assert_eq!(b.create_link("quick", &["net_null0"]).await.status, 201);
+    assert_eq!(
+        b.create_link("quick", "net_null0", "net_null1")
+            .await
+            .status,
+        201
+    );
     assert!(drain_hints(&b.get("/api/host/hints").await.json())
         .0
         .is_empty());

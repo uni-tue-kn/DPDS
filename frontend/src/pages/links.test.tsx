@@ -5,15 +5,37 @@ import * as fx from '../test/fixtures';
 import { renderApp } from '../test/helpers';
 
 describe('Links list', () => {
-  it('lists every link with name and ports', async () => {
-    api.getLinks.mockResolvedValue([fx.link(), fx.loopLink()]);
+  const AB = 'a-b: 0000:65:00.0 → 0000:65:00.1';
+  const LOOP = 'loop: net_null0 → net_null0';
+
+  it('lists one row per link reading "name: ingress → egress"', async () => {
+    api.getLinks.mockResolvedValue([fx.link(), fx.linkRev(), fx.loopLink()]);
     renderApp('/links');
-    const row = (await screen.findByText('a-b')).closest('tr') as HTMLElement;
-    expect(row).toHaveTextContent('0000:65:00.0');
-    expect(row).toHaveTextContent('0000:65:00.1');
-    const loop = screen.getByText('loop').closest('tr') as HTMLElement;
-    expect(loop).toHaveTextContent('net_null0');
+    const row = (await screen.findByText(AB)).closest('tr') as HTMLElement;
+    expect(row).toBeInTheDocument();
+    const rev = screen.getByText('b-a: 0000:65:00.1 → 0000:65:00.0').closest('tr') as HTMLElement;
+    expect(rev).not.toBe(row);
+    const loop = screen.getByText(LOOP).closest('tr') as HTMLElement;
     expect(loop).not.toHaveTextContent('0000:65:00');
+    expect(screen.getAllByRole('row')).toHaveLength(1 + 3); // header + one row per link, not per direction
+  });
+
+  it('the old "a ↔ b" pair notation and the direction count are gone', async () => {
+    api.getLinks.mockResolvedValue([fx.link()]);
+    renderApp('/links');
+    const row = (await screen.findByText(AB)).closest('tr') as HTMLElement;
+    expect(row).not.toHaveTextContent('↔');
+    expect(screen.queryByRole('columnheader', { name: /directions/i })).not.toBeInTheDocument();
+  });
+
+  it('shows the worker of a link, "auto" without one', async () => {
+    api.getLinks.mockResolvedValue([fx.link({ worker: 7 }), fx.linkRev({ worker: null })]);
+    renderApp('/links');
+    const row = (await screen.findByText(AB)).closest('tr') as HTMLElement;
+    expect(within(row).getByText('7')).toBeInTheDocument();
+    expect(row).not.toHaveTextContent(/auto/i);
+    const rev = screen.getByText('b-a: 0000:65:00.1 → 0000:65:00.0').closest('tr') as HTMLElement;
+    expect(rev).toHaveTextContent(/auto/i);
   });
 
   it('shows an empty state without links', async () => {
@@ -52,7 +74,7 @@ describe('Links list', () => {
     api.getEmulation.mockClear();
     api.getEmulation.mockResolvedValue(fx.emulation('running', { pending_restart: false }));
     renderApp('/links');
-    await screen.findByText('a-b');
+    await screen.findByText('a-b: 0000:65:00.0 → 0000:65:00.1');
     await waitFor(() => expect(api.getEmulation).toHaveBeenCalled());
     await new Promise((r) => setTimeout(r, 50));
     expect(screen.queryByTestId('pending-restart')).not.toBeInTheDocument();
@@ -81,8 +103,8 @@ describe('Links delete', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Confirm delete' }));
     expect(api.deleteLink).toHaveBeenCalledTimes(1);
     expect(api.deleteLink).toHaveBeenCalledWith(1);
-    await waitFor(() => expect(screen.queryByText('a-b')).not.toBeInTheDocument());
-    expect(screen.getByText('loop')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText('a-b: 0000:65:00.0 → 0000:65:00.1')).not.toBeInTheDocument());
+    expect(screen.getByText('loop: net_null0 → net_null0')).toBeInTheDocument();
   });
 
   it('shows the API error when deleting fails', async () => {

@@ -5,18 +5,24 @@ use utoipa::ToSchema;
 
 use crate::dto::ConfigDto;
 
-/// One emulated link: one port (loopback, one direction) or two ports (two
-/// directions: ports[0] -> ports[1] and back), one config per direction.
+/// Longest link name, in characters.
+pub const MAX_NAME_CHARS: usize = 32;
+
+/// One emulated link: one direction, packets received on `ingress` leave on `egress`
+/// with `config` applied. `ingress == egress` (hairpin) is allowed. A port is the
+/// ingress of at most one link and the egress of at most one link.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Link {
     pub id: u32,
     pub name: String,
-    /// DPDK device names: PCI addresses or vdev names such as `net_null0`.
-    pub ports: Vec<String>,
-    pub configs: Vec<ConfigDto>,
-    /// Optional worker lcore per direction; automatic when absent.
+    /// DPDK device name the link receives on: a PCI address or a vdev name such as `net_null0`.
+    pub ingress: String,
+    /// DPDK device name the link sends on.
+    pub egress: String,
+    pub config: ConfigDto,
+    /// Optional worker lcore; automatic when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workers: Option<Vec<u32>>,
+    pub worker: Option<u32>,
 }
 
 /// A named per-direction config, stored in the controller (K1). Not part of a run.

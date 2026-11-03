@@ -12,11 +12,11 @@ const USAGE: &str = "Usage: dpds <EAL args...> -- [--config <path>] [--config0 <
 pub struct Cli {
     /// Everything before the first `--` (argv[0] included), for `Eal::new`.
     pub eal_args: Vec<String>,
-    /// `--config`: DPDS config of every direction without its own flag.
+    /// `--config`: DPDS config of every shorthand link without its own flag.
     pub config: Option<PathBuf>,
-    /// `--config0`: DPDS config of direction 0 (traffic received on port 0).
+    /// `--config0`: DPDS config of link `dir0` (port 0 -> port 1, or port 0 -> port 0).
     pub config0: Option<PathBuf>,
-    /// `--config1`: DPDS config of direction 1 (needs two ports).
+    /// `--config1`: DPDS config of link `dir1` (port 1 -> port 0, needs two ports).
     pub config1: Option<PathBuf>,
     /// `--links`: the multi-link file (excludes the config flags).
     pub links: Option<PathBuf>,

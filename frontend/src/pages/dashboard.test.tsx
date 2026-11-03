@@ -136,14 +136,14 @@ describe('Dashboard: per-direction cards', () => {
     api.getStats.mockResolvedValue(twoDirections());
   });
 
-  it('renders one card per direction with link and device names', async () => {
+  it('renders one card per link with link and device names', async () => {
     renderApp('/');
     const c0 = await screen.findByTestId('direction-card-0');
     const c1 = await screen.findByTestId('direction-card-1');
     expect(c0).toHaveTextContent('a-b');
     expect(c0).toHaveTextContent('0000:65:00.0');
     expect(c0).toHaveTextContent('0000:65:00.1');
-    expect(c1).toHaveTextContent('a-b');
+    expect(c1).toHaveTextContent('b-a');
     expect(screen.queryByTestId('direction-card-2')).not.toBeInTheDocument();
   });
 
@@ -755,17 +755,50 @@ describe('Dashboard: accessibility and labels (F4)', () => {
     expect(badge.closest('[aria-live="polite"], [role="status"]')).not.toBeNull();
   });
 
-  it('direction cards read "Direction d: <rx> -> <tx>" with 0-based numbering', async () => {
+  it('cards are titled "<link>: <ingress> -> <egress>"', async () => {
     renderApp('/');
     const c0 = await screen.findByTestId('direction-card-0');
     const c1 = await screen.findByTestId('direction-card-1');
-    expect(c0).toHaveTextContent(/Direction 0: 0000:65:00\.0 → 0000:65:00\.1/);
-    expect(c1).toHaveTextContent(/Direction 1: 0000:65:00\.1 → 0000:65:00\.0/);
+    expect(within(c0).getByText('a-b: 0000:65:00.0 → 0000:65:00.1')).toBeInTheDocument();
+    expect(within(c1).getByText('b-a: 0000:65:00.1 → 0000:65:00.0')).toBeInTheDocument();
   });
 
-  it('a loopback direction reads "Direction 0: net_null0 -> net_null0"', async () => {
+  it('the old "Direction d: rx -> tx" title is gone', async () => {
+    renderApp('/');
+    const c0 = await screen.findByTestId('direction-card-0');
+    expect(c0).not.toHaveTextContent(/Direction \d/);
+    expect(screen.queryByText(/Direction \d:/)).not.toBeInTheDocument();
+  });
+
+  it('a hairpin link reads "loop: net_null0 -> net_null0"', async () => {
     api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0, { link: 'loop', rx: 'net_null0', tx: 'net_null0' })]));
     renderApp('/');
-    expect(await screen.findByTestId('direction-card-0')).toHaveTextContent(/Direction 0: net_null0 → net_null0/);
+    const card = await screen.findByTestId('direction-card-0');
+    expect(within(card).getByText('loop: net_null0 → net_null0')).toBeInTheDocument();
+  });
+
+  it('the title uses the link name of the stats entry, ingress as rx and egress as tx (ring of three links)', async () => {
+    api.getStats.mockResolvedValue(fx.stats([
+      fx.dirStats(0, { link: 'a-to-b', rx: 'net_null0', tx: 'net_null1' }),
+      fx.dirStats(1, { link: 'b-to-c', rx: 'net_null1', tx: 'net_null2' }),
+      fx.dirStats(2, { link: 'c-to-a', rx: 'net_null2', tx: 'net_null0' }),
+    ]));
+    renderApp('/');
+    expect(await screen.findByText('a-to-b: net_null0 → net_null1')).toBeInTheDocument();
+    expect(screen.getByText('b-to-c: net_null1 → net_null2')).toBeInTheDocument();
+    expect(screen.getByText('c-to-a: net_null2 → net_null0')).toBeInTheDocument();
+    expect(screen.getByTestId('direction-card-2')).toHaveTextContent('c-to-a: net_null2 → net_null0');
+  });
+
+  it('API calls still use the direction index, not the link name', async () => {
+    api.getStats.mockResolvedValue(fx.stats([
+      fx.dirStats(0, { link: 'a-to-b', rx: 'net_null0', tx: 'net_null1' }),
+      fx.dirStats(1, { link: 'b-to-c', rx: 'net_null1', tx: 'net_null2' }),
+    ]));
+    renderApp('/');
+    await screen.findByText('b-to-c: net_null1 → net_null2');
+    await waitFor(() => expect(api.getDelayHistogram).toHaveBeenCalledWith(1));
+    expect(api.getDelayHistogram).toHaveBeenCalledWith(0);
+    for (const call of api.getDelayHistogram.mock.calls) expect(typeof call[0]).toBe('number');
   });
 });

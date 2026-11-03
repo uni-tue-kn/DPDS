@@ -24,8 +24,8 @@ fn file(dir: &Path) -> PathBuf {
     dir.join(STATE_FILE_NAME)
 }
 
-/// A missing directory or file is the default state; a corrupt file is an error
-/// (and left untouched).
+/// A missing directory or file is the default state; a corrupt file (or one with
+/// the old paired-link link shape) is an error naming the file, and left untouched.
 pub fn load(dir: &Path) -> Result<StoredState, StoreError> {
     let path = file(dir);
     let bytes = match fs::read(&path) {

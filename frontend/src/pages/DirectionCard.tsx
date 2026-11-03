@@ -5,7 +5,7 @@ import { Bar, Line } from 'react-chartjs-2';
 import '../components/charts';
 import { startPolling } from '../common/polling';
 import {
-  directionLabel, errorMessage, formatBps, formatDuration, formatInt, formatPct, formatPps,
+  errorMessage, formatBps, formatDuration, formatInt, formatPct, formatPps, linkLabel,
 } from '../common/format';
 import * as api from '../api/client';
 import type { DirectionPlan, DirectionStats, HistogramView, Percentiles as PercentilesDto } from '../api/types';
@@ -198,9 +198,7 @@ export default function DirectionCard({ stats, plan, history }: {
   return (
     <Card className="mb-3" data-testid={`direction-card-${stats.dir}`}>
       <Card.Header className="d-flex justify-content-between align-items-center">
-        <span>
-          {directionLabel(stats.dir, rx, tx)} <small className="text-body-secondary">{stats.link ?? plan?.link}</small>
-        </span>
+        <span>{linkLabel(stats.link ?? plan?.link, rx, tx)}</span>
         {plan && <Badge pill bg="light" text="dark">lcore {plan.lcore}</Badge>}
       </Card.Header>
       <Card.Body>

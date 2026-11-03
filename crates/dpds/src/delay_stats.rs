@@ -57,7 +57,7 @@ pub enum Bin {
     Overflow,
 }
 
-/// The per-direction `"histograms"` entry of the links file: every field
+/// The per-link `"histogram"` entry of the links file: every field
 /// optional, a missing one takes the automatic value.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct HistogramSpec {

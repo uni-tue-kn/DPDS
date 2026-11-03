@@ -109,14 +109,17 @@ fn stored_links_are_taken_into_account() {
     let host = FakeHost::bare_metal(); // 4 isolated cores
     let state = tempfile::tempdir().unwrap();
     let links: Vec<_> = (0..5)
-        .map(|i| link(i + 1, &format!("l{i}"), &[&format!("net_null{i}")], None))
+        .map(|i| {
+            let p = format!("net_null{i}");
+            link(i + 1, &format!("l{i}"), &p, &p, None)
+        })
         .collect();
     store::save(state.path(), &state_with(links)).unwrap();
     let o = run(&host, state.path(), false);
     assert_eq!(
         o.status.code(),
         Some(1),
-        "5 directions need 5 isolated cores: {:?}",
+        "5 links need 5 isolated cores: {:?}",
         lines(&o)
     );
 }

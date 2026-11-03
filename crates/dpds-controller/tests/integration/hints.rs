@@ -8,12 +8,12 @@ const NEED_PER_MBUF: u64 = 1920; // README: ~1.9 KB per mbuf
 const PAGE: u64 = 2 * 1024 * 1024;
 
 /// One link with the default 100000 packet buffer: pool = capacity + 2*4096 + 768 + 64.
-fn pool_bytes_for(dirs: u64) -> u64 {
-    dirs * (100_000 + 4096 * 2 + 768 + 64) * NEED_PER_MBUF
+fn pool_bytes_for(links: u64) -> u64 {
+    links * (100_000 + 4096 * 2 + 768 + 64) * NEED_PER_MBUF
 }
 
 fn one_link_nic0() -> StoredState {
-    state_with(vec![link(1, "l", &[NIC0], None)])
+    state_with(vec![link(1, "l", NIC0, NIC0, None)])
 }
 
 #[test]
@@ -96,13 +96,16 @@ fn isolation_on_a_host_without_any() {
 fn vdev_links(n: u32) -> StoredState {
     state_with(
         (0..n)
-            .map(|i| link(i + 1, &format!("l{i}"), &[&format!("net_null{i}")], None))
+            .map(|i| {
+                let p = format!("net_null{i}");
+                link(i + 1, &format!("l{i}"), &p, &p, None)
+            })
             .collect(),
     )
 }
 
 #[test]
-fn isolated_core_count_versus_directions() {
+fn isolated_core_count_versus_links() {
     let host = FakeHost::bare_metal(); // 4 isolated
     assert_level(
         &hints_json(&host, &vdev_links(4)),
@@ -126,19 +129,19 @@ fn isolated_core_count_versus_directions() {
 
 // ---- hugepages -----------------------------------------------------------
 
-fn hugepages_hint(need_factor_per_node: f64, dirs: u64) -> Value {
+fn hugepages_hint(need_factor_per_node: f64, links: u64) -> Value {
     let host = FakeHost::bare_metal();
-    let pages = (pool_bytes_for(dirs) as f64 * need_factor_per_node / PAGE as f64).ceil() as u64;
+    let pages = (pool_bytes_for(links) as f64 * need_factor_per_node / PAGE as f64).ceil() as u64;
     host.hugepages(&[0, 1], pages, pages);
-    // first direction on a real NIC, the others on vdevs: only the pool need matters here
-    let links: Vec<_> = (0..dirs as u32)
+    // first link on a real NIC, the others on vdevs: only the pool need matters here
+    let links: Vec<_> = (0..links as u32)
         .map(|i| {
             let port = if i == 0 {
                 NIC0.to_string()
             } else {
                 format!("net_null{i}")
             };
-            link(i + 1, &format!("l{i}"), &[&port], None)
+            link(i + 1, &format!("l{i}"), &port, &port, None)
         })
         .collect();
     hints_json(&host, &state_with(links))
@@ -157,8 +160,8 @@ fn hugepages_well_below_need_is_an_error() {
 }
 
 #[test]
-fn hugepage_need_grows_with_the_number_of_directions() {
-    // 3x one direction's need per node is plenty for one direction but not for four
+fn hugepage_need_grows_with_the_number_of_links() {
+    // 3x one link's need per node is plenty for one link but not for four
     let one = hugepages_hint(3.0, 1);
     assert_level(&one, "hugepages", "ok", "ok");
     let four = hugepages_hint(0.25, 4);
@@ -182,17 +185,27 @@ fn no_hugepages_configured_without_links_still_warns_at_least() {
 #[test]
 fn numa_workers_on_the_nic_node_ok_elsewhere_warn() {
     let host = FakeHost::bare_metal();
-    let local = state_with(vec![link(1, "l", &[NIC1], Some(vec![6]))]);
+    let local = state_with(vec![link(1, "l", NIC1, NIC1, Some(6))]);
     assert_level(&hints_json(&host, &local), "numa", "ok", "ok");
-    let remote = state_with(vec![link(1, "l", &[NIC1], Some(vec![2]))]);
+    let remote = state_with(vec![link(1, "l", NIC1, NIC1, Some(2))]);
     assert_level(&hints_json(&host, &remote), "numa", "warn", "warn");
+}
+
+#[test]
+fn numa_a_worker_off_the_ingress_nic_node_warns_in_a_two_nic_link() {
+    let host = FakeHost::bare_metal();
+    // ingress NIC1 is on node 1 (cores 6-7): a worker on node 0 is remote
+    let remote = state_with(vec![link(1, "a-to-b", NIC1, NIC0, Some(2))]);
+    assert_level(&hints_json(&host, &remote), "numa", "warn", "warn");
+    let local = state_with(vec![link(1, "a-to-b", NIC1, NIC0, Some(6))]);
+    assert_level(&hints_json(&host, &local), "numa", "ok", "ok");
 }
 
 #[test]
 fn numa_unknown_on_a_vm_is_not_a_problem() {
     let h = hints_json(
         &FakeHost::vm(),
-        &state_with(vec![link(1, "l", &["0000:00:05.0"], None)]),
+        &state_with(vec![link(1, "l", "0000:00:05.0", "0000:00:05.0", None)]),
     );
     assert_level(&h, "numa", "ok", "info");
 }
@@ -240,7 +253,7 @@ fn irqbalance_running_is_flagged() {
 fn iommu_matters_only_when_a_vfio_nic_is_used() {
     let host = FakeHost::bare_metal();
     host.rebind(INTEL, "vfio-pci", true);
-    let vfio = state_with(vec![link(1, "l", &[INTEL], None)]);
+    let vfio = state_with(vec![link(1, "l", INTEL, INTEL, None)]);
     assert_level(&hints_json(&host, &vfio), "iommu", "ok", "ok");
 
     host.iommu(false);
@@ -260,7 +273,7 @@ fn mtu_below_1500_on_a_used_nic_warns() {
     assert_level(&hints_json(&host, &one_link_nic0()), "mtu", "warn", "warn");
     // not used by the link -> no complaint
     assert_level(
-        &hints_json(&host, &state_with(vec![link(1, "l", &[NIC1], None)])),
+        &hints_json(&host, &state_with(vec![link(1, "l", NIC1, NIC1, None)])),
         "mtu",
         "ok",
         "ok",
@@ -271,11 +284,28 @@ fn mtu_below_1500_on_a_used_nic_warns() {
 fn mtu_above_1500_is_fine() {
     let host = FakeHost::bare_metal(); // NIC1 has 9000
     assert_level(
-        &hints_json(&host, &state_with(vec![link(1, "l", &[NIC1], None)])),
+        &hints_json(&host, &state_with(vec![link(1, "l", NIC1, NIC1, None)])),
         "mtu",
         "ok",
         "ok",
     );
+}
+
+#[test]
+fn mtu_of_an_egress_only_and_of_an_ingress_only_nic_counts() {
+    let host = FakeHost::bare_metal();
+    host.write("sys/class/net/ens1f0/mtu", "1400\n"); // NIC0
+    for l in [
+        link(1, "ingress-only", NIC0, NIC1, None),
+        link(1, "egress-only", NIC1, NIC0, None),
+    ] {
+        assert_level(
+            &hints_json(&host, &state_with(vec![l])),
+            "mtu",
+            "warn",
+            "warn",
+        );
+    }
 }
 
 // ---- PCIe MaxReadReq -----------------------------------------------------
@@ -308,9 +338,46 @@ fn maxreadreq_only_looks_at_used_nics() {
     assert_level(&h, "pcie_maxreadreq", "ok", "ok");
     let h = hints_json(
         &FakeHost::bare_metal(),
-        &state_with(vec![link(1, "l", &[INTEL], None)]),
+        &state_with(vec![link(1, "l", INTEL, INTEL, None)]),
     );
     assert_level(&h, "pcie_maxreadreq", "warn", "warn");
+}
+
+#[test]
+fn maxreadreq_looks_at_both_the_ingress_and_the_egress_nic() {
+    // INTEL has 512 in the fixture; NIC0 has 4096
+    for l in [
+        link(1, "in", INTEL, NIC0, None),
+        link(1, "out", NIC0, INTEL, None),
+    ] {
+        let h = hints_json(&FakeHost::bare_metal(), &state_with(vec![l]));
+        assert_level(&h, "pcie_maxreadreq", "warn", "warn");
+    }
+}
+
+#[test]
+fn a_ring_through_three_nics_needs_three_isolated_cores() {
+    let host = FakeHost::bare_metal(); // 4 isolated
+    let ring = state_with(vec![
+        link(1, "a-to-b", NIC0, NIC1, None),
+        link(2, "b-to-c", NIC1, INTEL, None),
+        link(3, "c-to-a", INTEL, NIC0, None),
+    ]);
+    assert_level(&hints_json(&host, &ring), "isolated_cores", "ok", "ok");
+    // with only 2 isolated cores the ring (three links) does not fit, a pair (two links) does
+    host.cpus(8, Some("2-3"), &[(0, "0-3"), (1, "4-7")]);
+    host.cmdline("ro isolcpus=2-3 nohz_full=2-3 rcu_nocbs=2-3");
+    assert_level(
+        &hints_json(&host, &ring),
+        "isolated_cores",
+        "error",
+        "error",
+    );
+    let pair = state_with(vec![
+        link(1, "a-to-b", NIC0, NIC1, None),
+        link(2, "b-to-a", NIC1, NIC0, None),
+    ]);
+    assert_level(&hints_json(&host, &pair), "isolated_cores", "ok", "ok");
 }
 
 #[test]
@@ -340,7 +407,7 @@ fn unreadable_config_space_is_info_not_a_failure() {
 fn vm_has_no_readable_pcie_state() {
     let h = hints_json(
         &FakeHost::vm(),
-        &state_with(vec![link(1, "l", &["0000:00:05.0"], None)]),
+        &state_with(vec![link(1, "l", "0000:00:05.0", "0000:00:05.0", None)]),
     );
     assert_level(&h, "pcie_maxreadreq", "info", "info");
 }

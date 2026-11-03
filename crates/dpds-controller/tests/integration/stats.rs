@@ -1,5 +1,10 @@
 //! Rate / percentage maths from two telemetry snapshots (B2, B4).
 //!
+//! Spec v10: a direction is a directed link (ingress -> egress); the stats of link `d` use the
+//! ports `dir<d>_rx_port` (the link's ingress) for rx and `dir<d>_tx_port` (its egress) for tx.
+//! The fixture snapshot is the pair `a-to-b` / `b-to-a` (two links); `ring_snapshot` below is a
+//! three-link ring over three ports and a hairpin.
+//!
 //! Contract of `compute_stats(prev, cur)` (JSON of `StatsView`):
 //! `{"directions":[{dir, link, rx, tx, rx_pps, tx_pps, rx_bps, tx_bps, loss_pct,
 //!   limiter_pct, buffer_full_pct, nic_tx_pct, nic_rx_pct, delay_mean_ns, delay_std_ns,
@@ -102,7 +107,7 @@ fn rates_and_drop_shares_from_two_snapshots() {
     let v = view(Some(&prev()), &cur());
     let d0 = &v["directions"][0];
     assert_eq!(d0["dir"], 0);
-    assert_eq!(d0["link"], "a-b");
+    assert_eq!(d0["link"], "a-to-b");
     assert_eq!(d0["rx"], NIC0);
     assert_eq!(d0["tx"], NIC1);
     assert_close(f(d0, "rx_pps"), 1_000_000.0);
@@ -122,6 +127,7 @@ fn direction_one_uses_port_one_for_rx_and_port_zero_for_tx() {
     let v = view(Some(&prev()), &cur());
     let d1 = &v["directions"][1];
     assert_eq!(d1["dir"], 1);
+    assert_eq!(d1["link"], "b-to-a");
     assert_eq!(d1["rx"], NIC1);
     assert_eq!(d1["tx"], NIC0);
     assert_close(f(d1, "rx_pps"), 1000.0);
@@ -278,4 +284,95 @@ fn delay_histogram_has_bins_and_edges() {
 #[test]
 fn delay_histogram_for_unknown_direction_is_none() {
     assert!(delay_histogram(&cur(), 2).is_none());
+}
+
+// ---- rings and hairpins (spec v10) -------------------------------------------------------------
+
+/// Ports 0, 1, 2 (a, b, c), links `a-to-b` (0 -> 1), `b-to-c` (1 -> 2), `c-to-a` (2 -> 0) and
+/// the hairpin `loop` on port 3 (3 -> 3). Port counters are chosen so that every mapping error
+/// changes a number: ibytes = 1000 * (port + 1) per second, obytes = 100_000 * (port + 1).
+fn ring_snapshot(t_s: u64) -> dpds_controller::stats::Snapshot {
+    let names = ["0000:17:00.0", "0000:65:00.0", "0000:b3:00.0", "net_null0"];
+    let links = [
+        ("a-to-b", 0usize, 1usize),
+        ("b-to-c", 1, 2),
+        ("c-to-a", 2, 0),
+        ("loop", 3, 3),
+    ];
+    let mut ports = json!({"num_ports": 4, "num_links": 4, "num_directions": 4});
+    for (p, n) in names.iter().enumerate() {
+        ports[format!("port{p}_name")] = json!(n);
+    }
+    for (d, (link, rx, tx)) in links.iter().enumerate() {
+        ports[format!("dir{d}_link")] = json!(link);
+        ports[format!("dir{d}_rx_port")] = json!(rx);
+        ports[format!("dir{d}_tx_port")] = json!(tx);
+        ports[format!("dir{d}_rx_name")] = json!(names[*rx]);
+        ports[format!("dir{d}_tx_name")] = json!(names[*tx]);
+        ports[format!("dir{d}_lcore")] = json!(2 + d);
+    }
+    let dir = |d: usize| {
+        let rx = 1_000 * (d as u64 + 1) * t_s;
+        json!({
+            "uptime_ns": t_s * 1_000_000_000, "polls": 1, "rx_pkts": rx,
+            "dpds_rejects": 0, "loss_drops": 0, "limiter_drops": 0, "buffer_full_drops": 0,
+            "pops": rx, "tx_pkts": rx, "tx_sent": rx, "tx_drops": 0, "buffer_len_max": 1,
+            "delay_mean_ns": "1.00", "delay_std_ns": "0.00", "delay_min_ns": 1, "delay_max_ns": 1,
+            "lateness_mean_ns": "0.00", "lateness_max_ns": 0,
+            "first_loss_reason": "Clean", "first_loss_detail": "", "first_loss_relative_ns": 0
+        })
+    };
+    let eth = |p: u64| {
+        json!({"ipackets": 0, "opackets": 0, "ibytes": 1_000 * (p + 1) * t_s,
+               "obytes": 100_000 * (p + 1) * t_s, "imissed": 0, "ierrors": 0, "oerrors": 0,
+               "rx_nombuf": 0})
+    };
+    dpds_controller::stats::Snapshot {
+        ports,
+        dirs: (0..4).map(dir).collect(),
+        eth: (0..4).map(eth).collect(),
+        hists: (0..4).map(|_| hist_json(0.0, 1.0, 16)).collect(),
+    }
+}
+
+#[test]
+fn ring_links_map_rx_to_the_ingress_port_and_tx_to_the_egress_port() {
+    let v = view(Some(&ring_snapshot(1)), &ring_snapshot(2));
+    let dirs = v["directions"].as_array().unwrap();
+    assert_eq!(dirs.len(), 4);
+    let want = [
+        ("a-to-b", "0000:17:00.0", "0000:65:00.0", 0usize, 1usize),
+        ("b-to-c", "0000:65:00.0", "0000:b3:00.0", 1, 2),
+        ("c-to-a", "0000:b3:00.0", "0000:17:00.0", 2, 0),
+        ("loop", "net_null0", "net_null0", 3, 3),
+    ];
+    for (d, (link, rx, tx, rx_port, tx_port)) in want.iter().enumerate() {
+        let x = &dirs[d];
+        assert_eq!(x["dir"], d, "{x}");
+        assert_eq!(x["link"], *link);
+        assert_eq!(x["rx"], *rx);
+        assert_eq!(x["tx"], *tx);
+        // +1 s: rx_bps = delta ibytes of the INGRESS port * 8, tx_bps = delta obytes of the EGRESS port * 8
+        assert_close(f(x, "rx_bps"), 1_000.0 * (*rx_port as f64 + 1.0) * 8.0);
+        assert_close(f(x, "tx_bps"), 100_000.0 * (*tx_port as f64 + 1.0) * 8.0);
+        assert_close(f(x, "rx_pps"), 1_000.0 * (d as f64 + 1.0));
+    }
+}
+
+#[test]
+fn ring_ports_are_listed_once_each() {
+    let v = view(Some(&ring_snapshot(1)), &ring_snapshot(2));
+    let ports = v["ports"].as_array().unwrap();
+    assert_eq!(ports.len(), 4);
+    assert_eq!(ports[3]["name"], "net_null0");
+    assert_eq!(ports[2]["name"], "0000:b3:00.0");
+}
+
+#[test]
+fn ring_histograms_are_per_link_index() {
+    for d in 0..4 {
+        let h = serde_json::to_value(delay_histogram(&ring_snapshot(2), d).unwrap()).unwrap();
+        assert_eq!(h["dir"], d);
+    }
+    assert!(delay_histogram(&ring_snapshot(2), 4).is_none());
 }

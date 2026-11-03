@@ -116,56 +116,49 @@ export function portError(port: string): string | null {
     : `"${port}" is neither a PCI address (0000:65:00.0) nor a vdev (net_null0, net_ring0)`;
 }
 
-/** Throws an Error naming the offending field (prefixed with the direction, 0-based like the API). */
-export function configToDto(f: ConfigForm, dir: number): ConfigDto {
-  const where = `Direction ${dir}: `;
-  try {
-    const loss_model: LossModelDto = f.loss_type === 'Random'
-      ? { type: 'Random', p: num(f.random_p, 'Random loss probability') }
-      : {
-        type: 'GilbertElliot',
-        p: num(f.ge_p, 'Gilbert-Elliot p'),
-        r: num(f.ge_r, 'Gilbert-Elliot r'),
-        k: num(f.ge_k, 'Gilbert-Elliot k'),
-        h: num(f.ge_h, 'Gilbert-Elliot h'),
-        state_is_good: f.ge_good,
-      };
-    const bins = optInt(f.hist_bins, 'Histogram bins');
-    const lo_ns = f.hist_lo.trim() === '' ? null : num(f.hist_lo, 'Histogram lo (ns)');
-    const hi_ns = f.hist_hi.trim() === '' ? null : num(f.hist_hi, 'Histogram hi (ns)');
-    return {
-      buffer_capacity: int(f.buffer_capacity, 'Buffer capacity'),
-      reordering: f.reordering,
-      delayer: {
-        distribution: f.distribution,
-        mean_ns: num(f.mean_ns, 'Mean delay (ns)'),
-        std_ns: num(f.std_ns, 'Delay std (ns)'),
-        activate_correlation: f.activate_correlation,
-        half_life_period_ns: num(f.half_life_period_ns, 'Half-life period (ns)'),
-      },
-      limiter: {
-        mode: f.limiter_mode,
-        activate: f.limiter_activate,
-        rate_bps: num(f.rate_bps, 'Rate (bit/s)'),
-        limit_bit: num(f.limit_bit, 'Burst limit (bit)'),
-      },
-      loss_model,
-      seed: seed(f.seed),
-      histogram: bins == null && lo_ns == null && hi_ns == null ? null : { bins, lo_ns, hi_ns },
-      delay_stats: f.delay_stats,
+/** Throws an Error naming the offending field. */
+export function configToDto(f: ConfigForm): ConfigDto {
+  const loss_model: LossModelDto = f.loss_type === 'Random'
+    ? { type: 'Random', p: num(f.random_p, 'Random loss probability') }
+    : {
+      type: 'GilbertElliot',
+      p: num(f.ge_p, 'Gilbert-Elliot p'),
+      r: num(f.ge_r, 'Gilbert-Elliot r'),
+      k: num(f.ge_k, 'Gilbert-Elliot k'),
+      h: num(f.ge_h, 'Gilbert-Elliot h'),
+      state_is_good: f.ge_good,
     };
-  } catch (e) {
-    throw new Error(where + (e instanceof Error ? e.message : String(e)));
-  }
+  const bins = optInt(f.hist_bins, 'Histogram bins');
+  const lo_ns = f.hist_lo.trim() === '' ? null : num(f.hist_lo, 'Histogram lo (ns)');
+  const hi_ns = f.hist_hi.trim() === '' ? null : num(f.hist_hi, 'Histogram hi (ns)');
+  return {
+    buffer_capacity: int(f.buffer_capacity, 'Buffer capacity'),
+    reordering: f.reordering,
+    delayer: {
+      distribution: f.distribution,
+      mean_ns: num(f.mean_ns, 'Mean delay (ns)'),
+      std_ns: num(f.std_ns, 'Delay std (ns)'),
+      activate_correlation: f.activate_correlation,
+      half_life_period_ns: num(f.half_life_period_ns, 'Half-life period (ns)'),
+    },
+    limiter: {
+      mode: f.limiter_mode,
+      activate: f.limiter_activate,
+      rate_bps: num(f.rate_bps, 'Rate (bit/s)'),
+      limit_bit: num(f.limit_bit, 'Burst limit (bit)'),
+    },
+    loss_model,
+    seed: seed(f.seed),
+    histogram: bins == null && lo_ns == null && hi_ns == null ? null : { bins, lo_ns, hi_ns },
+    delay_stats: f.delay_stats,
+  };
 }
 
-/** "7, 2" -> [7, 2]; empty -> null (automatic). */
-export function parseWorkers(s: string): number[] | null {
-  const parts = s.split(',').map((p) => p.trim()).filter(Boolean);
-  if (parts.length === 0) return null;
-  return parts.map((p) => {
-    const n = Number(p);
-    if (!Number.isInteger(n) || n < 0) throw new Error(`Worker lcores: "${p}" is not a core number`);
-    return n;
-  });
+/** "7" -> 7; empty -> null (automatic). */
+export function parseWorker(s: string): number | null {
+  const t = s.trim();
+  if (t === '') return null;
+  const n = Number(t);
+  if (!/^\d+$/.test(t) || !Number.isSafeInteger(n)) throw new Error(`Worker lcore: "${t}" is not a core number`);
+  return n;
 }

@@ -154,6 +154,25 @@
 //!                     direction (ten keys per direction)           [delay_stats.rs, stats.rs]
 //! ```
 //!
+//! ## v10: directed links -- the v5/v6 `dpds::links` API above is REPLACED
+//!
+//! ```text
+//! dpds::links         a link is one direction ingress -> egress (ingress == egress, a
+//!                     hairpin, is allowed); each port at most once as ingress and at most
+//!                     once as egress.
+//!                     LinkSpec { name, ingress, egress, config, lcore: Option<u32>,
+//!                                histogram, delay_stats: bool }   (v1 `ports`, `configs`,
+//!                     `lcores`, `histograms`, the per-direction `delay_stats` array: gone;
+//!                     the v1 keys are unknown fields)
+//!                     parse_links / load_links / MAX_NAME_LEN / LinksError as before;
+//!                     the dict limit is 3 + 5 * distinct ports + 10 * links <= 256
+//!                     resolve_directions(links, probed, main_lcore, workers) returns ONE
+//!                     LinkDirection per link (rx_port = ingress id, tx_port = egress id);
+//!                     every probed port must be used as ingress and/or egress
+//! dpds::stats         ports_reply keeps its shape; `num_links == num_directions`
+//! dpds::setup         validate_lcore_count(1 + links, links)
+//! ```
+//!
 //! Semantics are documented at the top of each test module.
 
 mod causes;

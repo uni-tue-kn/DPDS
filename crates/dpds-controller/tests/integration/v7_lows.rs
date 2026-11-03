@@ -47,7 +47,7 @@ fn absurd_meminfo_hugepage_figures_saturate_instead_of_overflowing() {
         (max.as_str(), max.as_str(), max.as_str()),
     ] {
         let h = meminfo_only_host(total, free, size_kb);
-        let state = state_with(vec![link(1, "a", &["net_null0"], None)]);
+        let state = state_with(vec![link(1, "a", "net_null0", "net_null0", None)]);
         // in a debug build an unchecked multiplication panics here
         let hints = hints_json(&h, &state);
         let hp = hint(&hints, "hugepages");
@@ -202,14 +202,14 @@ fn typos() -> Vec<Typo> {
 async fn a_typo_in_a_config_is_a_400_naming_the_field() {
     for (what, edit) in typos() {
         let a = app();
-        let mut body = link_body("x", &["net_null0"]);
-        edit(&mut body["configs"][0]);
+        let mut body = link_body("x", "net_null0", "net_null0");
+        edit(&mut body["config"]);
         let r = a.post("/api/links", body.clone()).await;
         assert_eq!(r.status, 400, "{what}: {}", r.text());
         r.message();
         assert_eq!(a.get("/api/links").await.json(), json!([]), "{what} stored");
         // on update as well
-        let id = a.create_link("y", &["net_null1"]).await.json()["id"]
+        let id = a.create_link("y", "net_null1", "net_null1").await.json()["id"]
             .as_u64()
             .unwrap();
         let r = a.put(&format!("/api/links/{id}"), body).await;
@@ -220,8 +220,8 @@ async fn a_typo_in_a_config_is_a_400_naming_the_field() {
 #[tokio::test]
 async fn the_message_names_a_typo_in_the_seed() {
     let a = app();
-    let mut body = link_body("x", &["net_null0"]);
-    body["configs"][0]["seeed"] = json!(7);
+    let mut body = link_body("x", "net_null0", "net_null0");
+    body["config"]["seeed"] = json!(7);
     let r = a.post("/api/links", body).await;
     assert_eq!(r.status, 400);
     assert!(r.message().contains("seeed"), "{}", r.text());
@@ -250,7 +250,7 @@ fn the_dtos_do_not_deserialize_with_unknown_fields() {
 #[tokio::test]
 async fn an_empty_or_invalid_json_body_is_a_400_with_a_message() {
     let a = app();
-    let id = a.create_link("l", &["net_null0"]).await.json()["id"]
+    let id = a.create_link("l", "net_null0", "net_null0").await.json()["id"]
         .as_u64()
         .unwrap();
     let put_link = format!("/api/links/{id}");

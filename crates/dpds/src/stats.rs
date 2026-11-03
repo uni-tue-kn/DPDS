@@ -306,7 +306,7 @@ pub struct PortInfo {
     pub tx_ring_requested: u16,
 }
 
-/// Static info of one direction for `/dpds/ports`.
+/// Static info of one link (= direction) for `/dpds/ports`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirectionInfo {
     pub rx_port: u16,
@@ -335,9 +335,9 @@ pub struct DirectionInfo {
 /// `num_directions`, `num_links` and per direction `d` `dir<d>_rx_port`,
 /// `dir<d>_tx_port`, `dir<d>_lcore`, `dir<d>_config` (string),
 /// `dir<d>_pool_size`, `dir<d>_raw_free` (0 or 1), `dir<d>_link` (string, the
-/// link name), `dir<d>_rx_name` and `dir<d>_tx_name` (strings, DPDK device
+/// link name; `d` is the link's index), `dir<d>_rx_name` and `dir<d>_tx_name` (strings, DPDK device
 /// names), `dir<d>_delay_stats` (0 or 1: the direction's delay statistics are
-/// off or on). That is `3 + 5 * ports + 10 * directions` keys in all, which
+/// off or on). That is `3 + 5 * ports + 10 * links` keys in all, which
 /// must stay within DPDK's `RTE_TEL_MAX_DICT_ENTRIES`
 /// ([`MAX_TELEMETRY_DICT_ENTRIES`](crate::consts::MAX_TELEMETRY_DICT_ENTRIES)).
 pub fn ports_reply(ports: &[PortInfo], directions: &[DirectionInfo], num_links: usize) -> Reply {

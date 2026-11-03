@@ -15,10 +15,15 @@
 //! FAILURE with a clear message, never a silent skip (same rule as
 //! `crates/dpds/tests/e2e.rs`). `DPDS_BIN` overrides the binary path.
 //!
-//! The controller runs with a fake sysfs/procfs (online CPUs 0-1, CPU 1
-//! isolated => main lcore 0, worker lcore 1) so the assignment does not depend
-//! on the test host's boot parameters; the EAL flags `--no-huge -m 256
-//! --no-pci` come from `settings.eal_extra_args`.
+//! The controller runs with a fake sysfs/procfs (online CPUs 0..=n, CPUs 1..=n isolated => main
+//! lcore 0, one worker lcore per link) so the assignment does not depend on the test host's
+//! boot parameters; the EAL flags `--no-huge -m 256 --no-pci` come from `settings.eal_extra_args`.
+//!
+//! Spec v10: a link is one direction ingress -> egress. The tests use `net_null` hairpin links
+//! and a three-link ring over three `net_null` vdevs (`net_null` receives an endless stream of
+//! packets and discards what it sends, so exact per-link counts are not available; the per-link
+//! deterministic delay, the link order, the ports and the lcores are what these tests pin).
+//! The links file the controller hands to `dpds` is the v2 shape and is checked while running.
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -77,11 +82,24 @@ struct Controller {
 
 impl Controller {
     fn start() -> Controller {
-        require_cpus(2);
+        Controller::start_with_workers(1)
+    }
+
+    /// A controller whose fake host has `workers` isolated cores (1..=workers) besides the
+    /// main lcore 0.
+    fn start_with_workers(workers: usize) -> Controller {
+        require_cpus(workers + 1);
         let dpds = dpds_bin();
         let host = FakeHost::empty();
-        host.cpus(2, Some("1"), &[]);
-        host.cmdline("ro isolcpus=1 nohz_full=1 rcu_nocbs=1");
+        let isolated = if workers == 1 {
+            "1".to_string()
+        } else {
+            format!("1-{workers}")
+        };
+        host.cpus(workers as u32 + 1, Some(&isolated), &[]);
+        host.cmdline(&format!(
+            "ro isolcpus={isolated} nohz_full={isolated} rcu_nocbs={isolated}"
+        ));
         let tmp = tempfile::tempdir().unwrap();
         // short path: the telemetry socket path must stay below 108 bytes
         let runtime_dir = PathBuf::from(format!("/tmp/dpdsc-{}", std::process::id()));
@@ -165,6 +183,11 @@ impl Controller {
     }
 
     fn configure(&self, eal_extra: &[&str], link_cfg: Value) {
+        self.settings(eal_extra);
+        self.create_link("loop", "net_null0", "net_null0", link_cfg);
+    }
+
+    fn settings(&self, eal_extra: &[&str]) {
         let (s, v) = self.call(
             "PUT",
             "/api/settings",
@@ -174,14 +197,42 @@ impl Controller {
             })),
         );
         assert_eq!(s, 200, "{v}");
+    }
+
+    fn create_link(&self, name: &str, ingress: &str, egress: &str, config: Value) {
         let (s, v) = self.call(
             "POST",
             "/api/links",
             Some(json!({
-                "name": "loop", "ports": ["net_null0"], "configs": [link_cfg]
+                "name": name, "ingress": ingress, "egress": egress, "config": config
             })),
         );
         assert_eq!(s, 201, "{v}");
+    }
+
+    /// Waits until every link `0..n` has seen packets; returns the last `/api/stats`.
+    fn wait_for_traffic(&self, n: usize) -> Value {
+        let t0 = Instant::now();
+        loop {
+            let (s, v) = self.call("GET", "/api/stats", None);
+            assert_eq!(s, 200);
+            let seen = (0..n)
+                .filter(|d| {
+                    v["directions"][*d]["counters"]["tx_sent"]
+                        .as_u64()
+                        .unwrap_or(0)
+                        > 0
+                })
+                .count();
+            if seen == n {
+                return v;
+            }
+            assert!(
+                t0.elapsed() < Duration::from_secs(30),
+                "only {seen} of {n} links forwarded packets: {v}"
+            );
+            thread::sleep(Duration::from_millis(250));
+        }
     }
 }
 
@@ -233,6 +284,9 @@ fn full_rest_flow_create_start_stats_stop_drain() {
     let pid = run["pid"].as_i64().expect("running state has a pid") as i32;
     assert!(pid > 0 && !process_gone(pid));
     assert_eq!(run["directions"].as_array().unwrap().len(), 1);
+    assert_eq!(run["directions"][0]["link"], "loop");
+    assert_eq!(run["directions"][0]["rx"], "net_null0");
+    assert_eq!(run["directions"][0]["tx"], "net_null0");
     assert_eq!(run["directions"][0]["lcore"], 1);
     assert_eq!(run["main_lcore"], 0);
     assert_eq!(run["pending_restart"], false);
@@ -359,4 +413,151 @@ fn controller_sigterm_stops_the_child_before_exiting() {
         process_gone(pid),
         "dpds child {pid} must not outlive the controller"
     );
+}
+
+/// A deterministic delay of `ms` milliseconds and a small buffer (fits `--no-huge -m 256`).
+fn delay_config(ms: f64) -> Value {
+    let mut c = loop_config();
+    c["delayer"]["mean_ns"] = json!(ms * 1.0e6);
+    c
+}
+
+fn assert_mean_delay(d: &Value, ms: f64) {
+    let mean = f(d, "delay_mean_ns");
+    assert!(
+        (0.9 * ms * 1e6..1.1 * ms * 1e6).contains(&mean),
+        "link {}: deterministic {ms} ms delay, got mean {mean} ns",
+        d["link"]
+    );
+}
+
+#[test]
+#[ignore = "needs target/release/dpds built with --features telemetry; run with -- --ignored"]
+fn two_hairpin_links_run_with_their_own_config_and_the_v2_links_file() {
+    let _g = serial();
+    let c = Controller::start_with_workers(2);
+    c.settings(&EAL);
+    c.create_link("fast", "net_null0", "net_null0", delay_config(1.0));
+    c.create_link("slow", "net_null1", "net_null1", delay_config(3.0));
+
+    let (s, v) = c.call("POST", "/api/emulation/start", Some(json!({})));
+    assert_eq!(s, 202, "{v}");
+    let run = c.wait_state(&["running"], START_TIMEOUT);
+    let dirs = run["directions"].as_array().unwrap();
+    assert_eq!(dirs.len(), 2, "{run}");
+    assert_eq!(dirs[0]["link"], "fast");
+    assert_eq!(dirs[1]["link"], "slow");
+    let mut lcores: Vec<u64> = dirs.iter().map(|d| d["lcore"].as_u64().unwrap()).collect();
+    lcores.sort_unstable();
+    assert_eq!(lcores, [1, 2], "one worker per link: {run}");
+
+    // the links file dpds was started with: v2, explicit lcores
+    let file: Value =
+        serde_json::from_slice(&std::fs::read(c.runtime_dir.join("links.json")).unwrap()).unwrap();
+    assert_eq!(file["links"].as_array().unwrap().len(), 2, "{file}");
+    for (i, (name, port)) in [("fast", "net_null0"), ("slow", "net_null1")]
+        .iter()
+        .enumerate()
+    {
+        let l = &file["links"][i];
+        assert_eq!(l["name"], *name);
+        assert_eq!(l["ingress"], *port);
+        assert_eq!(l["egress"], *port);
+        assert_eq!(l["lcore"], dirs[i]["lcore"]);
+        assert!(l["config"].is_object(), "{l}");
+        assert!(
+            l.get("ports").is_none() && l.get("configs").is_none(),
+            "{l}"
+        );
+    }
+
+    let v = c.wait_for_traffic(2);
+    thread::sleep(Duration::from_millis(1500));
+    let (_, v2) = c.call("GET", "/api/stats", None);
+    for d in 0..2 {
+        assert!(
+            v2["directions"][d]["counters"]["rx_pkts"].as_u64().unwrap()
+                > v["directions"][d]["counters"]["rx_pkts"].as_u64().unwrap(),
+            "link {d} must keep forwarding: {v2}"
+        );
+    }
+    assert_eq!(v2["directions"][0]["link"], "fast");
+    assert_eq!(v2["directions"][0]["rx"], "net_null0");
+    assert_eq!(v2["directions"][0]["tx"], "net_null0");
+    assert_eq!(v2["directions"][1]["link"], "slow");
+    assert_eq!(v2["directions"][1]["rx"], "net_null1");
+    assert_mean_delay(&v2["directions"][0], 1.0);
+    assert_mean_delay(&v2["directions"][1], 3.0);
+    for d in 0..2 {
+        let (s, h) = c.call("GET", &format!("/api/stats/{d}/delay_histogram"), None);
+        assert_eq!(s, 200, "{h}");
+        assert_eq!(h["dir"], d);
+    }
+    let (s, _) = c.call("GET", "/api/stats/2/delay_histogram", None);
+    assert_eq!(s, 404, "there are two links, no third histogram");
+
+    assert_eq!(
+        c.call("POST", "/api/emulation/stop", Some(json!({}))).0,
+        202
+    );
+    c.wait_state(&["stopped"], STOP_TIMEOUT);
+}
+
+#[test]
+#[ignore = "needs target/release/dpds built with --features telemetry; run with -- --ignored"]
+fn a_three_link_ring_over_three_vdevs_runs_one_worker_per_link() {
+    let _g = serial();
+    let c = Controller::start_with_workers(3);
+    c.settings(&EAL);
+    // A -> B, B -> C, C -> A: each port is ingress once and egress once
+    c.create_link("a-to-b", "net_null0", "net_null1", delay_config(1.0));
+    c.create_link("b-to-c", "net_null1", "net_null2", delay_config(2.0));
+    c.create_link("c-to-a", "net_null2", "net_null0", delay_config(3.0));
+
+    let (s, v) = c.call("POST", "/api/emulation/start", Some(json!({})));
+    assert_eq!(s, 202, "{v}");
+    let run = c.wait_state(&["running"], START_TIMEOUT);
+    let dirs = run["directions"].as_array().unwrap();
+    assert_eq!(dirs.len(), 3, "{run}");
+    let mut lcores: Vec<u64> = dirs.iter().map(|d| d["lcore"].as_u64().unwrap()).collect();
+    lcores.sort_unstable();
+    assert_eq!(lcores, [1, 2, 3], "{run}");
+
+    c.wait_for_traffic(3);
+    thread::sleep(Duration::from_millis(1500));
+    let (_, v) = c.call("GET", "/api/stats", None);
+    let ring = [
+        ("a-to-b", "net_null0", "net_null1", 1.0),
+        ("b-to-c", "net_null1", "net_null2", 2.0),
+        ("c-to-a", "net_null2", "net_null0", 3.0),
+    ];
+    assert_eq!(v["directions"].as_array().unwrap().len(), 3, "{v}");
+    for (d, (link, rx, tx, ms)) in ring.iter().enumerate() {
+        let x = &v["directions"][d];
+        assert_eq!(x["dir"], d);
+        assert_eq!(x["link"], *link, "{x}");
+        assert_eq!(x["rx"], *rx, "{x}");
+        assert_eq!(x["tx"], *tx, "{x}");
+        assert!(x["counters"]["rx_pkts"].as_u64().unwrap() > 0, "{x}");
+        assert_mean_delay(x, *ms);
+        let (s, h) = c.call("GET", &format!("/api/stats/{d}/delay_histogram"), None);
+        assert_eq!(s, 200, "{h}");
+    }
+    // three ports, each listed once in the NIC counters
+    assert_eq!(v["ports"].as_array().unwrap().len(), 3, "{v}");
+
+    // the links file carries the ring literally
+    let file: Value =
+        serde_json::from_slice(&std::fs::read(c.runtime_dir.join("links.json")).unwrap()).unwrap();
+    for (i, (link, rx, tx, _)) in ring.iter().enumerate() {
+        assert_eq!(file["links"][i]["name"], *link);
+        assert_eq!(file["links"][i]["ingress"], *rx);
+        assert_eq!(file["links"][i]["egress"], *tx);
+    }
+
+    assert_eq!(
+        c.call("POST", "/api/emulation/stop", Some(json!({}))).0,
+        202
+    );
+    c.wait_state(&["stopped"], STOP_TIMEOUT);
 }

@@ -6,7 +6,7 @@ import * as api from '../api/client';
 import ErrorAlert from '../components/ErrorAlert';
 import { errorMessage } from '../common/format';
 import { useLoad } from '../common/useLoad';
-import DirectionForm from './DirectionForm';
+import ConfigFieldset from './ConfigFieldset';
 import { configToDto, configToForm, defaultConfigForm } from './linkForm';
 import type { ConfigForm } from './linkForm';
 import type { Preset } from '../api/types';
@@ -29,7 +29,7 @@ function Editor({ id, preset }: { id?: number; preset?: Preset }) {
       input = {
         name: name.trim(),
         description: description.trim() === '' ? null : description.trim(),
-        config: configToDto(config, 0),
+        config: configToDto(config),
       };
     } catch (e) {
       setError(errorMessage(e));
@@ -61,7 +61,7 @@ function Editor({ id, preset }: { id?: number; preset?: Preset }) {
           </Form.Group>
         </Card.Body>
       </Card>
-      <DirectionForm index={0} title="Direction configuration" value={config} onChange={setConfig} />
+      <ConfigFieldset title="Preset configuration" value={config} onChange={setConfig} />
       <Button type="submit" variant="primary" className="me-2" disabled={saving}>Save</Button>
       <RouterLink to="/presets" className="btn btn-outline-secondary">Cancel</RouterLink>
     </Form>

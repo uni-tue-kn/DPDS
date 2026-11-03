@@ -1,5 +1,5 @@
 //! Startup validation: lcore and port counts, the egress port of a
-//! direction and the mempool size of a direction.
+//! direction and the mempool size of a link.
 
 use std::fmt;
 
@@ -28,7 +28,7 @@ impl fmt::Display for SetupError {
                 write!(
                     f,
                     "{ports} {noun} {verb} {required} lcores, e.g. -l 0-{} (the main lcore and \
-                     one worker per direction); got {found}",
+                     one worker per link); got {found}",
                     required.saturating_sub(1)
                 )
             }
@@ -41,8 +41,9 @@ impl fmt::Display for SetupError {
 
 impl std::error::Error for SetupError {}
 
-/// Ok only for `1 + num_ports` lcores: the main lcore plus one worker per
-/// direction (one direction per port).
+/// Ok only for `1 + num_links` lcores: the main lcore plus one worker per
+/// link. The message counts the links as "ports" for the `--config*` shorthand
+/// (one link per port).
 pub fn validate_lcore_count(lcores: usize, num_ports: usize) -> Result<(), SetupError> {
     let required = 1 + num_ports;
     if lcores == required {
@@ -55,7 +56,7 @@ pub fn validate_lcore_count(lcores: usize, num_ports: usize) -> Result<(), Setup
     }
 }
 
-/// Ok for one port (loopback) or two ports.
+/// Ok for one port (a hairpin link) or two ports (the `--config*` shorthand).
 pub fn validate_port_count(ports: usize) -> Result<(), SetupError> {
     if matches!(ports, 1 | 2) {
         Ok(())
@@ -74,7 +75,7 @@ pub fn egress_port(direction: u16, num_ports: usize) -> u16 {
     }
 }
 
-/// Mbufs of one direction's pool, derived from its config and NIC rings (no
+/// Mbufs of one link's pool, derived from its config and NIC rings (no
 /// rounding). It must hold: the delay buffer, the RX ring it
 /// fills and the TX ring it feeds (applied descriptor counts), 1.5 mempool
 /// caches of slack and two bursts in flight.

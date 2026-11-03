@@ -58,12 +58,12 @@ fn all_routes() -> Vec<(&'static str, &'static str, Option<Value>)> {
         (
             "POST",
             "/api/links",
-            Some(link_body("evil", &["net_null0"])),
+            Some(link_body("evil", "net_null0", "net_null0")),
         ),
         (
             "PUT",
             "/api/links/1",
-            Some(link_body("evil", &["net_null0"])),
+            Some(link_body("evil", "net_null0", "net_null0")),
         ),
         ("DELETE", "/api/links/1", None),
         (
@@ -118,7 +118,7 @@ fn a_foreign_host_is_rejected_on_every_api_route() {
 fn rejected_mutating_requests_change_nothing() {
     let c = ControllerProcess::start(&["serve", "--bind", "{addr}"], &[]);
     let good = c.addr.clone();
-    let body = link_body("evil", &["net_null0"]);
+    let body = link_body("evil", "net_null0", "net_null0");
     let (st, _) = call(
         &c.addr,
         "POST",
@@ -188,7 +188,7 @@ fn ip_literals_localhost_and_the_machine_hostname_are_accepted() {
         "POST",
         "/api/links",
         "localhost:8100",
-        Some(&link_body("ok", &["net_null0"])),
+        Some(&link_body("ok", "net_null0", "net_null0")),
     );
     assert_eq!(st, 201, "{text}");
 }

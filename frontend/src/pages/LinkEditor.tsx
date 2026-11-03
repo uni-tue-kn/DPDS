@@ -4,36 +4,44 @@ import { Button, Card, Col, Form, Row } from 'react-bootstrap';
 import { Link as RouterLink, useNavigate, useParams } from 'react-router-dom';
 import * as api from '../api/client';
 import ErrorAlert from '../components/ErrorAlert';
-import { directionLabel, errorMessage } from '../common/format';
+import { errorMessage } from '../common/format';
 import { useLoad } from '../common/useLoad';
-import DirectionForm from './DirectionForm';
+import ConfigFieldset from './ConfigFieldset';
 import SavePresetModal from './SavePresetModal';
-import { configToDto, configToForm, defaultConfigForm, parseWorkers, portError } from './linkForm';
+import { configToDto, configToForm, defaultConfigForm, parseWorker, portError } from './linkForm';
 import type { ConfigForm } from './linkForm';
 import type { Interface, Link, Preset } from '../api/types';
 
-function optionLabel(i: Interface): string {
+/** Port -> name of the link that uses it, per role. */
+type Users = Map<string, string>;
+
+function optionLabel(i: Interface, usedBy?: string, role?: string): string {
   const base = i.netdev ? `${i.pci} (${i.netdev})` : i.pci;
-  if (i.dpds_usable && !i.kernel_route) return base;
-  return `${base} - ${i.reason ?? (i.kernel_route ? 'management NIC' : 'not usable')}`;
+  const reasons: string[] = [];
+  if (!i.dpds_usable || i.kernel_route) reasons.push(i.reason ?? (i.kernel_route ? 'management NIC' : 'not usable'));
+  if (usedBy !== undefined) reasons.push(`already used as ${role} by ${usedBy}`);
+  return reasons.length === 0 ? base : `${base} - ${reasons.join('; ')}`;
 }
 
 /** A picker over the discovered interfaces plus a free-text field; a typed value wins (see `Editor`). */
-function PortField({ name, id, value, typed, interfaces, onChange, onType }: {
-  name: string; id: string; value: string; typed: string; interfaces: Interface[];
+function PortField({ name, id, value, typed, interfaces, users, onChange, onType }: {
+  name: string; id: string; value: string; typed: string; interfaces: Interface[]; users: Users;
   onChange: (v: string) => void; onType: (v: string) => void;
 }) {
+  const role = name.toLowerCase();
   // A stored port that is not a discovered interface (e.g. a vdev) stays selectable as its own option.
   const unknown = value !== '' && !interfaces.some((i) => i.pci === value);
   return (
-    <Col md={4} className="mb-3">
+    <Col md={6} className="mb-3">
       <Form.Group controlId={id}>
         <Form.Label>{name}</Form.Label>
         <Form.Select value={value} onChange={(e) => onChange(e.target.value)}>
           <option value="">Select a port...</option>
           {unknown && <option value={value}>{value}</option>}
           {interfaces.map((i) => (
-            <option key={i.pci} value={i.pci} disabled={!i.dpds_usable || i.kernel_route}>{optionLabel(i)}</option>
+            <option key={i.pci} value={i.pci} disabled={!i.dpds_usable || i.kernel_route || users.has(i.pci)}>
+              {optionLabel(i, users.get(i.pci), role)}
+            </option>
           ))}
         </Form.Select>
       </Form.Group>
@@ -46,27 +54,29 @@ function PortField({ name, id, value, typed, interfaces, onChange, onType }: {
   );
 }
 
-function Editor({ id, link, interfaces, presets, onPresetSaved }: {
-  id?: number; link?: Link; interfaces: Interface[]; presets: Preset[]; onPresetSaved: () => void;
+function Editor({ id, link, interfaces, others, presets, onPresetSaved }: {
+  id?: number; link?: Link; interfaces: Interface[]; others: Link[]; presets: Preset[]; onPresetSaved: () => void;
 }) {
   const navigate = useNavigate();
   const [name, setName] = useState(link?.name ?? '');
-  const [portCount, setPortCount] = useState(link ? Math.min(link.ports.length, 2) : 2);
-  const [ports, setPorts] = useState<string[]>([link?.ports[0] ?? '', link?.ports[1] ?? '']);
-  const [typed, setTyped] = useState<string[]>(['', '']);
-  const [configs, setConfigs] = useState<ConfigForm[]>(() => [
-    link?.configs[0] ? configToForm(link.configs[0]) : defaultConfigForm(),
-    link?.configs[1] ? configToForm(link.configs[1]) : defaultConfigForm(),
-  ]);
-  const [workers, setWorkers] = useState(link?.workers?.join(', ') ?? '');
+  const [ingress, setIngress] = useState(link?.ingress ?? '');
+  const [egress, setEgress] = useState(link?.egress ?? '');
+  const [typedIngress, setTypedIngress] = useState('');
+  const [typedEgress, setTypedEgress] = useState('');
+  const [config, setConfig] = useState<ConfigForm>(() => (link ? configToForm(link.config) : defaultConfigForm()));
+  const [worker, setWorker] = useState(link?.worker == null ? '' : String(link.worker));
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
-  /** Direction whose "Save as preset" dialog is open. */
-  const [presetDir, setPresetDir] = useState<number>();
+  const [presetOpen, setPresetOpen] = useState(false);
   const [presetSaved, setPresetSaved] = useState<string>();
 
-  // A typed value wins over the picker.
-  const effective = ports.map((p, i) => typed[i].trim() || p);
+  // Every port is ingress of at most one link and egress of at most one link (the controller enforces it, 409).
+  const ingressUsers: Users = new Map();
+  const egressUsers: Users = new Map();
+  for (const l of others) {
+    ingressUsers.set(l.ingress, l.name);
+    egressUsers.set(l.egress, l.name);
+  }
 
   const submit = async (ev: FormEvent) => {
     ev.preventDefault();
@@ -75,17 +85,15 @@ function Editor({ id, link, interfaces, presets, onPresetSaved }: {
     let input;
     try {
       if (name.trim() === '') throw new Error('Name is required');
-      const chosen = effective.slice(0, portCount);
-      if (chosen.some((p) => p === '')) throw new Error('Select a port for every port of the link');
-      chosen.forEach((p, i) => {
-        const bad = portError(p);
-        if (bad) throw new Error(`Port ${i === 0 ? 'A' : 'B'}: ${bad}`);
-      });
+      // A typed value wins over the picker.
+      const ports = [['Ingress', typedIngress.trim() || ingress], ['Egress', typedEgress.trim() || egress]];
+      for (const [role, port] of ports) {
+        if (port === '') throw new Error(`Select an ${role.toLowerCase()} port`);
+        const bad = portError(port);
+        if (bad) throw new Error(`${role}: ${bad}`);
+      }
       input = {
-        name: name.trim(),
-        ports: chosen,
-        configs: configs.slice(0, portCount).map((c, d) => configToDto(c, d)),
-        workers: parseWorkers(workers),
+        name: name.trim(), ingress: ports[0][1], egress: ports[1][1], config: configToDto(config), worker: parseWorker(worker),
       };
     } catch (e) {
       setError(errorMessage(e));
@@ -102,14 +110,6 @@ function Editor({ id, link, interfaces, presets, onPresetSaved }: {
     }
   };
 
-  const setPort = (i: number, v: string) => setPorts((p) => p.map((x, k) => (k === i ? v : x)));
-  const setType = (i: number, v: string) => setTyped((p) => p.map((x, k) => (k === i ? v : x)));
-  const setConfig = (i: number, c: ConfigForm) => setConfigs((cs) => cs.map((x, k) => (k === i ? c : x)));
-  // Direction 0 is A -> B, direction 1 is B -> A; a single port loops back onto itself.
-  const dirTitle = (d: number) => (portCount === 1
-    ? directionLabel(0, effective[0], effective[0])
-    : directionLabel(d, effective[d], effective[1 - d]));
-
   return (
     <>
       <Form onSubmit={submit} noValidate>
@@ -118,53 +118,42 @@ function Editor({ id, link, interfaces, presets, onPresetSaved }: {
         <Card className="mb-3">
           <Card.Body>
             <Row>
-              <Form.Group as={Col} md={4} className="mb-3" controlId="link-name">
+              <Form.Group as={Col} md={6} className="mb-3" controlId="link-name">
                 <Form.Label>Name</Form.Label>
                 <Form.Control type="text" value={name} onChange={(e) => setName(e.target.value)} />
               </Form.Group>
-              <Form.Group as={Col} md={4} className="mb-3" controlId="port-count">
-                <Form.Label>Number of ports</Form.Label>
-                <Form.Select value={String(portCount)} onChange={(e) => setPortCount(Number(e.target.value))}>
-                  <option value="1">1 (loopback)</option>
-                  <option value="2">2</option>
-                </Form.Select>
-              </Form.Group>
-              <Form.Group as={Col} md={4} className="mb-3" controlId="link-workers">
-                <Form.Label>Worker lcores</Form.Label>
-                <Form.Control type="text" value={workers} onChange={(e) => setWorkers(e.target.value)} />
-                <Form.Text>Comma separated, one per direction. Empty: automatic.</Form.Text>
+              <Form.Group as={Col} md={6} className="mb-3" controlId="link-worker">
+                <Form.Label>Worker lcore</Form.Label>
+                <Form.Control type="number" min={0} step={1} value={worker} onChange={(e) => setWorker(e.target.value)} />
+                <Form.Text>Empty: automatic.</Form.Text>
               </Form.Group>
             </Row>
             <Row>
               <PortField
-                name="Port A" id="port-a" value={ports[0]} typed={typed[0]} interfaces={interfaces}
-                onChange={(v) => setPort(0, v)} onType={(v) => setType(0, v)}
+                name="Ingress" id="link-ingress" value={ingress} typed={typedIngress} interfaces={interfaces}
+                users={ingressUsers} onChange={setIngress} onType={setTypedIngress}
               />
-              {portCount === 2 && (
-                <PortField
-                  name="Port B" id="port-b" value={ports[1]} typed={typed[1]} interfaces={interfaces}
-                  onChange={(v) => setPort(1, v)} onType={(v) => setType(1, v)}
-                />
-              )}
+              <PortField
+                name="Egress" id="link-egress" value={egress} typed={typedEgress} interfaces={interfaces}
+                users={egressUsers} onChange={setEgress} onType={setTypedEgress}
+              />
             </Row>
           </Card.Body>
         </Card>
-        {configs.slice(0, portCount).map((c, d) => (
-          <DirectionForm
-            key={d} index={d} title={dirTitle(d)} value={c} onChange={(next) => setConfig(d, next)}
-            presets={presets} onSaveAsPreset={() => { setPresetSaved(undefined); setPresetDir(d); }}
-          />
-        ))}
+        <ConfigFieldset
+          title="Link configuration" value={config} onChange={setConfig} presets={presets}
+          onSaveAsPreset={() => { setPresetSaved(undefined); setPresetOpen(true); }}
+        />
         <Button type="submit" variant="primary" className="me-2" disabled={saving}>Save</Button>
         <RouterLink to="/links" className="btn btn-outline-secondary">Cancel</RouterLink>
       </Form>
       {/* Outside the <Form>: React submit events bubble through portals and would submit the link. */}
-      {presetDir !== undefined && (
+      {presetOpen && (
         <SavePresetModal
-          getConfig={() => configToDto(configs[presetDir], presetDir)}
-          onClose={() => setPresetDir(undefined)}
+          getConfig={() => configToDto(config)}
+          onClose={() => setPresetOpen(false)}
           onSaved={(p) => {
-            setPresetDir(undefined);
+            setPresetOpen(false);
             setPresetSaved(`Preset "${p.name}" saved.`);
             onPresetSaved();
           }}
@@ -180,8 +169,10 @@ export default function LinkEditor() {
   const interfaces = useLoad(api.getInterfaces);
   // The editor works without presets: a failed load just leaves the "Apply preset" selects empty.
   const presets = useLoad(api.getPresets);
+  // Only used to disable ports other links hold: the editor works without it, the controller answers 409 anyway.
+  const links = useLoad(api.getLinks);
   const link = useLoad(() => (linkId === undefined ? Promise.resolve(undefined) : api.getLink(linkId)));
-  const ready = interfaces.data !== undefined && (linkId === undefined || link.data !== undefined);
+  const ready = interfaces.data !== undefined && (links.data !== undefined || links.error !== undefined) && (linkId === undefined || link.data !== undefined);
 
   return (
     <>
@@ -190,6 +181,7 @@ export default function LinkEditor() {
       {ready && (
         <Editor
           key={linkId ?? 'new'} id={linkId} link={link.data} interfaces={interfaces.data ?? []}
+          others={(links.data ?? []).filter((l) => l.id !== linkId)}
           presets={presets.data ?? []} onPresetSaved={presets.reload}
         />
       )}
