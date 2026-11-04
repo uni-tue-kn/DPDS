@@ -162,7 +162,7 @@ fn off_snapshot(uptime_step: u64) -> Snapshot {
     for k in DELAY_FIELDS {
         obj.remove(k);
     }
-    s.hists[1] = empty_hist_json();
+    set_hist(&mut s, 1, empty_hist_json());
     s
 }
 

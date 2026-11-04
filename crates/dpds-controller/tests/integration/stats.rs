@@ -327,13 +327,14 @@ fn ring_snapshot(t_s: u64) -> dpds_controller::stats::Snapshot {
                "obytes": 100_000 * (p + 1) * t_s, "imissed": 0, "ierrors": 0, "oerrors": 0,
                "rx_nombuf": 0})
     };
-    dpds_controller::stats::Snapshot {
+    let mut snap = dpds_controller::stats::Snapshot {
         ports,
         dirs: (0..4).map(dir).collect(),
         eth: (0..4).map(eth).collect(),
-        hists: (0..4).map(|_| hist_json(0.0, 1.0, 16)).collect(),
         ..Default::default()
-    }
+    };
+    set_hists(&mut snap, (0..4).map(|_| hist_json(0.0, 1.0, 16)).collect());
+    snap
 }
 
 #[test]

@@ -1234,14 +1234,75 @@ pub fn snapshot(dirs: [DirSample; 2], ports: [PortSample; 2]) -> Snapshot {
                 "obytes": p.obytes, "imissed": p.imissed, "ierrors": 0, "oerrors": 0,
                 "rx_nombuf": p.rx_nombuf })
     };
-    Snapshot {
+    let mut snap = Snapshot {
         ports: ports_reply,
         dirs: vec![dir_json(&dirs[0]), dir_json(&dirs[1])],
         eth: vec![eth_json(&ports[0]), eth_json(&ports[1])],
-        // direction 1 has a non-default number of bins, like a link with `histograms`
-        hists: vec![hist_json(1000.0, 10.0, 256), hist_json(2000.0, 20.0, 100)],
         ..Snapshot::default()
+    };
+    // direction 1 has a non-default number of bins, like a link with `histograms`
+    set_hists(
+        &mut snap,
+        vec![hist_json(1000.0, 10.0, 256), hist_json(2000.0, 20.0, 100)],
+    );
+    snap
+}
+
+/// Spec 30b: how a polled `Snapshot` stores histograms. `hists[d]` is page 0 of direction `d`
+/// without its `bins`, `hist_bins[d]` holds all its bins. Tests describe a histogram as one JSON
+/// object with its `bins` (like [`hist_json`]) and let these helpers split it.
+///
+/// Splits `full` (page 0 JSON with all bins) into the metadata (no `bins`) and the bins. A
+/// missing or non-array `bins` gives no bins.
+pub fn split_hist(full: &Value) -> (Value, Vec<u64>) {
+    let bins = full["bins"]
+        .as_array()
+        .map(|a| a.iter().map(|b| b.as_u64().expect("a u64 bin")).collect())
+        .unwrap_or_default();
+    let mut meta = full.clone();
+    if let Some(o) = meta.as_object_mut() {
+        o.remove("bins");
     }
+    (meta, bins)
+}
+
+/// Direction `dir` of `snapshot` gets the histogram `full` (grows `hists` and `hist_bins`).
+pub fn set_hist(snapshot: &mut Snapshot, dir: usize, full: Value) {
+    let (meta, bins) = split_hist(&full);
+    if snapshot.hists.len() <= dir {
+        snapshot.hists.resize(dir + 1, Value::Null);
+    }
+    if snapshot.hist_bins.len() <= dir {
+        snapshot.hist_bins.resize(dir + 1, Vec::new());
+    }
+    snapshot.hists[dir] = meta;
+    snapshot.hist_bins[dir] = bins;
+}
+
+/// Directions `0..` of `snapshot` get the histograms `full`, replacing all earlier ones.
+pub fn set_hists(snapshot: &mut Snapshot, full: Vec<Value>) {
+    snapshot.hists.clear();
+    snapshot.hist_bins.clear();
+    for (dir, h) in full.into_iter().enumerate() {
+        set_hist(snapshot, dir, h);
+    }
+}
+
+/// The inverse of [`set_hists`]: one JSON histogram with all its `bins` per direction, what a
+/// fake `dpds` pages through.
+pub fn full_hists(snapshot: &Snapshot) -> Vec<Value> {
+    snapshot
+        .hists
+        .iter()
+        .enumerate()
+        .map(|(dir, meta)| {
+            let mut full = meta.clone();
+            if let (Some(o), Some(bins)) = (full.as_object_mut(), snapshot.hist_bins.get(dir)) {
+                o.insert("bins".into(), Value::from(bins.clone()));
+            }
+            full
+        })
+        .collect()
 }
 
 /// A `/dpds/delay_hist` reply as the real `dpds` sends it: `lo_ns` and `bin_ns` as decimal

@@ -30,6 +30,7 @@ mod fake_telemetry;
 mod fixtures_sanity;
 mod frontend;
 mod hints;
+mod histogram_bad_pages;
 mod histogram_extras;
 mod histogram_paging;
 mod histogram_window;

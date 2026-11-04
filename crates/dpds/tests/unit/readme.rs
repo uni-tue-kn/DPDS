@@ -469,12 +469,15 @@ fn telemetry_doc() -> String {
         .expect("docs/TELEMETRY.md")
 }
 
-/// The lines of the `## /dpds/delay_hist,<dir>` section (the heading line itself picks it, not
-/// a substring: the table of contents and the command table mention the command too).
+/// The heading of the paged histogram section (spec 30b: it names the optional page).
+const DELAY_HIST_HEADING: &str = "## `/dpds/delay_hist,<dir>[,<page>]`";
+
+/// The lines of the `## /dpds/delay_hist,<dir>[,<page>]` section (the heading line itself picks
+/// it, not a substring: the table of contents and the command table mention the command too).
 fn delay_hist_section(text: &str) -> String {
     let mut lines = text
         .lines()
-        .skip_while(|l| l.trim_end() != "## `/dpds/delay_hist,<dir>`");
+        .skip_while(|l| l.trim_end() != DELAY_HIST_HEADING);
     assert!(lines.next().is_some(), "the delay_hist section heading");
     lines
         .take_while(|l| !l.starts_with("## "))
@@ -502,9 +505,35 @@ fn the_telemetry_doc_describes_paging_and_the_4096_cap() {
         lower.contains("page 0"),
         "`,<dir>` alone is page 0:\n{section}"
     );
+}
+
+#[test]
+fn the_telemetry_doc_heading_names_the_optional_page() {
+    let doc = telemetry_doc();
     assert!(
-        lower.contains("error"),
-        "an out-of-range page is an error reply:\n{section}"
+        doc.lines().any(|l| l.trim_end() == DELAY_HIST_HEADING),
+        "a heading line {DELAY_HIST_HEADING:?}"
+    );
+    assert!(
+        !doc.lines()
+            .any(|l| l.trim_end() == "## `/dpds/delay_hist,<dir>`"),
+        "the old heading without `[,<page>]` is gone"
+    );
+}
+
+#[test]
+fn the_telemetry_doc_says_a_bad_page_is_an_empty_reply_not_null() {
+    // spec 30b item 5: the real `dpds` answers a page past the end, a malformed page and a bad
+    // `<dir>` with an empty dict
+    let section = delay_hist_section(&telemetry_doc());
+    let flat = section.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        flat.contains("empty reply (`{}`)"),
+        "a bad page is an empty reply (`{{}}`):\n{section}"
+    );
+    assert!(
+        !flat.contains("`null`") && !flat.contains("error reply"),
+        "a bad page is not a `null` or error reply:\n{section}"
     );
 }
 

@@ -153,7 +153,7 @@ async fn a_direction_with_delay_stats_off_is_a_404_that_says_so() {
     let mut s = hist_snapshot();
     s.ports["dir0_delay_stats"] = json!(1);
     s.ports["dir1_delay_stats"] = json!(0);
-    s.hists[1] = empty_hist_json();
+    set_hist(&mut s, 1, empty_hist_json());
     set_polled(&a, 0, false, s);
 
     assert_eq!(a.get("/api/stats/0/delay_histogram").await.status, 200);

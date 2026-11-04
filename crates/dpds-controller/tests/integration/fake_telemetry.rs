@@ -22,6 +22,8 @@ use socket2::{Domain, SockAddr, Socket, Type};
 
 use dpds_controller::stats::Snapshot;
 
+use crate::common::full_hists;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     /// Greeting, then answer every request from the handler.
@@ -32,6 +34,9 @@ pub enum Mode {
     Hang,
     /// Greeting, then answer every request with `null` ("no such command").
     Nulls,
+    /// Like `Serve`, but the connection is closed on a request for a histogram page past page 0
+    /// (`/dpds/delay_hist,<dir>,<page>` with `page > 0`): a transport error in the middle of a poll.
+    CloseOnLaterPage,
 }
 
 /// Bins per page of the real `/dpds/delay_hist` reply (spec 30).
@@ -139,13 +144,14 @@ impl FakeTelemetryServer {
 
     /// A server that answers like a `dpds` with the replies of `snapshot`.
     pub fn serving(path: &Path, pid: u32, snapshot: Snapshot) -> FakeTelemetryServer {
+        let hists = full_hists(&snapshot);
         FakeTelemetryServer::start(path, pid, vec![Mode::Serve], move |cmd| {
             let (name, param) = cmd.split_once(',').unwrap_or((cmd, ""));
             let idx: usize = param.parse().unwrap_or(usize::MAX);
             match name {
                 "/dpds/ports" => Some(snapshot.ports.clone()),
                 "/dpds/stats" => snapshot.dirs.get(idx).cloned(),
-                "/dpds/delay_hist" => hist_page(&snapshot.hists, param),
+                "/dpds/delay_hist" => hist_page(&hists, param),
                 "/ethdev/stats" => snapshot.eth.get(idx).cloned(),
                 _ => None,
             }
@@ -161,6 +167,11 @@ impl FakeTelemetryServer {
     /// Drops every connection that is open now.
     pub fn break_all(&self) {
         self.shared.generation.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Connections accepted so far (a client that reconnects raises it).
+    pub fn connections(&self) -> usize {
+        self.shared.connections.load(Ordering::SeqCst)
     }
 
     /// Every request received so far, in order.
@@ -204,8 +215,11 @@ fn connection(s: &Shared, mut conn: Socket, mode: Mode, generation: usize) {
         };
         let cmd = String::from_utf8_lossy(&buf[..n]).into_owned();
         s.queries.lock().unwrap().push(cmd.clone());
+        if mode == Mode::CloseOnLaterPage && is_later_page(&cmd) {
+            return;
+        }
         let value = match mode {
-            Mode::Serve => (s.handler)(&cmd),
+            Mode::Serve | Mode::CloseOnLaterPage => (s.handler)(&cmd),
             Mode::Nulls => None,
             Mode::Hang | Mode::CloseAfterGreeting => continue,
         };
@@ -215,6 +229,11 @@ fn connection(s: &Shared, mut conn: Socket, mode: Mode, generation: usize) {
             return;
         }
     }
+}
+
+fn is_later_page(cmd: &str) -> bool {
+    let parts: Vec<&str> = cmd.split(',').collect();
+    parts.len() == 3 && parts[0] == "/dpds/delay_hist" && parts[2] != "0"
 }
 
 /// A short temp dir below `/tmp` (the socket path must fit `sun_path`).

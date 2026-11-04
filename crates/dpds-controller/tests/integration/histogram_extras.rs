@@ -98,7 +98,7 @@ fn zero_port() -> PortSample {
 /// Telemetry of the two links `a-to-b` and `b-to-a` with the given histograms.
 pub fn snap(h0: Value, h1: Value) -> Snapshot {
     let mut s = snapshot([zero_dir(), zero_dir()], [zero_port(), zero_port()]);
-    s.hists = vec![h0, h1];
+    set_hists(&mut s, vec![h0, h1]);
     s
 }
 

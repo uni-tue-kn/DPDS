@@ -227,7 +227,7 @@ README). For a link with `false`:
 
 A consumer checks `dir<d>_delay_stats` once, or tests for the absent keys.
 
-## `/dpds/delay_hist,<dir>`
+## `/dpds/delay_hist,<dir>[,<page>]`
 
 A cumulative linear histogram of the intended delay (as defined above) of every
 accepted packet of link `<dir>`, since start, with up to 4096 bins. One DPDK
@@ -236,8 +236,8 @@ most 500 bins: `/dpds/delay_hist,<dir>,<page>`, where `<page>` is a 0-based plai
 decimal number. `/dpds/delay_hist,<dir>` alone is page 0. A histogram of `num_bins`
 bins has `ceil(num_bins / 500)` pages (4096 bins: eight pages of 500 and one of 96).
 A page that does not exist (`<page>` >= the number of pages), a `<page>` that is not
-a plain decimal number and a bad `<dir>` give an error reply (`null`, like an unknown
-command), never a short or empty histogram. Every page has exactly these fields:
+a plain decimal number and a bad `<dir>` give an empty reply (`{}`), never a short or
+empty histogram. Every page has exactly these fields:
 
 | field | meaning |
 | --- | --- |

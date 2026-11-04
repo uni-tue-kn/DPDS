@@ -62,13 +62,14 @@ fn query_handler(
     snapshot: Snapshot,
     tamper: impl Fn(&str, Option<Value>) -> Option<Value> + Send + Sync + 'static,
 ) -> impl Fn(&str) -> Option<Value> + Send + Sync + 'static {
+    let hists = full_hists(&snapshot);
     move |cmd| {
         let (name, param) = cmd.split_once(',').unwrap_or((cmd, ""));
         let idx: usize = param.parse().unwrap_or(usize::MAX);
         let honest = match name {
             "/dpds/ports" => Some(snapshot.ports.clone()),
             "/dpds/stats" => snapshot.dirs.get(idx).cloned(),
-            "/dpds/delay_hist" => hist_page(&snapshot.hists, param),
+            "/dpds/delay_hist" => hist_page(&hists, param),
             "/ethdev/stats" => snapshot.eth.get(idx).cloned(),
             _ => None,
         };
@@ -199,7 +200,7 @@ fn assert_no_corrupt_histogram(what: &str, result: std::io::Result<Snapshot>) {
 #[test]
 fn a_page_that_is_replayed_is_not_stitched_in() {
     // page p > 0 answers with page 0 again (a reply matched to the wrong request)
-    let honest_page0 = hist_page(&snapshot_with(2000, 100).hists, "0");
+    let honest_page0 = hist_page(&full_hists(&snapshot_with(2000, 100)), "0");
     let (_s, mut client, _d) = connect(query_handler(snapshot_with(2000, 100), move |param, r| {
         if param.starts_with("0,") && !param.ends_with(",0") {
             honest_page0.clone()

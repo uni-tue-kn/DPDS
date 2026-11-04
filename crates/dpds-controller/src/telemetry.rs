@@ -67,13 +67,20 @@ impl Client {
     /// Sends `cmd` (e.g. `/dpds/stats,0`) and returns the value of the reply.
     /// Unknown commands and errors come back as `null` and are an `Err`.
     pub fn query(&mut self, cmd: &str) -> io::Result<Value> {
+        self.query_opt(cmd)?
+            .ok_or_else(|| io::Error::other(format!("no reply for {cmd}")))
+    }
+
+    /// Like [`Client::query`], but a `null` or missing reply is `Ok(None)`: the request was
+    /// answered, so the stream is still in step. Only transport errors are an `Err`.
+    pub fn query_opt(&mut self, cmd: &str) -> io::Result<Option<Value>> {
         self.socket.write_all(cmd.as_bytes())?;
         let mut reply = self.read_reply()?;
         let name = cmd.split(',').next().unwrap_or(cmd);
-        match reply.get_mut(name).map(Value::take) {
-            Some(Value::Null) | None => Err(io::Error::other(format!("no reply for {cmd}"))),
-            Some(v) => Ok(v),
-        }
+        Ok(match reply.get_mut(name).map(Value::take) {
+            Some(Value::Null) | None => None,
+            Some(v) => Some(v),
+        })
     }
 }
 
@@ -96,62 +103,72 @@ pub trait TelemetrySource: Send + Sync + 'static {
 /// Most bins in one page of `/dpds/delay_hist`.
 const PAGE_BINS: u64 = 500;
 
-fn bad_page(d: u64, page: u64, what: &str) -> io::Error {
-    io::Error::new(
-        io::ErrorKind::InvalidData,
-        format!("/dpds/delay_hist direction {d} page {page}: {what}"),
-    )
-}
-
 /// One page of `/dpds/delay_hist` of direction `d`, which must say it is `page` of a
 /// histogram of `num_bins` bins and carry exactly the bins it should. Replies are matched to
-/// requests by send order only, so a replayed, cut or mixed-up page is caught here.
-fn check_page(d: u64, page: u64, num_bins: u64, reply: &Value) -> io::Result<Vec<u64>> {
+/// requests by send order only, so a replayed, cut or mixed-up page is caught here. The error
+/// says what is wrong with the page.
+fn check_page(page: u64, num_bins: u64, reply: &Value) -> Result<Vec<u64>, String> {
     let first = page * PAGE_BINS;
     let want = PAGE_BINS.min(num_bins - first);
     let field = |key: &str| reply.get(key).and_then(Value::as_u64);
     if field("page") != Some(page) || field("first_bin") != Some(first) {
-        return Err(bad_page(d, page, "the page says it is another page"));
+        return Err("the page says it is another page".into());
     }
     if field("num_bins") != Some(num_bins) {
-        return Err(bad_page(d, page, "num_bins differs from page 0"));
+        return Err("num_bins differs from page 0".into());
     }
     let bins = reply
         .get("bins")
         .and_then(Value::as_array)
         .and_then(|a| a.iter().map(Value::as_u64).collect::<Option<Vec<u64>>>())
-        .ok_or_else(|| bad_page(d, page, "no bins, or a bin that is not a count"))?;
+        .ok_or("no bins, or a bin that is not a count")?;
     if bins.len() as u64 != want {
-        return Err(bad_page(
-            d,
-            page,
-            &format!("{} bins, expected {want}", bins.len()),
-        ));
+        return Err(format!("{} bins, expected {want}", bins.len()));
     }
     Ok(bins)
 }
 
+/// A direction whose histogram is absent for this poll.
+const NO_HISTOGRAM: (Value, Vec<u64>) = (Value::Null, Vec::new());
+
 /// The delay histogram of direction `d`: page 0 without its bins, and all bins of all pages.
-/// Page 0 gives the number of bins, so the pages 1.. follow in order, none past the last. A
-/// direction without a histogram (an older `dpds`, or delay statistics off) gives a page 0
-/// without `bins`, and no bins. A page that is wrong is an error: a histogram is never put
-/// together from pieces that do not fit.
+/// Page 0 gives the number of bins, so the pages 1.. follow in order, none past the last.
+/// A page 0 that is null or empty (delay statistics off, or a `dpds` without the feature)
+/// means no histogram, silently. Any other bad page (wrong, missing or short data, or
+/// `num_bins` out of range) also means no histogram for this poll, with a warning: a
+/// histogram is never put together from pieces that do not fit. Only a transport error is an
+/// `Err`, because it can put the replies out of step with the requests.
 fn poll_histogram(client: &mut Client, d: u64) -> io::Result<(Value, Vec<u64>)> {
-    // the histogram only exists in newer builds; its absence is not an error
-    let Ok(mut page0) = client.query(&format!("/dpds/delay_hist,{d}")) else {
-        return Ok((Value::Null, Vec::new()));
+    let broken = |page: u64, what: &str| {
+        eprintln!(
+            "dpds-controller: /dpds/delay_hist direction {d} page {page}: {what}; no histogram"
+        );
+        NO_HISTOGRAM
     };
-    if page0.get("bins").is_none() {
-        return Ok((page0, Vec::new()));
-    }
+    let mut page0 = match client.query_opt(&format!("/dpds/delay_hist,{d}"))? {
+        None => return Ok(NO_HISTOGRAM),
+        Some(v) if v.as_object().is_some_and(|o| o.is_empty()) => return Ok(NO_HISTOGRAM),
+        Some(v) => v,
+    };
     let num_bins = page0.get("num_bins").and_then(Value::as_u64).unwrap_or(0);
-    if num_bins > u64::from(MAX_HISTOGRAM_BINS) {
-        return Err(bad_page(d, 0, &format!("num_bins {num_bins} is too large")));
+    if num_bins == 0 || num_bins > u64::from(MAX_HISTOGRAM_BINS) {
+        return Ok(broken(
+            0,
+            &format!("num_bins {num_bins} is not in 1..=4096"),
+        ));
     }
-    let mut bins = check_page(d, 0, num_bins, &page0)?;
+    let mut bins = match check_page(0, num_bins, &page0) {
+        Ok(bins) => bins,
+        Err(what) => return Ok(broken(0, &what)),
+    };
     for page in 1..num_bins.div_ceil(PAGE_BINS) {
-        let reply = client.query(&format!("/dpds/delay_hist,{d},{page}"))?;
-        bins.extend(check_page(d, page, num_bins, &reply)?);
+        let Some(reply) = client.query_opt(&format!("/dpds/delay_hist,{d},{page}"))? else {
+            return Ok(broken(page, "null reply"));
+        };
+        match check_page(page, num_bins, &reply) {
+            Ok(more) => bins.extend(more),
+            Err(what) => return Ok(broken(page, &what)),
+        }
     }
     if let Some(page0) = page0.as_object_mut() {
         page0.remove("bins");
