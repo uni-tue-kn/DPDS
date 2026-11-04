@@ -14,8 +14,8 @@ use socket2::{Domain, SockAddr, Socket, Type};
 
 use crate::dto::MAX_HISTOGRAM_BINS;
 pub use crate::stats::Polled;
-use crate::stats::Snapshot;
-use crate::supervisor::{State, Supervisor};
+use crate::stats::{compute_stats, HistorySample, HistoryView, Snapshot};
+use crate::supervisor::{State, Supervisor, SupervisorStatus};
 
 /// DPDK `--file-prefix` of the child; fixes the socket path below the runtime dir.
 pub const FILE_PREFIX: &str = "dpds-ctl";
@@ -94,6 +94,17 @@ pub trait TelemetrySource: Send + Sync + 'static {
         self.latest()
             .map(|p| vec![(p.age_ms, p.cur)])
             .unwrap_or_default()
+    }
+
+    /// The chart history of the current (or last) run: its samples with `t_ms` above
+    /// `since_ms`, or all without it. Empty for a source that records nothing.
+    fn run_history(&self, _since_ms: Option<u64>) -> HistoryView {
+        HistoryView::default()
+    }
+
+    /// Milliseconds since the current run started, frozen at its stop; `None` before any run.
+    fn elapsed_ms(&self) -> Option<u64> {
+        None
     }
 
     /// The poll interval of the run being started (a no-op for sources that do not poll).
@@ -215,6 +226,35 @@ fn ring_capacity(interval_ms: u64) -> usize {
     usize::try_from(n).map_or(RING_MAX, |n| n.min(RING_MAX))
 }
 
+/// Most samples kept per link: 24 h at one sample per second.
+pub const HISTORY_MAX_SAMPLES: usize = 86_400;
+
+/// Time between two samples of a link's history.
+const SAMPLE_PERIOD_MS: u64 = 1000;
+
+fn millis(d: Duration) -> u64 {
+    u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
+}
+
+/// The series of one run, and the monotonic clock all its times are measured on.
+struct RunSeries {
+    pid: u32,
+    started_at: Option<u64>,
+    t0: Instant,
+    /// The clock at the stop, once the run is no longer running.
+    stopped_ms: Option<u64>,
+    /// `t_ms` of the newest sample.
+    last_ms: Option<u64>,
+    /// `links[d]` = samples of link `d`, oldest first.
+    links: Vec<VecDeque<HistorySample>>,
+}
+
+impl RunSeries {
+    fn elapsed_ms(&self) -> u64 {
+        self.stopped_ms.unwrap_or_else(|| millis(self.t0.elapsed()))
+    }
+}
+
 struct Cache {
     polled: Polled,
     at: Instant,
@@ -229,6 +269,10 @@ struct Cache {
 pub struct Poller {
     cell: Mutex<Option<Cache>>,
     interval_ms: AtomicU64,
+    supervisor: Arc<dyn Supervisor>,
+    /// The current or last run; runtime data, kept after a stop until the next run begins.
+    run: Mutex<Option<RunSeries>>,
+    max_samples: usize,
 }
 
 /// Poll interval until a start sets one.
@@ -236,13 +280,87 @@ const DEFAULT_POLL_INTERVAL_MS: u64 = 500;
 
 impl Poller {
     pub fn spawn(runtime_dir: PathBuf, supervisor: Arc<dyn Supervisor>) -> Arc<Poller> {
+        Poller::spawn_with_history_cap(runtime_dir, supervisor, HISTORY_MAX_SAMPLES)
+    }
+
+    /// Like [`Poller::spawn`], with the most samples kept per link of the chart history.
+    pub fn spawn_with_history_cap(
+        runtime_dir: PathBuf,
+        supervisor: Arc<dyn Supervisor>,
+        max_samples: usize,
+    ) -> Arc<Poller> {
         let poller = Arc::new(Poller {
             cell: Mutex::new(None),
             interval_ms: AtomicU64::new(DEFAULT_POLL_INTERVAL_MS),
+            supervisor,
+            run: Mutex::new(None),
+            max_samples,
         });
         let p = poller.clone();
-        thread::spawn(move || p.run(&runtime_dir, supervisor.as_ref()));
+        thread::spawn(move || p.run(&runtime_dir));
         poller
+    }
+
+    fn series(&self) -> std::sync::MutexGuard<'_, Option<RunSeries>> {
+        self.run.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Follows the supervisor: a running process that is not the current run's begins a new
+    /// run (clock at 0, empty series); a start in progress drops the old run; any other state
+    /// freezes the clock of the current run and keeps its series.
+    fn sync_run(&self, status: &SupervisorStatus) {
+        let mut run = self.series();
+        match (status.state, status.pid) {
+            (State::Running, Some(pid)) => {
+                let same = run
+                    .as_ref()
+                    .is_some_and(|r| r.pid == pid && r.started_at == status.started_at);
+                if !same {
+                    *run = Some(RunSeries {
+                        pid,
+                        started_at: status.started_at,
+                        t0: Instant::now(),
+                        stopped_ms: None,
+                        last_ms: None,
+                        links: Vec::new(),
+                    });
+                }
+            }
+            (State::Starting, _) => *run = None,
+            _ => {
+                if let Some(r) = run.as_mut() {
+                    r.stopped_ms.get_or_insert_with(|| millis(r.t0.elapsed()));
+                }
+            }
+        }
+    }
+
+    /// Adds a sample per link, at most one per [`SAMPLE_PERIOD_MS`], from a poll of the
+    /// process `pid`. A poll without a predecessor has no rate window and gives none.
+    fn record(&self, pid: u32, prev: Option<&Snapshot>, cur: &Snapshot) {
+        let Some(prev) = prev else { return };
+        let mut guard = self.series();
+        let Some(run) = guard
+            .as_mut()
+            .filter(|r| r.pid == pid && r.stopped_ms.is_none())
+        else {
+            return;
+        };
+        let t_ms = run.elapsed_ms();
+        if run.last_ms.is_some_and(|l| t_ms < l + SAMPLE_PERIOD_MS) {
+            return;
+        }
+        let view = compute_stats(Some(prev), cur);
+        if run.links.len() < view.directions.len() {
+            run.links.resize_with(view.directions.len(), VecDeque::new);
+        }
+        for (queue, d) in run.links.iter_mut().zip(&view.directions) {
+            queue.push_back(HistorySample::new(t_ms, d));
+            while queue.len() > self.max_samples {
+                queue.pop_front();
+            }
+        }
+        run.last_ms = Some(t_ms);
     }
 
     fn cell(&self) -> std::sync::MutexGuard<'_, Option<Cache>> {
@@ -253,13 +371,14 @@ impl Poller {
         *self.cell() = None;
     }
 
-    fn succeeded(&self, cur: Snapshot, capacity: usize) {
+    fn succeeded(&self, cur: Snapshot, capacity: usize, pid: u32) {
         let mut cell = self.cell();
         let now = Instant::now();
         let (prev, mut ring) = match cell.take() {
             Some(c) => (Some(c.polled.cur), c.ring),
             None => (None, VecDeque::new()),
         };
+        self.record(pid, prev.as_ref(), &cur);
         ring.push_back((now, cur.clone()));
         while ring.len() > capacity {
             ring.pop_front();
@@ -288,13 +407,14 @@ impl Poller {
         }
     }
 
-    fn run(&self, runtime_dir: &Path, supervisor: &dyn Supervisor) {
+    fn run(&self, runtime_dir: &Path) {
         let mut conn: Option<Client> = None;
         let mut conn_pid: Option<u32> = None;
         loop {
             let interval = self.interval_ms.load(Ordering::Relaxed);
             thread::sleep(Duration::from_millis(interval));
-            let status = supervisor.status();
+            let status = self.supervisor.status();
+            self.sync_run(&status);
             let pid = match (status.state, status.pid) {
                 (State::Running, Some(pid)) => pid,
                 _ => {
@@ -324,7 +444,7 @@ impl Poller {
                 continue;
             };
             match poll_once(client) {
-                Ok(cur) => self.succeeded(cur, ring_capacity(interval)),
+                Ok(cur) => self.succeeded(cur, ring_capacity(interval), pid),
                 Err(_) => {
                     conn = None;
                     self.failed();
@@ -337,6 +457,33 @@ impl Poller {
 impl TelemetrySource for Poller {
     fn set_poll_interval(&self, ms: u64) {
         self.interval_ms.store(ms.max(1), Ordering::Relaxed);
+    }
+
+    fn run_history(&self, since_ms: Option<u64>) -> HistoryView {
+        self.sync_run(&self.supervisor.status());
+        let run = self.series();
+        let Some(r) = run.as_ref() else {
+            return HistoryView::default();
+        };
+        let samples = r
+            .links
+            .iter()
+            .enumerate()
+            .map(|(d, queue)| {
+                // the queue is ordered by t_ms
+                let first = since_ms.map_or(0, |t| queue.partition_point(|s| s.t_ms <= t));
+                (d.to_string(), queue.iter().skip(first).copied().collect())
+            })
+            .collect();
+        HistoryView {
+            started_at: r.started_at,
+            samples,
+        }
+    }
+
+    fn elapsed_ms(&self) -> Option<u64> {
+        self.sync_run(&self.supervisor.status());
+        self.series().as_ref().map(RunSeries::elapsed_ms)
     }
 
     fn history(&self) -> Vec<(u64, Snapshot)> {

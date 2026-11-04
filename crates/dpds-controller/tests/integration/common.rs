@@ -896,6 +896,9 @@ pub struct FakeSupervisorInner {
     pub fail_next: Option<(String, Vec<String>)>,
     /// `start` sleeps this long (without holding the lock) before it takes effect.
     pub start_delay: Duration,
+    /// Spec 29: the (pid, started_at) of the next successful `start`; consumed by it. Without
+    /// one a start is pid 4242 and started_at 1_700_000_000, as always.
+    pub next_run: Option<(u32, u64)>,
 }
 
 /// Scripted supervisor: `start` goes straight to Running (pid 4242) unless
@@ -923,6 +926,7 @@ impl FakeSupervisor {
                 stops: 0,
                 fail_next: None,
                 start_delay: Duration::ZERO,
+                next_run: None,
             }),
         })
     }
@@ -934,6 +938,10 @@ impl FakeSupervisor {
     }
     pub fn set_start_delay(&self, d: Duration) {
         self.inner.lock().unwrap().start_delay = d;
+    }
+    /// The next successful `start` reports `pid` and `started_at` instead of 4242 and 1_700_000_000.
+    pub fn set_next_run(&self, pid: u32, started_at: u64) {
+        self.inner.lock().unwrap().next_run = Some((pid, started_at));
     }
     pub fn force_status(&self, s: SupervisorStatus) {
         self.inner.lock().unwrap().status = s;
@@ -952,6 +960,7 @@ impl Supervisor for FakeSupervisor {
         std::thread::sleep(delay);
         let mut i = self.inner.lock().unwrap();
         i.plans.push(plan);
+        let next_run = i.next_run.take();
         i.status = match i.fail_next.take() {
             Some((error, log_tail)) => SupervisorStatus {
                 error: Some(error),
@@ -959,8 +968,8 @@ impl Supervisor for FakeSupervisor {
                 ..status(State::Failed)
             },
             None => SupervisorStatus {
-                pid: Some(4242),
-                started_at: Some(1_700_000_000),
+                pid: Some(next_run.map_or(4242, |r| r.0)),
+                started_at: Some(next_run.map_or(1_700_000_000, |r| r.1)),
                 log_tail: vec!["DPDS running on lcore(s) [2] with 1 port(s).".into()],
                 ..status(State::Running)
             },

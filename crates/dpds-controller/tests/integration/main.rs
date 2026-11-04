@@ -18,6 +18,7 @@
 //! are written down in the header of [`common`].
 
 mod api;
+mod chart_history;
 mod check_cli;
 mod common;
 mod delay_stats;

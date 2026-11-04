@@ -1,5 +1,7 @@
 //! Rates, drop shares and histogram edges from raw telemetry replies (B2, B4).
 
+use std::collections::BTreeMap;
+
 use serde::Serialize;
 use serde_json::Value;
 use utoipa::ToSchema;
@@ -107,6 +109,55 @@ pub struct StatsView {
     pub age_ms: Option<u64>,
     /// No data, or the last poll(s) failed.
     pub stale: bool,
+    /// Milliseconds since the current (or last) run started, from a monotonic clock; frozen
+    /// at the stop. Absent before any run. Shares its clock with `t_ms` of the history.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub elapsed_ms: Option<u64>,
+}
+
+/// One point of a link's chart history: the rates and drop shares `/api/stats` reports for
+/// the poll window ending at `t_ms`, in the units of the charts.
+#[derive(Debug, Clone, Copy, Serialize, ToSchema)]
+pub struct HistorySample {
+    /// Milliseconds since the run started.
+    pub t_ms: u64,
+    pub rx_gbps: f64,
+    pub tx_gbps: f64,
+    pub rx_mpps: f64,
+    pub tx_mpps: f64,
+    /// Drop shares in percent of the packets received in the window, one per cause.
+    pub loss_pct: f64,
+    pub limiter_pct: f64,
+    pub buffer_full_pct: f64,
+    pub nic_tx_pct: f64,
+    pub nic_rx_pct: f64,
+}
+
+impl HistorySample {
+    pub fn new(t_ms: u64, d: &DirectionStats) -> HistorySample {
+        HistorySample {
+            t_ms,
+            rx_gbps: d.rx_bps / 1e9,
+            tx_gbps: d.tx_bps / 1e9,
+            rx_mpps: d.rx_pps / 1e6,
+            tx_mpps: d.tx_pps / 1e6,
+            loss_pct: d.loss_pct,
+            limiter_pct: d.limiter_pct,
+            buffer_full_pct: d.buffer_full_pct,
+            nic_tx_pct: d.nic_tx_pct,
+            nic_rx_pct: d.nic_rx_pct,
+        }
+    }
+}
+
+/// Answer of `GET /api/stats/history`.
+#[derive(Debug, Clone, Default, Serialize, ToSchema)]
+pub struct HistoryView {
+    /// Unix seconds, as `/api/emulation` reports it; null while nothing has run.
+    pub started_at: Option<u64>,
+    /// Per link index (in the order of the start body), the samples with `t_ms` above the
+    /// request's `since_ms`, oldest first.
+    pub samples: BTreeMap<String, Vec<HistorySample>>,
 }
 
 /// Where a clamped percentile lies: below or above the histogram range.
@@ -399,6 +450,7 @@ pub fn compute_stats(prev: Option<&Snapshot>, cur: &Snapshot) -> StatsView {
         ports,
         age_ms: None,
         stale: false,
+        elapsed_ms: None,
     }
 }
 

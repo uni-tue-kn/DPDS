@@ -35,7 +35,7 @@ use crate::lcores::{assign_lcores, DirectionPlan};
 use crate::model::{Link, RunConfig, Settings, StartLink, StartRequest, MAX_NAME_CHARS};
 use crate::stats::{
     compute_stats, delay_histogram, delay_stats_on, uptime_ms, Clamped, Counters, DirectionStats,
-    ExpectedModel, HistogramView, Percentiles, PortStats, StatsView,
+    ExpectedModel, HistogramView, HistorySample, HistoryView, Percentiles, PortStats, StatsView,
 };
 use crate::supervisor::{LaunchPlan, State as RunState, Supervisor};
 use crate::telemetry::TelemetrySource;
@@ -605,8 +605,10 @@ async fn stop(
 
 #[utoipa::path(get, path = "/api/stats", responses((status = 200, body = StatsView)))]
 async fn stats(State(app): Shared) -> Json<StatsView> {
+    let elapsed_ms = app.deps.telemetry.elapsed_ms();
     Json(match app.deps.telemetry.latest() {
         Some(p) => StatsView {
+            elapsed_ms,
             age_ms: Some(p.age_ms),
             stale: p.stale,
             ..compute_stats(p.prev.as_ref(), &p.cur)
@@ -614,9 +616,47 @@ async fn stats(State(app): Shared) -> Json<StatsView> {
         // no data (never polled, not running, or cleared after failed polls)
         None => StatsView {
             stale: true,
+            elapsed_ms,
             ..StatsView::default()
         },
     })
+}
+
+/// `since_ms` of the history query: absent, or digits only (a u64). Any other parameter is an error.
+fn parse_since_ms(query: Option<&str>) -> Result<Option<u64>, ApiError> {
+    let mut since = None;
+    for pair in query.unwrap_or("").split('&').filter(|p| !p.is_empty()) {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        if key != "since_ms" {
+            return Err(ApiError::bad(format!(
+                "unknown query parameter {key:?}: only since_ms is accepted"
+            )));
+        }
+        let ms = (!value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| value.parse::<u64>().ok())
+            .flatten();
+        let Some(ms) = ms.filter(|_| since.is_none()) else {
+            return Err(ApiError::bad(format!(
+                "since_ms = {value:?}: must be given once, as a non-negative integer number of milliseconds"
+            )));
+        };
+        since = Some(ms);
+    }
+    Ok(since)
+}
+
+/// The chart history of the current or last run, per link, one sample per second.
+#[utoipa::path(
+    get, path = "/api/stats/history",
+    params(("since_ms" = Option<u64>, Query, description = "only the samples with t_ms above this, in milliseconds since the run started (default: all)")),
+    responses((status = 200, body = HistoryView), (status = 400, body = ErrorBody))
+)]
+async fn stats_history(
+    State(app): Shared,
+    RawQuery(query): RawQuery,
+) -> Result<Json<HistoryView>, ApiError> {
+    let since_ms = parse_since_ms(query.as_deref())?;
+    Ok(Json(app.deps.telemetry.run_history(since_ms)))
 }
 
 #[utoipa::path(
@@ -695,6 +735,7 @@ async fn histogram(
         validate_start,
         stop,
         stats,
+        stats_history,
         histogram
     ),
     components(schemas(
@@ -720,6 +761,8 @@ async fn histogram(
         VersionView,
         ErrorBody,
         StatsView,
+        HistoryView,
+        HistorySample,
         DirectionStats,
         Counters,
         PortStats,
@@ -755,6 +798,7 @@ pub fn router_with(deps: Deps, frontend: Frontend) -> Router {
         .route("/api/emulation/validate", post(validate_start))
         .route("/api/emulation/stop", post(stop))
         .route("/api/stats", get(stats))
+        .route("/api/stats/history", get(stats_history))
         .route("/api/stats/{dir}/delay_histogram", get(histogram))
         .with_state(app);
     api.merge(SwaggerUi::new("/api/docs").url("/api/openapi.json", ApiDoc::openapi()))
