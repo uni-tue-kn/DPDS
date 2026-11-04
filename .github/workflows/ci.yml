@@ -38,6 +38,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Pinned so a new stable release (new clippy lints, rustfmt changes) can't turn CI red on an
+      # unchanged tree; bump deliberately together with dpds-core's rust-version note.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.99.1
+          components: rustfmt, clippy
+
+      # First: needs neither DPDK nor the build cache, so a formatting slip fails in seconds.
+      - name: Format
+        run: cargo fmt --all -- --check
+
       # libclang-dev: bindgen. libnuma-dev: DPDK refuses to build for several NUMA nodes without
       # it (platform=generic). libpcap-dev: libdpdk.pc requires libpcap, and the net_pcap vdev of
       # the e2e tests links it. The rest is only needed to build DPDK on a cache miss.
@@ -72,19 +83,10 @@ jobs:
           echo "PKG_CONFIG_PATH=$HOME/dpdk/lib/pkgconfig" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=$HOME/dpdk/lib" >> "$GITHUB_ENV"
 
-      # Pinned so a new stable release (new clippy lints, rustfmt changes) can't turn CI red on an
-      # unchanged tree; bump deliberately together with dpds-core's rust-version note.
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.99.1
-          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
 
-      # First, because it is cheap.
-      - name: Format
-        run: cargo fmt --all -- --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       # `telemetry` (crate dpds) is the only feature that changes code paths, the others of
