@@ -108,7 +108,7 @@ export default function ConfigFieldset({ title, value, onChange, presets, onSave
             disabled={opts.disabled}
             required={opts.required}
             aria-required={opts.required ? 'true' : undefined}
-            onChange={(e) => set(key, { ...v, text: e.target.value })}
+            onChange={(e) => set(key, { text: e.target.value, unit: v.unit })}
           />
           <Form.Label htmlFor={`${id(key)}-unit`} visuallyHidden>{`${label} unit`}</Form.Label>
           <Form.Select
@@ -261,7 +261,6 @@ export default function ConfigFieldset({ title, value, onChange, presets, onSave
               {text('ge_r', 'Gilbert-Elliot r', { required: true })}
               {text('ge_k', 'Gilbert-Elliot k', { required: true })}
               {text('ge_h', 'Gilbert-Elliot h', { required: true })}
-              {check('ge_good', 'Gilbert-Elliot starts in good state')}
             </>
           )}
         </>,

@@ -439,10 +439,10 @@ describe('Link editor: create', () => {
     await user.type(input(g, 'Gilbert-Elliot k'), '0.9');
     await user.clear(input(g, 'Gilbert-Elliot h'));
     await user.type(input(g, 'Gilbert-Elliot h'), '0.3');
-    await user.click(input(g, 'Gilbert-Elliot starts in good state')); // default on -> off
     await user.click(save());
     const c = lastCreate().config;
-    expect(c.loss_model).toEqual({ type: 'GilbertElliot', p: 0.01, r: 0.2, k: 0.9, h: 0.3, state_is_good: false });
+    expect(c.loss_model).toEqual({ type: 'GilbertElliot', p: 0.01, r: 0.2, k: 0.9, h: 0.3 }); // spec26: exactly {type, p, r, k, h}
+    expect(Object.keys(must(c.loss_model)).sort()).toEqual(['h', 'k', 'p', 'r', 'type']);
     expect(c.delay_stats).toBe(true);
   });
 
@@ -454,7 +454,7 @@ describe('Link editor: create', () => {
     await user.selectOptions(within(g).getByLabelText('Loss model'), 'GilbertElliot');
     expect(within(g).queryByLabelText('Random loss probability')).not.toBeInTheDocument();
     for (const n of ['p', 'r', 'k', 'h']) expect(within(g).getByLabelText(`Gilbert-Elliot ${n}`)).toBeInTheDocument();
-    expect(within(g).getByLabelText('Gilbert-Elliot starts in good state')).toBeChecked();
+    expect(within(g).queryByLabelText('Gilbert-Elliot starts in good state')).not.toBeInTheDocument();
   });
 
   it('offers exactly the five delay distributions and the two limiter modes', async () => {
@@ -714,7 +714,7 @@ describe('Link editor: edit', () => {
     expect(input(g, 'Gilbert-Elliot r')).toHaveValue(0.2);
     expect(input(g, 'Gilbert-Elliot k')).toHaveValue(0.9);
     expect(input(g, 'Gilbert-Elliot h')).toHaveValue(0.3);
-    expect(input(g, 'Gilbert-Elliot starts in good state')).not.toBeChecked();
+    expect(screen.queryByLabelText('Gilbert-Elliot starts in good state')).not.toBeInTheDocument();
     expect(input(g, 'Buffer capacity')).toHaveValue(5000);
     expect(input(g, 'Reordering')).toBeChecked();
     expect(input(g, 'Seed')).toHaveDisplayValue('42');

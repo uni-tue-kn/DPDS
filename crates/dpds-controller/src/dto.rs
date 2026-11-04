@@ -89,18 +89,8 @@ pub struct LimiterDto {
 #[serde(deny_unknown_fields)]
 #[serde(tag = "type")]
 pub enum LossModelDto {
-    Random {
-        p: f64,
-    },
-    GilbertElliot {
-        p: f64,
-        r: f64,
-        k: f64,
-        h: f64,
-        /// Absent: the model starts in the good state. Kept as sent.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        state_is_good: Option<bool>,
-    },
+    Random { p: f64 },
+    GilbertElliot { p: f64, r: f64, k: f64, h: f64 },
 }
 
 /// Optional delay histogram settings of a direction; anything omitted is
@@ -219,17 +209,12 @@ impl ConfigDto {
                 probability("p", *p)?;
                 LossModel::Random(*p)
             }
-            Some(LossModelDto::GilbertElliot {
-                p,
-                r,
-                k,
-                h,
-                state_is_good,
-            }) => {
+            Some(LossModelDto::GilbertElliot { p, r, k, h }) => {
                 for (name, v) in [("p", p), ("r", r), ("k", k), ("h", h)] {
                     probability(name, *v)?;
                 }
-                LossModel::GilbertElliot(*p, *r, *k, *h, state_is_good.unwrap_or(true))
+                // dpds-core always starts the model in the Good state.
+                LossModel::GilbertElliot(*p, *r, *k, *h, true)
             }
         };
         let d = self.delayer.clone().unwrap_or_else(DelayerDto::none);

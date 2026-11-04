@@ -30,7 +30,7 @@ export interface LimiterDto {
 
 export type LossModelDto =
   | { type: 'Random'; p: number }
-  | { type: 'GilbertElliot'; p: number; r: number; k: number; h: number; state_is_good?: boolean };
+  | { type: 'GilbertElliot'; p: number; r: number; k: number; h: number };
 
 /** All three optional (null/absent = automatic default: 256 bins, mean +- 6 std). */
 export interface HistogramDto {

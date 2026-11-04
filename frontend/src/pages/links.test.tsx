@@ -498,14 +498,13 @@ describe('Links: inspect panel (v16)', () => {
       'Gilbert-Elliot r',
       'Gilbert-Elliot k',
       'Gilbert-Elliot h',
-      'Gilbert-Elliot starts in good state',
-    ]);
+    ]); // spec26: no good-state row
     expect(field(dropper, 'Loss model').textContent?.trim()).toBe('GilbertElliot');
     expect(field(dropper, 'Gilbert-Elliot p').textContent?.trim()).toBe('0.01');
     expect(field(dropper, 'Gilbert-Elliot r').textContent?.trim()).toBe('0.2');
     expect(field(dropper, 'Gilbert-Elliot k').textContent?.trim()).toBe('0.9');
     expect(field(dropper, 'Gilbert-Elliot h').textContent?.trim()).toBe('0.3');
-    expect(field(dropper, 'Gilbert-Elliot starts in good state').textContent?.trim()).toBe('no');
+    expect(within(dropper).queryByText('Gilbert-Elliot starts in good state')).not.toBeInTheDocument();
 
     // delay statistics off: only the switch is listed (the stored histogram is inactive)
     const stats = group(dialog, 'Statistics');
@@ -740,9 +739,7 @@ describe('Links list: Delay, Reordering, Limiter and Loss columns (v16)', () => 
   });
 
   it('Gilbert-Elliott loss lists p, r, h, k in this order, whatever the stored key order', async () => {
-    seedLinks([
-      withConfig({ loss_model: { type: 'GilbertElliot', k: 0.5, h: 0.25, r: 0.125, p: 0.0625, state_is_good: false } }),
-    ]);
+    seedLinks([withConfig({ loss_model: { type: 'GilbertElliot', k: 0.5, h: 0.25, r: 0.125, p: 0.0625 } })]);
     renderApp('/links');
     expect(await cellOf('a-b', LOSS)).toBe('Gilbert-Elliott p=0.0625, r=0.125, h=0.25, k=0.5');
   });

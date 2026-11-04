@@ -106,9 +106,6 @@ export default function LinkInspect({
                     <Item name="Gilbert-Elliot r">{c.loss_model.r}</Item>
                     <Item name="Gilbert-Elliot k">{c.loss_model.k}</Item>
                     <Item name="Gilbert-Elliot h">{c.loss_model.h}</Item>
-                    <Item name="Gilbert-Elliot starts in good state">
-                      {c.loss_model.state_is_good === false ? 'no' : 'yes'}
-                    </Item>
                   </>
                 )}
               </Section>

@@ -97,13 +97,7 @@ describe.each(PAGES)('$name: subsections', (page: ConfigPage) => {
     const user = await page.openFull();
     await user.selectOptions(ctl('Loss model'), 'GilbertElliot');
     const d = section('Dropper');
-    for (const l of [
-      'Gilbert-Elliot p',
-      'Gilbert-Elliot r',
-      'Gilbert-Elliot k',
-      'Gilbert-Elliot h',
-      'Gilbert-Elliot starts in good state',
-    ]) {
+    for (const l of ['Gilbert-Elliot p', 'Gilbert-Elliot r', 'Gilbert-Elliot k', 'Gilbert-Elliot h']) {
       expect(within(d).getByLabelText(l)).toBeInTheDocument();
     }
     expect(within(d).queryByLabelText('Random loss probability')).not.toBeInTheDocument();

@@ -62,26 +62,49 @@ fn json_with_random_loss_converts_to_the_core_config() {
 
 #[test]
 fn gilbert_elliot_uses_named_fields() {
-    let v = with_loss(
-        json!({"type":"GilbertElliot","p":0.01,"r":0.3,"k":1.0,"h":0.5,"state_is_good":false}),
-    );
+    // Spec 26: the DTO has no `state_is_good`; the core is always handed `true`.
+    let v = with_loss(json!({"type":"GilbertElliot","p":0.01,"r":0.3,"k":1.0,"h":0.5}));
     let core = dto_from(v).to_core().unwrap();
     match core.loss_model {
         LossModel::GilbertElliot(p, r, k, h, good) => {
-            assert_eq!((p, r, k, h, good), (0.01, 0.3, 1.0, 0.5, false));
+            assert_eq!((p, r, k, h, good), (0.01, 0.3, 1.0, 0.5, true));
         }
         other => panic!("wrong loss model {other:?}"),
     }
 }
 
 #[test]
-fn gilbert_elliot_state_is_good_defaults_to_true() {
+fn gilbert_elliot_always_starts_in_the_good_state() {
     let v = with_loss(json!({"type":"GilbertElliot","p":0.01,"r":0.3,"k":1.0,"h":0.5}));
     let core = dto_from(v).to_core().unwrap();
     assert!(matches!(
         core.loss_model,
         LossModel::GilbertElliot(_, _, _, _, true)
     ));
+}
+
+#[test]
+fn gilbert_elliot_state_is_good_is_an_unknown_field_for_either_value() {
+    for good in [true, false] {
+        let v = with_loss(
+            json!({"type":"GilbertElliot","p":0.01,"r":0.3,"k":1.0,"h":0.5,"state_is_good":good}),
+        );
+        let err = serde_json::from_value::<ConfigDto>(v)
+            .expect_err("state_is_good is no longer part of the DTO")
+            .to_string();
+        assert!(err.contains("state_is_good"), "{err}");
+    }
+}
+
+#[test]
+fn gilbert_elliot_serialises_exactly_type_p_r_k_h() {
+    let v = with_loss(json!({"type":"GilbertElliot","p":0.01,"r":0.3,"k":1.0,"h":0.5}));
+    let back = strip_nulls(&serde_json::to_value(dto_from(v)).unwrap());
+    assert_eq!(
+        back["loss_model"],
+        json!({"type":"GilbertElliot","p":0.01,"r":0.3,"k":1.0,"h":0.5}),
+        "{back}"
+    );
 }
 
 #[test]
@@ -92,7 +115,7 @@ fn seed_is_optional() {
 
 #[test]
 fn gilbert_elliot_and_random_loss_roundtrip_through_json_with_named_fields() {
-    let ge = json!({"type":"GilbertElliot","p":0.01,"r":0.3,"k":1.0,"h":0.5,"state_is_good":true});
+    let ge = json!({"type":"GilbertElliot","p":0.01,"r":0.3,"k":1.0,"h":0.5});
     let mut v = cfg_json(1.0e6, 1.0e5);
     v["loss_model"] = ge.clone();
     v["limiter"] = json!({"mode":"TokenBucketFilter","rate_bps":1.0e9});

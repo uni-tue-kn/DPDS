@@ -69,9 +69,6 @@ export const HELP = {
   // dpds-core/src/dropper.rs:11-17, 68-72 (drop when the draw > h)
   'Gilbert-Elliot h':
     'Probability that a packet is delivered (not dropped) while in the bad state, so loss there is 1 \u2212 h. Between 0 and 1.',
-  // dpds-core/src/dropper.rs:41-44: with_rng sets state_is_good = true for every GilbertElliot model
-  'Gilbert-Elliot starts in good state':
-    'Initial state of the model. dpds-core currently always starts in the good state, whatever is set here.',
   // dpds-controller/src/dto.rs:166-170
   'Delay statistics':
     'Record the intended delay, lateness and delay histogram of this link. Off: dpds skips that work; the counters and drop causes stay.',

@@ -76,7 +76,7 @@ export function config2(): ConfigDto {
       initialization_rate_pps: 8000000,
     },
     limiter: { mode: 'TokenBucketFilter', rate_bps: 40000000000 },
-    loss_model: { type: 'GilbertElliot', p: 0.01, r: 0.2, k: 0.9, h: 0.3, state_is_good: false },
+    loss_model: { type: 'GilbertElliot', p: 0.01, r: 0.2, k: 0.9, h: 0.3 },
     seed: 42,
     histogram: { bins: 64, lo_ns: 100, hi_ns: 9000 },
     delay_stats: false,

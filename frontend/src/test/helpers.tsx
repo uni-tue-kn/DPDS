@@ -109,7 +109,7 @@
 //     "Initialization rate" (was "Initialization rate (pps)"; message and label no longer carry the unit).
 //   Limiter: "Limiter active", "Limiter mode", "Rate" (was "Rate (bit/s)"), "Burst limit" (was "Burst limit (bit)").
 //   Dropper: "Loss model" (options Random | GilbertElliot only: the DTO has no "none", Random with p 0 is "no loss"),
-//     "Random loss probability" | "Gilbert-Elliot p|r|k|h", "Gilbert-Elliot starts in good state".
+//     "Random loss probability" | "Gilbert-Elliot p|r|k|h" (spec26: no "starts in good state" any more).
 //   Statistics: "Delay statistics", "Histogram bins" (no unit), "Histogram lo" (was "Histogram lo (ns)"), "Histogram hi".
 //   Validation messages name the label without a unit ("Mean delay must ...", never "(ns)"); the rules are on the base
 //   value (Initialization rate: finite and >= 1 pps AFTER conversion, so 0.5 Mpps is fine and 0.9 pps is not).
@@ -212,7 +212,7 @@
 //       Delayer:    Delay distribution (enum name) | Mean delay | Delay std | Correlation "on"/"off" |
 //                   Half-life period (ONLY while correlation is on) | Initialization rate
 //       Limiter:    Limiter "off" and nothing else, or Limiter "on" + Limiter mode | Rate | Burst limit
-//       Dropper:    Loss model (enum name) + Random loss probability, or Gilbert-Elliot p | r | k | h | "starts in good state" yes/no
+//       Dropper:    Loss model (enum name) + Random loss probability, or Gilbert-Elliot p | r | k | h (spec26: no good-state row)
 //       Statistics: Delay statistics "on"/"off" and, only while on, Histogram bins | lo | hi ("automatic" when not set)
 //     Unit fields read "<number> <unit>" by the editor's display rule ("2.5 \u00b5s", "12.5 Mpps", "40 Gbit/s", "120 kbit",
 //     "4 ms"), probabilities as the plain stored number ("0.07", no float noise), no "(ns)" anywhere.
@@ -346,7 +346,7 @@
 //   "Delay std (ns)", "Activate correlation", "Half-life period (ns)", "Initialization rate (pps)" (v12), "Limiter
 //   active", "Limiter mode", "Rate (bit/s)", "Burst limit (bit)",
 //   "Loss model" (values Random | GilbertElliot), Random: "Random loss probability"; Gilbert-Elliot:
-//   "Gilbert-Elliot p", "... r", "... k", "... h", "Gilbert-Elliot starts in good state" (only the fields of
+//   "Gilbert-Elliot p", "... r", "... k", "... h" (spec26: no good-state checkbox; only the fields of
 //   the selected model are rendered), "Buffer capacity", "Reordering", "Seed" (empty -> null),
 //   "Histogram bins", "Histogram lo (ns)", "Histogram hi (ns)" (all empty -> null/absent), "Delay statistics".
 // - Buttons "Save" and link "Cancel"; save -> `createLink(input)` / `updateLink(id, input)` then /links.

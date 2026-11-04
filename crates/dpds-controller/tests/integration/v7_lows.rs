@@ -206,6 +206,13 @@ fn typos() -> Vec<Typo> {
             "loss model",
             Box::new(|c| c["loss_model"] = json!({"type": "Random", "p": 0.1, "pp": 0.2})),
         ),
+        (
+            "gilbert-elliot state_is_good (gone)",
+            Box::new(|c| {
+                c["loss_model"] = json!({"type": "GilbertElliot", "p": 0.1, "r": 0.2, "k": 0.3,
+                    "h": 0.4, "state_is_good": true})
+            }),
+        ),
     ]
 }
 

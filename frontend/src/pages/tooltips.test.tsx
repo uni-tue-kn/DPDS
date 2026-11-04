@@ -77,13 +77,7 @@ const LINK_LABELS = [
   'Histogram lo',
   'Histogram hi',
 ];
-const GE_LABELS = [
-  'Gilbert-Elliot p',
-  'Gilbert-Elliot r',
-  'Gilbert-Elliot k',
-  'Gilbert-Elliot h',
-  'Gilbert-Elliot starts in good state',
-];
+const GE_LABELS = ['Gilbert-Elliot p', 'Gilbert-Elliot r', 'Gilbert-Elliot k', 'Gilbert-Elliot h'];
 const PRESET_ONLY_LABELS = ['Description'];
 const LINK_ONLY_LABELS = ['Worker lcore', 'Ingress', 'Egress', 'Apply preset'];
 

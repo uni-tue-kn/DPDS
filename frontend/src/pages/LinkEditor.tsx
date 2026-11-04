@@ -101,6 +101,9 @@ function Editor({
     let input: LinkInput;
     try {
       if (name.trim() === '') throw new Error('Name is required');
+      if (!LINK_NAME.test(name.trim())) {
+        throw new Error('Name must be 1 to 32 characters: letters A-Z a-z, digits, underscore, dot or dash');
+      }
       if (others.some((l) => l.name === name.trim())) throw new Error(`A link named "${name.trim()}" already exists`);
       const ports = [
         ['Ingress', ingress],
@@ -216,6 +219,9 @@ function Editor({
     </>
   );
 }
+
+/** The controller's link-name rule (`valid_name` in `api.rs`). */
+const LINK_NAME = /^[A-Za-z0-9_.-]{1,32}$/;
 
 export default function LinkEditor() {
   const { id } = useParams();

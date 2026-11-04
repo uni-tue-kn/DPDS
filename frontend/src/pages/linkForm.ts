@@ -9,6 +9,7 @@ import {
   emptyUnit,
   fromBase,
   parseFrame,
+  sourceOf,
   sameFamily,
   toBase,
 } from '../common/units';
@@ -55,7 +56,6 @@ export interface ConfigForm {
   ge_r: string;
   ge_k: string;
   ge_h: string;
-  ge_good: boolean;
   buffer_capacity: string;
   reordering: boolean;
   seed: string;
@@ -96,7 +96,6 @@ export function defaultConfigForm(): ConfigForm {
     ge_r: '0.2',
     ge_k: '1',
     ge_h: '0',
-    ge_good: true,
     buffer_capacity: '100000',
     reordering: false,
     seed: '',
@@ -151,7 +150,6 @@ export function configToForm(c: ConfigDto, frame?: number | null): ConfigForm {
       f.ge_r = String(l.r);
       f.ge_k = String(l.k);
       f.ge_h = String(l.h);
-      f.ge_good = l.state_is_good ?? true;
     }
   }
   return f;
@@ -186,22 +184,34 @@ function unitNum(v: UnitValue, units: Unit[], label: string, required = true): n
  * A rate field in the base unit of its own family (units[0]). A value typed in the other family is converted with the
  * frame size and rounded to a whole base unit.
  */
-function rateBase(v: UnitValue, units: Unit[], label: string, frame: number | null): number {
-  const n = toBase(v, units);
+function rateBase(
+  v: UnitValue,
+  units: Unit[],
+  label: string,
+  frame: number | null,
+  checkExact: (exact: number) => void = () => {},
+): number {
+  const src = sourceOf(v);
+  const n = toBase(src, units);
   if (n === null) throw new Error(`${label} must be a number`);
-  const from = units[v.unit];
-  if (sameFamily(from, units[0])) return n;
+  const from = units[src.unit];
+  if (sameFamily(from, units[0])) {
+    checkExact(n);
+    return n;
+  }
   if (frame === null) throw new Error(`Average frame size is required to convert ${label} from ${from.label}`);
-  return Math.round(convertBase(n, from, units[0], frame));
+  const exact = convertBase(n, from, units[0], frame);
+  checkExact(exact);
+  return Math.round(exact);
 }
 
 /** No default exists for this rate: the user always chooses it. */
 function initRate(v: UnitValue, frame: number | null): number {
   const label = 'Initialization rate';
   if (v.text.trim() === '') throw new Error(`${label} is required`);
-  const n = rateBase(v, INIT_RATE_UNITS, label, frame);
-  if (n < 1) throw new Error(`${label} must be at least 1 pps`);
-  return n;
+  return rateBase(v, INIT_RATE_UNITS, label, frame, (exact) => {
+    if (exact < 1) throw new Error(`${label} must be at least 1 pps`);
+  });
 }
 
 /** The limiter rate: empty, negative or 0 (also after rounding to a whole bit/s) is refused, the controller needs > 0. */
@@ -279,7 +289,6 @@ function lossToDto(f: ConfigForm): LossModelDto {
         r: prob(f.ge_r, 'Gilbert-Elliot r'),
         k: prob(f.ge_k, 'Gilbert-Elliot k'),
         h: prob(f.ge_h, 'Gilbert-Elliot h'),
-        state_is_good: f.ge_good,
       };
 }
 

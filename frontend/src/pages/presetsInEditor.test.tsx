@@ -125,16 +125,16 @@ describe('Link editor: Apply preset', () => {
     expect(field(g, 'Delay statistics')).toBeChecked();
   });
 
-  it('copies a Gilbert-Elliot preset including the good-state flag (fields of the model appear)', async () => {
+  it('copies a Gilbert-Elliot preset (fields of the model appear, no good-state flag)', async () => {
     const user = await openEdit();
-    await user.selectOptions(applySelect(), 'other'); // config2: GE p .01 r .2 k .9 h .3 bad start, delay_stats false
+    await user.selectOptions(applySelect(), 'other'); // config2: GE p .01 r .2 k .9 h .3, delay_stats false
     const g = group();
     expect(field(g, 'Loss model')).toHaveValue('GilbertElliot');
     expect(field(g, 'Gilbert-Elliot p')).toHaveValue(0.01);
     expect(field(g, 'Gilbert-Elliot r')).toHaveValue(0.2);
     expect(field(g, 'Gilbert-Elliot k')).toHaveValue(0.9);
     expect(field(g, 'Gilbert-Elliot h')).toHaveValue(0.3);
-    expect(field(g, 'Gilbert-Elliot starts in good state')).not.toBeChecked();
+    expect(within(g).queryByLabelText('Gilbert-Elliot starts in good state')).not.toBeInTheDocument();
     expect(field(g, 'Delay statistics')).not.toBeChecked();
     expect(field(g, 'Delay distribution')).toHaveValue('GammaDistribution');
     expect(field(g, 'Initialization rate')).toHaveValue(8); // v12: 8 Mpps

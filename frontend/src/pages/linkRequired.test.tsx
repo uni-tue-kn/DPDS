@@ -187,13 +187,12 @@ describe.each(PAGES)('$name: conditionally required fields', (page: ConfigPage) 
     expectRequired(ctl('Mean delay'));
   });
 
-  it('Random loss: only its probability is marked; Gilbert-Elliot: p, r, k and h (not the good-state checkbox)', async () => {
+  it('Random loss: only its probability is marked; Gilbert-Elliot: p, r, k and h', async () => {
     const user = await page.openFull();
     expectRequired(ctl('Random loss probability'));
     await user.selectOptions(ctl('Loss model'), 'GilbertElliot');
     expect(screen.queryByLabelText('Random loss probability')).not.toBeInTheDocument();
     for (const n of ['p', 'r', 'k', 'h']) expectRequired(ctl(`Gilbert-Elliot ${n}`));
-    expectOptional(ctl('Gilbert-Elliot starts in good state'));
     expectOptional(ctl('Loss model'));
   });
 
@@ -209,7 +208,7 @@ describe.each(PAGES)('$name: conditionally required fields', (page: ConfigPage) 
     await page.openStored({
       ...cfg(),
       delayer: { ...must(cfg().delayer), activate_correlation: true },
-      loss_model: { type: 'GilbertElliot', p: 0.01, r: 0.2, k: 0.9, h: 0.3, state_is_good: true },
+      loss_model: { type: 'GilbertElliot', p: 0.01, r: 0.2, k: 0.9, h: 0.3 },
     });
     for (const l of [
       'Half-life period',

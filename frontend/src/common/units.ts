@@ -36,6 +36,11 @@ export const SIZE_UNITS: Unit[] = [
 export interface UnitValue {
   text: string;
   unit: number;
+  /**
+   * Set by a cross-family unit change: the text and unit the shown number was converted from. Further unit changes and
+   * saving use it, so switching back and forth does not drift. Typing into the number drops it. Form state only.
+   */
+  from?: { text: string; unit: number };
 }
 
 const DECIMAL = /^([+-]?)(\d*)\.?(\d*)(?:e([+-]?\d+))?$/i;
@@ -104,22 +109,27 @@ export function convertBase(n: number, from: Unit, to: Unit, frame: number): num
 
 /**
  * Switches the unit and converts the shown number; an empty or unparsable text stays as it is. Within a family the
- * conversion is decimal-exact; across families it needs the frame size and shows the number rounded to 3 decimals.
- * Without one the number cannot be converted, so it is cleared rather than reinterpreted in the new unit.
+ * conversion is decimal-exact; across families it needs the frame size and shows the number rounded to 3 decimals, and
+ * the value it was converted from is remembered (`from`) so that the next change converts from that, not from the
+ * rounded number. Without a frame size a cross-family number cannot be converted, so it is cleared.
  */
 export function changeUnit(v: UnitValue, units: Unit[], unit: number, frame: number | null = null): UnitValue {
-  const from = units[v.unit];
+  const src = sourceOf(v);
+  const from = units[src.unit];
   const to = units[unit];
   if (!sameFamily(from, to)) {
-    const n = toBase(v, units);
+    const n = toBase(src, units);
     if (frame === null) return { text: '', unit };
-    if (n === null) return { text: v.text, unit };
+    if (n === null) return { text: src.text, unit };
     const shown = convertBase(n, from, to, frame) / 10 ** to.exp;
-    return { text: String(Number(shown.toFixed(3))), unit };
+    return { text: String(Number(shown.toFixed(3))), unit, from: src };
   }
-  const t = shiftDecimal(v.text, from.exp - to.exp);
-  return { text: t ?? v.text, unit };
+  const t = shiftDecimal(src.text, from.exp - to.exp);
+  return v.from ? { text: t ?? src.text, unit, from: v.from } : { text: t ?? src.text, unit };
 }
+
+/** What the field holds exactly: the remembered value if there is one, else the shown number. */
+export const sourceOf = (v: UnitValue): { text: string; unit: number } => v.from ?? { text: v.text, unit: v.unit };
 
 /** The base value of the shown number, or null when it is empty or not a finite number. */
 export function toBase(v: UnitValue, units: Unit[]): number | null {
