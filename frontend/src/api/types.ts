@@ -202,6 +202,29 @@ export interface StatsView {
   age_ms?: number | null;
   /** the data is old (poll failures); after 5 failures `directions` is empty. */
   stale: boolean;
+  /** Milliseconds since the run started, on the controller's monotonic clock (frozen after a stop); null/absent: nothing ran. */
+  elapsed_ms?: number | null;
+}
+
+/** One second of one link's run, as `GET /api/stats/history` reports it (`t_ms` is relative to the run's start). */
+export interface HistorySample {
+  t_ms: number;
+  rx_gbps: number;
+  tx_gbps: number;
+  rx_mpps: number;
+  tx_mpps: number;
+  /** Drop shares in percent of the packets received. */
+  loss_pct: number;
+  limiter_pct: number;
+  buffer_full_pct: number;
+  nic_tx_pct: number;
+  nic_rx_pct: number;
+}
+
+/** The current run's series per link index (as a string key); `started_at` (unix seconds) is null while nothing ran. */
+export interface HistoryView {
+  started_at: number | null;
+  samples: Record<string, HistorySample[]>;
 }
 
 export type Clamped = 'underflow' | 'overflow' | null;

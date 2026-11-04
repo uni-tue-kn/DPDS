@@ -45,6 +45,16 @@ describe('api client (real module)', () => {
     ['getEmulation', () => client.getEmulation(), '/api/emulation'],
     ['getStats', () => client.getStats(), '/api/stats'],
     ['getDelayHistogram', () => client.getDelayHistogram(2), '/api/stats/2/delay_histogram'],
+    // spec 29
+    ['getStatsHistory', () => client.getStatsHistory(), '/api/stats/history'],
+    ['getStatsHistory with since_ms', () => client.getStatsHistory(12500), '/api/stats/history?since_ms=12500'],
+    // 0 is a real time here (samples newer than 0 s), unlike the histogram window where 0 means absent
+    ['getStatsHistory since 0', () => client.getStatsHistory(0), '/api/stats/history?since_ms=0'],
+    [
+      'getStatsHistory since a whole number',
+      () => client.getStatsHistory(192000),
+      '/api/stats/history?since_ms=192000',
+    ],
   ])('%s GETs %s and returns the parsed body', async (_name, call, url) => {
     reply(200, { ok: 1 });
     await expect(call()).resolves.toEqual({ ok: 1 });
@@ -120,6 +130,7 @@ describe('api client (real module)', () => {
       'getInterfaces',
       'getOnline',
       'getStats',
+      'getStatsHistory',
       'startEmulation',
       'stopEmulation',
     ]);

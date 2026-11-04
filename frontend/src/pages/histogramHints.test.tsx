@@ -204,7 +204,10 @@ describe('histogram range: binary-aligned check and suggested range', () => {
     await lo(user, '0', 'ns');
     await hi(user, '4096', 'ns');
     expect(text()).not.toContain('Binary-aligned');
-    expect(text()).toContain('Suggested range: 0 – 4096 ns (2^12 ns).');
+    // spec 28b item 6a. Was: 'Suggested range: 0 – 4096 ns (2^12 ns).' here; lo is 0 and hi already is that value, so applying
+    // the suggestion would change nothing and it is not shown (histogramHintsSpec28b.test.tsx)
+    expect(text()).not.toContain('Suggested range');
+    expect(useSuggestion()).not.toBeInTheDocument();
     await bins(user, '64'); // now all three are set and aligned
     expect(text()).toContain('Binary-aligned bins: 64 ns each (2^6 ns).');
     await lo(user, '', undefined); // lo cleared again

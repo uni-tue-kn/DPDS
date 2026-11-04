@@ -8,6 +8,8 @@ import type {
   EmulationView,
   Hint,
   HistogramView,
+  HistorySample,
+  HistoryView,
   Interface,
   Link,
   LinkInput,
@@ -389,4 +391,34 @@ export function runningEmulation(
   state: EmulationState = 'running',
 ): EmulationView {
   return emulation(state, { config });
+}
+
+/**
+ * Spec 29: one sample of `GET /api/stats/history` (`t_ms`: whole milliseconds since the run started). The defaults are the rates and shares of `dirStats()` in the units of the
+ * series (Gbit/s, Mpps, percent), so a chart built from the history shows what the stats cards show.
+ */
+export function historySample(t_ms: number, over: Partial<HistorySample> = {}): HistorySample {
+  return {
+    t_ms,
+    rx_gbps: 9.5,
+    tx_gbps: 8.25,
+    rx_mpps: 1.234567,
+    tx_mpps: 1.2,
+    loss_pct: 0.5,
+    limiter_pct: 1.25,
+    buffer_full_pct: 2.5,
+    nic_tx_pct: 0.1,
+    nic_rx_pct: 0.75,
+    ...over,
+  };
+}
+
+/** `GET /api/stats/history`: the run's start (unix seconds, as `emulation('running')` has it) and the samples per link index. */
+export function history(samples: Record<string, HistorySample[]>, over: Partial<HistoryView> = {}): HistoryView {
+  return { started_at: 1762000000, samples, ...over };
+}
+
+/** `count` samples one second apart, at t_ms = from * 1000, (from + 1) * 1000, ... (`from` in seconds), all with the same values. */
+export function historySamples(from: number, count: number, over: Partial<HistorySample> = {}): HistorySample[] {
+  return Array.from({ length: count }, (_, i) => historySample((from + i) * 1000, over));
 }

@@ -416,6 +416,7 @@ describe('no REST calls for the removed routes', () => {
       'getInterfaces',
       'getOnline',
       'getStats',
+      'getStatsHistory', // spec 29
       'startEmulation',
       'stopEmulation',
     ]);

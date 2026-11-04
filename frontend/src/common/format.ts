@@ -61,15 +61,19 @@ export function linkLabel(
   return `${name || '?'}: ${label(ingress) || '?'} → ${label(egress) || '?'}`;
 }
 
-/** The first of `units` (each 1000 x the one before) in which `v` is at least 1, with two decimals: "9.25 Gbit/s". */
+/**
+ * The first of `units` (each 1000 x the one before) in which `v` shows as at least 1, with two decimals ("9.25 Gbit/s";
+ * none for the base unit). The unit is chosen after rounding, so 999 996 bit/s is "1.00 Mbit/s", not "1000.00 kbit/s".
+ */
 function scaled(v: number, units: string[]): string {
+  const show = (x: number, i: number) => x.toFixed(i === 0 ? 0 : 2);
   let i = 0;
   let x = v;
-  while (x >= 1000 && i < units.length - 1) {
+  while (i < units.length - 1 && Number(show(x, i)) >= 1000) {
     x /= 1000;
     i += 1;
   }
-  return `${i === 0 ? x.toFixed(0) : x.toFixed(2)} ${units[i]}`;
+  return `${show(x, i)} ${units[i]}`;
 }
 
 /** The rate pills of the dashboard: "9.25 Gbit/s (7.31 Mpps)". */
@@ -77,8 +81,8 @@ export function formatRatePill(bps: number, pps: number): string {
   return `${scaled(bps, ['bit/s', 'kbit/s', 'Mbit/s', 'Gbit/s'])} (${scaled(pps, ['pps', 'kpps', 'Mpps'])})`;
 }
 
-/** Seconds as "1h 2m 5s". */
-export function formatElapsed(seconds: number): string {
-  const s = Math.max(0, Math.floor(seconds));
+/** Milliseconds (a run's relative time) as "1h 2m 5s". */
+export function formatElapsed(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
   return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m ${s % 60}s`;
 }

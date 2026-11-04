@@ -3,7 +3,16 @@
 // Every function returns the parsed JSON body. Any non-2xx response rejects with `ApiError`; a network
 // failure rejects with the plain fetch error. Every non-GET request carries `Content-Type: application/json`
 // (the controller answers 415 otherwise), also the body-less stop.
-import type { EmulationView, Hint, HistogramView, Interface, OnlineView, StartRequest, StatsView } from './types';
+import type {
+  EmulationView,
+  Hint,
+  HistogramView,
+  HistoryView,
+  Interface,
+  OnlineView,
+  StartRequest,
+  StatsView,
+} from './types';
 
 export class ApiError extends Error {
   status: number;
@@ -49,3 +58,6 @@ export const getStats = () => request<StatsView>('GET', '/stats');
 /** `windowS` 10 | 60 | 300 = only the last n seconds; absent = since start. */
 export const getDelayHistogram = (dir: number, windowS?: number) =>
   request<HistogramView>('GET', `/stats/${dir}/delay_histogram${windowS ? `?window_s=${windowS}` : ''}`);
+/** The run's per-second series; `sinceMs` = only samples newer than that (0 is a real time), absent = everything. */
+export const getStatsHistory = (sinceMs?: number) =>
+  request<HistoryView>('GET', `/stats/history${sinceMs === undefined ? '' : `?since_ms=${sinceMs}`}`);

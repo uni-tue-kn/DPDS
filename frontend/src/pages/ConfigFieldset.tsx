@@ -44,6 +44,9 @@ function Section({ title, onRemove, children }: { title: string; onRemove?: () =
 
 const isPowerOfTwo = (n: number) => Number.isSafeInteger(n) && n > 0 && Number.isInteger(Math.log2(n));
 
+/** 2^k for a whole k, negative ones included (a bin narrower than 1 ns). */
+const isBinaryWidth = (n: number) => Number.isFinite(n) && n > 0 && Number.isInteger(Math.log2(n));
+
 /** `ns` as the text of the time unit `unit`, exact ("0.064"), or null when it cannot be shown. */
 const inUnit = (ns: number, unit: number) => shiftDecimal(String(ns), -TIME_UNITS[unit].exp);
 
@@ -56,13 +59,15 @@ function rangeAdvice(
   const lo = value.hist_lo.text.trim() === '' ? null : toBase(value.hist_lo, TIME_UNITS);
   const bins = value.hist_bins.trim() === '' ? NaN : Number(value.hist_bins);
   const width = lo === null ? NaN : (hi - lo) / bins;
-  if (lo !== null && Number.isSafeInteger(lo) && isPowerOfTwo(width) && lo % width === 0) {
+  if (lo !== null && Number.isSafeInteger(lo) && isBinaryWidth(width) && lo % width === 0) {
     const shown = inUnit(width, value.hist_hi.unit);
     if (shown !== null) return { aligned: true, width: shown, suggested: '', exponent: Math.log2(width) };
   }
   const next = 2 ** Math.ceil(Math.log2(Math.ceil(hi)));
   const suggested = inUnit(next, value.hist_hi.unit);
   if (!Number.isSafeInteger(next) || suggested === null) return null;
+  // Applying the suggestion would change nothing.
+  if (lo === 0 && hi === next) return null;
   return { aligned: false, width: '', suggested, exponent: Math.log2(next) };
 }
 

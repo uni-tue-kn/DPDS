@@ -1,0 +1,494 @@
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { vi } from 'vitest';
+import type { HistogramView } from '../api/types';
+import { formatRatePill } from '../common/format';
+import * as fx from '../test/fixtures';
+import { api, ApiError, fakeController } from '../test/mockApi';
+import { expectStartBody, renderApp, seedStore, storedDoc, tick } from '../test/helpers';
+import { must } from '../test/must';
+
+// Spec 28b: fixes from the review of bcca62b (items 1, 3, 4 and 5 here; item 2 is dashboardMemo.test.tsx, item 6 is
+// histogramHintsSpec28b.test.tsx). Spec: scratchpad/spec28b.md. The tester's choices where it is silent are marked "CHOICE".
+//
+// Item 1 is about a mismatch between the mocks and the controller: the controller answers `POST /api/emulation/stop` with
+// 202 and state `stopping`, and answers a start with 409 until a later `GET /api/emulation` reports `stopped` or `failed`.
+// These tests run against `fakeController` (src/test/mockApi.ts), which behaves that way and records, for every start,
+// the state the client had last polled.
+
+const startBtn = () => screen.queryByRole('button', { name: /^start$/i });
+const stopBtn = () => screen.queryByRole('button', { name: /^stop$/i });
+const restartBtn = () => screen.queryByRole('button', { name: /^restart$/i });
+const stoppingBtn = () => screen.queryByRole('button', { name: /^stopping…$/i });
+const restartingBtn = () => screen.queryByRole('button', { name: 'Restarting…' });
+
+async function openRunning() {
+  vi.useFakeTimers();
+  const c = fakeController('running');
+  const view = renderApp('/');
+  await tick(0);
+  await tick(0);
+  return { c, view };
+}
+
+const clickRestart = async () => {
+  fireEvent.click(must(restartBtn(), 'the Restart button'));
+  await tick(0);
+};
+
+describe('Dashboard (spec 28b item 1): Restart waits until the stop has finished', () => {
+  beforeEach(() => {
+    seedStore({ links: [fx.link(), fx.linkRev()], settings: fx.settings({ poll_interval_ms: 250 }) });
+  });
+
+  it('the stop request is sent at once and the button area shows a disabled "Restarting…" with a spinner', async () => {
+    await openRunning();
+    await clickRestart();
+    expect(api.stopEmulation).toHaveBeenCalledTimes(1);
+    const b = must(restartingBtn(), 'the Restarting… button');
+    expect(b).toBeDisabled();
+    const spinner = must(b.querySelector('.spinner-border'), 'spinner');
+    expect(spinner).toHaveAttribute('aria-hidden', 'true'); // so the accessible name is exactly "Restarting…"
+    expect(b).toHaveAccessibleName('Restarting…');
+  });
+
+  it('while it waits there is no Start, Stop, Restart or "Stopping…" button, whatever the polls report', async () => {
+    const { c } = await openRunning();
+    await clickRestart();
+    for (const state of ['stopping', 'stopping', 'running'] as const) {
+      c.state = state; // "running" = a lagging poll
+      await tick(1000);
+      expect(restartingBtn(), state).toBeInTheDocument();
+      expect(startBtn(), state).not.toBeInTheDocument();
+      expect(stopBtn(), state).not.toBeInTheDocument();
+      expect(restartBtn(), state).not.toBeInTheDocument();
+      expect(stoppingBtn(), state).not.toBeInTheDocument();
+    }
+  });
+
+  it('nothing is started while the polls say "stopping" (or still "running")', async () => {
+    const { c } = await openRunning();
+    await clickRestart();
+    await tick(4000);
+    expect(c.state).toBe('stopping');
+    expect(api.startEmulation).not.toHaveBeenCalled();
+    c.state = 'running'; // the controller had not noticed the stop yet
+    await tick(3000);
+    expect(api.startEmulation).not.toHaveBeenCalled();
+    c.state = 'stopping';
+    await tick(3000);
+    expect(api.startEmulation).not.toHaveBeenCalled();
+    expect(api.stopEmulation).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['stopped', 'failed'] as const)(
+    'once a poll has reported "%s" the start is sent, after that poll and with no 409 shown',
+    async (end) => {
+      const { c } = await openRunning();
+      await clickRestart();
+      await tick(2000);
+      c.state = end;
+      await tick(2500);
+      expect(api.startEmulation).toHaveBeenCalledTimes(1);
+      // the client had polled the end state before it sent the start, and the controller accepted it
+      expect(c.starts).toEqual([{ state: end, lastPolled: end }]);
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+      expect(api.stopEmulation.mock.invocationCallOrder[0]).toBeLessThan(
+        api.startEmulation.mock.invocationCallOrder[0],
+      );
+    },
+  );
+
+  it('never sends a start that the controller would refuse with 409 (the whole flow, polls as they come)', async () => {
+    const { c } = await openRunning();
+    await clickRestart();
+    await tick(3000);
+    c.state = 'stopped';
+    await tick(3000);
+    await tick(3000);
+    expect(c.starts.every((s) => s.state === 'stopped' || s.state === 'failed')).toBe(true);
+    expect(c.starts).toHaveLength(1);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('then "Restarting…" goes away and the Stop button of the new run is shown', async () => {
+    const { c } = await openRunning();
+    await clickRestart();
+    c.state = 'stopped';
+    await tick(2500);
+    c.state = 'running';
+    await tick(2500);
+    expect(restartingBtn()).not.toBeInTheDocument();
+    expect(stopBtn()).toBeEnabled();
+    expect(restartBtn()).toBeEnabled();
+  });
+
+  it('the start carries the local document as it is stored when the start happens, not when Restart was clicked', async () => {
+    const { c } = await openRunning();
+    await clickRestart();
+    seedStore({ links: [fx.loopLink({ id: 9 })], settings: fx.settings({ poll_interval_ms: 100 }) });
+    await tick(2000);
+    expect(api.startEmulation).not.toHaveBeenCalled();
+    c.state = 'stopped';
+    await tick(2500);
+    expect(api.startEmulation).toHaveBeenCalledTimes(1);
+    expectStartBody(api.startEmulation.mock.calls[0][0], storedDoc());
+    expect(api.startEmulation.mock.calls[0][0].links.map((l) => l.name)).toEqual(['loop']);
+  });
+
+  it('a second click while it waits does nothing: one stop, one start', async () => {
+    const { c } = await openRunning();
+    await clickRestart();
+    fireEvent.click(must(restartingBtn()));
+    fireEvent.click(must(restartingBtn()));
+    await tick(0);
+    c.state = 'stopped';
+    await tick(2500);
+    expect(api.stopEmulation).toHaveBeenCalledTimes(1);
+    expect(api.startEmulation).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaving the dashboard cancels the pending start', async () => {
+    const { c, view } = await openRunning();
+    await clickRestart();
+    await tick(1500);
+    view.unmount();
+    c.state = 'stopped';
+    await tick(10000);
+    expect(api.startEmulation).not.toHaveBeenCalled();
+    expect(api.stopEmulation).toHaveBeenCalledTimes(1);
+  });
+
+  it('a stop request error cancels the restart: the message is shown, nothing is ever started, Restart is usable again', async () => {
+    const { c } = await openRunning();
+    api.stopEmulation.mockRejectedValue(new ApiError(500, 'cannot signal child'));
+    await clickRestart();
+    expect(screen.getByRole('alert')).toHaveTextContent('cannot signal child');
+    expect(restartingBtn()).not.toBeInTheDocument();
+    expect(restartBtn()).toBeEnabled();
+    c.state = 'stopped'; // even if the emulation then happens to stop
+    await tick(5000);
+    expect(api.startEmulation).not.toHaveBeenCalled();
+  });
+
+  it('a start refused after the wait shows the controller message and ends the "Restarting…" state', async () => {
+    const { c } = await openRunning();
+    await clickRestart();
+    api.startEmulation.mockRejectedValue(new ApiError(409, 'port 0000:17:00.0 is a host uplink'));
+    c.state = 'stopped';
+    await tick(2500);
+    expect(screen.getByRole('alert')).toHaveTextContent('port 0000:17:00.0 is a host uplink');
+    expect(restartingBtn()).not.toBeInTheDocument();
+    expect(startBtn()).toBeEnabled();
+  });
+
+  it('the pending restart survives polls that fail: it waits for a poll that does report the end', async () => {
+    const { c } = await openRunning();
+    await clickRestart();
+    const polls = api.getEmulation.getMockImplementation();
+    api.getEmulation.mockRejectedValue(new Error('Failed to fetch'));
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await tick(3000);
+    expect(api.startEmulation).not.toHaveBeenCalled();
+    api.getEmulation.mockImplementation(must(polls, 'the polling mock'));
+    c.state = 'stopped';
+    await tick(2500);
+    expect(api.startEmulation).toHaveBeenCalledTimes(1);
+    errors.mockRestore();
+  });
+});
+
+// ---- item 3 ------------------------------------------------------------------------------------------------------------
+
+describe('Dashboard (spec 28b item 3): the pill unit is chosen after rounding', () => {
+  it.each([
+    [999_996, 0, '1.00 Mbit/s (0 pps)'],
+    [0, 999_996, '0 bit/s (1.00 Mpps)'],
+    [999.6, 999.6, '1.00 kbit/s (1.00 kpps)'],
+    [999.5, 999.5, '1.00 kbit/s (1.00 kpps)'],
+    [999.4, 999.4, '999 bit/s (999 pps)'],
+    [999_994, 999_994, '999.99 kbit/s (999.99 kpps)'],
+    [999_996_000, 0, '1.00 Gbit/s (0 pps)'],
+    [999_996_000, 999_996_000, '1.00 Gbit/s (1000.00 Mpps)'], // Mpps is the largest pps unit: nothing to move to
+    [999_996_000_000, 0, '1000.00 Gbit/s (0 pps)'], // so is Gbit/s
+    [1000, 1000, '1.00 kbit/s (1.00 kpps)'],
+    [1_000_000, 1_000_000, '1.00 Mbit/s (1.00 Mpps)'],
+    [9.25e9, 7.31e6, '9.25 Gbit/s (7.31 Mpps)'],
+    [0, 0, '0 bit/s (0 pps)'],
+  ])('formatRatePill(%s bit/s, %s pps) = "%s"', (bps, pps, text) => {
+    expect(formatRatePill(bps, pps)).toBe(text);
+  });
+
+  it('never shows "1000.00" in a unit that has a larger one', () => {
+    for (const v of [999_995, 999_996, 999_999, 999_999_995, 999_500, 999.5, 999.99]) {
+      const text = formatRatePill(v, v);
+      expect(text, String(v)).not.toMatch(/1000\.00 (kbit\/s|Mbit\/s|kpps)/);
+      expect(text, String(v)).not.toMatch(/\b1000 (bit\/s|pps)/);
+    }
+  });
+
+  it('the RX and TX pills of the dashboard use it', async () => {
+    api.getEmulation.mockResolvedValue(fx.emulation('running'));
+    api.getStats.mockResolvedValue(
+      fx.stats([
+        fx.dirStats(0, { rx_bps: 999_996, rx_pps: 999_996, tx_bps: 999.6, tx_pps: 999.6 }),
+        fx.dirStats(1, { rx_bps: 0, rx_pps: 0, tx_bps: 0, tx_pps: 0 }),
+      ]),
+    );
+    renderApp('/');
+    const rx = await screen.findByTestId('pill-rx');
+    await waitFor(() => expect(rx).toHaveTextContent('RX 1.00 Mbit/s (1.00 Mpps)'));
+    expect(screen.getByTestId('pill-tx')).toHaveTextContent('TX 1.00 kbit/s (1.00 kpps)');
+    expect(rx.textContent).not.toContain('1000');
+  });
+});
+
+// ---- item 4 ------------------------------------------------------------------------------------------------------------
+
+describe('Dashboard (spec 28b item 4): the action error and the live poll error', () => {
+  beforeEach(() => {
+    seedStore({ links: [fx.link(), fx.linkRev()] });
+    vi.useFakeTimers();
+  });
+
+  const refusedStart = async () => {
+    api.getEmulation.mockResolvedValue(fx.emulation('stopped'));
+    api.startEmulation.mockRejectedValue(new ApiError(409, 'port 0000:17:00.0 is a host uplink'));
+    renderApp('/');
+    await tick(0);
+    await tick(0);
+    fireEvent.click(must(startBtn(), 'Start'));
+    await tick(0);
+    expect(screen.getByRole('alert')).toHaveTextContent('host uplink');
+  };
+
+  it('an action error stays while the state does not change, however many polls come', async () => {
+    await refusedStart();
+    await tick(6000);
+    expect(screen.getByRole('alert')).toHaveTextContent('host uplink');
+  });
+
+  it.each(['starting', 'running', 'failed'] as const)(
+    'it disappears when the polled state changes to "%s"',
+    async (state) => {
+      await refusedStart();
+      api.getEmulation.mockResolvedValue(fx.emulation(state));
+      await tick(2500);
+      expect(screen.queryByText(/host uplink/)).not.toBeInTheDocument();
+    },
+  );
+
+  it('it disappears when a later action succeeds', async () => {
+    api.getEmulation.mockResolvedValue(fx.emulation('stopped'));
+    api.startEmulation
+      .mockRejectedValueOnce(new ApiError(409, 'port 0000:17:00.0 is a host uplink'))
+      .mockResolvedValue(fx.emulation('starting'));
+    renderApp('/');
+    await tick(0);
+    await tick(0);
+    fireEvent.click(must(startBtn()));
+    await tick(0);
+    expect(screen.getByRole('alert')).toHaveTextContent('host uplink');
+    fireEvent.click(must(startBtn()));
+    await tick(0);
+    expect(api.startEmulation).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText(/host uplink/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('a failed poll is shown next to an old action error: both messages are on the page', async () => {
+    await refusedStart();
+    api.getEmulation.mockRejectedValue(new Error('Failed to fetch'));
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await tick(2500);
+    const alerts = screen.getAllByRole('alert').map((a) => a.textContent ?? '');
+    const all = alerts.join(' | ');
+    expect(all).toContain('host uplink');
+    expect(all).toMatch(/failed to fetch/i);
+    errors.mockRestore();
+  });
+
+  it('the poll error goes away when polls work again (as before)', async () => {
+    api.getEmulation.mockRejectedValue(new Error('Failed to fetch'));
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    renderApp('/');
+    await tick(0);
+    await tick(0);
+    expect(screen.getByRole('alert')).toHaveTextContent(/failed to fetch/i);
+    api.getEmulation.mockResolvedValue(fx.emulation('stopped'));
+    await tick(2500);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    errors.mockRestore();
+  });
+});
+
+describe('Dashboard (spec 28b item 4): no RX/TX pills while stopped', () => {
+  it('no RX or TX pill when the stats have no directions (stopped), not even "RX 0 bit/s (0 pps)"', async () => {
+    vi.useFakeTimers();
+    api.getEmulation.mockResolvedValue(fx.emulation('stopped'));
+    api.getStats.mockResolvedValue(fx.stats([]));
+    renderApp('/');
+    await tick(0);
+    await tick(0);
+    await tick(2500);
+    expect(screen.getByTestId('state-badge')).toHaveAttribute('data-state', 'stopped');
+    expect(screen.queryByTestId('pill-rx')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('pill-tx')).not.toBeInTheDocument();
+    expect(screen.queryByText(/\bRX\b/)).not.toBeInTheDocument();
+  });
+
+  it('they are there while links run and go away when the run has stopped', async () => {
+    vi.useFakeTimers();
+    api.getEmulation.mockResolvedValue(fx.emulation('running'));
+    api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0)]));
+    renderApp('/');
+    await tick(0);
+    await tick(0);
+    expect(screen.getByTestId('pill-rx')).toBeInTheDocument();
+    expect(screen.getByTestId('pill-tx')).toBeInTheDocument();
+    api.getEmulation.mockResolvedValue(fx.emulation('stopped'));
+    api.getStats.mockResolvedValue(fx.stats([], { stale: true, age_ms: undefined }));
+    await tick(2500);
+    expect(screen.queryByTestId('pill-rx')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('pill-tx')).not.toBeInTheDocument();
+  });
+
+  it('a running emulation without directions yet (just started) shows no empty pills either', async () => {
+    vi.useFakeTimers();
+    api.getEmulation.mockResolvedValue(fx.emulation('starting'));
+    api.getStats.mockResolvedValue(fx.stats([]));
+    renderApp('/');
+    await tick(0);
+    await tick(0);
+    expect(screen.queryByTestId('pill-rx')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('pill-tx')).not.toBeInTheDocument();
+  });
+});
+
+// ---- item 5 ------------------------------------------------------------------------------------------------------------
+
+describe('Dashboard (spec 28b item 5): histogram settings are kept per card', () => {
+  const card = (d: number) => screen.getByTestId(`direction-card-${d}`);
+  const radio = (d: number, name: string) => within(card(d)).getByRole('radio', { name });
+  const windowSelect = (d: number) => within(card(d)).getByLabelText('Histogram window');
+  const logBox = (d: number) => within(card(d)).getByLabelText('Log scale');
+  const expectedBox = (d: number) => within(card(d)).getByLabelText('Show expected distribution');
+
+  /** `hang` makes every histogram request that starts from now on never settle. */
+  const gate = { hang: false };
+
+  beforeEach(() => {
+    gate.hang = false;
+    api.getEmulation.mockResolvedValue(fx.emulation('running'));
+    api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0), fx.dirStats(1)]));
+    api.getDelayHistogram.mockImplementation((dir, windowS) =>
+      gate.hang
+        ? new Promise<HistogramView>(() => undefined)
+        : Promise.resolve(fx.histogram(dir, { window_s: windowS ?? 0 })),
+    );
+  });
+
+  async function openHistogram(user: ReturnType<typeof userEvent.setup>, d = 0) {
+    renderApp('/');
+    await screen.findByTestId('direction-card-0');
+    await user.click(radio(d, 'Delay histogram'));
+    await within(card(d)).findByTestId('chart-bar');
+  }
+
+  async function changeSettings(user: ReturnType<typeof userEvent.setup>, d = 0) {
+    await user.selectOptions(windowSelect(d), '60');
+    await user.click(logBox(d));
+    await user.click(expectedBox(d));
+    expect(windowSelect(d)).toHaveValue('60');
+    expect(logBox(d)).toBeChecked();
+    expect(expectedBox(d)).not.toBeChecked();
+  }
+
+  it('window, log scale and expected overlay survive switching to Drops and back', async () => {
+    const user = userEvent.setup();
+    await openHistogram(user);
+    await changeSettings(user);
+    await user.click(radio(0, 'Drops'));
+    expect(within(card(0)).queryByLabelText('Histogram window')).not.toBeInTheDocument();
+    await user.click(radio(0, 'Delay histogram'));
+    expect(windowSelect(0)).toHaveValue('60');
+    expect(logBox(0)).toBeChecked();
+    expect(expectedBox(0)).not.toBeChecked();
+  });
+
+  it('the histogram is fetched again with the kept window, not with "since start"', async () => {
+    const user = userEvent.setup();
+    await openHistogram(user);
+    await changeSettings(user);
+    await user.click(radio(0, 'Rate'));
+    const n = api.getDelayHistogram.mock.calls.length;
+    await user.click(radio(0, 'Delay histogram'));
+    await waitFor(() => expect(api.getDelayHistogram.mock.calls.length).toBeGreaterThan(n));
+    expect(api.getDelayHistogram.mock.calls[n]).toEqual([0, 60]);
+  });
+
+  it('the reloaded chart honours the kept log scale and overlay', async () => {
+    const user = userEvent.setup();
+    await openHistogram(user);
+    await changeSettings(user);
+    await user.click(radio(0, 'Drops'));
+    await user.click(radio(0, 'Delay histogram'));
+    const chart = await within(card(0)).findByTestId('chart-bar');
+    const options = JSON.parse(chart.getAttribute('data-options') ?? 'null');
+    expect(options.scales.y.type).toBe('logarithmic');
+    expect(JSON.parse(chart.getAttribute('data-chart') ?? 'null').datasets).toHaveLength(1); // no expected overlay
+  });
+
+  it('the settings belong to the card: the other card still has the defaults', async () => {
+    const user = userEvent.setup();
+    await openHistogram(user);
+    await changeSettings(user);
+    await user.click(radio(1, 'Delay histogram'));
+    await within(card(1)).findByTestId('chart-bar');
+    expect(windowSelect(1)).toHaveValue('0');
+    expect(logBox(1)).not.toBeChecked();
+    expect(expectedBox(1)).toBeChecked();
+    // and card 0 still has its own
+    expect(windowSelect(0)).toHaveValue('60');
+  });
+
+  it('the controls are visible while the first histogram after reselecting is loading', async () => {
+    const user = userEvent.setup();
+    await openHistogram(user);
+    await changeSettings(user);
+    await user.click(radio(0, 'Drops'));
+    gate.hang = true; // from now on no histogram arrives
+    await user.click(radio(0, 'Delay histogram'));
+    expect(windowSelect(0)).toBeInTheDocument();
+    expect(windowSelect(0)).toHaveValue('60');
+    expect(logBox(0)).toBeChecked();
+    expect(expectedBox(0)).not.toBeChecked();
+    expect(within(card(0)).queryByTestId('chart-bar')).not.toBeInTheDocument();
+  });
+
+  it('the controls are visible while the very first histogram is loading, and usable', async () => {
+    const user = userEvent.setup();
+    gate.hang = true;
+    renderApp('/');
+    await screen.findByTestId('direction-card-0');
+    await user.click(radio(0, 'Delay histogram'));
+    expect(windowSelect(0)).toHaveValue('0');
+    expect(logBox(0)).toBeInTheDocument();
+    expect(expectedBox(0)).toBeInTheDocument();
+    await user.click(logBox(0));
+    expect(logBox(0)).toBeChecked();
+    await user.selectOptions(windowSelect(0), '10');
+    expect(windowSelect(0)).toHaveValue('10');
+    await waitFor(() => expect(api.getDelayHistogram).toHaveBeenLastCalledWith(0, 10));
+  });
+
+  it('the settings survive the next polls (the card is not rebuilt)', async () => {
+    const user = userEvent.setup();
+    await openHistogram(user);
+    await changeSettings(user);
+    await new Promise((r) => setTimeout(r, 2200)); // two polls in real time
+    expect(windowSelect(0)).toHaveValue('60');
+    expect(logBox(0)).toBeChecked();
+    expect(expectedBox(0)).not.toBeChecked();
+  }, 10000);
+});

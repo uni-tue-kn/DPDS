@@ -1,9 +1,11 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { vi } from 'vitest';
 import type { EmulationState } from '../api/types';
 import * as fx from '../test/fixtures';
-import { api, ApiError } from '../test/mockApi';
+import { api, ApiError, fakeController, serveHistory } from '../test/mockApi';
 import { setPrefersDark } from '../test/matchMedia';
 import { deferred, expectStartBody, renderApp, seedRaw, seedStore, storedDoc, tick } from '../test/helpers';
 import { must } from '../test/must';
@@ -113,43 +115,53 @@ describe('Dashboard (spec 28): Restart = stop, then start with the current local
     seedStore({ links: [fx.link(), fx.linkRev()], settings: fx.settings({ poll_interval_ms: 250 }) });
   });
 
+  // Spec 28b item 1: the real controller answers a stop with `stopping` and refuses a start (409) until a later poll reports
+  // `stopped` or `failed`. These tests used a stop that resolved with `stopped` at once, which the controller never does:
+  // they now run against `fakeController` (src/test/mockApi.ts) and finish the stop by setting its state, under fake timers.
+  const openRunning = async () => {
+    vi.useFakeTimers();
+    const c = fakeController('running');
+    renderApp('/');
+    await tick(0);
+    await tick(0);
+    return c;
+  };
+
   it('stops first and starts only after the stop has finished, with the local document', async () => {
-    const user = userEvent.setup();
-    const stopped = deferred<ReturnType<typeof fx.emulation>>();
-    api.stopEmulation.mockReturnValue(stopped.promise);
-    api.startEmulation.mockResolvedValue(fx.emulation('starting'));
-    await openIn('running');
-    await user.click(must(restartBtn()));
-    await waitFor(() => expect(api.stopEmulation).toHaveBeenCalledTimes(1));
-    await new Promise((r) => setTimeout(r, 50)); // real time: nothing may happen while the stop is pending
+    const c = await openRunning();
+    fireEvent.click(must(restartBtn()));
+    await tick(0);
+    expect(api.stopEmulation).toHaveBeenCalledTimes(1);
+    await tick(3000); // the controller still says "stopping": nothing may happen
     expect(api.startEmulation).not.toHaveBeenCalled();
-    stopped.resolve(fx.emulation('stopped'));
-    await waitFor(() => expect(api.startEmulation).toHaveBeenCalledTimes(1));
+    c.state = 'stopped';
+    await tick(2500);
+    expect(api.startEmulation).toHaveBeenCalledTimes(1);
     expect(api.stopEmulation.mock.invocationCallOrder[0]).toBeLessThan(api.startEmulation.mock.invocationCallOrder[0]);
     expectStartBody(api.startEmulation.mock.calls[0][0], storedDoc());
   });
 
   it('uses the document as it is stored now: an edit made before the click is included', async () => {
-    const user = userEvent.setup();
-    api.stopEmulation.mockResolvedValue(fx.emulation('stopped'));
-    api.startEmulation.mockResolvedValue(fx.emulation('starting'));
-    await openIn('running');
+    const c = await openRunning();
     seedStore({ links: [fx.loopLink({ id: 9 })], settings: fx.settings({ poll_interval_ms: 100 }) });
-    await user.click(must(restartBtn()));
-    await waitFor(() => expect(api.startEmulation).toHaveBeenCalledTimes(1));
+    fireEvent.click(must(restartBtn()));
+    await tick(0);
+    c.state = 'stopped';
+    await tick(2500);
+    expect(api.startEmulation).toHaveBeenCalledTimes(1);
     const body = api.startEmulation.mock.calls[0][0];
     expect(body.links.map((l) => l.name)).toEqual(['loop']);
     expect(body.settings.poll_interval_ms).toBe(100);
   });
 
   it('does not write the stored document', async () => {
-    const user = userEvent.setup();
-    api.stopEmulation.mockResolvedValue(fx.emulation('stopped'));
-    api.startEmulation.mockResolvedValue(fx.emulation('starting'));
-    await openIn('running');
+    const c = await openRunning();
     const before = localStorage.getItem('dpds.config.v1');
-    await user.click(must(restartBtn()));
-    await waitFor(() => expect(api.startEmulation).toHaveBeenCalled());
+    fireEvent.click(must(restartBtn()));
+    await tick(0);
+    c.state = 'stopped';
+    await tick(2500);
+    expect(api.startEmulation).toHaveBeenCalled();
     expect(localStorage.getItem('dpds.config.v1')).toBe(before);
   });
 
@@ -164,28 +176,37 @@ describe('Dashboard (spec 28): Restart = stop, then start with the current local
   });
 
   it('a refused start after the stop shows the controller message', async () => {
-    const user = userEvent.setup();
-    api.stopEmulation.mockResolvedValue(fx.emulation('stopped'));
+    const c = await openRunning();
     api.startEmulation.mockRejectedValue(new ApiError(409, 'port 0000:17:00.0 is a host uplink'));
-    await openIn('running');
-    await user.click(must(restartBtn()));
-    expect(await screen.findByRole('alert')).toHaveTextContent('port 0000:17:00.0 is a host uplink');
+    fireEvent.click(must(restartBtn()));
+    await tick(0);
+    c.state = 'stopped';
+    await tick(2500);
+    expect(screen.getByRole('alert')).toHaveTextContent('port 0000:17:00.0 is a host uplink');
     expect(api.stopEmulation).toHaveBeenCalledTimes(1);
   });
 
   it('while the restart is in flight Restart is disabled and a second click sends no second stop', async () => {
-    const user = userEvent.setup();
+    vi.useFakeTimers();
+    const c = fakeController('running');
     const stopped = deferred<ReturnType<typeof fx.emulation>>();
     api.stopEmulation.mockReturnValue(stopped.promise);
-    api.startEmulation.mockResolvedValue(fx.emulation('starting'));
-    await openIn('running');
-    const b = must(restartBtn());
-    await user.click(b);
-    await user.click(b);
-    expect(api.stopEmulation).toHaveBeenCalledTimes(1);
+    renderApp('/');
+    await tick(0);
+    await tick(0);
+    fireEvent.click(must(restartBtn()));
+    await tick(0);
+    // spec 28b item 1: while it waits, the button area shows a disabled "Restarting…" (see dashboardSpec28b.test.tsx)
+    const b = screen.getByRole('button', { name: 'Restarting…' });
     expect(b).toBeDisabled();
-    stopped.resolve(fx.emulation('stopped'));
-    await waitFor(() => expect(api.startEmulation).toHaveBeenCalledTimes(1));
+    fireEvent.click(b);
+    await tick(0);
+    expect(api.stopEmulation).toHaveBeenCalledTimes(1);
+    c.state = 'stopped';
+    stopped.resolve(fx.emulation('stopping'));
+    await tick(2500);
+    expect(api.startEmulation).toHaveBeenCalledTimes(1);
+    expect(api.stopEmulation).toHaveBeenCalledTimes(1);
   });
 
   it('CHOICE: with no local links Restart refuses first: nothing is stopped, an alert says why', async () => {
@@ -259,46 +280,125 @@ describe('Dashboard (spec 28): status pills', () => {
     expect(badge.closest('[aria-live="polite"], [role="status"]')).not.toBeNull();
   });
 
-  describe('elapsed time from started_at (unix seconds)', () => {
-    const NOW = 1_762_000_192; // 192 s after fx.emulation('running').started_at
+  // Spec 29, second round (user 2026-11-04): relative times like P4TG. The pill shows the `elapsed_ms` of the stats poll
+  // (whole milliseconds since the controller started the run, from its own monotonic clock) and the browser's clock is not
+  // used at all. Was: "elapsed time from started_at (unix seconds)", where the pill was `Date.now()` minus `started_at`
+  // and counted up by itself once a second; its four tests are rewritten below. `started_at` is for display only.
+  describe('elapsed time from the polled elapsed_ms (spec 29, no browser clock)', () => {
+    const polled = (elapsed_ms?: number | null, over: Partial<ReturnType<typeof fx.stats>> = {}) =>
+      fx.stats([fx.dirStats(0), fx.dirStats(1)], { ...(elapsed_ms === undefined ? {} : { elapsed_ms }), ...over });
+    const pill = () => screen.getByTestId('pill-elapsed');
 
-    it('reads "0h 3m 12s" and counts up by itself, once per second', async () => {
+    async function open(elapsed_ms?: number | null) {
       vi.useFakeTimers();
-      vi.setSystemTime(NOW * 1000);
+      api.getStats.mockResolvedValue(polled(elapsed_ms));
       renderApp('/');
       await tick(0);
       await tick(0);
-      const pill = screen.getByTestId('pill-elapsed');
-      expect(pill).toHaveTextContent('0h 3m 12s');
-      await tick(5000);
-      expect(screen.getByTestId('pill-elapsed')).toHaveTextContent('0h 3m 17s');
+    }
+
+    it('reads "0h 3m 12s" from elapsed_ms 192000', async () => {
+      await open(192_000);
+      expect(pill()).toHaveTextContent('0h 3m 12s');
     });
 
-    it('counts hours: 3725 s is "1h 2m 5s"', async () => {
+    it('whatever the browser clock says: a clock a year off the start time changes nothing', async () => {
       vi.useFakeTimers();
-      vi.setSystemTime((1_762_000_000 + 3725) * 1000);
+      vi.setSystemTime((1_762_000_000 + 366 * 86_400) * 1000); // a year after started_at
+      api.getStats.mockResolvedValue(polled(192_000));
       renderApp('/');
       await tick(0);
       await tick(0);
-      expect(screen.getByTestId('pill-elapsed')).toHaveTextContent('1h 2m 5s');
+      expect(pill()).toHaveTextContent('0h 3m 12s');
+      vi.setSystemTime(1000); // and the other way round
+      await tick(0);
+      expect(pill()).toHaveTextContent('0h 3m 12s');
     });
 
-    it('is not shown while the emulation has no start time (stopped)', async () => {
+    it('does not count up by itself: with every request held back it stands still however long the page waits', async () => {
       vi.useFakeTimers();
-      api.getEmulation.mockResolvedValue(fx.emulation('stopped'));
+      let n = 0;
+      api.getStats.mockImplementation(() =>
+        n++ === 0 ? Promise.resolve(polled(192_000)) : new Promise<ReturnType<typeof fx.stats>>(() => undefined),
+      );
       renderApp('/');
       await tick(0);
       await tick(0);
-      expect(screen.queryByTestId('pill-elapsed')).not.toBeInTheDocument();
+      expect(pill()).toHaveTextContent('0h 3m 12s');
+      await tick(30_000);
+      expect(pill()).toHaveTextContent('0h 3m 12s');
     });
 
-    it('is not shown for a running emulation that reports no started_at', async () => {
+    it('is updated by each stats poll, to the value that poll carries', async () => {
+      await open(192_000);
+      api.getStats.mockResolvedValue(polled(197_400));
+      await tick(2500);
+      expect(pill()).toHaveTextContent('0h 3m 17s');
+      api.getStats.mockResolvedValue(polled(210_999));
+      await tick(2500);
+      expect(pill()).toHaveTextContent('0h 3m 30s');
+    });
+
+    it.each([
+      [3_725_000, '1h 2m 5s'],
+      [59_999, '0h 0m 59s'],
+      [1000, '0h 0m 1s'],
+      [999, '0h 0m 0s'],
+      [0, '0h 0m 0s'], // 0 is a value, not "absent"
+      [36_000_000, '10h 0m 0s'],
+    ])('elapsed_ms %s is "%s"', async (ms, text) => {
+      await open(ms);
+      expect(pill()).toHaveTextContent(text);
+    });
+
+    it.each([undefined, null])(
+      'is not shown while the stats carry no elapsed_ms (%s), also for a running emulation',
+      async (v) => {
+        await open(v);
+        expect(screen.getByTestId('state-badge')).toHaveAttribute('data-state', 'running');
+        expect(screen.queryByTestId('pill-elapsed')).not.toBeInTheDocument();
+      },
+    );
+
+    it('does not need started_at: a running emulation without it shows the polled time', async () => {
       vi.useFakeTimers();
       api.getEmulation.mockResolvedValue(fx.emulation('running', { started_at: null }));
+      api.getStats.mockResolvedValue(polled(65_000));
+      renderApp('/');
+      await tick(0);
+      await tick(0);
+      expect(pill()).toHaveTextContent('0h 1m 5s');
+    });
+
+    it('CHOICE: after a stop the pill keeps the frozen final time the controller still reports', async () => {
+      vi.useFakeTimers();
+      api.getEmulation.mockResolvedValue(fx.emulation('stopped'));
+      api.getStats.mockResolvedValue(fx.stats([], { stale: true, age_ms: undefined, elapsed_ms: 305_400 }));
+      renderApp('/');
+      await tick(0);
+      await tick(0);
+      expect(pill()).toHaveTextContent('0h 5m 5s');
+      await tick(10_000);
+      expect(pill()).toHaveTextContent('0h 5m 5s');
+    });
+
+    it('is not shown for a stopped controller that never ran (no elapsed_ms)', async () => {
+      vi.useFakeTimers();
+      api.getEmulation.mockResolvedValue(fx.emulation('stopped'));
+      api.getStats.mockResolvedValue(fx.stats([], { stale: true, age_ms: undefined }));
       renderApp('/');
       await tick(0);
       await tick(0);
       expect(screen.queryByTestId('pill-elapsed')).not.toBeInTheDocument();
+    });
+
+    it('the dashboard sources use no browser clock and no local tick', () => {
+      for (const file of ['src/pages/Dashboard.tsx', 'src/pages/DirectionCard.tsx']) {
+        const src = readFileSync(join(process.cwd(), file), 'utf8');
+        for (const forbidden of ['Date.now', 'new Date', 'toLocaleTimeString', 'performance.now', 'setInterval']) {
+          expect(src, `${file} uses ${forbidden}`).not.toContain(forbidden);
+        }
+      }
     });
   });
 
@@ -408,6 +508,15 @@ const imgName = (el: HTMLElement) => el.closest('[role="img"]')?.getAttribute('a
 
 function twoDirections() {
   return fx.stats([fx.dirStats(0), fx.dirStats(1)]);
+}
+
+/**
+ * Spec 29: the rate and drops charts are built from the controller's series (`GET /api/stats/history`), no longer from the
+ * stats polls. This serves one sample per link with the values of `fx.dirStats()` (RX 9.5 Gbit/s, TX 8.25 Gbit/s, shares
+ * 0.5 / 1.25 / 2.5 / 0.1 / 0.75 %), so the chart tests below keep their numbers.
+ */
+function serveFixtureHistory() {
+  serveHistory({ startedAt: 1762000000, samples: { '0': [fx.historySample(1000)], '1': [fx.historySample(1000)] } });
 }
 
 async function openCards() {
@@ -534,6 +643,7 @@ describe('Dashboard (spec 28): rate chart in the P4TG look', () => {
   beforeEach(() => {
     api.getEmulation.mockResolvedValue(fx.emulation('running'));
     api.getStats.mockResolvedValue(twoDirections());
+    serveFixtureHistory(); // spec 29
   });
 
   const rate = async () => {
@@ -593,16 +703,15 @@ describe('Dashboard (spec 28): rate chart in the P4TG look', () => {
     expect(o.plugins?.tooltip?.enabled).not.toBe(false);
   });
 
-  it('keeps one sample per poll (the 120 s client history is unchanged)', async () => {
+  // Spec 29. Was: "keeps one sample per poll (the 120 s client history is unchanged)", which counted one point per stats poll.
+  it('has one point per sample of the series, however often the stats are polled', async () => {
     vi.useFakeTimers();
     renderApp('/');
     await tick(0);
     await tick(0);
-    await tick(3000);
-    const n = dataOf(within(card(0)).getByTestId('chart-line')).labels.length;
-    expect(n).toBeGreaterThanOrEqual(3);
-    await tick(2000);
-    expect(dataOf(within(card(0)).getByTestId('chart-line')).labels.length).toBeGreaterThan(n);
+    await tick(5000);
+    expect(dataOf(within(card(0)).getByTestId('chart-line')).labels).toHaveLength(1);
+    expect(series(within(card(0)).getByTestId('chart-line'), /RX/).data).toHaveLength(1);
   });
 });
 
@@ -610,6 +719,7 @@ describe('Dashboard (spec 28): drops chart split into model loss and overload', 
   beforeEach(() => {
     api.getEmulation.mockResolvedValue(fx.emulation('running'));
     api.getStats.mockResolvedValue(twoDirections());
+    serveFixtureHistory(); // spec 29
   });
 
   const drops = async () => {
@@ -634,12 +744,12 @@ describe('Dashboard (spec 28): drops chart split into model loss and overload', 
   });
 
   it('every cause is in the sum: one cause alone moves only its own series', async () => {
-    api.getStats.mockResolvedValue(
-      fx.stats([
-        fx.dirStats(0, { loss_pct: 0, limiter_pct: 0, buffer_full_pct: 0, nic_tx_pct: 0, nic_rx_pct: 3 }),
-        fx.dirStats(1),
-      ]),
-    );
+    // spec 29: the series, not the stats, carries the shares the chart plots
+    const alone = { loss_pct: 0, limiter_pct: 0, buffer_full_pct: 0, nic_tx_pct: 0, nic_rx_pct: 3 };
+    serveHistory({
+      startedAt: 1762000000,
+      samples: { '0': [fx.historySample(1000, alone)], '1': [fx.historySample(1000)] },
+    });
     const chart = await drops();
     const [loss, overload] = dataOf(chart).datasets;
     expect(loss.data.at(-1)).toBe(0);
@@ -663,8 +773,13 @@ describe('Dashboard (spec 28): drops chart split into model loss and overload', 
     expect(o.plugins?.tooltip?.enabled).not.toBe(false);
   });
 
-  it('collects one point per poll', async () => {
+  // Spec 29. Was: "collects one point per poll" (a client-side sample per stats poll).
+  it('has one point per sample of the series in both datasets, as many as there are labels', async () => {
     vi.useFakeTimers();
+    serveHistory({
+      startedAt: 1762000000,
+      samples: { '0': fx.historySamples(1, 3), '1': fx.historySamples(1, 3) },
+    });
     renderApp('/');
     await tick(0);
     await tick(0);
@@ -672,7 +787,7 @@ describe('Dashboard (spec 28): drops chart split into model loss and overload', 
     await tick(3000);
     const chart = within(card(0)).getByTestId('chart-line');
     const d = dataOf(chart);
-    expect(d.datasets[0].data.length).toBeGreaterThanOrEqual(3);
+    expect(d.datasets[0].data).toHaveLength(3);
     expect(d.datasets[0].data.length).toBe(d.labels.length);
     expect(d.datasets[1].data.length).toBe(d.labels.length);
   });

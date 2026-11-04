@@ -4,7 +4,18 @@
 // that still calls a removed function fails with "is not a function".
 import { vi } from 'vitest';
 import type { Mock } from 'vitest';
-import type { EmulationView, Hint, HistogramView, Interface, OnlineView, StartRequest, StatsView } from '../api/types';
+import type {
+  EmulationState,
+  EmulationView,
+  Hint,
+  HistogramView,
+  HistorySample,
+  HistoryView,
+  Interface,
+  OnlineView,
+  StartRequest,
+  StatsView,
+} from '../api/types';
 import * as fx from './fixtures';
 
 export class ApiError extends Error {
@@ -28,6 +39,8 @@ export const api = {
   stopEmulation: vi.fn() as Mock<() => Promise<EmulationView>>,
   getStats: vi.fn() as Mock<() => Promise<StatsView>>,
   getDelayHistogram: vi.fn() as Mock<(dir: number, windowS?: number) => Promise<HistogramView>>,
+  /** Spec 29: GET /api/stats/history, `sinceMs` absent = everything (0 is a real value: samples newer than 0 ms). */
+  getStatsHistory: vi.fn() as Mock<(sinceMs?: number) => Promise<HistoryView>>,
 };
 
 /** The module object the `../api/client` import resolves to in tests. */
@@ -47,4 +60,63 @@ export function resetApi(): void {
   api.stopEmulation.mockResolvedValue(fx.emulation('stopping'));
   api.getStats.mockResolvedValue(fx.stats([]));
   api.getDelayHistogram.mockImplementation(async (dir, windowS) => fx.histogram(dir, { window_s: windowS ?? 0 }));
+  api.getStatsHistory.mockResolvedValue(fx.history({}, { started_at: null })); // nothing ran
+}
+
+/**
+ * Spec 29: the controller's series as a test controls it. `getStatsHistory(sinceMs)` answers like `GET /api/stats/history`:
+ * `started_at` and, per link index, the samples with `t_ms > sinceMs` (all without `sinceMs`); a known link keeps its key with
+ * `[]` when nothing is newer. Change `server` between polls to simulate the run going on, a new run, and so on.
+ */
+export interface HistoryServer {
+  startedAt: number | null;
+  samples: Record<string, HistorySample[]>;
+}
+
+export function serveHistory(server: HistoryServer): void {
+  api.getStatsHistory.mockImplementation(async (sinceMs) => ({
+    started_at: server.startedAt,
+    samples: Object.fromEntries(
+      Object.entries(server.samples).map(([link, list]) => [
+        link,
+        list.filter((s) => sinceMs === undefined || s.t_ms > sinceMs).map((s) => ({ ...s })),
+      ]),
+    ),
+  }));
+}
+
+/**
+ * Spec 28b: the controller's start/stop state machine as the real one has it (not a mock that answers `stopped` at once).
+ * `stop` answers 202 with `stopping` and the state stays `stopping` until the test sets `c.state` to `stopped` (or
+ * `failed`), the way `dpds` finishes its drain; `start` is a 409 `ApiError` unless the state is `stopped` or `failed`
+ * and otherwise answers `starting`. `getEmulation` answers the current state and remembers what it answered last, so a test
+ * can tell what the client had seen when it sent a start.
+ */
+export interface FakeController {
+  state: EmulationState;
+  /** The state the latest `getEmulation` answer carried. */
+  lastPolled: EmulationState | undefined;
+  /** One entry per `startEmulation` call: the controller's state and the last polled state at that moment. */
+  starts: { state: EmulationState; lastPolled: EmulationState | undefined }[];
+}
+
+export function fakeController(initial: EmulationState = 'running'): FakeController {
+  const c: FakeController = { state: initial, lastPolled: undefined, starts: [] };
+  api.getEmulation.mockImplementation(async () => {
+    c.lastPolled = c.state;
+    return fx.emulation(c.state);
+  });
+  api.stopEmulation.mockImplementation(async () => {
+    c.state = 'stopping';
+    return fx.emulation('stopping');
+  });
+  api.startEmulation.mockImplementation(async () => {
+    c.starts.push({ state: c.state, lastPolled: c.lastPolled });
+    if (c.state !== 'stopped' && c.state !== 'failed') {
+      throw new ApiError(409, `cannot start while the emulation is ${c.state}`);
+    }
+    c.state = 'starting';
+    return fx.emulation('starting');
+  });
+  return c;
 }

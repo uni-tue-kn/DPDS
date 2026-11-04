@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Badge, Button, Card, Spinner } from 'react-bootstrap';
 import * as api from '../api/client';
 import ErrorAlert from '../components/ErrorAlert';
-import { errorMessage, formatElapsed, formatPct, formatRatePill } from '../common/format';
+import { errorMessage, formatElapsed, formatPct, formatRatePill, linkLabel } from '../common/format';
 import { startPolling } from '../common/polling';
 import { usePortLabeler } from '../common/portLabel';
 import { readConfig, startRequestOf, useLocalConfig } from '../common/localConfig';
@@ -10,11 +10,13 @@ import { pendingRestart } from '../common/pendingRestart';
 import LoadRunning from './LoadRunning';
 import DirectionCard from './DirectionCard';
 import PortsTable from './PortsTable';
-import type { Sample } from './DirectionCard';
-import type { EmulationState, EmulationView, StatsView } from '../api/types';
+import type { DirectionStats, EmulationState, EmulationView, HistorySample, StatsView } from '../api/types';
 
 const POLL_MS = 1000;
-const HISTORY = 120;
+
+/** The series per link index, and the same empty list for every link without samples (stable for the charts' memos). */
+type History = Record<string, HistorySample[]>;
+const NO_SAMPLES: HistorySample[] = [];
 
 const STATE_BG: Record<EmulationState, string> = {
   stopped: 'secondary',
@@ -34,16 +36,33 @@ function keyedLines(lines: string[]): { key: string; line: string }[] {
   });
 }
 
-/** The wall clock in ms, updated every second while `active` (for the elapsed-time pill). */
-function useNow(active: boolean): number {
-  const [now, setNow] = useState(Date.now);
-  useEffect(() => {
-    if (!active) return;
-    setNow(Date.now());
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [active]);
-  return now;
+/** `old` plus the new samples of `add`; `old` itself when there is nothing new, so unchanged links keep their lists. */
+function merge(old: History, add: History): History {
+  let out = old;
+  for (const [link, list] of Object.entries(add)) {
+    if (list.length === 0 && link in old) continue;
+    if (out === old) out = { ...old };
+    out[link] = [...(old[link] ?? NO_SAMPLES), ...list];
+  }
+  return out;
+}
+
+/** The newest `t_ms` over all links, undefined without samples. */
+function newestOf(h: History): number | undefined {
+  let newest: number | undefined;
+  for (const list of Object.values(h)) {
+    const t = list.at(-1)?.t_ms;
+    if (t !== undefined && (newest === undefined || t > newest)) newest = t;
+  }
+  return newest;
+}
+
+/** The start request for the configuration as it is stored now, so an edit made in another tab is included. */
+function storedRequest() {
+  const stored = readConfig();
+  if (stored.corrupt) throw new Error('The local configuration cannot be read; reset it first.');
+  if (stored.doc.links.length === 0) throw new Error('No links configured: nothing to start. Add a link first.');
+  return startRequestOf(stored.doc);
 }
 
 /** Total RX and TX rate over all links, and the share of dropped packets weighted by each link's received rate. */
@@ -63,23 +82,10 @@ function totalsOf(directions: StatsView['directions']) {
   return { rxBps, rxPps, txBps, txPps, droppedPct: rxPps > 0 ? dropped / rxPps : 0 };
 }
 
-function sampleOf(d: StatsView['directions'][number]): Sample {
-  return {
-    t: Date.now(),
-    rx_bps: d.rx_bps,
-    tx_bps: d.tx_bps,
-    loss_pct: d.loss_pct,
-    limiter_pct: d.limiter_pct,
-    buffer_full_pct: d.buffer_full_pct,
-    nic_tx_pct: d.nic_tx_pct,
-    nic_rx_pct: d.nic_rx_pct,
-  };
-}
-
 export default function Dashboard() {
   const [emulation, setEmulation] = useState<EmulationView>();
   const [stats, setStats] = useState<StatsView>();
-  const [history, setHistory] = useState<Record<number, Sample[]>>({});
+  const [history, setHistory] = useState<History>({});
   const [pollError, setPollError] = useState<string>();
   const [statsError, setStatsError] = useState<string>();
   /** The stats error the user closed; the warning returns only for a different message. */
@@ -88,6 +94,20 @@ export default function Dashboard() {
   const [busy, setBusy] = useState<'start' | 'stop' | 'restart'>();
   const label = usePortLabeler();
   const { doc, corrupt } = useLocalConfig();
+  /** A restart has sent its stop and waits for a poll that reports the end, then starts. */
+  const [waiting, setWaiting] = useState(false);
+  /** The last live stats of every link, to name its card after a stop. */
+  const lastStats = useRef<Record<number, DirectionStats>>({});
+
+  const start = useCallback(async () => {
+    try {
+      setEmulation(await api.startEmulation(storedRequest()));
+    } catch (err) {
+      setActionError(errorMessage(err));
+    } finally {
+      setBusy(undefined);
+    }
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -117,13 +137,32 @@ export default function Dashboard() {
         if (!alive) return;
         setStatsError(undefined);
         setDismissed(undefined);
+        for (const d of s.directions) lastStats.current[d.dir] = d;
         setStats(s);
-        setHistory((h) => {
-          if (s.directions.length === 0) return {};
-          const next: Record<number, Sample[]> = {};
-          for (const d of s.directions) next[d.dir] = [...(h[d.dir] ?? []), sampleOf(d)].slice(-HISTORY);
-          return next;
-        });
+      },
+      POLL_MS,
+      true,
+    );
+    // The series of the run: everything once, then only what is newer than the newest sample held. Another run
+    // (`started_at` changed) starts at 0 again, so its first answer must be a full one.
+    let run: number | null | undefined; // undefined: nothing received yet
+    let data: History = {};
+    const stopHistoryPoll = startPolling(
+      async () => {
+        const since = newestOf(data);
+        let h = await api.getStatsHistory(since);
+        if (!alive) return;
+        const newRun = h.started_at !== run;
+        if (newRun && since !== undefined) {
+          h = await api.getStatsHistory();
+          if (!alive) return;
+        }
+        run = h.started_at;
+        const next = newRun ? h.samples : merge(data, h.samples);
+        if (next !== data) {
+          data = next;
+          setHistory(next);
+        }
       },
       POLL_MS,
       true,
@@ -132,44 +171,68 @@ export default function Dashboard() {
       alive = false;
       stopEmulationPoll();
       stopStatsPoll();
+      stopHistoryPoll();
     };
   }, []);
+
+  const state = emulation?.state;
+  // An action's error is old news once the emulation has changed its state.
+  const [errorState, setErrorState] = useState(state);
+  if (errorState !== state) {
+    setErrorState(state);
+    setActionError(undefined);
+  }
+
+  // The controller refuses a start (409) until a poll reports that the stop has finished.
+  useEffect(() => {
+    if (waiting && (state === 'stopped' || state === 'failed')) {
+      setWaiting(false);
+      void start();
+    }
+  }, [waiting, state, start]);
 
   const act = async (which: 'start' | 'stop' | 'restart') => {
     if (busy) return;
     setBusy(which);
     setActionError(undefined);
+    if (which === 'start') return start();
     try {
-      let request: ReturnType<typeof startRequestOf> | undefined;
-      if (which !== 'stop') {
-        // The configuration as it is stored now, so an edit made in another tab is included. A restart checks it
-        // before stopping, so that a run is never stopped for a start that cannot happen.
-        const stored = readConfig();
-        if (stored.corrupt) throw new Error('The local configuration cannot be read; reset it first.');
-        if (stored.doc.links.length === 0) throw new Error('No links configured: nothing to start. Add a link first.');
-        request = startRequestOf(stored.doc);
-      }
-      if (which !== 'start') setEmulation(await api.stopEmulation());
-      if (request) setEmulation(await api.startEmulation(request));
+      if (which === 'restart') storedRequest(); // a run is never stopped for a start that cannot happen
+      setEmulation(await api.stopEmulation());
+      if (which === 'restart') setWaiting(true);
+      else setBusy(undefined);
     } catch (err) {
       setActionError(errorMessage(err));
-    } finally {
       setBusy(undefined);
     }
   };
 
-  const state = emulation?.state;
-  const startedAt = emulation?.started_at ?? undefined;
-  const now = useNow(startedAt !== undefined);
-  const totals = stats && totalsOf(stats.directions);
+  const live = stats && stats.directions.length > 0 ? stats.directions : undefined;
+  const totals = live && totalsOf(live);
   const plan = (dir: number) => emulation?.directions.find((p) => p.dir === dir);
   // The controller reports stale: true with no age_ms for a stopped emulation; that is not "old data".
   const showStale = state === 'running' && stats?.stale === true && stats.age_ms != null;
+  // After a stop the controller keeps the run's series until the next start: its final charts stay on the page.
+  const finished = state === 'stopped' && Object.values(history).some((list) => list.length > 0);
+  const shown: { dir: number; stats?: DirectionStats }[] = finished
+    ? Object.keys(history)
+        .map(Number)
+        .filter(Number.isInteger)
+        .sort((a, b) => a - b)
+        .map((dir) => ({ dir }))
+    : (live ?? []).map((d) => ({ dir: d.dir, stats: d }));
+  const titleOf = (dir: number, s?: DirectionStats) => {
+    const named = s ?? lastStats.current[dir];
+    const p = plan(dir);
+    if (!named && !p) return `Link ${dir}`;
+    return linkLabel(named?.link ?? p?.link, named?.rx ?? p?.rx, named?.tx ?? p?.tx, label);
+  };
 
   return (
     <>
       <h1 className="mb-3">Dashboard</h1>
-      <ErrorAlert message={actionError ?? pollError} />
+      <ErrorAlert message={actionError} />
+      <ErrorAlert message={pollError} />
       {statsError && statsError !== dismissed && (
         <Alert
           variant="warning"
@@ -206,9 +269,9 @@ export default function Dashboard() {
               </span>
             </>
           )}
-          {startedAt !== undefined && (
+          {stats?.elapsed_ms != null && (
             <span className="status-pill" data-testid="pill-elapsed">
-              {formatElapsed(now / 1000 - startedAt)}
+              {formatElapsed(stats.elapsed_ms)}
             </span>
           )}
           {totals && totals.droppedPct > 0 && (
@@ -216,7 +279,11 @@ export default function Dashboard() {
               dropped {formatPct(totals.droppedPct)}
             </span>
           )}
-          {state === 'stopping' ? (
+          {busy === 'restart' ? (
+            <Button variant="primary" disabled>
+              <Spinner size="sm" aria-hidden="true" /> Restarting…
+            </Button>
+          ) : state === 'stopping' ? (
             <Button variant="primary" disabled>
               <Spinner size="sm" aria-hidden="true" /> Stopping…
             </Button>
@@ -233,7 +300,7 @@ export default function Dashboard() {
               <i className="bi bi-play-fill" aria-hidden="true" /> Start
             </Button>
           )}
-          {state === 'running' && (
+          {state === 'running' && busy !== 'restart' && (
             <Button variant="outline-primary" disabled={corrupt || busy !== undefined} onClick={() => act('restart')}>
               <i className="bi bi-arrow-clockwise" aria-hidden="true" /> Restart
             </Button>
@@ -268,8 +335,15 @@ export default function Dashboard() {
           ))}
         </pre>
       )}
-      {stats?.directions.map((d) => (
-        <DirectionCard key={d.dir} stats={d} plan={plan(d.dir)} label={label} history={history[d.dir] ?? []} />
+      {shown.map(({ dir, stats: s }) => (
+        <DirectionCard
+          key={dir}
+          dir={dir}
+          title={titleOf(dir, s)}
+          stats={s}
+          plan={plan(dir)}
+          history={history[String(dir)] ?? NO_SAMPLES}
+        />
       ))}
       {stats && stats.ports.length > 0 && <PortsTable ports={stats.ports} label={label} />}
     </>

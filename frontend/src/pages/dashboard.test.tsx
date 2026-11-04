@@ -615,9 +615,12 @@ describe('Dashboard: polling (fake timers)', () => {
     const view = renderApp('/');
     await tick(3000);
     view.unmount();
-    const counts = [api.getEmulation, api.getStats, api.getDelayHistogram].map((m) => m.mock.calls.length);
+    // spec 29: the history poll stops too
+    const polled = [api.getEmulation, api.getStats, api.getDelayHistogram, api.getStatsHistory];
+    const counts = polled.map((m) => m.mock.calls.length);
+    expect(api.getStatsHistory.mock.calls.length).toBeGreaterThanOrEqual(1);
     await tick(20000);
-    expect([api.getEmulation, api.getStats, api.getDelayHistogram].map((m) => m.mock.calls.length)).toEqual(counts);
+    expect(polled.map((m) => m.mock.calls.length)).toEqual(counts);
   });
 
   it('a response that arrives after unmount does not break anything', async () => {
