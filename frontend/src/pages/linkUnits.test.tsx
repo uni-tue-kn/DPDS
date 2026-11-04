@@ -19,8 +19,8 @@ import {
 } from '../test/helpers';
 import { must } from '../test/must';
 
-// Contract: "v16" block of src/test/helpers.tsx. Every test runs against the link editor AND the preset editor
-// (they share ConfigFieldset). Stored/base values are ns, bit/s, bit and pps; the form shows units.
+// Contract: "v16" block of src/test/helpers.tsx. Every test runs against the link editor (the only page with the config form
+// since spec27). Stored/base values are ns, bit/s, bit and pps; the form shows units.
 const MU = 'µs'; // micro sign U+00B5, exactly as in the spec / P4TG
 
 const UNIT_FIELDS: [string, string[]][] = [

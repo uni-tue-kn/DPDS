@@ -179,7 +179,6 @@ describe('Links delete', () => {
     const user = userEvent.setup();
     seedStore({
       links: [fx.link(), fx.loopLink()],
-      presets: [fx.preset({ id: 4 })],
       settings: fx.settings({ main_lcore: 2 }),
     });
     renderApp('/links');
@@ -190,7 +189,6 @@ describe('Links delete', () => {
     expect(screen.getByText('loop')).toBeInTheDocument();
     const doc = storedDoc();
     expect(doc.links).toEqual([fx.loopLink()]);
-    expect(doc.presets.map((p) => p.id)).toEqual([4]);
     expect(doc.settings.main_lcore).toBe(2);
   });
 
@@ -563,7 +561,9 @@ describe('Links: inspect panel (v16)', () => {
 
   it('inspecting changes nothing: the stored document is untouched, no extra interface request', async () => {
     await inspect('a-b'); // seeds the three default links, then opens the panel
-    expect(rawStore()).toBe(JSON.stringify({ ...emptyDoc(), links: [fx.link(), fx.linkRev(), fx.loopLink()] }));
+    // (seedStore may add a tolerated `presets` member; the app must not change anything else)
+    const { presets: _presets, ...stored } = JSON.parse(rawStore() ?? 'null') as Record<string, unknown>;
+    expect(stored).toEqual({ ...emptyDoc(), links: [fx.link(), fx.linkRev(), fx.loopLink()] });
     expect(api.getInterfaces).toHaveBeenCalledTimes(1);
   });
 

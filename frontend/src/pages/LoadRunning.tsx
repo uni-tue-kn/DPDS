@@ -4,7 +4,7 @@ import type { EmulationView } from '../api/types';
 
 /**
  * Shown while an emulation runs and this browser has no links (a fresh browser, or one that was reset): copies the
- * running configuration into the local document. Presets stay.
+ * running configuration into the local document.
  */
 export default function LoadRunning({ emulation }: { emulation?: EmulationView }) {
   const { doc, corrupt } = useLocalConfig();

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { FormEvent } from 'react';
 import { Button, Card, Col, Form, Row } from 'react-bootstrap';
-import { Link as RouterLink, useNavigate, useParams } from 'react-router';
+import { Link as RouterLink, useLocation, useNavigate, useParams } from 'react-router';
 import * as api from '../api/client';
 import ErrorAlert from '../components/ErrorAlert';
 import { errorMessage } from '../common/format';
@@ -9,10 +9,9 @@ import { useLoad } from '../common/useLoad';
 import { saveLink, useLocalConfig } from '../common/localConfig';
 import ConfigFieldset from './ConfigFieldset';
 import { FieldLabel, RequiredNote } from './FieldLabel';
-import SavePresetModal from './SavePresetModal';
 import { configToForm, defaultConfigForm, formToDto, parseWorker, portError } from './linkForm';
 import type { ConfigForm } from './linkForm';
-import type { Interface, Link, LinkInput, Preset } from '../api/types';
+import type { Interface, Link, LinkInput } from '../api/types';
 
 /** Port -> name of the link that uses it, per role. */
 type Users = Map<string, string>;
@@ -67,13 +66,11 @@ function Editor({
   link,
   interfaces,
   others,
-  presets,
 }: {
   id?: number;
   link?: Link;
   interfaces: Interface[];
   others: Link[];
-  presets: Preset[];
 }) {
   const navigate = useNavigate();
   const [name, setName] = useState(link?.name ?? '');
@@ -84,8 +81,6 @@ function Editor({
   );
   const [worker, setWorker] = useState(link?.worker == null ? '' : String(link.worker));
   const [error, setError] = useState<string>();
-  const [presetOpen, setPresetOpen] = useState(false);
-  const [presetSaved, setPresetSaved] = useState<string>();
 
   // Every port is ingress of at most one link and egress of at most one link (the controller enforces it, 409).
   const ingressUsers: Users = new Map();
@@ -134,101 +129,82 @@ function Editor({
   };
 
   return (
-    <>
-      <Form onSubmit={submit} noValidate>
-        <ErrorAlert message={error} />
-        <RequiredNote />
-        {presetSaved && (
-          <div role="status" className="alert alert-success">
-            {presetSaved}
-          </div>
-        )}
-        <Card className="mb-3">
-          <Card.Body>
-            <Row>
-              <Form.Group as={Col} md={6} className="mb-3" controlId="link-name">
-                <FieldLabel label="Name" help="Link name" required />
-                <Form.Control
-                  type="text"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  required
-                  aria-required="true"
-                />
-              </Form.Group>
-              <Form.Group as={Col} md={6} className="mb-3" controlId="link-worker">
-                <FieldLabel help="Worker lcore" />
-                <Form.Control
-                  type="number"
-                  min={0}
-                  step={1}
-                  value={worker}
-                  onChange={(e) => setWorker(e.target.value)}
-                />
-                <Form.Text>Empty: automatic.</Form.Text>
-              </Form.Group>
-            </Row>
-            <Row>
-              <PortField
-                name="Ingress"
-                id="link-ingress"
-                value={ingress}
-                interfaces={interfaces}
-                users={ingressUsers}
-                onChange={setIngress}
+    <Form onSubmit={submit} noValidate>
+      <ErrorAlert message={error} />
+      <RequiredNote />
+      <Card className="mb-3">
+        <Card.Body>
+          <Row>
+            <Form.Group as={Col} md={6} className="mb-3" controlId="link-name">
+              <FieldLabel label="Name" help="Link name" required />
+              <Form.Control
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                required
+                aria-required="true"
               />
-              <PortField
-                name="Egress"
-                id="link-egress"
-                value={egress}
-                interfaces={interfaces}
-                users={egressUsers}
-                onChange={setEgress}
-              />
-            </Row>
-          </Card.Body>
-        </Card>
-        <ConfigFieldset
-          title="Link configuration"
-          value={config}
-          onChange={setConfig}
-          presets={presets}
-          onSaveAsPreset={() => {
-            setPresetSaved(undefined);
-            setPresetOpen(true);
-          }}
-        />
-        <Button type="submit" variant="primary" className="me-2">
-          Save
-        </Button>
-        <RouterLink to="/links" className="btn btn-outline-secondary">
-          Cancel
-        </RouterLink>
-      </Form>
-      {/* Outside the <Form>: React submit events bubble through portals and would submit the link. */}
-      {presetOpen && (
-        <SavePresetModal
-          getConfig={() => formToDto(config)}
-          onClose={() => setPresetOpen(false)}
-          onSaved={(p) => {
-            setPresetOpen(false);
-            setPresetSaved(`Preset "${p.name}" saved.`);
-          }}
-        />
-      )}
-    </>
+            </Form.Group>
+            <Form.Group as={Col} md={6} className="mb-3" controlId="link-worker">
+              <FieldLabel help="Worker lcore" />
+              <Form.Control type="number" min={0} step={1} value={worker} onChange={(e) => setWorker(e.target.value)} />
+              <Form.Text>Empty: automatic.</Form.Text>
+            </Form.Group>
+          </Row>
+          <Row>
+            <PortField
+              name="Ingress"
+              id="link-ingress"
+              value={ingress}
+              interfaces={interfaces}
+              users={ingressUsers}
+              onChange={setIngress}
+            />
+            <PortField
+              name="Egress"
+              id="link-egress"
+              value={egress}
+              interfaces={interfaces}
+              users={egressUsers}
+              onChange={setEgress}
+            />
+          </Row>
+        </Card.Body>
+      </Card>
+      <ConfigFieldset title="Link configuration" value={config} onChange={setConfig} />
+      <Button type="submit" variant="primary" className="me-2">
+        Save
+      </Button>
+      <RouterLink to="/links" className="btn btn-outline-secondary">
+        Cancel
+      </RouterLink>
+    </Form>
   );
 }
 
 /** The controller's link-name rule (`valid_name` in `api.rs`). */
 const LINK_NAME = /^[A-Za-z0-9_.-]{1,32}$/;
 
+/** The first free `<name>_copy`, `<name>_copy2`, ...; the base is shortened so the result has at most 32 characters. */
+function copyName(name: string, taken: Link[]): string {
+  const used = new Set(taken.map((l) => l.name));
+  for (let n = 1; ; n += 1) {
+    const suffix = n === 1 ? '_copy' : `_copy${n}`;
+    const candidate = name.slice(0, 32 - suffix.length) + suffix;
+    if (!used.has(candidate)) return candidate;
+  }
+}
+
 export default function LinkEditor() {
   const { id } = useParams();
+  // "Duplicate" in the Links list opens the new-link editor with `{ copyOf: <link id> }` as router state.
+  const copyOf = (useLocation().state as { copyOf?: number } | null)?.copyOf;
   const linkId = id === undefined ? undefined : Number(id);
   const interfaces = useLoad(api.getInterfaces);
   const { doc, corrupt } = useLocalConfig();
   const link = linkId === undefined ? undefined : doc.links.find((l) => l.id === linkId);
+  const source = linkId === undefined ? doc.links.find((l) => l.id === copyOf) : undefined;
+  const copy = source && { ...source, name: copyName(source.name, doc.links), ingress: '', egress: '' };
   const missing = linkId !== undefined && link === undefined && !corrupt;
   const ready = interfaces.data !== undefined && !missing && (linkId === undefined || link !== undefined);
 
@@ -240,10 +216,9 @@ export default function LinkEditor() {
         <Editor
           key={linkId ?? 'new'}
           id={linkId}
-          link={link}
+          link={link ?? copy}
           interfaces={interfaces.data ?? []}
           others={doc.links.filter((l) => l.id !== linkId)}
-          presets={doc.presets}
         />
       )}
     </>

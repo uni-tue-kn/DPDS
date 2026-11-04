@@ -11,7 +11,7 @@ import { addButton, numberField, removeButton, section } from '../test/helpers';
 // Contract: "v21" block of src/test/helpers.tsx (spec20). The limiter's limit is derived by dpds-core from the buffer
 // capacity (capacity x 1542 B x 8 bit, the same for Spacer and Token Bucket Filter); `limit_bit` is gone from the API.
 // The form has no "Burst limit" field; the Limiter subsection shows the derived limit read-only. Every test runs
-// against the link editor AND the preset editor (they share ConfigFieldset).
+// against the link editor (the only page with the config form since spec27).
 const body = () => document.body;
 const BITS_PER_PACKET = 1542 * 8; // 12336
 

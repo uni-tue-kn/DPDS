@@ -581,15 +581,16 @@ describe('Link editor: create', () => {
     expect(rawStore()).toBeNull();
     await fillValid(user, 'first');
     await user.click(save());
-    expect(storedDoc()).toMatchObject({ version: 1, presets: [] });
+    expect(storedDoc()).toMatchObject({ version: 1 });
+    expect(Object.keys(storedDoc()).sort()).toEqual(['links', 'settings', 'version']); // spec27: no presets member
     expect(storedDoc().links.map((l) => [l.id, l.name])).toEqual([[1, 'first']]);
     expect(storedDoc().settings).toEqual({ main_lcore: null, eal_extra_args: [], poll_interval_ms: 500 });
   });
 
-  it('a new link next to links 3 and 10 gets id 11; the stored links, presets and settings are unchanged', async () => {
+  it('a new link next to links 3 and 10 gets id 11; the stored links and settings are unchanged', async () => {
     const a = fx.link({ id: 3, name: 'c', ingress: 'net_null1', egress: 'net_null1' });
     const b = fx.link({ id: 10, name: 'd', ingress: 'net_null2', egress: 'net_null2' });
-    seedStore({ links: [a, b], presets: [fx.preset({ id: 4 })], settings: fx.settings({ poll_interval_ms: 250 }) });
+    seedStore({ links: [a, b], settings: fx.settings({ poll_interval_ms: 250 }) });
     seeded = 2;
     const user = userEvent.setup();
     renderApp('/links/new');
@@ -603,7 +604,6 @@ describe('Link editor: create', () => {
     expect(doc.links.map((l) => l.id)).toEqual([3, 10, 11]);
     expect(doc.links[0]).toEqual(a);
     expect(doc.links[1]).toEqual(b);
-    expect(doc.presets.map((p) => p.id)).toEqual([4]);
     expect(doc.settings.poll_interval_ms).toBe(250);
   });
 
@@ -807,10 +807,9 @@ describe('Link editor: edit', () => {
     expect(lastUpdate().name).toBe('a-b');
   });
 
-  it('editing leaves the other links, the presets and the settings of the document alone', async () => {
+  it('editing leaves the other links and the settings of the document alone', async () => {
     seedStore({
       links: [fx.link(), fx.linkRev()],
-      presets: [fx.preset({ id: 9 })],
       settings: fx.settings({ main_lcore: 2 }),
     });
     editedId = 1;
@@ -826,7 +825,6 @@ describe('Link editor: edit', () => {
       [3, 'b-a'],
     ]);
     expect(doc.links[1]).toEqual(fx.linkRev());
-    expect(doc.presets.map((p) => p.id)).toEqual([9]);
     expect(doc.settings.main_lcore).toBe(2);
   });
 
@@ -1078,7 +1076,7 @@ describe('Link editor: initialization rate (v12)', () => {
     expect(rate()).toBeInTheDocument();
   });
 
-  it('a new link starts with the field EMPTY (no preset value); saving the untouched form is refused', async () => {
+  it('a new link starts with the field EMPTY (no default value); saving the untouched form is refused', async () => {
     const user = await openNew();
     expect(rate()).toHaveValue(null);
     expect(rate()).toHaveDisplayValue('');

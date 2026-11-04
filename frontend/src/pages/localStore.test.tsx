@@ -3,7 +3,17 @@ import userEvent from '@testing-library/user-event';
 import { vi } from 'vitest';
 import { api } from '../test/mockApi';
 import * as fx from '../test/fixtures';
-import { STORAGE_KEY, emptyDoc, rawStore, renderApp, seedRaw, seedStore, storedOrEmpty } from '../test/helpers';
+import { linkPage } from '../test/configPages';
+import {
+  STORAGE_KEY,
+  emptyDoc,
+  rawStore,
+  renderApp,
+  seedRaw,
+  seedStore,
+  storedDoc,
+  storedOrEmpty,
+} from '../test/helpers';
 
 // Contract: "Local document" and "Corrupt storage" in the v22 block of src/test/helpers.tsx.
 // Never silently drop what is stored: a value that cannot be read raises an alert with a reset button, and stays untouched until
@@ -14,12 +24,11 @@ const CORRUPT: [string, string][] = [
   ['an empty string', ''],
   ['JSON null', 'null'],
   ['a JSON array', '[]'],
-  ['an unknown version', JSON.stringify({ version: 2, links: [], presets: [], settings: fx.settings() })],
-  ['version 0', JSON.stringify({ version: 0, links: [], presets: [], settings: fx.settings() })],
-  ['a missing version', JSON.stringify({ links: [], presets: [], settings: fx.settings() })],
-  ['links that are not a list', JSON.stringify({ version: 1, links: {}, presets: [], settings: fx.settings() })],
-  ['presets that are not a list', JSON.stringify({ version: 1, links: [], presets: 'x', settings: fx.settings() })],
-  ['missing settings', JSON.stringify({ version: 1, links: [], presets: [] })],
+  ['an unknown version', JSON.stringify({ version: 2, links: [], settings: fx.settings() })],
+  ['version 0', JSON.stringify({ version: 0, links: [], settings: fx.settings() })],
+  ['a missing version', JSON.stringify({ links: [], settings: fx.settings() })],
+  ['links that are not a list', JSON.stringify({ version: 1, links: {}, settings: fx.settings() })],
+  ['missing settings', JSON.stringify({ version: 1, links: [] })],
 ];
 
 const alertOf = async () => screen.findByRole('alert');
@@ -34,15 +43,12 @@ describe('local document: corrupt or unknown storage', () => {
     expect(within(alert).getByRole('button', { name: /^reset/i })).toBeInTheDocument();
   });
 
-  it.each(['/', '/links', '/settings', '/presets', '/hints', '/links/new'])(
-    'the alert shows on %s too',
-    async (path) => {
-      seedRaw('{not json');
-      renderApp(path);
-      expect(await alertOf()).toHaveTextContent(/local configuration/i);
-      expect(resetButton()).toBeInTheDocument();
-    },
-  );
+  it.each(['/', '/links', '/settings', '/hints', '/links/new'])('the alert shows on %s too', async (path) => {
+    seedRaw('{not json');
+    renderApp(path);
+    expect(await alertOf()).toHaveTextContent(/local configuration/i);
+    expect(resetButton()).toBeInTheDocument();
+  });
 
   it('shows the alert without any user action and leaves the stored string untouched', async () => {
     seedRaw('{"version":1,"links":"oops"');
@@ -53,7 +59,7 @@ describe('local document: corrupt or unknown storage', () => {
   });
 
   it('an unknown version is kept as it is (it may come from a newer release), not downgraded or dropped', async () => {
-    const raw = JSON.stringify({ version: 7, links: [fx.link()], presets: [], settings: fx.settings() });
+    const raw = JSON.stringify({ version: 7, links: [fx.link()], settings: fx.settings() });
     seedRaw(raw);
     renderApp('/');
     await alertOf();
@@ -126,7 +132,9 @@ describe('local document: corrupt or unknown storage', () => {
 
 describe('local document: what is valid', () => {
   it('a valid document with extra unknown members is accepted without an alert', async () => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...seedStore({ links: [fx.link()] }), future: { a: 1 } }));
+    seedStore({ links: [fx.link()] });
+    const stored = JSON.parse(rawStore() ?? 'null') as object;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...stored, future: { a: 1 } }));
     renderApp('/links');
     expect(await screen.findByText('a-b')).toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
@@ -140,16 +148,7 @@ describe('local document: what is valid', () => {
   });
 
   it('opening any page with nothing stored never creates the document', async () => {
-    for (const path of [
-      '/',
-      '/links',
-      '/presets',
-      '/settings',
-      '/hints',
-      '/interfaces',
-      '/links/new',
-      '/presets/new',
-    ]) {
+    for (const path of ['/', '/links', '/settings', '/hints', '/interfaces', '/links/new']) {
       const view = renderApp(path);
       await waitFor(() => expect(document.querySelector('h1')).not.toBeNull());
       expect(rawStore(), path).toBeNull();
@@ -165,21 +164,63 @@ describe('local document: what is valid', () => {
   });
 });
 
+describe('spec27: the document has no presets member', () => {
+  const noPresets = (links = [fx.link()]) => JSON.stringify({ version: 1, links, settings: fx.settings() });
+
+  it('a document without a presets member is a valid document: no alert, its links are listed', async () => {
+    seedRaw(noPresets());
+    renderApp('/links');
+    expect(await screen.findByText('a-b')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^reset/i })).not.toBeInTheDocument();
+  });
+
+  it('a document without a presets member is startable (Start is enabled)', async () => {
+    seedRaw(noPresets());
+    renderApp('/');
+    await waitFor(() => expect(screen.getByRole('button', { name: /^start$/i })).toBeEnabled());
+  });
+
+  it('an extra well-formed presets member is accepted and ignored (no alert, links listed)', async () => {
+    const preset = { id: 1, name: 'wan', description: 'old', config: fx.config3() };
+    seedRaw(JSON.stringify({ version: 1, links: [fx.link()], presets: [preset], settings: fx.settings() }));
+    renderApp('/links');
+    expect(await screen.findByText('a-b')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('the first save from an empty store writes {version, links, settings} and no presets member', async () => {
+    const user = await linkPage.openNew();
+    await linkPage.ready(user);
+    await linkPage.save(user);
+    await screen.findByRole('heading', { level: 1, name: 'Links' });
+    expect(Object.keys(storedDoc()).sort()).toEqual(['links', 'settings', 'version']);
+  });
+
+  it('saving the settings into a document without presets does not add the member either', async () => {
+    seedRaw(noPresets());
+    const user = userEvent.setup();
+    renderApp('/settings');
+    await user.click(await screen.findByRole('button', { name: /^save$/i }));
+    await screen.findByRole('status');
+    expect(Object.keys(storedDoc()).sort()).toEqual(['links', 'settings', 'version']);
+  });
+
+  it('deleting a link from a document without presets does not add the member either', async () => {
+    seedRaw(noPresets());
+    const user = userEvent.setup();
+    renderApp('/links');
+    await user.click(await screen.findByRole('button', { name: 'Delete a-b' }));
+    await user.click(screen.getByRole('button', { name: 'Confirm delete' }));
+    await waitFor(() => expect(storedDoc().links).toEqual([]));
+    expect(Object.keys(storedDoc()).sort()).toEqual(['links', 'settings', 'version']);
+  });
+});
+
 describe('no REST calls for the removed routes', () => {
   it('walking through every page requests nothing but online, interfaces, hints, emulation, stats and histograms', async () => {
-    seedStore({ links: [fx.link()], presets: [fx.preset({ id: 1 })] });
-    for (const path of [
-      '/',
-      '/links',
-      '/links/1',
-      '/links/new',
-      '/presets',
-      '/presets/1',
-      '/presets/new',
-      '/settings',
-      '/hints',
-      '/interfaces',
-    ]) {
+    seedStore({ links: [fx.link()] });
+    for (const path of ['/', '/links', '/links/1', '/links/new', '/settings', '/hints', '/interfaces']) {
       const view = renderApp(path);
       await waitFor(() => expect(document.querySelector('h1')).not.toBeNull());
       view.unmount();

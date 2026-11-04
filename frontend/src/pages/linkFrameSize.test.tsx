@@ -1,12 +1,12 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { UserEvent } from '@testing-library/user-event';
-import type { ConfigDto, Link, LocalConfig, Preset } from '../api/types';
+import type { ConfigDto, Link } from '../api/types';
 import { startRequestOf } from '../common/localConfig';
 import { pendingRestart } from '../common/pendingRestart';
 import { api } from '../test/mockApi';
 import * as fx from '../test/fixtures';
-import { linkPage, presetPage, PAGES } from '../test/configPages';
+import { linkPage, PAGES } from '../test/configPages';
 import type { ConfigPage } from '../test/configPages';
 import {
   PPS_UNITS,
@@ -21,40 +21,36 @@ import {
   rawStore,
   renderApp,
   seedLinks,
-  seedPresets,
   seedStore,
   storedDoc,
   storedLinks,
-  storedOrEmpty,
-  storedPresets,
   typeInto,
   unitOf,
   unitSelect,
   watchStoreWrites,
 } from '../test/helpers';
+import type { StoredDoc } from '../test/helpers';
 
-// Spec 25 (user 2026-11-04): "Average frame size" is a per-link and per-preset value that lives ONLY in the browser's local
-// document, as the top-level optional member `avg_frame_size_byte` of the link / preset (NOT inside `config`). It is the
+// Spec 25 (user 2026-11-04): "Average frame size" is a per-link value that lives ONLY in the browser's local
+// document, as the top-level optional member `avg_frame_size_byte` of the link (NOT inside `config`). It is the
 // L2 Ethernet frame including FCS (e.g. 1518 B); conversion between packet rates and bit rates adds 20 B of L1 overhead:
 //   pps = bit/s / ((frame + 20) x 8)        bit/s = pps x (frame + 20) x 8
 // It has no default and is optional. While it is empty or invalid, "Initialization rate" offers only pps|kpps|Mpps and
 // "Rate" only bit/s..Gbit/s; once it holds a valid value (finite, >= 64) both offer both families, own family first.
 // Choices of the tester where the spec is silent are marked "tester's choice" below.
 
-/** The optional top-level member the spec adds to links and presets (types.ts does not have it yet). */
+/** The optional top-level member the spec adds to links (types.ts does not have it yet). */
 interface Framed {
   avg_frame_size_byte?: number | null;
 }
 type FramedLink = Link & Framed;
-type FramedPreset = Preset & Framed;
 
-const withFrame = <T extends Link | Preset>(entry: T, frame: number | null): T & Framed => ({
+const withFrame = <T extends Link>(entry: T, frame: number | null): T & Framed => ({
   ...entry,
   avg_frame_size_byte: frame,
 });
 
 const body = () => document.body;
-const isLink = (page: ConfigPage) => page.name === 'link editor';
 
 const FRAME = 'Average frame size';
 const frameInput = () => numberField(body(), FRAME);
@@ -65,28 +61,24 @@ const shown = (label: string) => numberField(body(), label).value;
 const BOTH_FROM_PPS = [...PPS_UNITS, ...RATE_UNITS];
 const BOTH_FROM_RATE = [...RATE_UNITS, ...PPS_UNITS];
 
-/** The one stored link / preset after saving a new form, with its top-level frame size member. */
-function storedEntry(page: ConfigPage): (FramedLink | FramedPreset) & { config: ConfigDto } {
-  const list = isLink(page) ? storedLinks() : storedPresets();
-  expect(list).toHaveLength(1);
-  return list[0] as (FramedLink | FramedPreset) & { config: ConfigDto };
+/** The one stored link after saving a new form, with its top-level frame size member. */
+function storedEntry(_page: ConfigPage): FramedLink & { config: ConfigDto } {
+  expect(storedLinks()).toHaveLength(1);
+  return storedLinks()[0] as FramedLink & { config: ConfigDto };
 }
 const storedFrame = (page: ConfigPage) => storedEntry(page).avg_frame_size_byte ?? null;
 
-/** Opens the edit form of link / preset 1 whose config is `config` and whose stored frame size is `frame`. */
-async function openStored(page: ConfigPage, frame: number | null, config: ConfigDto = fx.config()): Promise<UserEvent> {
+/** Opens the edit form of link 1 whose config is `config` and whose stored frame size is `frame`. */
+async function openStored(
+  _page: ConfigPage,
+  frame: number | null,
+  config: ConfigDto = fx.config(),
+): Promise<UserEvent> {
   const user = userEvent.setup();
-  if (isLink(page)) {
-    seedLinks([withFrame(fx.link({ config }), frame)]);
-    renderApp('/links/1');
-    await screen.findByRole('heading', { level: 1, name: 'Edit link' });
-    await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue('a-b'));
-  } else {
-    seedPresets([withFrame(fx.preset({ id: 1, name: 'stored', config }), frame)]);
-    renderApp('/presets/1');
-    await screen.findByRole('heading', { level: 1, name: 'Edit preset' });
-    await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue('stored'));
-  }
+  seedLinks([withFrame(fx.link({ config }), frame)]);
+  renderApp('/links/1');
+  await screen.findByRole('heading', { level: 1, name: 'Edit link' });
+  await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue('a-b'));
   return user;
 }
 
@@ -543,125 +535,13 @@ describe.each(PAGES)('$name: the frame size is conditionally required', (page: C
   });
 });
 
-describe('Link editor: Apply preset and Save as preset carry the frame size', () => {
-  const seededPresets = () => [
-    withFrame(fx.preset({ id: 1, name: 'jumbo', config: fx.config3() }), 9000),
-    withFrame(fx.preset({ id: 2, name: 'plain', config: fx.config2() }), null),
-  ];
-  const apply = (user: UserEvent, name: string) => user.selectOptions(screen.getByLabelText('Apply preset'), name);
-
-  it("copies the preset's frame size into the link form", async () => {
-    seedPresets(seededPresets());
-    const user = await linkPage.openNew();
-    expect(frameInput()).toHaveValue(null);
-    await apply(user, 'jumbo');
-    expect(frameInput()).toHaveValue(9000);
-    expect(optionsOf('Initialization rate')).toEqual(BOTH_FROM_PPS);
-  });
-
-  it('replaces a typed frame size', async () => {
-    seedPresets(seededPresets());
-    const user = await linkPage.openNew();
-    await typeFrame(user, '1518');
-    await apply(user, 'jumbo');
-    expect(frameInput()).toHaveValue(9000);
-  });
-
-  it('a preset without a frame size CLEARS the form field', async () => {
-    seedPresets(seededPresets());
-    const user = await linkPage.openNew();
-    await typeFrame(user, '1518');
-    await apply(user, 'plain');
-    expect(frameInput()).toHaveValue(null);
-    expect(optionsOf('Initialization rate')).toEqual(PPS_UNITS);
-  });
-
-  it('an applied frame size is saved with the link', async () => {
-    seedPresets(seededPresets());
-    const user = await linkPage.openNew();
-    await apply(user, 'jumbo');
-    await linkPage.ready(user);
-    await linkPage.save(user);
-    await waitFor(() => expect(storedLinks()).toHaveLength(1));
-    expect((storedLinks()[0] as FramedLink).avg_frame_size_byte).toBe(9000);
-  });
-
-  it('is not stored in the preset by applying it (the link is a copy)', async () => {
-    seedPresets(seededPresets());
-    const user = await linkPage.openNew();
-    await apply(user, 'jumbo');
-    await typeFrame(user, '1500');
-    await linkPage.ready(user);
-    await linkPage.save(user);
-    await waitFor(() => expect(storedLinks()).toHaveLength(1));
-    expect((storedPresets()[0] as FramedPreset).avg_frame_size_byte).toBe(9000);
-    expect((storedLinks()[0] as FramedLink).avg_frame_size_byte).toBe(1500);
-  });
-
-  async function saveAsPreset(user: UserEvent, name: string): Promise<HTMLElement> {
-    await user.click(screen.getByRole('button', { name: 'Save as preset' }));
-    const dialog = await screen.findByRole('dialog');
-    await user.type(within(dialog).getByLabelText('Preset name'), name);
-    await user.click(within(dialog).getByRole('button', { name: 'Save preset' }));
-    return dialog;
-  }
-
-  it("Save as preset copies the link's frame size", async () => {
-    const user = await linkPage.openNew();
-    await typeFrame(user, '1518');
-    await saveAsPreset(user, 'from-link');
-    await waitFor(() => expect(storedPresets()).toHaveLength(1));
-    const p = storedPresets()[0] as FramedPreset;
-    expect(p.avg_frame_size_byte).toBe(1518);
-    expect(JSON.stringify(p.config)).not.toMatch(/frame/i);
-  });
-
-  it('Save as preset without a frame size stores none', async () => {
-    const user = await linkPage.openNew();
-    await saveAsPreset(user, 'from-link');
-    await waitFor(() => expect(storedPresets()).toHaveLength(1));
-    expect((storedPresets()[0] as FramedPreset).avg_frame_size_byte ?? null).toBeNull();
-  });
-
-  it('Save as preset stores converted base values together with the frame size', async () => {
-    const user = await linkPage.openFull();
-    await typeFrame(user, '1518');
-    await typeInto(user, body(), 'Initialization rate', '100', 'Gbit/s');
-    await typeInto(user, body(), 'Rate', '8', 'Mpps');
-    await saveAsPreset(user, 'cross');
-    await waitFor(() => expect(storedPresets()).toHaveLength(1));
-    const p = storedPresets()[0] as FramedPreset;
-    expect(p.avg_frame_size_byte).toBe(1518);
-    expect(p.config.delayer?.initialization_rate_pps).toBe(8127438);
-    expect(p.config.limiter?.rate_bps).toBe(98432000000);
-  });
-
-  // tester's choice: the dialog validates the whole form like Save does, so a bad frame size is refused there too
-  it('Save as preset with an invalid frame size is refused with an error naming "Average frame size"', async () => {
-    const user = await linkPage.openNew();
-    await typeFrame(user, '63');
-    const dialog = await saveAsPreset(user, 'bad');
-    expect(await within(dialog).findByRole('alert')).toHaveTextContent(/Average frame size/);
-    expect(storedOrEmpty().presets).toHaveLength(0);
-  });
-
-  it('the preset editor stores its own frame size on the preset', async () => {
-    const user = await presetPage.openNew();
-    await presetPage.ready(user);
-    await typeFrame(user, '9000');
-    await presetPage.save(user);
-    expect((storedPresets()[0] as FramedPreset).avg_frame_size_byte).toBe(9000);
-  });
-});
-
 describe('the frame size never reaches the controller and never marks a restart', () => {
   const frameLink = () => withFrame(fx.link(), 1518);
 
   it('startRequestOf leaves it out of the start request', () => {
-    const doc: LocalConfig = {
+    const doc: StoredDoc = {
       version: 1,
       links: [frameLink(), withFrame(fx.linkRev(), 9000)],
-      presets: [withFrame(fx.preset(), 64)],
       settings: fx.settings(),
     };
     const req = startRequestOf(doc);
@@ -690,14 +570,14 @@ describe('the frame size never reaches the controller and never marks a restart'
   });
 
   it('a local link with a frame size equals the running link without one: no pending restart (pure)', () => {
-    const local: LocalConfig = { version: 1, links: [frameLink()], presets: [], settings: fx.settings() };
+    const local: StoredDoc = { version: 1, links: [frameLink()], settings: fx.settings() };
     const running = fx.runningEmulation(fx.runningConfig([fx.link()], fx.settings()));
     expect(pendingRestart(local, running).any).toBe(false);
   });
 
   it('a different frame size alone does not mark a restart (pure)', () => {
     const running = fx.runningEmulation(fx.runningConfig([withFrame(fx.link(), 9000)], fx.settings()));
-    const local: LocalConfig = { version: 1, links: [frameLink()], presets: [], settings: fx.settings() };
+    const local: StoredDoc = { version: 1, links: [frameLink()], settings: fx.settings() };
     expect(pendingRestart(local, running).any).toBe(false);
   });
 
@@ -790,7 +670,7 @@ describe('the local document round trip keeps the frame size', () => {
     await linkPage.ready(user);
     await typeFrame(user, '1518');
     await linkPage.save(user);
-    const raw = JSON.parse(rawStore() ?? 'null') as LocalConfig;
+    const raw = JSON.parse(rawStore() ?? 'null') as StoredDoc;
     expect(Object.keys(raw.links[0]).sort()).toEqual(
       expect.arrayContaining(['avg_frame_size_byte', 'config', 'egress', 'id', 'ingress', 'name']),
     );

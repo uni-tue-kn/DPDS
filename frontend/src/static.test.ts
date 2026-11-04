@@ -476,3 +476,66 @@ describe('frontend lint and format tooling: Biome (spec v23)', () => {
     expect(hits).toEqual([]);
   });
 });
+
+// Spec 27 (user 2026-11-04): presets are gone, replaced by Import/Export on Settings and Duplicate in the Links list.
+describe('presets are removed from the source and the README (spec27)', () => {
+  const src = (f: string) => read('src', f);
+
+  it.each(['pages/Presets.tsx', 'pages/PresetEditor.tsx', 'pages/SavePresetModal.tsx'])('%s is gone', (file) => {
+    expect(existsSync(resolve(frontendDir, 'src', file)), file).toBe(false);
+  });
+
+  it.each(['pages/presets.test.tsx', 'pages/presetsInEditor.test.tsx'])('the old test %s is gone', (file) => {
+    expect(existsSync(resolve(frontendDir, 'src', file)), file).toBe(false);
+  });
+
+  it.each([
+    'App.tsx',
+    'pages/ConfigFieldset.tsx',
+    'pages/LinkEditor.tsx',
+    'pages/Links.tsx',
+    'pages/Settings.tsx',
+    'pages/fieldHelp.ts',
+    'pages/LoadRunning.tsx',
+  ])('%s does not mention presets', (file) => {
+    expect(src(file)).not.toMatch(/preset/i);
+  });
+
+  it('the DTO types have no Preset, PresetInput or presets member', () => {
+    const types = src('api/types.ts');
+    expect(types).not.toMatch(/\bPreset(Input)?\b/);
+    expect(types).not.toMatch(/\bpresets\??\s*:/);
+  });
+
+  it('the local store has no preset functions and no presets member in its empty document', () => {
+    const store = src('common/localConfig.ts');
+    expect(store).not.toMatch(/savePreset|deletePreset|isPreset|PresetInput/);
+    expect(store).not.toMatch(/presets\s*:\s*\[/);
+  });
+
+  it('there is no help text for presets, the old "Import setup file" or the preset-only "Description" field', () => {
+    const help = src('pages/fieldHelp.ts');
+    expect(help).not.toMatch(/Import setup file|Apply preset|Preset name/);
+    expect(help).not.toMatch(/^\s*Description:/m);
+  });
+
+  describe('README.md', () => {
+    const readme = readFileSync(resolve(repoDir, 'README.md'), 'utf8');
+    const paragraphs = readme.split(/\n\s*\n/).map((p) => p.replace(/\s+/g, ' '));
+
+    it('does not mention presets any more', () => {
+      expect(readme).not.toMatch(/preset/i);
+    });
+
+    it('says that links can be exported and imported on the Settings page (and that this is about the links)', () => {
+      const para = paragraphs.find(
+        (p) => /\bSettings\b/.test(p) && /\bImport\b/.test(p) && /\bExport\b/.test(p) && /\blinks\b/i.test(p),
+      );
+      expect(para, 'no paragraph naming Settings, Import, Export and links').toBeDefined();
+    });
+
+    it('no longer describes a whole-setup export that carries settings and presets', () => {
+      expect(readme).not.toMatch(/Export\s+and\s+import\s+of\s+the\s+whole\s+setup/i);
+    });
+  });
+});

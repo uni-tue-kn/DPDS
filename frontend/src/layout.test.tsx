@@ -25,6 +25,27 @@ describe('sidebar navigation', () => {
     expect(names.slice(0, 5)).toEqual(NAV);
   });
 
+  it('has no Presets item: the navigation holds exactly the five pages (spec27)', () => {
+    renderApp('/');
+    const nav = screen.getByRole('navigation', { name: 'Main navigation' });
+    const names = within(nav)
+      .getAllByRole('link')
+      .map((a) => a.getAttribute('aria-label') ?? a.textContent?.trim());
+    expect(names).toEqual(NAV);
+    expect(screen.queryByRole('link', { name: /preset/i })).not.toBeInTheDocument();
+    expect(document.querySelector('a[href="/presets"]')).toBeNull();
+  });
+
+  it.each(['/presets', '/presets/new', '/presets/1'])(
+    'the route %s is gone: it falls through to the dashboard, no Presets page',
+    async (path) => {
+      renderApp(path);
+      expect(await screen.findByRole('heading', { level: 1, name: 'Dashboard' })).toBeInTheDocument();
+      expect(screen.queryByRole('heading', { name: /preset/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /preset/i })).not.toBeInTheDocument();
+    },
+  );
+
   it.each(PAGES)('link "%s" opens %s with the matching heading', async (name, _path, heading) => {
     const user = userEvent.setup();
     renderApp('/');

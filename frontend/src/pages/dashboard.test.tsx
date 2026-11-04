@@ -18,7 +18,6 @@ describe('Dashboard: emulation state and control', () => {
   beforeEach(() => {
     seedStore({
       links: [fx.link(), fx.linkRev()],
-      presets: [fx.preset({ id: 4 })],
       settings: fx.settings({ main_lcore: 2, eal_extra_args: ['--no-huge'], poll_interval_ms: 250 }),
     });
   });
@@ -117,7 +116,7 @@ describe('Dashboard: emulation state and control', () => {
   });
 
   it('with an empty links list stored the same applies', async () => {
-    seedStore({ links: [], presets: [fx.preset({ id: 4 })] });
+    seedStore({ links: [] });
     const user = userEvent.setup();
     renderApp('/');
     const btn = await screen.findByRole('button', { name: /^start$/i });

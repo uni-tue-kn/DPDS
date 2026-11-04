@@ -24,7 +24,7 @@ import * as fx from '../test/fixtures';
 import { must } from '../test/must';
 
 // Contract: "Subsections" and "Enable / disable" in the v16 block and "Optional stages" in the v22 block of
-// src/test/helpers.tsx. Each test runs against the link editor and the preset editor (they share ConfigFieldset).
+// src/test/helpers.tsx. Each test runs against the link editor, the only page with the config form since spec27.
 // Tests of the five-section layout use `openFull()` (all three stages added); `openNew()` is the bare form.
 const body = () => document.body;
 const outer = (page: ConfigPage) => screen.getByRole('group', { name: page.outerName });
@@ -112,7 +112,7 @@ describe.each(PAGES)('$name: subsections', (page: ConfigPage) => {
     }
   });
 
-  it('every control of the config form lies in a subsection, except the preset actions of the link editor', async () => {
+  it('every control of the config form lies in a subsection (spec27: no loose Apply preset / Save as preset any more)', async () => {
     await page.openFull();
     const subs = SECTIONS.map(section);
     const loose = Array.from(
@@ -121,10 +121,10 @@ describe.each(PAGES)('$name: subsections', (page: ConfigPage) => {
     const names = loose.map((c) =>
       (c.tagName === 'BUTTON' ? c.textContent : (c as HTMLInputElement).labels?.[0]?.textContent)?.trim(),
     );
-    expect(names.sort()).toEqual(page.name === 'link editor' ? ['Apply preset', 'Save as preset'] : []);
+    expect(names.sort()).toEqual([]);
   });
 
-  it('v22: on a bare form the only loose controls are the three "Add ..." buttons (and the preset actions of the link editor)', async () => {
+  it('v22: on a bare form the only loose controls are the three "Add ..." buttons', async () => {
     await page.openNew();
     const subs = ['Buffer', 'Statistics'].map(section);
     const loose = Array.from(
@@ -133,14 +133,7 @@ describe.each(PAGES)('$name: subsections', (page: ConfigPage) => {
     const names = loose.map((c) =>
       (c.tagName === 'BUTTON' ? c.textContent : (c as HTMLInputElement).labels?.[0]?.textContent)?.trim(),
     );
-    expect(names.sort()).toEqual(
-      [
-        'Add delayer',
-        'Add dropper',
-        'Add limiter',
-        ...(page.name === 'link editor' ? ['Apply preset', 'Save as preset'] : []),
-      ].sort(),
-    );
+    expect(names.sort()).toEqual(['Add delayer', 'Add dropper', 'Add limiter']);
   });
 
   it('the same structure shows when editing a stored config', async () => {
@@ -365,16 +358,11 @@ describe.each(PAGES)('$name: v22 optional stages', (page: ConfigPage) => {
 describe('link editor: what stays outside the subsections', () => {
   const link = PAGES[0];
 
-  it('Apply preset and Save as preset belong to the whole configuration: inside the outer fieldset, in no subsection', async () => {
+  it('has no Apply preset and no Save as preset (presets are gone, spec27)', async () => {
     await link.openFull();
-    const apply = ctl('Apply preset');
-    const saveAs = screen.getByRole('button', { name: 'Save as preset' });
-    expect(outer(link)).toContainElement(apply);
-    expect(outer(link)).toContainElement(saveAs);
-    for (const s of SECTIONS.map(section)) {
-      expect(s).not.toContainElement(apply);
-      expect(s).not.toContainElement(saveAs);
-    }
+    expect(screen.queryByLabelText('Apply preset')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Save as preset' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/preset/i)).not.toBeInTheDocument();
   });
 
   it('Name, Worker lcore, Ingress and Egress are outside the config fieldset', async () => {
@@ -382,21 +370,6 @@ describe('link editor: what stays outside the subsections', () => {
     for (const l of ['Name', 'Worker lcore', 'Ingress', 'Egress']) {
       expect(outer(link)).not.toContainElement(ctl(l));
     }
-  });
-});
-
-describe('preset editor: what stays outside the subsections', () => {
-  const preset = PAGES[1];
-
-  it('has no Apply preset and no Save as preset (they are link-editor features)', async () => {
-    await preset.openFull();
-    expect(screen.queryByLabelText('Apply preset')).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Save as preset' })).not.toBeInTheDocument();
-  });
-
-  it('Name and Description are outside the config fieldset', async () => {
-    await preset.openFull();
-    for (const l of ['Name', 'Description']) expect(outer(preset)).not.toContainElement(ctl(l));
   });
 });
 

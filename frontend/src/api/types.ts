@@ -243,18 +243,7 @@ export interface HistogramView {
   expected_note?: string;
 }
 
-export interface Preset {
-  id: number;
-  name: string;
-  description?: string | null;
-  config: ConfigDto;
-  /** UI only, like `Link.avg_frame_size_byte`. */
-  avg_frame_size_byte?: number | null;
-}
-
-export type PresetInput = Omit<Preset, 'id'>;
-
-/** Body of `POST /api/emulation/start` and `POST /api/host/hints`: the whole configuration, no ids, no presets. */
+/** Body of `POST /api/emulation/start` and `POST /api/host/hints`: the whole configuration, no ids. */
 export interface StartRequest {
   links: StartLink[];
   settings: Settings;
@@ -273,7 +262,6 @@ export interface RunningConfig {
 export interface LocalConfig {
   version: 1;
   links: Link[];
-  presets: Preset[];
   settings: Settings;
 }
 

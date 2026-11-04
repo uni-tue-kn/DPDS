@@ -125,7 +125,6 @@ describe('Host hints page: hints for the local configuration (v22)', () => {
   it('with local links it POSTs the start body (links without ids, settings) and lists the host and the link hints together', async () => {
     const doc = seedStore({
       links: [fx.link(), fx.linkRev()],
-      presets: [fx.preset()],
       settings: fx.settings({ main_lcore: 2, poll_interval_ms: 250 }),
     });
     api.getHostHintsFor.mockResolvedValue([linkHint]);

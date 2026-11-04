@@ -20,11 +20,10 @@ import { must } from '../test/must';
 // aria-hidden, text "*", in the field's own group; control has `required` + aria-required="true"; one "* required" note.
 const body = () => document.body;
 const ctl = (label: string) => screen.getByLabelText(label) as HTMLElement;
-const isLink = (page: ConfigPage) => page.name === 'link editor';
 
 /** v22: controls required on a new form whose stages are not added yet: no stage field exists, so none is required. */
-function bareRequired(page: ConfigPage): string[] {
-  return ['Name', ...(isLink(page) ? ['Ingress', 'Egress'] : []), 'Buffer capacity'];
+function bareRequired(_page: ConfigPage): string[] {
+  return ['Name', 'Ingress', 'Egress', 'Buffer capacity'];
 }
 
 /** Controls required once delayer, limiter and dropper are added (Normal distribution, correlation off, Random loss). */
@@ -33,9 +32,9 @@ function pristineRequired(page: ConfigPage): string[] {
 }
 
 /** Controls that are never required. */
-function neverRequired(page: ConfigPage): string[] {
+function neverRequired(): string[] {
   return [
-    ...(isLink(page) ? ['Worker lcore'] : ['Description']),
+    'Worker lcore',
     'Seed',
     'Histogram bins',
     'Histogram lo',
@@ -53,7 +52,6 @@ function neverRequired(page: ConfigPage): string[] {
     'Rate unit',
     'Histogram lo unit',
     'Histogram hi unit',
-    ...(isLink(page) ? ['Apply preset'] : []),
   ];
 }
 
@@ -100,7 +98,7 @@ describe.each(PAGES)('$name: required fields are marked', (page: ConfigPage) => 
 
   it('marks nothing else: optional fields, selects with a default, checkboxes and unit selects carry no marker', async () => {
     await page.openFull();
-    for (const l of neverRequired(page)) expectOptional(ctl(l));
+    for (const l of neverRequired()) expectOptional(ctl(l));
   });
 
   it('the half-life is unmarked while its correlation switch is off', async () => {
@@ -119,10 +117,8 @@ describe.each(PAGES)('$name: required fields are marked', (page: ConfigPage) => 
     expect(screen.getByRole('spinbutton', { name: 'Initialization rate' })).toBe(ctl('Initialization rate'));
     expect(screen.getByRole('spinbutton', { name: 'Buffer capacity' })).toBe(ctl('Buffer capacity'));
     expect(screen.getByRole('textbox', { name: 'Name' })).toBe(ctl('Name'));
-    if (isLink(page)) {
-      expect(screen.getByRole('combobox', { name: 'Ingress' })).toBe(ctl('Ingress'));
-      expect(screen.getByRole('combobox', { name: 'Egress' })).toBe(ctl('Egress'));
-    }
+    expect(screen.getByRole('combobox', { name: 'Ingress' })).toBe(ctl('Ingress'));
+    expect(screen.getByRole('combobox', { name: 'Egress' })).toBe(ctl('Egress'));
   });
 
   it('the required attribute does not replace the in-app messages: saving the empty form still shows an alert', async () => {
@@ -142,8 +138,8 @@ describe.each(PAGES)('$name: required fields are marked', (page: ConfigPage) => 
     await page.openStored(cfg());
     const expected = pristineRequired(page).filter((l) => l !== 'Ingress' && l !== 'Egress');
     for (const l of expected) expectRequired(ctl(l));
-    for (const l of neverRequired(page)) expectOptional(ctl(l));
-    if (isLink(page)) for (const l of ['Ingress', 'Egress']) expectRequired(ctl(l));
+    for (const l of neverRequired()) expectOptional(ctl(l));
+    for (const l of ['Ingress', 'Egress']) expectRequired(ctl(l));
   });
 });
 
@@ -314,17 +310,5 @@ describe('link editor: name, ingress and egress are required before saving', () 
     await link.save(user);
     expect(await screen.findByRole('alert')).toHaveTextContent(/name/i);
     expect(link.requests()).toBe(0);
-  });
-});
-
-describe('preset editor: name is required, description is not', () => {
-  const preset = PAGES[1];
-
-  it('saves without a description', async () => {
-    const user = await preset.openFull();
-    await preset.ready(user);
-    expectOptional(ctl('Description'));
-    await preset.save(user);
-    expect(preset.requests()).toBe(1);
   });
 });

@@ -1,19 +1,11 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import type { ChangeEvent, FormEvent } from 'react';
 import { Button, Card, Form, InputGroup, Modal } from 'react-bootstrap';
 import ErrorAlert from '../components/ErrorAlert';
 import { errorMessage } from '../common/format';
 import { FieldLabel, InfoTip } from './FieldLabel';
-import {
-  emptyConfig,
-  isLocalConfig,
-  parseStored,
-  readRaw,
-  updateConfig,
-  useLocalConfig,
-  writeConfig,
-} from '../common/localConfig';
-import type { LocalConfig, Settings as SettingsDto } from '../api/types';
+import { isLinksFile, readConfig, replaceLinks, updateConfig, useLocalConfig } from '../common/localConfig';
+import type { Link, Settings as SettingsDto } from '../api/types';
 
 interface FormState {
   main_lcore: string;
@@ -58,16 +50,13 @@ function readText(file: File): Promise<string> {
   });
 }
 
-/** Downloads the local document as `dpds-setup-<date>.json`: as stored, ids included (an unreadable value as it is). */
-function downloadSetup() {
-  const raw = readRaw();
-  const stored = parseStored(raw);
-  const text =
-    raw !== null && stored.corrupt ? raw : JSON.stringify(raw === null ? emptyConfig() : stored.doc, null, 2);
+/** Downloads `{version: 1, links}` as `dpds-links-<date>.json`: the links as stored, ids included, no settings. */
+function downloadLinks() {
+  const text = JSON.stringify({ version: 1, links: readConfig().doc.links }, null, 2);
   const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
   const a = document.createElement('a');
   a.href = url;
-  a.download = `dpds-setup-${new Date().toISOString().slice(0, 10)}.json`;
+  a.download = `dpds-links-${new Date().toISOString().slice(0, 10)}.json`;
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -79,7 +68,8 @@ export default function Settings() {
   const [form, setForm] = useState<FormState>(() => toForm(doc.settings));
   const [error, setError] = useState<string>();
   const [saved, setSaved] = useState(false);
-  const [pendingImport, setPendingImport] = useState<LocalConfig>();
+  const [pendingImport, setPendingImport] = useState<Link[]>();
+  const fileInput = useRef<HTMLInputElement>(null);
   const [imported, setImported] = useState<string>();
 
   const edit = (patch: Partial<FormState>) => {
@@ -100,10 +90,10 @@ export default function Settings() {
     }
   };
 
-  const exportSetup = () => {
+  const exportLinks = () => {
     setError(undefined);
     try {
-      downloadSetup();
+      downloadLinks();
     } catch (e) {
       setError(errorMessage(e));
     }
@@ -119,27 +109,45 @@ export default function Settings() {
     try {
       parsed = JSON.parse(await readText(file));
     } catch (e) {
-      setError(`"${file.name}" is not a valid JSON setup file: ${errorMessage(e)}`);
+      setError(`"${file.name}" is not a valid JSON links file: ${errorMessage(e)}`);
       return;
     }
-    if (isLocalConfig(parsed)) setPendingImport(parsed);
-    else setError(`"${file.name}" is not a DPDS setup file (a version 1 document with links, presets and settings)`);
+    if (isLinksFile(parsed)) setPendingImport(parsed.links);
+    else setError(`"${file.name}" is not a DPDS links file (a version 1 document with a list of links)`);
   };
 
   const confirmImport = () => {
     if (!pendingImport) return;
-    writeConfig(pendingImport);
-    setForm(toForm(pendingImport.settings));
-    setSaved(false);
-    setImported(
-      `Setup imported: ${pendingImport.links.length} links and ${pendingImport.presets.length} presets. Settings were replaced as well.`,
-    );
+    try {
+      replaceLinks(pendingImport);
+      setImported(`Imported ${pendingImport.length} links`);
+    } catch (e) {
+      setError(errorMessage(e));
+    }
     setPendingImport(undefined);
   };
 
   return (
     <>
-      <h1 className="mb-3">Settings</h1>
+      <div className="d-flex justify-content-between align-items-center mb-3">
+        <h1 className="mb-0">Settings</h1>
+        <div className="text-end">
+          <input
+            ref={fileInput}
+            type="file"
+            accept=".json"
+            aria-label="Import links file"
+            className="d-none"
+            onChange={chooseFile}
+          />
+          <Button variant="success" className="me-2" onClick={() => fileInput.current?.click()}>
+            <i className="bi bi-cloud-arrow-down-fill" aria-hidden="true" /> Import
+          </Button>
+          <Button variant="danger" onClick={exportLinks}>
+            <i className="bi bi-cloud-arrow-up-fill" aria-hidden="true" /> Export
+          </Button>
+        </div>
+      </div>
       <ErrorAlert message={error} />
       {imported && (
         <div role="status" className="alert alert-success">
@@ -215,28 +223,12 @@ export default function Settings() {
           </Form>
         </Card.Body>
       </Card>
-      <Card className="mt-3" style={{ maxWidth: '40rem' }}>
-        <Card.Body>
-          <h2 className="h5">Backup</h2>
-          <p className="mb-2">
-            Export settings, links and presets as a JSON file, or restore them from one. They are kept in this browser
-            only.
-          </p>
-          <Button variant="outline-secondary" className="mb-3" onClick={exportSetup}>
-            Export setup
-          </Button>
-          <Form.Group controlId="import-file">
-            <FieldLabel help="Import setup file" />
-            <Form.Control type="file" accept=".json,application/json" onChange={chooseFile} />
-          </Form.Group>
-        </Card.Body>
-      </Card>
       <Modal show={pendingImport !== undefined} onHide={() => setPendingImport(undefined)} animation={false} centered>
         <Modal.Header closeButton>
-          <Modal.Title>Import setup</Modal.Title>
+          <Modal.Title>Import links</Modal.Title>
         </Modal.Header>
         <Modal.Body>
-          Importing will replace all existing links, settings and presets with the contents of the file. This cannot be
+          Importing will replace all existing links with the links of the file. The settings stay. This cannot be
           undone.
         </Modal.Body>
         <Modal.Footer>

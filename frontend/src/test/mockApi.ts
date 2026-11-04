@@ -1,6 +1,6 @@
 // Mock of the `../api/client` module (installed globally in setup.ts via vi.mock).
 // Tests import `api` from here to program and inspect the calls, and `ApiError` to build rejections.
-// v22: the surface is exactly the surviving REST client (no links / presets / settings / export / import functions): a page
+// v22: the surface is exactly the surviving REST client (no links / settings / export / import functions; presets are gone altogether): a page
 // that still calls a removed function fails with "is not a function".
 import { vi } from 'vitest';
 import type { Mock } from 'vitest';

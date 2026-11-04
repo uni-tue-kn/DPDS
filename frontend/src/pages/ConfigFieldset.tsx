@@ -1,7 +1,6 @@
 import type { ReactNode } from 'react';
 import { Button, Col, Form, InputGroup, Row } from 'react-bootstrap';
 import {
-  configToForm,
   DISTRIBUTIONS,
   frameRequired,
   halfLifeRequired,
@@ -15,18 +14,15 @@ import { FieldLabel, InfoTip } from './FieldLabel';
 import type { HelpKey } from './fieldHelp';
 import { TIME_UNITS, changeUnit, parseFrame, sameFamily } from '../common/units';
 import type { Unit, UnitValue } from '../common/units';
-import type { Preset } from '../api/types';
 import { derivedLimitText } from './linkSummary';
 
 interface Props {
   title: string;
   value: ConfigForm;
   onChange: (next: ConfigForm) => void;
-  /** Given: an "Apply preset" select copies the chosen preset's config into this form. */
-  presets?: Preset[];
-  /** Given: a "Save as preset" button. */
-  onSaveAsPreset?: () => void;
 }
+
+const forget = ({ text, unit }: UnitValue): UnitValue => ({ text, unit });
 
 type UnitKey = {
   [K in keyof ConfigForm]: ConfigForm[K] extends UnitValue ? K : never;
@@ -46,8 +42,8 @@ function Section({ title, onRemove, children }: { title: string; onRemove?: () =
   );
 }
 
-/** The config form of one link or preset: a `<fieldset>` named by `title` with one subsection per stage. */
-export default function ConfigFieldset({ title, value, onChange, presets, onSaveAsPreset }: Props) {
+/** The config form of one link: a `<fieldset>` named by `title` with one subsection per stage. */
+export default function ConfigFieldset({ title, value, onChange }: Props) {
   const id = (name: string) => `cfg-${name}`;
   const set = <K extends keyof ConfigForm>(key: K, v: ConfigForm[K]) => onChange({ ...value, [key]: v });
 
@@ -61,7 +57,17 @@ export default function ConfigFieldset({ title, value, onChange, presets, onSave
         type="number"
         step="any"
         value={value[key]}
-        onChange={(e) => set(key, e.target.value as never)}
+        onChange={(e) =>
+          key === 'avg_frame_size'
+            ? // Any frame-size edit makes the shown rate text count: the old frame no longer applies to the remembered values.
+              onChange({
+                ...value,
+                avg_frame_size: e.target.value,
+                initialization_rate_pps: forget(value.initialization_rate_pps),
+                rate_bps: forget(value.rate_bps),
+              })
+            : set(key, e.target.value as never)
+        }
         required={opts.required}
         aria-required={opts.required ? 'true' : undefined}
       />
@@ -182,37 +188,6 @@ export default function ConfigFieldset({ title, value, onChange, presets, onSave
       <div id={id('title')} className="config-title">
         {title}
       </div>
-      {(presets || onSaveAsPreset) && (
-        <Row className="align-items-end">
-          {presets && (
-            <Form.Group as={Col} md={4} className="mb-3" controlId={id('apply-preset')}>
-              <FieldLabel help="Apply preset" />
-              {/* Always shows the placeholder: choosing copies the config, it does not link to the preset. */}
-              <Form.Select
-                value=""
-                onChange={(e) => {
-                  const p = presets.find((x) => String(x.id) === e.target.value);
-                  if (p) onChange(configToForm(p.config, p.avg_frame_size_byte));
-                }}
-              >
-                <option value="">Select a preset...</option>
-                {presets.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </Form.Select>
-            </Form.Group>
-          )}
-          {onSaveAsPreset && (
-            <Col md={4} className="mb-3">
-              <Button type="button" variant="outline-secondary" onClick={onSaveAsPreset}>
-                Save as preset
-              </Button>
-            </Col>
-          )}
-        </Row>
-      )}
       <Section title="Buffer">
         {text('buffer_capacity', 'Buffer capacity', { required: true })}
         {check('reordering', 'Reordering')}

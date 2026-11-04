@@ -59,7 +59,7 @@ export interface ConfigForm {
   buffer_capacity: string;
   reordering: boolean;
   seed: string;
-  /** UI only (bytes, typed): not part of the config, kept beside it in the link / preset. */
+  /** UI only (bytes, typed): not part of the config, kept beside it in the link. */
   avg_frame_size: string;
   hist_bins: string;
   hist_lo: UnitValue;
@@ -111,7 +111,7 @@ const str = (v: number | null | undefined) => (v == null ? '' : String(v));
 const optUnit = (v: number | null | undefined, units: Unit[], dflt: number) =>
   v == null ? emptyUnit(dflt) : fromBase(v, units, dflt);
 
-/** `frame`: the stored average frame size of the link / preset that holds `c` (null or absent: none). */
+/** `frame`: the stored average frame size of the link that holds `c` (null or absent: none). */
 export function configToForm(c: ConfigDto, frame?: number | null): ConfigForm {
   const f: ConfigForm = {
     ...defaultConfigForm(),
@@ -308,7 +308,7 @@ function configToDto(f: ConfigForm, frame: number | null): ConfigDto {
   };
 }
 
-/** What a link or preset stores beside its name: the config and the UI-only frame size (left out when empty). */
+/** What a link stores beside its name: the config and the UI-only frame size (left out when empty). */
 export interface FormDto {
   config: ConfigDto;
   avg_frame_size_byte?: number;

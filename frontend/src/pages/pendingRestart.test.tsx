@@ -47,10 +47,9 @@ describe('pending restart: the local configuration equals the running one', () =
     expect(screen.queryByTestId('link-pending-restart')).not.toBeInTheDocument();
   });
 
-  it("ids, presets and the controller's extra keys (assigned id, dir, lcore) do not count", async () => {
+  it("ids and the controller's extra keys (assigned id, dir, lcore) do not count", async () => {
     seedStore({
       links: [fx.link({ id: 41 }), fx.linkRev({ id: 42 })],
-      presets: [fx.preset({ id: 9 })],
       settings: fx.settings(),
     });
     api.getEmulation.mockResolvedValue(fx.emulation('running', { config: RUNNING() }));
@@ -255,8 +254,8 @@ describe('Load running configuration', () => {
     expect(button()).not.toBeInTheDocument();
   });
 
-  it('loads the running links (ids 1..n, running order, worker kept) and settings into the local document; presets stay', async () => {
-    seedStore({ links: [], presets: [fx.preset({ id: 4 })], settings: fx.settings({ poll_interval_ms: 900 }) });
+  it('loads the running links (ids 1..n, running order, worker kept) and settings into the local document', async () => {
+    seedStore({ links: [], settings: fx.settings({ poll_interval_ms: 900 }) });
     api.getEmulation.mockResolvedValue(fx.emulation('running', { config: running() }));
     const user = userEvent.setup();
     renderApp('/');
@@ -274,7 +273,6 @@ describe('Load running configuration', () => {
       ['config', 'egress', 'id', 'ingress', 'name', 'worker'].filter((k) => k in doc.links[0]).sort(),
     );
     expect(doc.settings).toEqual({ main_lcore: 2, eal_extra_args: ['--no-huge'], poll_interval_ms: 250 });
-    expect(doc.presets.map((p) => p.id)).toEqual([4]);
   });
 
   it('afterwards the button is gone and there is no pending restart: the document equals the running one', async () => {

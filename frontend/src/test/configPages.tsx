@@ -1,5 +1,5 @@
-// The two pages that host the shared config form (`ConfigFieldset`): the link editor and the preset editor.
-// The v16 tests (linkUnits / linkRequired) run the same checks against both through this harness.
+// The page that hosts the config form (`ConfigFieldset`): the link editor. Spec27 removed the preset editor, so `PAGES` has one
+// entry; the v16 tests (linkUnits / linkRequired ...) still run through this harness.
 // v22: nothing is requested from the controller any more; "stored" means seeded into the local document, and what the page
 // created or updated is read back from it. Stages (delayer, limiter, dropper) start as "Add ..." buttons.
 import { screen, waitFor } from '@testing-library/react';
@@ -7,16 +7,7 @@ import userEvent from '@testing-library/user-event';
 import type { UserEvent } from '@testing-library/user-event';
 import type { ConfigDto } from '../api/types';
 import * as fx from './fixtures';
-import {
-  addStages,
-  renderApp,
-  seedLinks,
-  seedPresets,
-  storedLinks,
-  storedPresets,
-  typeRate,
-  watchStoreWrites,
-} from './helpers';
+import { addStages, renderApp, seedLinks, storedLinks, typeRate, watchStoreWrites } from './helpers';
 import { must } from './must';
 
 export interface ConfigPage {
@@ -27,15 +18,15 @@ export interface ConfigPage {
   openNew(): Promise<UserEvent>;
   /** A new form with delayer, limiter and dropper added (their v16 default values). */
   openFull(): Promise<UserEvent>;
-  /** The edit form (id 1) of a stored link/preset whose config is `config`; it opens with exactly its present stages. */
+  /** The edit form (id 1) of a stored link whose config is `config`; it opens with exactly its present stages. */
   openStored(config: ConfigDto): Promise<UserEvent>;
-  /** Everything but the config that a new form needs (name, ports for links), plus a valid initialization rate (pps) when a delayer is shown. */
+  /** Everything but the config that a new form needs (name, ports), plus a valid initialization rate (pps) when a delayer is shown. */
   ready(user: UserEvent): Promise<void>;
   /** Clicks Save. */
   save(user: UserEvent): Promise<void>;
-  /** The config of the one stored entry after a save of a new form; fails when there is not exactly one entry. */
+  /** The config of the one stored link after a save of a new form; fails when there is not exactly one link. */
   created(): ConfigDto;
-  /** The config of the (seeded) entry 1 after a save of a stored form; fails when there is not exactly one entry. */
+  /** The config of the (seeded) link 1 after a save of a stored form; fails when there is not exactly one link. */
   updated(): ConfigDto;
   /** Number of times the local document was written since the form opened. */
   requests(): number;
@@ -98,47 +89,7 @@ export const linkPage: ConfigPage = {
   requests: () => writeCount(),
 };
 
-export const presetPage: ConfigPage = {
-  name: 'preset editor',
-  outerName: 'Preset configuration',
-  async openNew() {
-    const user = userEvent.setup();
-    renderApp('/presets/new');
-    await screen.findByRole('heading', { level: 1, name: 'New preset' });
-    watchWrites();
-    return user;
-  },
-  async openFull() {
-    const user = await presetPage.openNew();
-    await addStages(user);
-    return user;
-  },
-  async openStored(config) {
-    seedPresets([fx.preset({ id: 1, name: 'stored', config })]);
-    const user = userEvent.setup();
-    renderApp('/presets/1');
-    await screen.findByRole('heading', { level: 1, name: 'Edit preset' });
-    await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue('stored'));
-    watchWrites();
-    return user;
-  },
-  async ready(user) {
-    await user.type(screen.getByLabelText('Name'), 'my-preset');
-    await readyFields(user);
-  },
-  save: clickSave,
-  created() {
-    expect(storedPresets()).toHaveLength(1);
-    return storedPresets()[0].config;
-  },
-  updated() {
-    expect(storedPresets()).toHaveLength(1);
-    return storedPresets()[0].config;
-  },
-  requests: () => writeCount(),
-};
-
-export const PAGES: ConfigPage[] = [linkPage, presetPage];
+export const PAGES: ConfigPage[] = [linkPage];
 
 /**
  * `fx.config()` with some delayer / limiter / histogram fields replaced (stored base values). Unlike `fx.config()` the

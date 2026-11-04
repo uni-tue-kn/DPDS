@@ -6,11 +6,6 @@ export const HELP = {
   // dpds-controller/src/api.rs:232-237 (valid_name), model.rs:10-11 (MAX_NAME_CHARS = 32)
   'Link name':
     'Name of this link. 1 to 32 characters: letters, digits and _ . - (the controller refuses anything else at start). Must be unique among your links.',
-  // no backend source: presets exist only in this browser (localConfig.ts refuseDuplicate; PresetEditor maxLength 64)
-  'Preset name':
-    'Name of this preset, up to 64 characters. Must be unique among your presets. Kept only in this browser.',
-  // no backend source: presets are not part of the controller's model (model.rs)
-  Description: 'Optional note about this preset. Kept only in this browser, never sent to the controller.',
   // dpds-controller/src/lcores.rs:65-67 (override), 83-106 (online, not main, not shared), 108-136 (automatic pick); model.rs worker is Option<u32>
   'Worker lcore':
     'CPU core that runs this link\u2019s forwarding loop (receive, delay, send). A whole number of at least 0: an online core that is not the main lcore and not used by another link. Empty: automatic, the lowest free isolated core, preferring the NUMA node of the ingress NIC.',
@@ -19,9 +14,6 @@ export const HELP = {
     'Port this link receives packets on. A port can be the ingress of at most one link. The same port may also be the egress (hairpin).',
   Egress:
     'Port this link sends its packets out on. A port can be the egress of at most one link. The same port may also be the ingress (hairpin).',
-  // UI behaviour only (ConfigFieldset copies configToForm(preset.config, preset.avg_frame_size_byte) into the form)
-  'Apply preset':
-    'Copies the settings of a preset into this form, including its average frame size. The link keeps its own copy: later changes to the preset do not affect it.',
   // dpds-core/src/buffer.rs:259-261 (BufferFull when len >= capacity), dpds-controller/src/dto.rs:18-19 and 210-215 (at most 2^31), dpds-core/src/lib.rs:159-173 (derived limiter limit)
   'Buffer capacity':
     'Most packets the buffer of this link holds at once (a number of packets, 0 to 2147483648 = 2^31). A packet arriving at a full buffer is dropped. The limiter\u2019s limit is derived from it.',
@@ -89,9 +81,6 @@ export const HELP = {
   // dpds-controller/src/api.rs:312-316 (>= 1), telemetry.rs:147 (waits interval_ms between polls), 154 (default 500), 215; model.rs:38-39
   'Poll interval (ms)':
     'How long, in milliseconds, the controller waits between two polls of the running dpds for its statistics. A whole number of at least 1; the default is 500. Applies at the next start.',
-  // no backend source: UI behaviour (Settings.tsx confirmImport)
-  'Import setup file':
-    'A JSON file made by Export setup. After you confirm, it replaces all links, presets and settings stored in this browser.',
 } as const;
 
 export type HelpKey = keyof typeof HELP;

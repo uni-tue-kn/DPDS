@@ -6,7 +6,7 @@ import userEvent from '@testing-library/user-event';
 import type { UserEvent } from '@testing-library/user-event';
 import type { ConfigDto } from '../api/types';
 import * as fx from '../test/fixtures';
-import { linkPage, presetPage, PAGES } from '../test/configPages';
+import { linkPage, PAGES } from '../test/configPages';
 import type { ConfigPage } from '../test/configPages';
 import {
   addStages,
@@ -17,7 +17,6 @@ import {
   section,
   seedLinks,
   storedLinks,
-  storedPresets,
   typeInto,
   typeRate,
   unitOf,
@@ -32,7 +31,7 @@ import { must } from '../test/must';
 //    form member, no DTO member. The GilbertElliot DTO the UI sends is exactly {type, p, r, k, h}.
 // 2. A link name must follow the controller's rule (1 to 32 characters, each of A-Z a-z 0-9 _ . -). Saving a link whose
 //    name breaks it is refused with an alert naming "Name" and stating the rule (tester's choice for "stating": the text
-//    holds the number 32 and the words "letters" or the range "A-Z"); nothing is written. Preset names are unchanged.
+//    holds the number 32 and the words "letters" or the range "A-Z"); nothing is written. (Spec27 removed presets, and with them the preset-name freedom.)
 // 3. A cross-family unit change remembers the value it converted from (text + unit) until the number is edited.
 // 4. The Initialization rate minimum (>= 1 pps) is checked on the exact converted value, before rounding.
 
@@ -243,29 +242,6 @@ describe('link editor: the name follows the controller rule (1 to 32 of A-Z a-z 
   });
 });
 
-describe('preset names are local-only and keep their old freedom', () => {
-  it('the preset editor accepts spaces, punctuation, non-ASCII and more than 32 characters', async () => {
-    const name = `my preset! ä ${'x'.repeat(40)}`;
-    const user = await presetPage.openNew();
-    await user.type(screen.getByLabelText('Name'), name);
-    await presetPage.save(user);
-    await screen.findByRole('heading', { level: 1, name: /presets/i });
-    expect(storedPresets()).toHaveLength(1);
-    expect(storedPresets()[0].name).toBe(name);
-  });
-
-  it('the Save-as-preset dialog of the link editor accepts such a name too', async () => {
-    const user = await linkPage.openFull();
-    await typeRate(user);
-    await user.click(screen.getByRole('button', { name: 'Save as preset' }));
-    const dialog = await screen.findByRole('dialog');
-    await user.type(within(dialog).getByLabelText('Preset name'), 'my preset (wan)');
-    await user.click(within(dialog).getByRole('button', { name: 'Save preset' }));
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-    expect(storedPresets().map((p) => p.name)).toEqual(['my preset (wan)']);
-  });
-});
-
 // ---- 3. No drift when switching rate units back and forth -------------------------------------------------------
 
 // 1518 B frame: 1e11 bit/s / ((1518 + 20) x 8) = 8127438.23... pps; 7.7 Gbit/s = 625812.4 pps.
@@ -455,7 +431,7 @@ describe.each(PAGES)('$name: a cross-family unit change remembers the value it c
     expect(shown('Initialization rate')).toBe('2.5');
   });
 
-  it('the remembered value is form state only: the saved link / preset holds no trace and reopens as the stored pps', async () => {
+  it('the remembered value is form state only: the saved link holds no trace and reopens as the stored pps', async () => {
     const user = await open();
     await page.ready(user);
     await init(user, '100', 'Gbit/s');
@@ -463,7 +439,7 @@ describe.each(PAGES)('$name: a cross-family unit change remembers the value it c
     await page.save(user);
     const raw = rawStore() ?? '';
     expect(raw).not.toMatch(/Gbit|remember|unit/i);
-    const entry = (page === linkPage ? storedLinks() : storedPresets())[0];
+    const entry = storedLinks()[0];
     expect(Object.keys(entry.config.delayer ?? {}).sort()).toEqual([
       'activate_correlation',
       'distribution',
@@ -583,6 +559,158 @@ describe.each(PAGES)(
     });
   },
 );
+
+// ---- 3b. Editing the frame size drops the remembered values (spec26 review, 2026-11-04) -------------------------------
+
+// A cross-family switch makes a rate field show a rounded number while it remembers the exact value it converted from. Any
+// edit of "Average frame size" (change, clear or retype) drops the remembered value of BOTH rate fields: the shown text and unit
+// stay as they are and from then on the SHOWN value is what counts (it is what the user sees, and the old frame no longer
+// applies). Before this rule, save converted the remembered 100 Gbit/s with the NEW frame (148809524 pps while 8.127 Mpps was
+// shown), clearing the frame made save fail with "required to convert ... from Gbit/s", and Mpps -> kpps blanked the field.
+// 1518 B frame: 8.127 Mpps shown for 100 Gbit/s; 8.127 Mpps shown as Gbit/s is 99.995 (exactly 99.994608).
+describe.each(PAGES)('$name: editing the frame size drops the remembered rate values', (page: ConfigPage) => {
+  /** Frame 1518, Initialization rate 100 Gbit/s switched to Mpps (shows 8.127, remembers 100 Gbit/s). */
+  async function initRemembered() {
+    const user = await page.openFull();
+    await typeFrame(user, '1518');
+    await page.ready(user);
+    await typeInto(user, body(), 'Initialization rate', '100', 'Gbit/s');
+    await pickUnit(user, body(), 'Initialization rate', 'Mpps');
+    expect(shown('Initialization rate')).toBe('8.127');
+    return user;
+  }
+  /** Frame 1518, limiter Rate 8.127 Mpps switched to Gbit/s (shows 99.995, remembers 8.127 Mpps). */
+  async function rateRemembered() {
+    const user = await page.openFull();
+    await typeFrame(user, '1518');
+    await page.ready(user);
+    await typeInto(user, body(), 'Rate', '8.127', 'Mpps');
+    await pickUnit(user, body(), 'Rate', 'Gbit/s');
+    expect(shown('Rate')).toBe('99.995');
+    return user;
+  }
+
+  describe('Initialization rate', () => {
+    it('after a changed frame size the shown 8.127 Mpps is saved: 8127000 pps (not 148809524)', async () => {
+      const user = await initRemembered();
+      await typeFrame(user, '64');
+      expect(shown('Initialization rate')).toBe('8.127');
+      expect(unitOf(body(), 'Initialization rate')).toBe('Mpps');
+      await page.save(user);
+      expect(must(page.created().delayer).initialization_rate_pps).toBe(8127000);
+    });
+
+    it('retyping the very same frame size drops it too (any edit does): 8127000 pps, not 8127438', async () => {
+      const user = await initRemembered();
+      await typeFrame(user, '1518');
+      await page.save(user);
+      expect(must(page.created().delayer).initialization_rate_pps).toBe(8127000);
+    });
+
+    it('after clearing the frame size the Mpps value saves without a frame-size error', async () => {
+      const user = await initRemembered();
+      await typeFrame(user, '');
+      expect(shown('Initialization rate')).toBe('8.127');
+      expect(unitOf(body(), 'Initialization rate')).toBe('Mpps');
+      await page.save(user);
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+      expect(must(page.created().delayer).initialization_rate_pps).toBe(8127000);
+    });
+
+    it('after clearing the frame size Mpps -> kpps shows 8127 (decimal-exact, not blank) and -> pps 8127000', async () => {
+      const user = await initRemembered();
+      await typeFrame(user, '');
+      await pickUnit(user, body(), 'Initialization rate', 'kpps');
+      expect(shown('Initialization rate')).toBe('8127');
+      await pickUnit(user, body(), 'Initialization rate', 'pps');
+      expect(shown('Initialization rate')).toBe('8127000');
+      await page.save(user);
+      expect(must(page.created().delayer).initialization_rate_pps).toBe(8127000);
+    });
+
+    it('a later cross-family switch converts the SHOWN value with the new frame: 8.127 Mpps at 64 B is 5.461 Gbit/s', async () => {
+      const user = await initRemembered();
+      await typeFrame(user, '64');
+      await pickUnit(user, body(), 'Initialization rate', 'Gbit/s');
+      expect(shown('Initialization rate')).toBe('5.461'); // 8127000 x (64 + 20) x 8 bit, not 100
+    });
+
+    it('the remembered value is dropped only by a frame edit: without one, save still stores 8127438', async () => {
+      const user = await initRemembered();
+      await page.save(user);
+      expect(must(page.created().delayer).initialization_rate_pps).toBe(8127438);
+    });
+  });
+
+  describe('limiter Rate', () => {
+    it('after a changed frame size the shown 99.995 Gbit/s is saved: 99995000000 bit/s (not 8.127 Mpps converted at 64 B)', async () => {
+      const user = await rateRemembered();
+      await typeFrame(user, '64');
+      expect(shown('Rate')).toBe('99.995');
+      expect(unitOf(body(), 'Rate')).toBe('Gbit/s');
+      await page.save(user);
+      expect(must(page.created().limiter).rate_bps).toBe(99995000000);
+    });
+
+    it('retyping the very same frame size drops it too: 99995000000 bit/s, not 99994608000', async () => {
+      const user = await rateRemembered();
+      await typeFrame(user, '1518');
+      await page.save(user);
+      expect(must(page.created().limiter).rate_bps).toBe(99995000000);
+    });
+
+    it('after clearing the frame size the Gbit/s value saves without a frame-size error', async () => {
+      const user = await rateRemembered();
+      await typeFrame(user, '');
+      expect(shown('Rate')).toBe('99.995');
+      await page.save(user);
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+      expect(must(page.created().limiter).rate_bps).toBe(99995000000);
+    });
+
+    it('after clearing the frame size Gbit/s -> Mbit/s shows 99995 (decimal-exact, not blank) and -> bit/s 99995000000', async () => {
+      const user = await rateRemembered();
+      await typeFrame(user, '');
+      await pickUnit(user, body(), 'Rate', 'Mbit/s');
+      expect(shown('Rate')).toBe('99995');
+      await pickUnit(user, body(), 'Rate', 'bit/s');
+      expect(shown('Rate')).toBe('99995000000');
+    });
+
+    it('a later cross-family switch converts the SHOWN value with the new frame: 99.995 Gbit/s at 64 B is 148.8 Mpps', async () => {
+      const user = await rateRemembered();
+      await typeFrame(user, '64');
+      await pickUnit(user, body(), 'Rate', 'Mpps');
+      expect(shown('Rate')).toBe('148.802'); // 99995000000 / 672 = 148802083.3 pps, not 8.127
+    });
+  });
+
+  it('one frame edit drops the remembered values of BOTH fields at once', async () => {
+    const user = await page.openFull();
+    await typeFrame(user, '1518');
+    await page.ready(user);
+    await typeInto(user, body(), 'Initialization rate', '100', 'Gbit/s');
+    await pickUnit(user, body(), 'Initialization rate', 'Mpps');
+    await typeInto(user, body(), 'Rate', '8.127', 'Mpps');
+    await pickUnit(user, body(), 'Rate', 'Gbit/s');
+    await typeFrame(user, '');
+    await page.save(user);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(must(page.created().delayer).initialization_rate_pps).toBe(8127000);
+    expect(must(page.created().limiter).rate_bps).toBe(99995000000);
+  });
+
+  it('the new rule leaves a field without a remembered value alone (same-family values and typed numbers)', async () => {
+    const user = await page.openFull();
+    await typeFrame(user, '1518');
+    await page.ready(user);
+    await typeInto(user, body(), 'Initialization rate', '5', 'Mpps');
+    await typeFrame(user, '64');
+    await typeFrame(user, '');
+    await page.save(user);
+    expect(must(page.created().delayer).initialization_rate_pps).toBe(5000000);
+  });
+});
 
 // ---- 4. Minimum check before rounding ---------------------------------------------------------------------------
 

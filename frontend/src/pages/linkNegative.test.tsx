@@ -9,7 +9,7 @@ import { must } from '../test/must';
 // probabilities outside [0, 1], in the unit the user typed. The message names the field (like the other validation
 // messages) and says why; it never quotes the base-unit value (a user who typed "-5 ms" must not read "-5000000").
 // The controller stays the final check; these tests only pin the frontend's own refusal (no request is made).
-// Every case runs against the link editor AND the preset editor (shared ConfigFieldset).
+// Every case runs against the link editor (the only page with the config form since spec27).
 //
 // Deliberately NOT pinned: whether 0 is refused for Rate (the controller wants > 0 while the limiter is active) and
 // what a negative value in a field that is switched off (half-life with correlation off) does. v22: the limiter has no switch.

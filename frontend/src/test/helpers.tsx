@@ -1,3 +1,22 @@
+// ## v27 (spec27, user 2026-11-04): presets are gone, replaced by Import/Export on the Settings page and Duplicate in the
+//    Links list (supersedes EVERY statement below about presets, "Apply preset", "Save as preset", `/presets`, "Export setup",
+//    "Import setup file" and the "Backup" card)
+//   - The local document is { "version": 1, "links": Link[], "settings": Settings }: the app never writes a `presets`
+//     member. A stored document with an extra `presets` member is still readable (the member is ignored, not migrated).
+//   - No sidebar item "Presets", no `/presets` route (the router shows its not-found state), no "Apply preset" and no
+//     "Save as preset" in the link editor. The editor's config fieldset holds only the subsections and the stage buttons.
+//   - Settings: a toolbar at the TOP of the page with, right-aligned, buttons "Import" (icon bi-cloud-arrow-down-fill,
+//     opens a hidden file input labelled "Import links file", accept ".json") and "Export" (icon bi-cloud-arrow-up-fill).
+//     No "Backup" card, no "Export setup" button. Export downloads { version: 1, links } (links as stored, ids and
+//     `avg_frame_size_byte` included, no settings) as `dpds-links-<YYYY-MM-DD>.json`. Import: the file must be a version 1
+//     document whose `links` are well formed (extra members such as `presets` or `settings` are ignored), otherwise an
+//     inline role=alert and nothing is written; a valid file opens a dialog ("Importing will replace all existing links")
+//     whose "Confirm import" replaces `links` ONLY (settings stay), whose "Cancel" writes nothing; then role=status
+//     "Imported <n> links". Import/Export are not disabled while an emulation runs.
+//   - Links list: each row has a button "Duplicate <name>" (icon bi-files) between Edit and Delete. It opens the new-link
+//     editor (`/links/new`) pre-filled with the copy: same config, ports, worker and frame size, name `<name>_copy`, if
+//     taken `<name>_copy2`, `_copy3` ..., the base shortened so the name is at most 32 characters. Nothing is stored
+//     until Save is clicked.
 // ## v22 (spec22, user 2026-11-04): stateless controller, configuration only in the browser (supersedes EVERY REST
 //    statement below about links, presets, settings, export/import and pending_restart; the v16/v21 UI rules stay unless
 //    the "Optional stages" part says otherwise)
@@ -427,7 +446,7 @@ import type { UserEvent } from '@testing-library/user-event';
 import { vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
 import App from '../App';
-import type { ConfigDto, Link, Preset, Settings } from '../api/types';
+import type { ConfigDto, Link, Settings } from '../api/types';
 
 export function renderApp(path = '/') {
   return render(
@@ -463,7 +482,7 @@ export function field(scope: HTMLElement, label: string): HTMLElement {
   return dd as HTMLElement;
 }
 
-/** A valid initialization rate for flows that create a link or preset (v12: new forms start with this field EMPTY). */
+/** A valid initialization rate for flows that create a link (v12: new forms start with this field EMPTY). */
 export const TEST_RATE = '10000000';
 
 // ---- v16: units, subsections ------------------------------------------------------------------------------------
@@ -590,12 +609,11 @@ export const DEFAULT_SETTINGS: Settings = { main_lcore: null, eal_extra_args: []
 export interface StoredDoc {
   version: 1;
   links: Link[];
-  presets: Preset[];
   settings: Settings;
 }
 
 export function emptyDoc(): StoredDoc {
-  return { version: 1, links: [], presets: [], settings: { ...DEFAULT_SETTINGS } };
+  return { version: 1, links: [], settings: { ...DEFAULT_SETTINGS } };
 }
 
 /** Writes a document (missing parts empty) to the store, as an earlier session of the app would have. */
@@ -605,7 +623,6 @@ export function seedStore(over: Partial<StoredDoc> = {}): StoredDoc {
   return doc;
 }
 export const seedLinks = (links: Link[]) => seedStore({ links });
-export const seedPresets = (presets: Preset[]) => seedStore({ presets });
 export const seedSettings = (settings: Settings) => seedStore({ settings });
 /** Writes an arbitrary string (corruption tests). */
 export function seedRaw(value: string): void {
@@ -622,7 +639,6 @@ export function storedDoc(): StoredDoc {
 /** The stored document, or the empty one while the key is absent. */
 export const storedOrEmpty = (): StoredDoc => (rawStore() === null ? emptyDoc() : storedDoc());
 export const storedLinks = () => storedDoc().links;
-export const storedPresets = () => storedDoc().presets;
 
 /** Recursively drops null / undefined object members ("null or absent" are the same optional value). */
 export function dropNulls<T>(v: T): T {

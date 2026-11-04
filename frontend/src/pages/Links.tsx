@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Badge, Button, Modal, Table } from 'react-bootstrap';
-import { Link as RouterLink } from 'react-router';
+import { Link as RouterLink, useNavigate } from 'react-router';
 import * as api from '../api/client';
 import { deleteLink, useLocalConfig } from '../common/localConfig';
 import { pendingRestart } from '../common/pendingRestart';
@@ -17,6 +17,7 @@ export default function Links() {
   const { doc, corrupt } = useLocalConfig();
   const emulation = useLoad(api.getEmulation);
   const label = usePortLabeler();
+  const navigate = useNavigate();
   const [target, setTarget] = useState<Link | null>(null);
   const [inspected, setInspected] = useState<Link | null>(null);
   const [actionError, setActionError] = useState<string>();
@@ -99,6 +100,15 @@ export default function Links() {
                   >
                     <i className="bi bi-pencil" aria-hidden="true" />
                   </RouterLink>
+                  <Button
+                    size="sm"
+                    variant="outline-secondary"
+                    className="me-1"
+                    aria-label={`Duplicate ${l.name}`}
+                    onClick={() => navigate('/links/new', { state: { copyOf: l.id } })}
+                  >
+                    <i className="bi bi-files" aria-hidden="true" />
+                  </Button>
                   <Button
                     size="sm"
                     variant="outline-danger"

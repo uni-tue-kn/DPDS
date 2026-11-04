@@ -6,7 +6,7 @@ import { rawStore, renderApp, seedSettings, seedStore, storedDoc } from '../test
 
 // v22: the settings live in the local document (key dpds.config.v1, member `settings`) and nothing is requested from the controller.
 // Without a stored document the form shows the defaults main lcore empty, no EAL arguments, poll interval 500 ms; viewing writes
-// nothing; Save writes `settings` (links, presets and ids stay) and shows the status. Values are validated at Save: the poll
+// nothing; Save writes `settings` (links and ids stay) and shows the status. Values are validated at Save: the poll
 // interval must be an integer >= 1, the main lcore an integer or empty.
 // Labels: "Main lcore" (number, empty = null/automatic), "Poll interval (ms)" (number). There is NO mlx5 devargs
 // field (spec v17: the controller fixes them to PREOF's `txq_mpw_en=1`), and the page proposes no devargs.
@@ -154,13 +154,12 @@ describe('Settings page', () => {
     expect(rawStore()).toBeNull();
     expect(screen.getByLabelText('Main lcore')).toHaveValue(null);
     await user.click(save());
-    expect(storedDoc()).toMatchObject({ version: 1, links: [], presets: [] });
+    expect(storedDoc()).toMatchObject({ version: 1, links: [] });
   });
 
-  it('saving keeps the stored links (ids included) and presets', async () => {
+  it('saving keeps the stored links (ids included)', async () => {
     seedStore({
       links: [fx.link(), fx.linkRev()],
-      presets: [fx.preset({ id: 4 })],
       settings: fx.settings({ poll_interval_ms: 500 }),
     });
     const user = userEvent.setup();
@@ -171,7 +170,6 @@ describe('Settings page', () => {
     const doc = storedDoc();
     expect(doc.settings.main_lcore).toBe(3);
     expect(doc.links).toEqual([fx.link(), fx.linkRev()]);
-    expect(doc.presets).toEqual([fx.preset({ id: 4 })]);
   });
 
   it('the page needs nothing from the controller: no emulation request', async () => {

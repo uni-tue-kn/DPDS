@@ -697,10 +697,12 @@ request) and, when a newer release exists, shows a red arrow next to the version
 available" notice. Update with `./dpds.sh update --stable`. Any failure of the check, for example
 without internet access, means no notice.
 
-- **Configuration lives in the browser.** The frontend keeps links, presets and settings only in
-  the browser's localStorage, as P4TG does, so another or a cleared browser starts empty. Export
-  and import of the whole setup are a download and an upload of that document in the browser. The
-  controller reads and writes no configuration file, so an update can never leave it with a file it
+- **Configuration lives in the browser.** The frontend keeps links and settings only in the
+  browser's localStorage, as P4TG does, so another or a cleared browser starts empty. The
+  Settings page has Import and Export buttons for the links: Export downloads them as
+  `dpds-links-<date>.json`, Import replaces all links with those of such a file and keeps the
+  settings. The "Duplicate" button of a link in the Links list opens the new-link form pre-filled
+  with a copy; you pick its ports. The controller reads and writes no configuration file, so an update can never leave it with a file it
   cannot load. While the emulation runs, `GET /api/emulation` reports the configuration it was
   started with in `config`, as the client sent it. The frontend compares it with its own to show
   "pending restart" and offers "Load running configuration" to a browser without links.
@@ -736,7 +738,7 @@ without internet access, means no notice.
   expected packet rate of the link.
 - **Frontend**: `http://<host>:<controller port>/`, served by the controller itself. Pages for the
   dashboard (start/stop, per-link rates, drop shares per cause, delay statistics and histogram),
-  links, presets, interfaces, host hints and settings.
+  links, interfaces, host hints and settings.
 - **REST API**: served by the controller on port 8100 (`/api/...`), the same port as the frontend.
   The interactive OpenAPI documentation is at `http://<host>:8100/api/docs`.
 - **Delay histogram extras** (`GET /api/stats/{dir}/delay_histogram`): `?window_s=10|60|300` returns

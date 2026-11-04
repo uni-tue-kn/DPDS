@@ -1,7 +1,7 @@
-import { screen, within } from '@testing-library/react';
+import { screen } from '@testing-library/react';
 import type { UserEvent } from '@testing-library/user-event';
 import type { ConfigDto } from '../api/types';
-import { linkPage, PAGES } from '../test/configPages';
+import { PAGES } from '../test/configPages';
 import type { ConfigPage } from '../test/configPages';
 import {
   PPS_UNITS,
@@ -13,7 +13,6 @@ import {
   rawStore,
   removeButton,
   storedLinks,
-  storedPresets,
   typeInto,
   unitOf,
   unitSelect,
@@ -33,12 +32,9 @@ const FRAME = 'Average frame size';
 const typeFrame = (user: UserEvent, text: string) => typeInto(user, body(), FRAME, text);
 const optionsOf = (label: string) => Array.from(unitSelect(body(), label).options).map((o) => o.textContent);
 const shown = (label: string) => numberField(body(), label).value;
-const isLink = (page: ConfigPage) => page === linkPage;
-
-const storedConfig = (page: ConfigPage): ConfigDto => {
-  const list = isLink(page) ? storedLinks() : storedPresets();
-  expect(list).toHaveLength(1);
-  return list[0].config;
+const storedConfig = (_page: ConfigPage): ConfigDto => {
+  expect(storedLinks()).toHaveLength(1);
+  return storedLinks()[0].config;
 };
 
 describe.each(PAGES)('$name: a cross-family unit without a valid frame size', (page: ConfigPage) => {
@@ -301,19 +297,5 @@ describe.each(PAGES)('$name: the limiter Rate must be greater than 0', (page: Co
     await page.ready(user);
     await page.save(user);
     expect(storedConfig(page).limiter ?? null).toBeNull();
-  });
-});
-
-describe('Link editor: Save as preset refuses a Rate of 0 too', () => {
-  it('the dialog shows an error naming "Rate" and writes no preset', async () => {
-    const user = await linkPage.openFull();
-    await typeInto(user, body(), 'Initialization rate', '5', 'Mpps');
-    await typeInto(user, body(), 'Rate', '0', 'Gbit/s');
-    await user.click(screen.getByRole('button', { name: 'Save as preset' }));
-    const dialog = await screen.findByRole('dialog');
-    await user.type(within(dialog).getByLabelText('Preset name'), 'zero');
-    await user.click(within(dialog).getByRole('button', { name: 'Save preset' }));
-    expect(await within(dialog).findByRole('alert')).toHaveTextContent(/\bRate\b/);
-    expect(rawStore()).toBeNull();
   });
 });

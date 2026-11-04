@@ -1,12 +1,12 @@
 import { act, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { UserEvent } from '@testing-library/user-event';
-import { linkPage, presetPage } from '../test/configPages';
+import { linkPage } from '../test/configPages';
 import type { ConfigPage } from '../test/configPages';
 import { allRequiredMarkers, rawStore, renderApp, typeInto } from '../test/helpers';
 
-// Spec 25 (user 2026-11-04): an info-icon tooltip after EVERY field label in the link editor, the preset editor (the shared
-// ConfigFieldset) and the Settings page. Mechanics (spec): react-bootstrap OverlayTrigger + Tooltip, hover or keyboard focus;
+// Spec 25 (user 2026-11-04): an info-icon tooltip after EVERY field label in the link editor and the Settings page (spec27
+// removed the preset editor). Mechanics (spec): react-bootstrap OverlayTrigger + Tooltip, hover or keyboard focus;
 // the trigger is a `<button type="button">` with the Bootstrap icon `bi-info-circle` and the accessible name "About <label>",
 // placed after the label (and after a required marker); it must not change the field's accessible name and must not count as a
 // required marker. The prose is not pinned except for the few facts that are certain from the backend: the base units.
@@ -18,11 +18,15 @@ const MIN_TEXT = 10;
 const aboutButton = (label: string) => screen.getByRole('button', { name: `About ${label}` });
 const queryAbout = (label: string) => screen.queryByRole('button', { name: `About ${label}` });
 
-/** Every field label of the page: all <label> elements except the visually hidden "<label> unit" ones. */
+/**
+ * Every field label of the page: all <label> elements except the visually hidden "<label> unit" ones and the label of the
+ * hidden file input behind the toolbar's Import button (spec27: a tooltip next to an invisible field makes no sense; the
+ * button names the action).
+ */
 function fieldLabels(): HTMLLabelElement[] {
   return Array.from(document.querySelectorAll('label')).filter((l) => {
     const t = l.textContent?.trim() ?? '';
-    return t !== '' && !t.endsWith(' unit');
+    return t !== '' && !t.endsWith(' unit') && t !== 'Import links file';
   });
 }
 const textOf = (l: HTMLElement) => l.textContent?.trim() ?? '';
@@ -57,7 +61,6 @@ const LINK_LABELS = [
   'Worker lcore',
   'Ingress',
   'Egress',
-  'Apply preset',
   'Buffer capacity',
   'Reordering',
   'Seed',
@@ -78,18 +81,11 @@ const LINK_LABELS = [
   'Histogram hi',
 ];
 const GE_LABELS = ['Gilbert-Elliot p', 'Gilbert-Elliot r', 'Gilbert-Elliot k', 'Gilbert-Elliot h'];
-const PRESET_ONLY_LABELS = ['Description'];
-const LINK_ONLY_LABELS = ['Worker lcore', 'Ingress', 'Egress', 'Apply preset'];
 
-const labelsOf = (page: ConfigPage) =>
-  page === linkPage
-    ? LINK_LABELS
-    : [...LINK_LABELS.filter((l) => !LINK_ONLY_LABELS.includes(l)), ...PRESET_ONLY_LABELS];
-
-describe.each([linkPage, presetPage])('$name: tooltips after every field label', (page: ConfigPage) => {
+describe.each([linkPage])('$name: tooltips after every field label', (page: ConfigPage) => {
   it('every field has a button "About <label>" (all stages added)', async () => {
     await page.openFull();
-    for (const label of labelsOf(page)) expect(aboutButton(label)).toBeInTheDocument();
+    for (const label of LINK_LABELS) expect(aboutButton(label)).toBeInTheDocument();
   });
 
   it('the Gilbert-Elliot fields have one too', async () => {
@@ -112,7 +108,7 @@ describe.each([linkPage, presetPage])('$name: tooltips after every field label',
     const user = await page.openFull();
     await user.selectOptions(screen.getByLabelText('Loss model'), 'GilbertElliot');
     const labels = fieldLabels();
-    expect(labels.length).toBeGreaterThanOrEqual(labelsOf(page).length - 1 + GE_LABELS.length);
+    expect(labels.length).toBeGreaterThanOrEqual(LINK_LABELS.length - 1 + GE_LABELS.length);
     for (const l of labels) {
       const name = `About ${textOf(l)}`;
       const buttons = screen.getAllByRole('button', { name });
@@ -220,9 +216,7 @@ describe.each([linkPage, presetPage])('$name: tooltips after every field label',
     await user.click(aboutButton('Initialization rate'));
     expect(page.requests()).toBe(0);
     expect(rawStore()).toBeNull();
-    expect(
-      screen.getByRole('heading', { level: 1, name: page === linkPage ? 'New link' : 'New preset' }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 1, name: 'New link' })).toBeInTheDocument();
   });
 
   it('typing into a field still works next to its button', async () => {
@@ -240,18 +234,15 @@ describe('Settings: tooltips', () => {
     return user;
   };
 
-  it.each(['Main lcore', 'Poll interval (ms)', 'Import setup file', 'EAL extra arguments'])(
-    'has a button "About %s"',
-    async (label) => {
-      await open();
-      expect(aboutButton(label)).toBeInTheDocument();
-    },
-  );
+  it.each(['Main lcore', 'Poll interval (ms)', 'EAL extra arguments'])('has a button "About %s"', async (label) => {
+    await open();
+    expect(aboutButton(label)).toBeInTheDocument();
+  });
 
   it('EVERY <label> of the page has exactly one button right after it, outside the label', async () => {
     await open();
     const labels = fieldLabels();
-    expect(labels.length).toBeGreaterThanOrEqual(3);
+    expect(labels.length).toBeGreaterThanOrEqual(2); // Main lcore, Poll interval (ms)
     for (const l of labels) {
       const name = `About ${textOf(l)}`;
       const buttons = screen.getAllByRole('button', { name });
@@ -279,7 +270,13 @@ describe('Settings: tooltips', () => {
     await open();
     expect(screen.getByLabelText('Main lcore').tagName).toBe('INPUT');
     expect(screen.getByLabelText('Poll interval (ms)').tagName).toBe('INPUT');
-    expect(screen.getByLabelText('Import setup file').tagName).toBe('INPUT');
+    expect(screen.getByLabelText('Import links file').tagName).toBe('INPUT');
+  });
+
+  it('the toolbar has no tooltip for the hidden file input (neither the old nor the new name)', async () => {
+    await open();
+    expect(queryAbout('Import setup file')).not.toBeInTheDocument();
+    expect(queryAbout('Import links file')).not.toBeInTheDocument();
   });
 
   it('the Poll interval tooltip names milliseconds', async () => {

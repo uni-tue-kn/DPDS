@@ -13,7 +13,6 @@ import type {
   LinkInput,
   OnlineView,
   PortStats,
-  Preset,
   RunningConfig,
   Settings,
   StatsView,
@@ -83,7 +82,7 @@ export function config2(): ConfigDto {
   };
 }
 
-/** Third config, different from `config()` and `config2()` in every field (presets). */
+/** Third config, different from `config()` and `config2()` in every field (a link of its own). */
 export function config3(): ConfigDto {
   return {
     buffer_capacity: 321,
@@ -102,10 +101,6 @@ export function config3(): ConfigDto {
     histogram: { bins: 32, lo_ns: 1000, hi_ns: 50000 },
     delay_stats: true,
   };
-}
-
-export function preset(over: Partial<Preset> = {}): Preset {
-  return { id: 1, name: 'wan', description: 'Typical WAN', config: config3(), ...over };
 }
 
 /** One directed link (spec v10): ingress port -> egress port with one config. */
