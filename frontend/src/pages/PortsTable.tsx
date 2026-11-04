@@ -12,8 +12,8 @@ export default function PortsTable({ ports, label }: { ports: PortStats[]; label
       <Card.Header as="h2" className="h6 mb-0">
         NIC ports
       </Card.Header>
-      <Table responsive size="sm" className="mb-0">
-        <thead>
+      <Table responsive striped size="sm" className="mb-0">
+        <thead className="table-dark">
           <tr>
             <th scope="col">Port</th>
             {COLUMNS.map((c) => (

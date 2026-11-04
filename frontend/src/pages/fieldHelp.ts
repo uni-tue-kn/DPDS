@@ -64,8 +64,9 @@ export const HELP = {
   // dpds-controller/src/dto.rs:166-170
   'Delay statistics':
     'Record the intended delay, lateness and delay histogram of this link. Off: dpds skips that work; the counters and drop causes stay.',
-  // dpds-controller/src/dto.rs:15-16 and 121-129 (1 to 500); dpds/src/delay_stats.rs:46-48 (256 default, 500 max), 209-221
-  'Histogram bins': 'Number of equal-width bins of the delay histogram: a whole number from 1 to 500. Empty: 256 bins.',
+  // spec 30: the cap is 4096 bins (dpds-controller MAX_HISTOGRAM_BINS, dpds MAX_BINS); 256 is the default
+  'Histogram bins':
+    'Number of equal-width bins of the delay histogram: a whole number from 1 to 4096. Empty: 256 bins. A power of two is only a suggestion.',
   // dpds/src/delay_stats.rs:30-31 (range [lo, lo + bins x width)), 131-152 (automatic window), 206-221 (from_spec), 229-231 (underflow); dpds-controller/src/dto.rs:130-143
   'Histogram lo':
     'Lower edge of the histogram range (included), the start of the first bin; delays below it are counted as underflow. Stored in ns; finite, at least 0 and below Histogram hi. Empty: the mean \u2212 6 std, but not below 0. If the automatic range is narrower than 1 \u00b5s it is recentred to exactly 1 \u00b5s wide: lo = max(0, midpoint \u2212 500 ns).',

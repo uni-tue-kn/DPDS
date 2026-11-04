@@ -10,12 +10,12 @@ import Links from './pages/Links';
 import Settings from './pages/Settings';
 import { resetConfig, useLocalConfig } from './common/localConfig';
 import { startPolling } from './common/polling';
+import { ThemeContext } from './common/theme';
+import type { Theme } from './common/theme';
 import { isUpdateAvailable, RELEASES_URL } from './common/updateCheck';
 import type { OnlineView } from './api/types';
 
 const ONLINE_POLL_MS = 5000;
-
-type Theme = 'dark' | 'light';
 
 function initialTheme(): Theme {
   const stored = localStorage.getItem('theme');
@@ -72,10 +72,15 @@ function Sidebar({ theme, onToggle }: { theme: Theme; onToggle: () => void }) {
       <div className="sidebar-brand">DPDS</div>
       <nav aria-label="Main navigation" className="nav flex-column">
         {NAV.map((n) => (
-          <NavLink key={n.to} to={n.to} end={n.end} className="nav-link">
-            <i className={`bi ${n.icon}`} aria-hidden="true" />
-            <span className="nav-label">{n.label}</span>
-          </NavLink>
+          <OverlayTrigger
+            key={n.to}
+            placement="right"
+            overlay={<Tooltip id={`nav-tooltip-${n.to}`}>{n.label}</Tooltip>}
+          >
+            <NavLink to={n.to} end={n.end} className="nav-link" aria-label={n.label}>
+              <i className={`bi ${n.icon}`} aria-hidden="true" />
+            </NavLink>
+          </OverlayTrigger>
         ))}
       </nav>
       <div className="sidebar-footer">
@@ -86,7 +91,7 @@ function Sidebar({ theme, onToggle }: { theme: Theme; onToggle: () => void }) {
           aria-pressed={theme === 'dark'}
           onClick={onToggle}
         >
-          <i className={`bi ${theme === 'dark' ? 'bi-sun' : 'bi-moon-stars'}`} aria-hidden="true" />
+          <i className={`bi ${theme === 'dark' ? 'bi-brightness-high-fill' : 'bi-moon-fill'}`} aria-hidden="true" />
         </button>
         <a
           href="/api/docs"
@@ -98,7 +103,7 @@ function Sidebar({ theme, onToggle }: { theme: Theme; onToggle: () => void }) {
           <i className="bi bi-book" aria-hidden="true" />
           <span className="visually-hidden">API documentation</span>
         </a>
-        <div className="nav-label" title={info?.dpds_bin}>
+        <div className="sidebar-version" title={info?.dpds_bin}>
           {info ? `v${info.version}` : 'Offline'}
           {info && updateAvailable && (
             <OverlayTrigger
@@ -167,21 +172,23 @@ export default function App() {
   };
 
   return (
-    <div className="app-shell">
-      <Sidebar theme={theme} onToggle={toggle} />
-      <main className="main-content">
-        <CorruptConfigAlert />
-        <Routes>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/links" element={<Links />} />
-          <Route path="/links/new" element={<LinkEditor />} />
-          <Route path="/links/:id" element={<LinkEditor />} />
-          <Route path="/interfaces" element={<Interfaces />} />
-          <Route path="/hints" element={<Hints />} />
-          <Route path="/settings" element={<Settings />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
-      </main>
-    </div>
+    <ThemeContext.Provider value={theme}>
+      <div className="app-shell">
+        <Sidebar theme={theme} onToggle={toggle} />
+        <main className="main-content">
+          <CorruptConfigAlert />
+          <Routes>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/links" element={<Links />} />
+            <Route path="/links/new" element={<LinkEditor />} />
+            <Route path="/links/:id" element={<LinkEditor />} />
+            <Route path="/interfaces" element={<Interfaces />} />
+            <Route path="/hints" element={<Hints />} />
+            <Route path="/settings" element={<Settings />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </main>
+      </div>
+    </ThemeContext.Provider>
   );
 }

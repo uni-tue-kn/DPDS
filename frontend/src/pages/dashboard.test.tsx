@@ -1,4 +1,4 @@
-import { screen, within, waitFor } from '@testing-library/react';
+import { fireEvent, screen, within, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { vi } from 'vitest';
 import type { EmulationState, StatsView } from '../api/types';
@@ -7,6 +7,14 @@ import * as fx from '../test/fixtures';
 import { deferred, expectStartBody, field, renderApp, seedStore, storedDoc, tick } from '../test/helpers';
 
 const STATES: EmulationState[] = ['stopped', 'starting', 'running', 'stopping', 'failed'];
+
+/**
+ * Spec 28: each card shows ONE chart, chosen with a radio group (Rate is the default). Every test that needs the delay
+ * histogram first picks "Delay histogram" in the card(s) with this helper. `fireEvent` so it also works under fake timers.
+ */
+function showHistogram(...cards: HTMLElement[]): void {
+  for (const c of cards) fireEvent.click(within(c).getByRole('radio', { name: 'Delay histogram' }));
+}
 
 function twoDirections() {
   return fx.stats([fx.dirStats(0), fx.dirStats(1, { rx_pps: 500, tx_pps: 400, rx_bps: 2.5e6, tx_bps: 1.5e3 })]);
@@ -30,24 +38,30 @@ describe('Dashboard: emulation state and control', () => {
     expect(badge).toHaveTextContent(new RegExp(state, 'i'));
   });
 
-  const ENABLED: Record<EmulationState, [boolean, boolean]> = {
-    stopped: [true, false],
-    starting: [false, true],
-    running: [false, true],
-    stopping: [false, false],
-    failed: [true, false],
+  // Spec 28: one contextual button instead of a Start and a Stop button that are both always there (details in
+  // dashboardP4tg.test.tsx). Was: both buttons queried in every state and only their enabled/disabled state checked.
+  const SHOWN: Record<EmulationState, 'Start' | 'Stop' | 'Stopping…'> = {
+    stopped: 'Start',
+    starting: 'Stop',
+    running: 'Stop',
+    stopping: 'Stopping…',
+    failed: 'Start',
   };
-  it.each(STATES)('Start/Stop enablement in "%s"', async (state) => {
+  it.each(STATES)('the contextual button in "%s"', async (state) => {
     api.getEmulation.mockResolvedValue(fx.emulation(state));
     renderApp('/');
     await waitFor(() => expect(screen.getByTestId('state-badge')).toHaveAttribute('data-state', state));
-    const [start, stop] = ENABLED[state];
-    const startBtn = screen.getByRole('button', { name: /^start$/i });
-    const stopBtn = screen.getByRole('button', { name: /^stop$/i });
-    if (start) expect(startBtn).toBeEnabled();
-    else expect(startBtn).toBeDisabled();
-    if (stop) expect(stopBtn).toBeEnabled();
-    else expect(stopBtn).toBeDisabled();
+    const shown = SHOWN[state];
+    for (const name of ['Start', 'Stop', 'Stopping…'] as const) {
+      const btn = screen.queryByRole('button', { name: new RegExp(`^${name}$`, 'i') });
+      if (name !== shown) {
+        expect(btn).not.toBeInTheDocument();
+      } else if (name === 'Stopping…') {
+        expect(btn).toBeDisabled();
+      } else {
+        expect(btn).toBeEnabled();
+      }
+    }
   });
 
   it('Start calls startEmulation once and shows the new state', async () => {
@@ -331,10 +345,13 @@ describe('Dashboard: per-direction cards', () => {
     expect(screen.queryByTestId('direction-card-0')).not.toBeInTheDocument();
   });
 
-  it('draws a rate/drop line chart once directions exist', async () => {
+  // Spec 28: a radio selector shows one chart per link; Rate is the default. Was: findAllByTestId('chart-line') with the
+  // rate and the drops chart both on the page.
+  it('draws the rate line chart once directions exist (one chart per card, Rate by default)', async () => {
     renderApp('/');
-    await screen.findByTestId('direction-card-0');
-    const charts = await screen.findAllByTestId('chart-line');
+    const c0 = await screen.findByTestId('direction-card-0');
+    const charts = await within(c0).findAllByTestId('chart-line');
+    expect(charts).toHaveLength(1);
     const data = JSON.parse(charts[0].getAttribute('data-chart') ?? 'null');
     expect(data.datasets.length).toBeGreaterThanOrEqual(1);
   });
@@ -441,11 +458,12 @@ describe('Dashboard: delay histogram', () => {
   it('renders a bar chart from the bins of each direction', async () => {
     renderApp('/');
     const c0 = await screen.findByTestId('direction-card-0');
+    const c1 = await screen.findByTestId('direction-card-1');
+    showHistogram(c0, c1);
     const chart = await within(c0).findByTestId('chart-bar');
     const data = JSON.parse(chart.getAttribute('data-chart') ?? 'null');
     expect(data.datasets[0].data).toEqual([1, 10, 100, 40, 2]);
     expect(data.labels).toHaveLength(5);
-    const c1 = await screen.findByTestId('direction-card-1');
     const chart1 = await within(c1).findByTestId('chart-bar');
     expect(JSON.parse(chart1.getAttribute('data-chart') ?? 'null').datasets[0].data).toEqual([1, 10, 100, 40, 3]);
     expect(api.getDelayHistogram).toHaveBeenCalledWith(0);
@@ -459,6 +477,7 @@ describe('Dashboard: delay histogram', () => {
     );
     renderApp('/');
     const c0 = await screen.findByTestId('direction-card-0');
+    showHistogram(c0);
     const chart = await within(c0).findByTestId('chart-bar');
     const data = JSON.parse(chart.getAttribute('data-chart') ?? 'null');
     expect(data.datasets[0].data).toHaveLength(500);
@@ -468,6 +487,7 @@ describe('Dashboard: delay histogram', () => {
   it('shows the underflow and overflow counts', async () => {
     renderApp('/');
     const c0 = await screen.findByTestId('direction-card-0');
+    showHistogram(c0);
     await within(c0).findByTestId('chart-bar');
     expect(c0).toHaveTextContent(/Underflow\D*3\b/);
     expect(c0).toHaveTextContent(/Overflow\D*7\b/);
@@ -491,6 +511,8 @@ describe('Dashboard: delay histogram', () => {
     renderApp('/');
     const c0 = await screen.findByTestId('direction-card-0');
     const c1 = await screen.findByTestId('direction-card-1');
+    showHistogram(c0);
+    expect(within(c1).queryByRole('radio', { name: 'Delay histogram' })).not.toBeInTheDocument(); // spec 28: no choice
     await within(c0).findByTestId('chart-bar');
     expect(within(c1).queryByTestId('chart-bar')).not.toBeInTheDocument();
     expect(field(c1, 'Mean delay')).toHaveTextContent('n/a');
@@ -501,6 +523,7 @@ describe('Dashboard: delay histogram', () => {
     api.getDelayHistogram.mockRejectedValue(new ApiError(404, 'no histogram'));
     renderApp('/');
     const c0 = await screen.findByTestId('direction-card-0');
+    showHistogram(c0);
     await waitFor(() => expect(api.getDelayHistogram).toHaveBeenCalled());
     expect(within(c0).queryByTestId('chart-bar')).not.toBeInTheDocument();
     expect(field(c0, 'RX rate')).toHaveTextContent(/Mpps/);
@@ -516,6 +539,9 @@ describe('Dashboard: polling (fake timers)', () => {
 
   it('polls emulation and stats repeatedly (interval <= 2 s)', async () => {
     renderApp('/');
+    await tick(0);
+    await tick(0);
+    showHistogram(screen.getByTestId('direction-card-0')); // the histogram polls while its chart is the selected one
     await tick(0);
     const e0 = api.getEmulation.mock.calls.length;
     const s0 = api.getStats.mock.calls.length;
@@ -553,6 +579,10 @@ describe('Dashboard: polling (fake timers)', () => {
       renderApp('/');
       await tick(0); // let the first stats arrive and the direction cards mount (act batches updates)
       await tick(0);
+      // (with a slow getStats the cards never appear in time, so only the histogram variant picks the chart)
+      if (name === 'getDelayHistogram') {
+        showHistogram(screen.getByTestId('direction-card-0'), screen.getByTestId('direction-card-1'));
+      }
       for (let i = 0; i < 30; i += 1) await tick(1000);
       expect(probe.max).toBe(1);
       expect(probe.calls).toBeGreaterThanOrEqual(3); // polling keeps going
@@ -841,6 +871,7 @@ describe('Dashboard: visible errors (F3)', () => {
     renderApp('/');
     const c0 = await screen.findByTestId('direction-card-0');
     const c1 = await screen.findByTestId('direction-card-1');
+    showHistogram(c0, c1);
     const note = await within(c0).findByTestId('histogram-error');
     expect(note).toHaveTextContent(/histogram/i);
     expect(note).toHaveTextContent('histogram read failed');
@@ -854,13 +885,23 @@ describe('Dashboard: visible errors (F3)', () => {
     vi.useFakeTimers();
     api.getEmulation.mockResolvedValue(fx.emulation('running'));
     api.getStats.mockResolvedValue(twoDirections());
-    api.getDelayHistogram
-      .mockRejectedValueOnce(new ApiError(500, 'transient'))
-      .mockImplementation(async (dir) => fx.histogram(dir));
+    // the first fetch made after the histogram was chosen fails (spec 28: it is one choice of the card's selector)
+    let chosen = false;
+    let failed = false;
+    api.getDelayHistogram.mockImplementation(async (dir) => {
+      if (chosen && !failed) {
+        failed = true;
+        throw new ApiError(500, 'transient');
+      }
+      return fx.histogram(dir);
+    });
     renderApp('/');
     await tick(0);
     await tick(0);
     const c0 = screen.getByTestId('direction-card-0');
+    chosen = true;
+    showHistogram(c0);
+    await tick(0);
     expect(within(c0).getByTestId('histogram-error')).toBeInTheDocument();
     await tick(2500);
     expect(within(c0).queryByTestId('histogram-error')).not.toBeInTheDocument();
@@ -885,20 +926,23 @@ describe('Dashboard: accessibility and labels (F4)', () => {
     api.getStats.mockResolvedValue(twoDirections());
   });
 
-  it('every chart sits in a role="img" element with an aria-label (rate, drops, histogram)', async () => {
+  // Spec 28: one chart per card at a time. Was: the rate, drops and histogram charts all on the page (three images).
+  it('every chart sits in a role="img" element with an aria-label (rate, drops, histogram: one at a time)', async () => {
     renderApp('/');
     const c0 = await screen.findByTestId('direction-card-0');
-    await within(c0).findByTestId('chart-bar');
-    const imgs = within(c0).getAllByRole('img');
-    expect(imgs.length).toBeGreaterThanOrEqual(3);
-    for (const img of imgs) expect(img.getAttribute('aria-label')?.trim()).toBeTruthy();
-    const names = imgs.map((i) => i.getAttribute('aria-label') ?? '');
-    expect(names.some((n) => /rate/i.test(n))).toBe(true);
-    expect(names.some((n) => /drop/i.test(n))).toBe(true);
-    expect(names.some((n) => /histogram/i.test(n))).toBe(true);
-    // the chart canvases are the content of those images
-    for (const id of ['chart-line', 'chart-bar']) {
-      for (const chart of within(c0).getAllByTestId(id)) expect(chart.closest('[role="img"]')).not.toBeNull();
+    for (const [choice, re, id] of [
+      ['Rate', /rate/i, 'chart-line'],
+      ['Drops', /drop/i, 'chart-line'],
+      ['Delay histogram', /histogram/i, 'chart-bar'],
+    ] as const) {
+      fireEvent.click(within(c0).getByRole('radio', { name: choice }));
+      const chart = await within(c0).findByTestId(id);
+      const imgs = within(c0).getAllByRole('img');
+      expect(imgs, choice).toHaveLength(1);
+      expect(imgs[0].getAttribute('aria-label')?.trim()).toBeTruthy();
+      expect(imgs[0].getAttribute('aria-label')).toMatch(re);
+      // the chart canvas is the content of that image
+      expect(chart.closest('[role="img"]')).toBe(imgs[0]);
     }
   });
 
@@ -978,6 +1022,7 @@ describe('Dashboard: accessibility and labels (F4)', () => {
     );
     renderApp('/');
     await screen.findByText('b-to-c: net_null1 → net_null2');
+    showHistogram(screen.getByTestId('direction-card-0'), screen.getByTestId('direction-card-1'));
     await waitFor(() => expect(api.getDelayHistogram).toHaveBeenCalledWith(1));
     expect(api.getDelayHistogram).toHaveBeenCalledWith(0);
     for (const call of api.getDelayHistogram.mock.calls) expect(typeof call[0]).toBe('number');

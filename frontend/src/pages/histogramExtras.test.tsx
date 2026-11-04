@@ -33,9 +33,19 @@ const logToggle = (d: 0 | 1) => within(card(d)).getByLabelText('Log scale') as H
 const overlayToggle = (d: 0 | 1) => within(card(d)).getByLabelText('Show expected distribution') as HTMLInputElement;
 const percentiles = (d: 0 | 1) => within(card(d)).getByTestId('percentiles');
 
+// Spec 28: the histogram is one choice of each card's radio selector (Rate is the default), so every test first picks
+// "Delay histogram" in both cards. Was: the histogram was always on the page below the rate and drops charts.
+function chooseHistogram(d: 0 | 1) {
+  fireEvent.click(within(card(d)).getByRole('radio', { name: 'Delay histogram' }));
+}
+
 async function ready(d: 0 | 1 = 0) {
   renderApp('/');
   await screen.findByTestId(`direction-card-${d}`);
+  await screen.findByTestId('direction-card-0');
+  await screen.findByTestId('direction-card-1');
+  chooseHistogram(0);
+  chooseHistogram(1);
   await within(card(d)).findByTestId('chart-bar');
 }
 
@@ -100,6 +110,8 @@ describe('Dashboard histogram: window selector', () => {
     api.getEmulation.mockResolvedValue(fx.emulation('running'));
     renderApp('/');
     await tick(0);
+    await tick(0);
+    chooseHistogram(0);
     await tick(0);
     fireEvent.change(windowSelect(0), { target: { value: '60' } });
     await tick(0);

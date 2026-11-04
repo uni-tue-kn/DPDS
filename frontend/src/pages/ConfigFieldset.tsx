@@ -12,7 +12,7 @@ import {
 import type { ConfigForm } from './linkForm';
 import { FieldLabel, InfoTip } from './FieldLabel';
 import type { HelpKey } from './fieldHelp';
-import { TIME_UNITS, changeUnit, parseFrame, sameFamily } from '../common/units';
+import { TIME_UNITS, changeUnit, parseFrame, sameFamily, shiftDecimal, toBase } from '../common/units';
 import type { Unit, UnitValue } from '../common/units';
 import { derivedLimitText } from './linkSummary';
 
@@ -40,6 +40,30 @@ function Section({ title, onRemove, children }: { title: string; onRemove?: () =
       )}
     </fieldset>
   );
+}
+
+const isPowerOfTwo = (n: number) => Number.isSafeInteger(n) && n > 0 && Number.isInteger(Math.log2(n));
+
+/** `ns` as the text of the time unit `unit`, exact ("0.064"), or null when it cannot be shown. */
+const inUnit = (ns: number, unit: number) => shiftDecimal(String(ns), -TIME_UNITS[unit].exp);
+
+/** P4TG-style advice on the histogram range: advisory only, nothing here refuses a value. */
+function rangeAdvice(
+  value: ConfigForm,
+): { aligned: boolean; width: string; suggested: string; exponent: number } | null {
+  const hi = value.hist_hi.text.trim() === '' ? null : toBase(value.hist_hi, TIME_UNITS);
+  if (hi === null || hi <= 0) return null;
+  const lo = value.hist_lo.text.trim() === '' ? null : toBase(value.hist_lo, TIME_UNITS);
+  const bins = value.hist_bins.trim() === '' ? NaN : Number(value.hist_bins);
+  const width = lo === null ? NaN : (hi - lo) / bins;
+  if (lo !== null && Number.isSafeInteger(lo) && isPowerOfTwo(width) && lo % width === 0) {
+    const shown = inUnit(width, value.hist_hi.unit);
+    if (shown !== null) return { aligned: true, width: shown, suggested: '', exponent: Math.log2(width) };
+  }
+  const next = 2 ** Math.ceil(Math.log2(Math.ceil(hi)));
+  const suggested = inUnit(next, value.hist_hi.unit);
+  if (!Number.isSafeInteger(next) || suggested === null) return null;
+  return { aligned: false, width: '', suggested, exponent: Math.log2(next) };
 }
 
 /** The config form of one link: a `<fieldset>` named by `title` with one subsection per stage. */
@@ -89,6 +113,14 @@ export default function ConfigFieldset({ title, value, onChange }: Props) {
   };
 
   const frame = parseFrame(value.avg_frame_size);
+  const advice = rangeAdvice(value);
+  const binsText = value.hist_bins.trim();
+  const binsHint =
+    binsText === ''
+      ? ''
+      : isPowerOfTwo(Number(binsText))
+        ? ' Power-of-two bin count.'
+        : ' Tip: use a power-of-two bin count (1, 2, 4, …, 4096).';
 
   /** A number with its own unit select right of it; changing the unit converts the shown number. */
   const unitField = (
@@ -242,9 +274,49 @@ export default function ConfigFieldset({ title, value, onChange }: Props) {
       )}
       <Section title="Statistics">
         {check('delay_stats', 'Delay statistics')}
-        {text('hist_bins', 'Histogram bins', { hint: 'Empty: 256 bins, mean +- 6 std. Max 500.' })}
+        {text('hist_bins', 'Histogram bins', { hint: `Empty: 256 bins, mean +- 6 std. Max 4096.${binsHint}` })}
         {unitField('hist_lo', 'Histogram lo', TIME_UNITS)}
         {unitField('hist_hi', 'Histogram hi', TIME_UNITS)}
+        {advice && (
+          <Col md={12} className="histogram-optimization-hint">
+            <span>
+              {advice.aligned ? (
+                <>
+                  <i
+                    className="bi bi-check-circle-fill histogram-optimization-icon histogram-optimization-icon-aligned"
+                    aria-hidden="true"
+                  />
+                  Binary-aligned bins: <strong>{`${advice.width} ${TIME_UNITS[value.hist_hi.unit].label}`}</strong> each{' '}
+                  {`(2^${advice.exponent} ns).`}
+                </>
+              ) : (
+                <>
+                  <i
+                    className="bi bi-exclamation-circle-fill histogram-optimization-icon histogram-optimization-icon-suggestion"
+                    aria-hidden="true"
+                  />
+                  Suggested range: <strong>{`0 – ${advice.suggested} ${TIME_UNITS[value.hist_hi.unit].label}`}</strong>{' '}
+                  {`(2^${advice.exponent} ns).`}
+                </>
+              )}
+            </span>
+            {!advice.aligned && (
+              <button
+                type="button"
+                className="histogram-optimization-action"
+                onClick={() =>
+                  onChange({
+                    ...value,
+                    hist_lo: { text: '0', unit: value.hist_lo.unit },
+                    hist_hi: { text: advice.suggested, unit: value.hist_hi.unit },
+                  })
+                }
+              >
+                Use suggestion
+              </button>
+            )}
+          </Col>
+        )}
       </Section>
     </fieldset>
   );

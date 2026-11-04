@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Alert, Badge, Button, Card } from 'react-bootstrap';
+import { Alert, Badge, Button, Card, Spinner } from 'react-bootstrap';
 import * as api from '../api/client';
 import ErrorAlert from '../components/ErrorAlert';
-import { errorMessage } from '../common/format';
+import { errorMessage, formatElapsed, formatPct, formatRatePill } from '../common/format';
 import { startPolling } from '../common/polling';
 import { usePortLabeler } from '../common/portLabel';
 import { readConfig, startRequestOf, useLocalConfig } from '../common/localConfig';
@@ -34,6 +34,35 @@ function keyedLines(lines: string[]): { key: string; line: string }[] {
   });
 }
 
+/** The wall clock in ms, updated every second while `active` (for the elapsed-time pill). */
+function useNow(active: boolean): number {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    if (!active) return;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [active]);
+  return now;
+}
+
+/** Total RX and TX rate over all links, and the share of dropped packets weighted by each link's received rate. */
+function totalsOf(directions: StatsView['directions']) {
+  let rxBps = 0;
+  let rxPps = 0;
+  let txBps = 0;
+  let txPps = 0;
+  let dropped = 0;
+  for (const d of directions) {
+    rxBps += d.rx_bps;
+    rxPps += d.rx_pps;
+    txBps += d.tx_bps;
+    txPps += d.tx_pps;
+    dropped += d.rx_pps * (d.loss_pct + d.limiter_pct + d.buffer_full_pct + d.nic_tx_pct + d.nic_rx_pct);
+  }
+  return { rxBps, rxPps, txBps, txPps, droppedPct: rxPps > 0 ? dropped / rxPps : 0 };
+}
+
 function sampleOf(d: StatsView['directions'][number]): Sample {
   return {
     t: Date.now(),
@@ -56,7 +85,7 @@ export default function Dashboard() {
   /** The stats error the user closed; the warning returns only for a different message. */
   const [dismissed, setDismissed] = useState<string>();
   const [actionError, setActionError] = useState<string>();
-  const [busy, setBusy] = useState<'start' | 'stop'>();
+  const [busy, setBusy] = useState<'start' | 'stop' | 'restart'>();
   const label = usePortLabeler();
   const { doc, corrupt } = useLocalConfig();
 
@@ -106,20 +135,22 @@ export default function Dashboard() {
     };
   }, []);
 
-  const act = async (which: 'start' | 'stop') => {
+  const act = async (which: 'start' | 'stop' | 'restart') => {
     if (busy) return;
     setBusy(which);
     setActionError(undefined);
     try {
-      if (which === 'stop') {
-        setEmulation(await api.stopEmulation());
-      } else {
-        // The configuration as it is stored now, so an edit made in another tab is included.
+      let request: ReturnType<typeof startRequestOf> | undefined;
+      if (which !== 'stop') {
+        // The configuration as it is stored now, so an edit made in another tab is included. A restart checks it
+        // before stopping, so that a run is never stopped for a start that cannot happen.
         const stored = readConfig();
         if (stored.corrupt) throw new Error('The local configuration cannot be read; reset it first.');
         if (stored.doc.links.length === 0) throw new Error('No links configured: nothing to start. Add a link first.');
-        setEmulation(await api.startEmulation(startRequestOf(stored.doc)));
+        request = startRequestOf(stored.doc);
       }
+      if (which !== 'start') setEmulation(await api.stopEmulation());
+      if (request) setEmulation(await api.startEmulation(request));
     } catch (err) {
       setActionError(errorMessage(err));
     } finally {
@@ -128,8 +159,9 @@ export default function Dashboard() {
   };
 
   const state = emulation?.state;
-  const canStart = (state === 'stopped' || state === 'failed') && !corrupt;
-  const canStop = state === 'starting' || state === 'running';
+  const startedAt = emulation?.started_at ?? undefined;
+  const now = useNow(startedAt !== undefined);
+  const totals = stats && totalsOf(stats.directions);
   const plan = (dir: number) => emulation?.directions.find((p) => p.dir === dir);
   // The controller reports stale: true with no age_ms for a stopped emulation; that is not "old data".
   const showStale = state === 'running' && stats?.stale === true && stats.age_ms != null;
@@ -162,12 +194,50 @@ export default function Dashboard() {
               {state ?? 'unknown'}
             </Badge>
           </span>
-          <Button variant="success" disabled={!canStart || busy !== undefined} onClick={() => act('start')}>
-            <i className="bi bi-play-fill" aria-hidden="true" /> Start
-          </Button>
-          <Button variant="primary" disabled={!canStop || busy !== undefined} onClick={() => act('stop')}>
-            <i className="bi bi-stop-fill" aria-hidden="true" /> Stop
-          </Button>
+          {totals && (
+            <>
+              <span className={`status-pill ${state === 'running' ? 'status-pill-active' : ''}`} data-testid="pill-rx">
+                <i className="bi bi-arrow-down-circle-fill" aria-hidden="true" />
+                RX {formatRatePill(totals.rxBps, totals.rxPps)}
+              </span>
+              <span className={`status-pill ${state === 'running' ? 'status-pill-active' : ''}`} data-testid="pill-tx">
+                <i className="bi bi-arrow-up-circle-fill" aria-hidden="true" />
+                TX {formatRatePill(totals.txBps, totals.txPps)}
+              </span>
+            </>
+          )}
+          {startedAt !== undefined && (
+            <span className="status-pill" data-testid="pill-elapsed">
+              {formatElapsed(now / 1000 - startedAt)}
+            </span>
+          )}
+          {totals && totals.droppedPct > 0 && (
+            <span className="status-pill" data-testid="pill-dropped">
+              dropped {formatPct(totals.droppedPct)}
+            </span>
+          )}
+          {state === 'stopping' ? (
+            <Button variant="primary" disabled>
+              <Spinner size="sm" aria-hidden="true" /> Stopping…
+            </Button>
+          ) : state === 'starting' || state === 'running' ? (
+            <Button variant="primary" disabled={busy !== undefined} onClick={() => act('stop')}>
+              <i className="bi bi-stop-fill" aria-hidden="true" /> Stop
+            </Button>
+          ) : (
+            <Button
+              variant="success"
+              disabled={state === undefined || corrupt || busy !== undefined}
+              onClick={() => act('start')}
+            >
+              <i className="bi bi-play-fill" aria-hidden="true" /> Start
+            </Button>
+          )}
+          {state === 'running' && (
+            <Button variant="outline-primary" disabled={corrupt || busy !== undefined} onClick={() => act('restart')}>
+              <i className="bi bi-arrow-clockwise" aria-hidden="true" /> Restart
+            </Button>
+          )}
           {pendingRestart(doc, emulation).any && (
             <Badge pill bg="warning" text="dark" data-testid="pending-restart">
               Restart needed: links or settings changed

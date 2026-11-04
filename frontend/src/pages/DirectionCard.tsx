@@ -2,7 +2,8 @@ import { Fragment, useEffect, useState } from 'react';
 import type { ChartData, ChartOptions } from 'chart.js';
 import { Badge, Card, Col, Form, Row } from 'react-bootstrap';
 import { Bar, Line } from 'react-chartjs-2';
-import '../components/charts';
+import { chartInk, chartOptions, RX_COLOR, RX_FILL, TX_COLOR, TX_FILL } from '../components/charts';
+import { useTheme } from '../common/theme';
 import { startPolling } from '../common/polling';
 import { errorMessage, formatBps, formatDuration, formatInt, formatPct, formatPps, linkLabel } from '../common/format';
 import * as api from '../api/client';
@@ -22,15 +23,9 @@ export interface Sample {
 }
 
 const POLL_MS = 1000;
-const COLORS = ['#e74c3c', '#2c3e50', '#27ae60', '#ffc107', '#3498db'];
+const COLORS = ['#e74c3c', '#2c3e50', '#27ae60'];
 
-const chartOptions = {
-  animation: false,
-  responsive: true,
-  maintainAspectRatio: false,
-  elements: { point: { radius: 0 } },
-  scales: { x: { ticks: { maxTicksLimit: 8 } } },
-} as const;
+type View = 'rate' | 'drops' | 'histogram';
 
 function Stat({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -91,7 +86,30 @@ function Percentiles({ p }: { p: PercentilesDto }) {
   );
 }
 
+/** One vertical line per percentile at its place on the category axis (bin i is centred on i), if it has a value. */
+function percentileLines(hist: HistogramView, textColor: string) {
+  const p = hist.percentiles;
+  const lines: Record<string, unknown> = {};
+  if (!p) return lines;
+  PERCENTILES.forEach(([label, key], i) => {
+    const value = p[key];
+    if (value == null) return;
+    const x = (value - hist.lo_ns) / hist.bin_ns - 0.5;
+    lines[key] = {
+      type: 'line',
+      xMin: x,
+      xMax: x,
+      borderColor: textColor,
+      borderDash: [6, 4],
+      borderWidth: 1,
+      label: { display: true, content: label, position: 'start', yAdjust: i * 22 },
+    };
+  });
+  return lines;
+}
+
 function Histogram({ dir }: { dir: number }) {
+  const theme = useTheme();
   const [hist, setHist] = useState<HistogramView | null>(null);
   const [error, setError] = useState<string>();
   const [windowS, setWindowS] = useState(0);
@@ -188,14 +206,19 @@ function Histogram({ dir }: { dir: number }) {
   }
   // The mixed bar + line dataset list is outside what the `Bar` typings allow.
   const data = { labels, datasets } as unknown as ChartData<'bar'>;
+  const base = chartOptions<'bar'>(theme, 'Delay', 'Packets', {
+    type: logScale ? 'logarithmic' : 'linear',
+    showLegend: overlay,
+  });
   const options = {
-    ...chartOptions,
-    scales: { ...chartOptions.scales, y: { type: logScale ? 'logarithmic' : 'linear' } },
-    plugins: { legend: { display: overlay } },
+    ...base,
+    plugins: {
+      ...base.plugins,
+      annotation: { annotations: percentileLines(hist, chartInk(theme).text) },
+    },
   } as ChartOptions<'bar'>;
   return (
     <>
-      <h3 className="h6 mt-3">Delay histogram</h3>
       {controls}
       <ChartBox label={`Delay histogram of direction ${dir}`}>
         <Bar data={data} options={options} />
@@ -219,39 +242,52 @@ export default function DirectionCard({
   label: PortLabeler;
   history: Sample[];
 }) {
+  const theme = useTheme();
+  const [chosen, setChosen] = useState<View>('rate');
+  // A link whose delay statistics are off has no histogram, whatever was chosen before.
+  const view = chosen === 'histogram' && !stats.delay_stats ? 'rate' : chosen;
+  const views: [View, string][] = [
+    ['rate', 'Rate'],
+    ['drops', 'Drops'],
+    ...(stats.delay_stats ? ([['histogram', 'Delay histogram']] as [View, string][]) : []),
+  ];
   const labels = history.map((s) => new Date(s.t).toLocaleTimeString());
   const rateData = {
     labels,
     datasets: [
       {
-        label: 'RX Gb/s',
+        label: 'RX',
         data: history.map((s) => s.rx_bps / 1e9),
-        borderColor: COLORS[0],
-        backgroundColor: COLORS[0],
+        borderColor: RX_COLOR,
+        backgroundColor: RX_FILL,
+        fill: true,
       },
       {
-        label: 'TX Gb/s',
+        label: 'TX',
         data: history.map((s) => s.tx_bps / 1e9),
-        borderColor: COLORS[1],
-        backgroundColor: COLORS[1],
+        borderColor: TX_COLOR,
+        backgroundColor: TX_FILL,
+        fill: true,
       },
     ],
   };
-  const drops: [string, (s: Sample) => number][] = [
-    ['Loss', (s) => s.loss_pct],
-    ['Limiter', (s) => s.limiter_pct],
-    ['Buffer full', (s) => s.buffer_full_pct],
-    ['NIC TX', (s) => s.nic_tx_pct],
-    ['NIC RX', (s) => s.nic_rx_pct],
-  ];
+  // The loss model is intended in an emulator; everything else is the emulator running out of room.
   const dropData = {
     labels,
-    datasets: drops.map(([label, pick], i) => ({
-      label: `${label} %`,
-      data: history.map(pick),
-      borderColor: COLORS[i],
-      backgroundColor: COLORS[i],
-    })),
+    datasets: [
+      {
+        label: 'Model loss %',
+        data: history.map((s) => s.loss_pct),
+        borderColor: COLORS[2],
+        backgroundColor: COLORS[2],
+      },
+      {
+        label: 'Overload drops %',
+        data: history.map((s) => s.limiter_pct + s.buffer_full_pct + s.nic_tx_pct + s.nic_rx_pct),
+        borderColor: COLORS[0],
+        backgroundColor: COLORS[0],
+      },
+    ],
   };
 
   const rx = stats.rx ?? plan?.rx;
@@ -303,15 +339,31 @@ export default function DirectionCard({
             </dl>
           </Col>
           <Col lg={7}>
-            <h3 className="h6">Rate</h3>
-            <ChartBox label={`Rate chart of direction ${stats.dir}`}>
-              <Line data={rateData} options={chartOptions} />
-            </ChartBox>
-            <h3 className="h6 mt-3">Drops</h3>
-            <ChartBox label={`Drops chart of direction ${stats.dir}`}>
-              <Line data={dropData} options={chartOptions} />
-            </ChartBox>
-            {stats.delay_stats && <Histogram dir={stats.dir} />}
+            <Form.Group role="radiogroup" aria-label="Chart" className="mb-2">
+              {views.map(([v, text]) => (
+                <Form.Check
+                  key={v}
+                  inline
+                  type="radio"
+                  name={`chart-${stats.dir}`}
+                  id={`chart-${stats.dir}-${v}`}
+                  label={text}
+                  checked={view === v}
+                  onChange={() => setChosen(v)}
+                />
+              ))}
+            </Form.Group>
+            {view === 'rate' && (
+              <ChartBox label={`Rate chart of direction ${stats.dir}`}>
+                <Line data={rateData} options={chartOptions<'line'>(theme, 'Time', 'Rate (Gbit/s)')} />
+              </ChartBox>
+            )}
+            {view === 'drops' && (
+              <ChartBox label={`Drops chart of direction ${stats.dir}`}>
+                <Line data={dropData} options={chartOptions<'line'>(theme, 'Time', 'Dropped packets (%)')} />
+              </ChartBox>
+            )}
+            {view === 'histogram' && <Histogram dir={stats.dir} />}
           </Col>
         </Row>
       </Card.Body>
