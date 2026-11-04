@@ -1,4 +1,4 @@
-import { useId } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { Badge, Button, OverlayTrigger, Tooltip } from 'react-bootstrap';
 import * as api from '../api/client';
 import ErrorAlert from '../components/ErrorAlert';
@@ -19,9 +19,25 @@ const GROUPS: { level: HintLevel; title: string; bg: string }[] = [
  */
 function Commands({ hint, commands }: { hint: Hint; commands: string[] }) {
   const id = useId();
-  // Read at click time: plain http has no clipboard, and a refused write must not become an unhandled rejection.
-  const copy = () => {
-    navigator.clipboard?.writeText(commands.join('\n')).catch(() => {});
+  // A fresh object per successful copy, so that a second copy restarts the 2 s of the "Copied" confirmation.
+  const [copied, setCopied] = useState<object | null>(null);
+  // Plain http has no clipboard; then the commands are shown for selecting by hand.
+  const [manual, setManual] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(null), 2000);
+    return () => clearTimeout(timer);
+  }, [copied]);
+  const text = commands.join('\n');
+  // Read at click time: the clipboard can be missing, throw or refuse the write, and none of that may escape.
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied({});
+    } catch {
+      setCopied(null);
+      setManual(true);
+    }
   };
   return (
     <div className="mt-1">
@@ -29,9 +45,9 @@ function Commands({ hint, commands }: { hint: Hint; commands: string[] }) {
         placement="top"
         trigger={['hover', 'focus']}
         overlay={
-          <Tooltip id={id}>
+          <Tooltip id={id} className="commands-tip">
             <pre className="text-start mb-1">
-              <code>{commands.join('\n')}</code>
+              <code>{text}</code>
             </pre>
             Run as root on the DPDS host.
           </Tooltip>
@@ -50,6 +66,17 @@ function Commands({ hint, commands }: { hint: Hint; commands: string[] }) {
       <Button type="button" size="sm" variant="outline-primary" onClick={copy}>
         Copy commands
       </Button>
+      {copied && (
+        <span role="status" className="ms-2 text-success">
+          Copied
+        </span>
+      )}
+      {manual && (
+        <div className="mt-2">
+          <div>Clipboard not available here (plain http): select the commands and copy them.</div>
+          <pre className="text-start mb-0">{text}</pre>
+        </div>
+      )}
     </div>
   );
 }

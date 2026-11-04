@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { act, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { vi } from 'vitest';
 import type { Hint, HintLevel } from '../api/types';
@@ -22,10 +22,21 @@ import { must } from '../test/must';
 //   closes when the pointer leaves it, a button inside could not be reached by keyboard).
 // - No Apply button, no dialog, no `applyHostAction`, no `/host/actions` anywhere in the frontend source, and no
 //   apply/undo/revert/reset control. The page does not read the emulation state any more (`api.getEmulation` is not called).
-// Not pinned (spec silent): the feedback after a copy ("Copied"), the icon class, the tooltip placement, a fallback when
-// the clipboard is unavailable (only: no crash, nothing thrown).
+// Spec 33b (frontend item 1), review of 378b16a: commands must be readable and copyable on the plain-http deployment.
+// - The tooltip's root element (role=tooltip) carries the class `commands-tip`; the stylesheet gives it a wide max-width and
+//   a wrapping `pre` (pinned in `assets/stylesSpec33b.test.ts`, since jsdom renders no CSS).
+// - When `navigator.clipboard` is missing, `writeText` rejects or `writeText` throws, "Copy commands" reveals, inside the
+//   hint's own list item, ONE `pre` (outside any tooltip, not hidden, not user-select:none) whose text is exactly the
+//   commands joined by "\n", plus the text FALLBACK_TEXT in an element of its own. No "Copied" then.
+// - On success the list item gets a role=status element with the text "Copied" (not before the write resolved), which is
+//   gone after about 2 s (present at 1 s, gone at 3 s, timer restarts on a second copy). No fallback then.
+// CHOICES of the tester (spec silent): the feedback sits in the hint's list item; per-hint state (another hint shows
+// nothing); a second click on Copy keeps the fallback revealed (no toggle); a synchronous throw of `writeText` counts as a
+// failure; the fallback adds no button that the "applies nothing" rules would forbid.
+// Not pinned: the icon class, the tooltip placement, how the fallback pre is styled, whether an empty status element stays.
 
 const NOTE = 'Run as root on the DPDS host.';
+const FALLBACK_TEXT = 'Clipboard not available here (plain http): select the commands and copy them.';
 const NIC = '0000:65:00.0';
 const SWAP = fx.commandsHint();
 const FLOW = fx.commandsHint({
@@ -455,6 +466,316 @@ describe('Host hints: Copy commands', () => {
   });
 });
 
+/** The `pre` blocks of a hint's list item that are not part of a tooltip: the fallback with the commands. */
+const fallbackBlocks = (title: string) =>
+  Array.from(itemOf(title).querySelectorAll('pre')).filter((p) => !p.closest('[role="tooltip"]'));
+/** Asserts that the hint shows the fallback: one selectable pre with exactly its commands, plus the explanation. */
+function expectFallback(hint: Hint) {
+  const blocks = fallbackBlocks(hint.title);
+  expect(blocks, 'one inline pre block with the commands').toHaveLength(1);
+  const pre = must(blocks[0]);
+  expect(pre.textContent).toBe(must(hint.commands).join('\n'));
+  for (let e: Element | null = pre; e && e !== document.body; e = e.parentElement) {
+    expect(getComputedStyle(e).userSelect, 'the block is selectable').not.toBe('none');
+    expect(e.getAttribute('aria-hidden'), 'the block is not hidden').not.toBe('true');
+    expect(e.hasAttribute('hidden'), 'the block is not hidden').toBe(false);
+  }
+  const text = within(itemOf(hint.title)).getByText(FALLBACK_TEXT);
+  expect(text).not.toBe(pre);
+  expect(pre).not.toContainElement(text);
+  expect(within(itemOf(hint.title)).queryByText('Copied')).toBeNull();
+}
+const expectNoFallback = (title: string) => {
+  expect(fallbackBlocks(title)).toEqual([]);
+  expect(within(itemOf(title)).queryByText(FALLBACK_TEXT)).toBeNull();
+};
+const copiedIn = (title: string) => within(itemOf(title)).queryByText('Copied');
+const flush = () => act(async () => {});
+
+describe('Host hints: the commands tooltip is wide and wraps (spec 33b)', () => {
+  it('the tooltip element carries the class commands-tip, on hover and on focus', async () => {
+    const user = userEvent.setup();
+    await showHints([FIRMWARE]);
+    await user.hover(commandsButton(FIRMWARE.title));
+    const tip = await screen.findByRole('tooltip');
+    expect(tip).toHaveClass('commands-tip');
+    expect(tip).toHaveTextContent(must(must(FIRMWARE.commands)[0]));
+    await user.unhover(commandsButton(FIRMWARE.title));
+    await waitFor(() => expect(screen.queryByRole('tooltip')).not.toBeInTheDocument());
+    act(() => commandsButton(FIRMWARE.title).focus());
+    expect(await screen.findByRole('tooltip')).toHaveClass('commands-tip');
+  });
+
+  it('the commands stay in a pre inside that tooltip, so the stylesheet rule for its pre applies', async () => {
+    const user = userEvent.setup();
+    await showHints([IRQ]);
+    await user.hover(commandsButton(IRQ.title));
+    const tip = await screen.findByRole('tooltip');
+    const pre = must(tip.querySelector('pre'), 'a pre in the tooltip');
+    expect(pre.textContent).toBe(must(IRQ.commands).join('\n'));
+  });
+});
+
+describe('Host hints: Copy commands without a usable clipboard reveals the commands (spec 33b)', () => {
+  it('shows nothing of the fallback before Copy is clicked', async () => {
+    setClipboard(undefined);
+    await showHints([SWAP, FLOW]);
+    expectNoFallback(SWAP.title);
+    expectNoFallback(FLOW.title);
+    expect(screen.queryByText(FALLBACK_TEXT)).toBeNull();
+  });
+
+  it('no clipboard at all: the click reveals one selectable pre with the commands and the explanation', async () => {
+    const user = userEvent.setup();
+    setClipboard(undefined);
+    await showHints([FIRMWARE]);
+    await user.click(copyButton(FIRMWARE.title));
+    expectFallback(FIRMWARE);
+    expect(within(itemOf(FIRMWARE.title)).queryByRole('status', { name: /copied/i })).toBeNull();
+  });
+
+  it('a single command is revealed too, verbatim with shell characters', async () => {
+    const user = userEvent.setup();
+    setClipboard(undefined);
+    const odd = fx.commandsHint({ commands: [`echo "a  b" > /sys/x && echo 'c' <d>`] });
+    await showHints([odd]);
+    await user.click(copyButton(odd.title));
+    expectFallback(odd);
+  });
+
+  it('a rejected writeText reveals the same fallback (and no unhandled rejection)', async () => {
+    const user = userEvent.setup();
+    let calls = 0;
+    // A plain function: vi.fn() would mark the returned promise as handled.
+    setClipboard(() => {
+      calls++;
+      return Promise.reject(new DOMException('denied', 'NotAllowedError'));
+    });
+    const unhandled: unknown[] = [];
+    const onUnhandled = (e: unknown) => unhandled.push(e);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      await showHints([IRQ]);
+      await user.click(copyButton(IRQ.title));
+      await waitFor(() => expect(calls).toBe(1));
+      await screen.findByText(FALLBACK_TEXT);
+      await flush();
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+    expect(unhandled).toEqual([]);
+    expectFallback(IRQ);
+  });
+
+  it('a writeText that throws synchronously reveals the fallback too', async () => {
+    const user = userEvent.setup();
+    setClipboard(() => {
+      throw new DOMException('not allowed', 'SecurityError');
+    });
+    await showHints([SWAP]);
+    await user.click(copyButton(SWAP.title));
+    expectFallback(SWAP);
+  });
+
+  it('the fallback belongs to its hint: the others show nothing', async () => {
+    const user = userEvent.setup();
+    setClipboard(undefined);
+    await showHints([SWAP, FLOW, IRQ]);
+    await user.click(copyButton(FLOW.title));
+    expectFallback(FLOW);
+    expectNoFallback(SWAP.title);
+    expectNoFallback(IRQ.title);
+    expect(screen.getAllByText(FALLBACK_TEXT)).toHaveLength(1);
+    await user.click(copyButton(IRQ.title));
+    expectFallback(IRQ);
+    expectFallback(FLOW);
+    expectNoFallback(SWAP.title);
+  });
+
+  it('a second click keeps the fallback revealed (one block, not toggled away or doubled)', async () => {
+    const user = userEvent.setup();
+    setClipboard(undefined);
+    await showHints([FIRMWARE]);
+    await user.click(copyButton(FIRMWARE.title));
+    await user.click(copyButton(FIRMWARE.title));
+    await flush();
+    expectFallback(FIRMWARE);
+  });
+
+  it('keyboard activation reveals it too, and the tooltip still opens next to it', async () => {
+    const user = userEvent.setup();
+    setClipboard(undefined);
+    await showHints([IRQ]);
+    act(() => copyButton(IRQ.title).focus());
+    await user.keyboard('{Enter}');
+    expectFallback(IRQ);
+    await user.hover(commandsButton(IRQ.title));
+    const tip = await screen.findByRole('tooltip');
+    for (const c of must(IRQ.commands)) expect(tip).toHaveTextContent(c);
+    expectFallback(IRQ); // the one block outside the tooltip is still just one
+  });
+
+  it('revealing sends no request, opens no dialog and writes no local document', async () => {
+    const user = userEvent.setup();
+    setClipboard(undefined);
+    const doc = seedStore({ links: [fx.link()] });
+    const before = localStorage.getItem('dpds.config.v1');
+    api.getHostHintsFor.mockResolvedValue([FLOW]);
+    renderApp('/hints');
+    await screen.findByText(FLOW.title);
+    const calls = [api.getHostHints.mock.calls.length, api.getHostHintsFor.mock.calls.length];
+    await user.click(copyButton(FLOW.title));
+    expectFallback(FLOW);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect([api.getHostHints.mock.calls.length, api.getHostHintsFor.mock.calls.length]).toEqual(calls);
+    expect(api.startEmulation).not.toHaveBeenCalled();
+    expect(localStorage.getItem('dpds.config.v1')).toBe(before);
+    expect(JSON.parse(String(before))).toEqual(doc);
+  });
+
+  it('a working clipboard reveals no fallback', async () => {
+    const user = userEvent.setup();
+    const writeText = mockClipboard();
+    await showHints([SWAP]);
+    await user.click(copyButton(SWAP.title));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    await flush();
+    expectNoFallback(SWAP.title);
+  });
+
+  it('the clipboard is read at click time: it can appear after the page loaded and is then used', async () => {
+    const user = userEvent.setup();
+    setClipboard(undefined);
+    await showHints([SWAP]);
+    const writeText = mockClipboard();
+    await user.click(copyButton(SWAP.title));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    expectNoFallback(SWAP.title);
+  });
+});
+
+describe('Host hints: Copy commands confirms a successful copy (spec 33b)', () => {
+  it('shows no Copied status before the click', async () => {
+    mockClipboard();
+    await showHints([SWAP, FLOW]);
+    expect(screen.queryByText('Copied')).toBeNull();
+  });
+
+  it('shows a role=status "Copied" in the hint after the write resolved, and hides it after about 2 s', async () => {
+    mockClipboard();
+    await showHints([SWAP]);
+    vi.useFakeTimers();
+    fireEvent.click(copyButton(SWAP.title));
+    await flush();
+    const copied = must(copiedIn(SWAP.title), 'the Copied text in the hint');
+    expect(copied.closest('[role="status"]'), 'inside a role=status element').not.toBeNull();
+    expect(copied.textContent?.trim()).toBe('Copied');
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect(copiedIn(SWAP.title), 'still shown after 1 s').not.toBeNull();
+    act(() => {
+      vi.advanceTimersByTime(2000);
+    });
+    expect(copiedIn(SWAP.title), 'gone after 3 s').toBeNull();
+    expectNoFallback(SWAP.title);
+  });
+
+  it('shows Copied only once the write has resolved, not while it is pending', async () => {
+    let release: () => void = () => {};
+    const pending = new Promise<void>((r) => {
+      release = r;
+    });
+    setClipboard(() => pending);
+    await showHints([SWAP]);
+    fireEvent.click(copyButton(SWAP.title));
+    await flush();
+    expect(copiedIn(SWAP.title)).toBeNull();
+    expectNoFallback(SWAP.title);
+    release();
+    await flush();
+    expect(copiedIn(SWAP.title)).not.toBeNull();
+  });
+
+  it('a second copy restarts the 2 s: an old timer does not hide the new confirmation early', async () => {
+    mockClipboard();
+    await showHints([SWAP]);
+    vi.useFakeTimers();
+    fireEvent.click(copyButton(SWAP.title));
+    await flush();
+    act(() => {
+      vi.advanceTimersByTime(1500);
+    });
+    fireEvent.click(copyButton(SWAP.title));
+    await flush();
+    act(() => {
+      vi.advanceTimersByTime(1000); // 2.5 s after the first copy, 1 s after the second
+    });
+    expect(copiedIn(SWAP.title), 'the first timer must not hide it').not.toBeNull();
+    act(() => {
+      vi.advanceTimersByTime(2000);
+    });
+    expect(copiedIn(SWAP.title)).toBeNull();
+  });
+
+  it('copying again after it disappeared shows it again', async () => {
+    mockClipboard();
+    await showHints([SWAP]);
+    vi.useFakeTimers();
+    fireEvent.click(copyButton(SWAP.title));
+    await flush();
+    act(() => {
+      vi.advanceTimersByTime(3000);
+    });
+    expect(copiedIn(SWAP.title)).toBeNull();
+    fireEvent.click(copyButton(SWAP.title));
+    await flush();
+    expect(copiedIn(SWAP.title)).not.toBeNull();
+  });
+
+  it('the confirmation belongs to the hint that was copied', async () => {
+    mockClipboard();
+    await showHints([SWAP, FLOW]);
+    fireEvent.click(copyButton(FLOW.title));
+    await flush();
+    expect(copiedIn(FLOW.title)).not.toBeNull();
+    expect(copiedIn(SWAP.title)).toBeNull();
+    expect(screen.getAllByText('Copied')).toHaveLength(1);
+  });
+
+  it('a failed copy shows no Copied, also not for a moment', async () => {
+    setClipboard(() => Promise.reject(new DOMException('denied', 'NotAllowedError')));
+    await showHints([SWAP]);
+    fireEvent.click(copyButton(SWAP.title));
+    expect(copiedIn(SWAP.title)).toBeNull();
+    await screen.findByText(FALLBACK_TEXT);
+    expect(copiedIn(SWAP.title)).toBeNull();
+  });
+
+  it('leaving the page within the 2 s throws nothing', async () => {
+    mockClipboard();
+    const errors: unknown[] = [];
+    const onError = (e: ErrorEvent) => {
+      errors.push(e.error);
+      e.preventDefault();
+    };
+    window.addEventListener('error', onError);
+    try {
+      const { unmount } = await showHints([SWAP]);
+      vi.useFakeTimers();
+      fireEvent.click(copyButton(SWAP.title));
+      await flush();
+      unmount();
+      act(() => {
+        vi.advanceTimersByTime(5000);
+      });
+    } finally {
+      window.removeEventListener('error', onError);
+    }
+    expect(errors).toEqual([]);
+  });
+});
+
 describe('Host hints: DPDS applies nothing', () => {
   const FORBIDDEN = /apply|undo|revert|reset|roll ?back|restore|turn .*off|untune|execute|confirm/i;
   const controls = () => [...within(pageOf()).queryAllByRole('button'), ...within(pageOf()).queryAllByRole('link')];
@@ -474,6 +795,18 @@ describe('Host hints: DPDS applies nothing', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(names().filter((n) => FORBIDDEN.test(n))).toEqual([]);
     expect(screen.queryByRole('button', { name: FORBIDDEN })).not.toBeInTheDocument();
+  });
+
+  it('a hint with the revealed fallback has no apply-like control either (spec 33b)', async () => {
+    const user = userEvent.setup();
+    setClipboard(undefined);
+    await showHints([FIRMWARE, ...fx.hints()]);
+    await user.click(copyButton(FIRMWARE.title));
+    expectFallback(FIRMWARE);
+    const names = within(itemOf(FIRMWARE.title)).getAllByRole('button').map(nameOf);
+    expect(names.filter((n) => FORBIDDEN.test(n))).toEqual([]);
+    expect(names).toContain('Copy commands');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
   it('a hint carries nothing but the two commands buttons: no third control', async () => {

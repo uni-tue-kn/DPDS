@@ -284,6 +284,15 @@ fieldset.config-section > legend {
   --bs-tooltip-max-width: 22rem;
 }
 
+.commands-tip {
+  --bs-tooltip-max-width: 40rem;
+}
+
+.commands-tip pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .inspect-fields {
   display: grid;
   grid-template-columns: max-content 1fr;
