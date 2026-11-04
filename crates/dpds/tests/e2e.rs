@@ -2614,16 +2614,21 @@ fn is_root() -> bool {
     unsafe { libc::geteuid() == 0 }
 }
 
-/// Can this process give a child `RLIMIT_MEMLOCK` of `soft`/`hard`? Raising the hard limit above
-/// the current hard limit needs `CAP_SYS_RESOURCE`; lowering never needs anything.
-fn can_set_memlock_limits(soft: libc::rlim_t, hard: libc::rlim_t) -> bool {
+/// This process's hard `RLIMIT_MEMLOCK` (`RLIM_INFINITY` when unlimited).
+fn current_memlock_hard_limit() -> libc::rlim_t {
     let mut cur = libc::rlimit {
         rlim_cur: 0,
         rlim_max: 0,
     };
     let rc = unsafe { libc::getrlimit(libc::RLIMIT_MEMLOCK, &mut cur) };
     assert_eq!(rc, 0);
-    soft <= hard && hard <= cur.rlim_max
+    cur.rlim_max
+}
+
+/// Can this process give a child `RLIMIT_MEMLOCK` of `soft`/`hard`? Raising the hard limit above
+/// the current hard limit needs `CAP_SYS_RESOURCE`; lowering never needs anything.
+fn can_set_memlock_limits(soft: libc::rlim_t, hard: libc::rlim_t) -> bool {
+    soft <= hard && hard <= current_memlock_hard_limit()
 }
 
 /// `Env::spawn`, with `RLIMIT_MEMLOCK` of the child set to `soft` / `hard` bytes.
@@ -2761,16 +2766,25 @@ fn a_finite_hard_limit_skips_mlockall_warns_and_dpds_forwards_unlocked() {
 
 #[test]
 fn a_finite_hard_limit_above_the_soft_limit_also_skips_mlockall() {
-    // soft 8 MiB, hard 1 GiB: raising the soft limit to the hard limit would still not make it
-    // unlimited, so the rule is "finite hard limit: don't lock". The warning names a limit in KiB.
+    // soft 4 MiB, hard finite and above it (1 GiB, or this process's own hard limit when that is
+    // lower, e.g. 8 MiB for a normal user on a GitHub runner: a child's hard limit can't be raised
+    // above it without CAP_SYS_RESOURCE): raising the soft limit to the hard limit would still not
+    // make it unlimited, so the rule is "finite hard limit: don't lock". The warning names a limit
+    // in KiB.
     require_cpus(2);
     let _g = serial();
     if is_root() {
         eprintln!("skipped: root locks whatever the limit says (spec v24 case 1)");
         return;
     }
+    let soft = 4 * MIB;
+    let hard = (1024 * MIB).min(current_memlock_hard_limit());
+    if hard <= soft || !can_set_memlock_limits(soft, hard) {
+        eprintln!("skipped: this process cannot give a child a hard memlock limit above {soft} B");
+        return;
+    }
     let mut env = Env::new(&config_json(0, 0.0));
-    let run = started_null_run(&mut env, 8 * MIB, 1024 * MIB);
+    let run = started_null_run(&mut env, soft, hard);
     let err = run.stderr.lock().unwrap().clone();
     assert!(
         err.contains("WARNING: RLIMIT_MEMLOCK is ")
