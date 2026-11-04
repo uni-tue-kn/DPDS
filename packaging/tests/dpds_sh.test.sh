@@ -19,9 +19,16 @@
 #   - Release channel (spec v21, like P4TG's P4TG_CHANNEL): DPDS_CHANNEL is `latest` (the default; also when the variable is
 #     empty or unset) or `nightly`. `--nightly` selects nightly and `--stable` selects latest, both override the variable
 #     (even an invalid one); both flags together: exit non-zero naming both, nothing executed. Any other value (`beta`,
-#     `Nightly`, `main`, ...): exit non-zero, stderr "Invalid DPDS channel '<value>' (expected 'latest' or 'nightly')",
-#     before any git, cargo, npm or systemctl call, for check, install and update.
+#     `Nightly`, `main`, ...): exit non-zero, stderr "Invalid DPDS channel '<value>' (expected 'latest', 'nightly' or a
+#     release tag like 'v1.0.0')", before any git, cargo, npm or systemctl call, for check, install and update.
 #     The channel's branch is `main` for latest and `nightly` for nightly.
+#   - Release tag channel (spec v25): DPDS_CHANNEL (the variable only; the flags stay as they are and still override it)
+#     also accepts a release tag matching ^v[0-9]+\.[0-9]+\.[0-9]+$ (`v1.0.0`). update then: prerequisites, dirty-tree
+#     refusal, `git fetch --tags`, the tag lookup `git rev-parse -q --verify "refs/tags/<tag>^{commit}"` (a missing tag is an
+#     error naming it, nothing changed), `git checkout --detach <tag>`, no `git pull`, then the usual rebuild, reinstall and
+#     restart. install stays read-only and warns (naming the tag and HEAD, telling to run `update`) when HEAD is not the tag's
+#     commit. status prints `Channel: <tag> (tag <tag>), checkout: ...`. The git stub answers the tag lookup with
+#     `commit-of-<tag>` for tags listed in STUB_GIT_TAGS (else exit 1) and `rev-parse HEAD` with STUB_GIT_HEAD_COMMIT.
 #   - update: after the prerequisites and the dirty-tree refusal, `git fetch`, `git checkout <branch>`,
 #     `git pull --ff-only` (repo root, in this order, each failing step aborts before the frontend, any build and any
 #     systemctl change), then the frontend and cargo builds. A warning names the checked-out branch and the channel's branch
@@ -321,7 +328,7 @@ setup_sandbox() {
   unset STUB_ACTIVE STUB_NO_LIBDPDK STUB_RUSTC_LLVM STUB_CLANG_VERSION STUB_LLD_VERSION \
         STUB_CONTROLLER_RC STUB_CONTROLLER_ERR STUB_CARGO_FAIL STUB_SYSTEMCTL_RC STUB_SYSTEMCTL_FAIL_SUB \
         STUB_GIT_FAIL_SUB STUB_CURL_RC DPDS_BIND STUB_GIT_DIRTY STUB_GIT_DIRTY_FRONTEND STUB_GIT_BRANCH \
-        STUB_GIT_TAGS STUB_GIT_NOT_A_REPO DPDS_CHANNEL STUB_ONLINE_JSON STUB_NODE_VERSION STUB_NPM_FAIL_SUB STUB_NPM_NO_INDEX STUB_NPM_BUILD_NOOP STUB_DPDK_VERSION STUB_RUSTC_VERSION \
+        STUB_GIT_TAGS STUB_GIT_HEAD_COMMIT STUB_GIT_NOT_A_REPO DPDS_CHANNEL STUB_ONLINE_JSON STUB_NODE_VERSION STUB_NPM_FAIL_SUB STUB_NPM_NO_INDEX STUB_NPM_BUILD_NOOP STUB_DPDK_VERSION STUB_RUSTC_VERSION \
         DPDS_FRONTEND_DIST DPDS_FRONTEND_ASSET_URL
   mkdir -p "$T/tmp"
   unset DPDS_STATE_DIR DPDS_CONTROLLER_STATE_DIR
@@ -400,9 +407,26 @@ br="${STUB_GIT_BRANCH:-main}"
 [ -n "${STUB_GIT_FAIL_SUB:-}" ] && [ "${1:-}" = "$STUB_GIT_FAIL_SUB" ] && { echo "fatal: stub git failure" >&2; exit 1; }
 case "${1:-}" in
   rev-parse)
+    # spec v25: a tag lookup (`rev-parse -q --verify refs/tags/<tag>^{commit}`) answers `commit-of-<tag>` for a tag listed in
+    # STUB_GIT_TAGS and fails silently (exit 1, like `-q`) for any other; HEAD (as a commit, not --abbrev-ref) answers
+    # STUB_GIT_HEAD_COMMIT (default headcommit-0000). Everything else answers the current branch, as before.
+    want=""
+    for a in "$@"; do case "$a" in *refs/tags/*) want=${a#*refs/tags/}; want=${want%%^*};; esac; done
+    if [ -n "$want" ]; then
+      for t in ${STUB_GIT_TAGS:-}; do [ "$t" = "$want" ] && { echo "commit-of-$t"; exit 0; }; done
+      exit 1
+    fi
     case "$*" in
+      *--abbrev-ref*|*--symbolic*|*--show-*|*--is-*|*--git-dir*) echo "$br";;
+      *HEAD*) echo "${STUB_GIT_HEAD_COMMIT:-headcommit-0000}";;
       *) echo "$br";;
     esac;;
+  describe)
+    # `git describe --tags --exact-match`: the tag whose commit is HEAD, else fail like git
+    for t in ${STUB_GIT_TAGS:-}; do
+      [ "${STUB_GIT_HEAD_COMMIT:-headcommit-0000}" = "commit-of-$t" ] && { echo "$t"; exit 0; }
+    done
+    echo "fatal: no tag exactly matches 'HEAD'" >&2; exit 128;;
   branch) [ "$br" = HEAD ] || echo "$br";;
   tag)
     # STUB_GIT_TAGS: space separated. Without --sort git lists alphabetically; --sort=-v:refname is by version, highest first.
@@ -753,7 +777,7 @@ test_an_invalid_channel_is_an_error_naming_it_before_any_git_or_build_call() {
       : >"$STUB_LOG"
       DPDS_CHANNEL="$v" run_dpds --yes "$c"
       CTX="DPDS_CHANNEL=$v $c" assert_rc_nonzero
-      CTX="DPDS_CHANNEL=$v $c" assert_err_has "Invalid DPDS channel '$v' (expected 'latest' or 'nightly')"
+      CTX="DPDS_CHANNEL=$v $c" assert_err_has "Invalid DPDS channel '$v' (expected 'latest', 'nightly' or a release tag like 'v1.0.0')"
       CTX="DPDS_CHANNEL=$v $c" assert_log_lacks '^(git|cargo|npm|systemctl|dpds-controller) '
       CTX="DPDS_CHANNEL=$v $c" assert_no_file "$DPDS_PREFIX/bin/dpds-controller"
     done
@@ -1010,7 +1034,8 @@ test_help_documents_the_channel() {
   ! grep -E -- '--nightly' <<<"$OUT" | grep -qi 'default' || fail "--help still calls --nightly the default: $OUT"
   grep -Ei 'default' <<<"$OUT" | grep -qi 'latest' || fail "--help does not say that latest is the default: $OUT"
   grep -Eqi "latest.*main|main.*latest" <<<"$OUT" || fail "--help does not say that latest means main: $OUT"
-  ! grep -Eqi 'v\*|git tag|highest|release tag|detached' <<<"$OUT" || fail "--help still talks about release tags: $OUT"
+  # spec v25 documents the tag form (see the v25 tests), but the old tag selection of --stable stays gone
+  ! grep -Eqi 'v\*|git tag|highest' <<<"$OUT" || fail "--help still talks about the old tag selection: $OUT"
 }
 
 test_the_channel_does_not_change_the_other_commands() {
@@ -1022,6 +1047,349 @@ test_the_channel_does_not_change_the_other_commands() {
     DPDS_CHANNEL=nightly run_dpds --yes "$c"
     CTX="$c" assert_log_lacks '^git (fetch|checkout|pull|tag)'
   done
+}
+
+# ------------------------------------------------------------------ tests: spec v25 (DPDS_CHANNEL=<release tag>)
+# DPDS_CHANNEL=v1.0.0 installs exactly that release: update detaches onto the tag, install only warns when HEAD is elsewhere.
+# The git stub knows a tag when it is listed in STUB_GIT_TAGS; its commit is `commit-of-<tag>`, HEAD's is STUB_GIT_HEAD_COMMIT.
+
+# update on a tag: fetch --tags, the tag lookup, checkout --detach TAG, in this order, never a pull, before the builds.
+assert_update_detaches_onto() { # assert_update_detaches_onto TAG
+  local tag="$1" lookup
+  lookup="^git rev-parse .*refs/tags/$tag\\^\\{commit\\}"
+  assert_log_has '^git fetch.*--tags'
+  assert_log_has "$lookup"
+  assert_log_has "^git checkout --detach $tag\$"
+  assert_log_lacks '^git pull'
+  assert_log_lacks '^git checkout (main|nightly)$'
+  assert_before '^git fetch.*--tags' "$lookup"
+  assert_before "$lookup" "^git checkout --detach $tag\$"
+  assert_before "^git checkout --detach $tag\$" '^npm ci( |$)'
+  assert_before "^git checkout --detach $tag\$" '^cargo build'
+  assert_dir_of '^git (fetch|checkout)' "$REPO_ROOT"
+  ! grep -qi 'unbound' <<<"$ERR" || fail "the script trips over an unset variable: $ERR"
+}
+
+# nothing was changed: no checkout, no pull, no build, no service change, and the installed controller is the old one
+assert_nothing_changed_by_update() {
+  assert_log_lacks '^git (checkout|pull)'
+  assert_log_lacks '^(cargo build|npm ci|npm run build)'
+  assert_log_lacks '^systemctl (enable|disable|daemon-reload)'
+  ! grep -q 'STUB-BINARY' "$DPDS_PREFIX/bin/dpds-controller" 2>/dev/null || fail "the installed controller was replaced"
+}
+
+# a WARN line (stdout or stderr) that names the tag, and for which the mismatch of HEAD is explained
+assert_tag_warning() { # assert_tag_warning TAG
+  local w; w="$(grep -Ei 'warn' <<<"$OUT$ERR")"
+  grep -qF -- "$1" <<<"$w" || fail "no WARN line names the tag '$1': $w"
+  grep -qi 'update' <<<"$w" || fail "the WARN line does not tell to run update: $w"
+}
+
+# --- valid and invalid values ---
+test_a_release_tag_is_a_valid_channel_for_check_install_and_update() {
+  export STUB_GIT_TAGS="v1.0.0 v10.20.30"
+  fake_install
+  local v c
+  for v in v1.0.0 v10.20.30; do
+    for c in check install update; do
+      : >"$STUB_LOG"
+      DPDS_CHANNEL="$v" run_dpds --yes "$c"
+      CTX="DPDS_CHANNEL=$v $c" assert_rc 0 "$ERR"
+      CTX="DPDS_CHANNEL=$v $c" assert_no_invalid_channel
+    done
+  done
+}
+assert_no_invalid_channel() { ! grep -qi 'invalid dpds channel' <<<"$ERR" || fail "a valid tag was rejected: $ERR"; }
+
+test_a_malformed_tag_is_an_invalid_channel_before_any_git_or_build_call() {
+  local v c
+  for v in v1 v1.0 1.0.0 v1.0.0-rc1 v1.0.0+build v1.0.0.0 vv1.0.0 V1.0.0 v1.0.x v1x0y0 v-1.0.0 'v1.0.0 ' ' v1.0.0' 'v1.0.0$(id)' 'v1.0.0;x' 'v1/0/0' refs/tags/v1.0.0; do
+    for c in check install update; do
+      : >"$STUB_LOG"
+      STUB_GIT_TAGS="v1.0.0" DPDS_CHANNEL="$v" run_dpds --yes "$c"
+      CTX="DPDS_CHANNEL='$v' $c" assert_rc_nonzero
+      CTX="DPDS_CHANNEL='$v' $c" assert_err_has "Invalid DPDS channel '$v' (expected 'latest', 'nightly' or a release tag like 'v1.0.0')"
+      CTX="DPDS_CHANNEL='$v' $c" assert_log_lacks '^(git|cargo|npm|systemctl|dpds-controller) '
+      CTX="DPDS_CHANNEL='$v' $c" assert_no_file "$DPDS_PREFIX/bin/dpds-controller"
+    done
+  done
+  assert_no_file "$T/cwd/x"
+  assert_no_file "$T/repo/x"
+}
+
+# --- update ---
+test_update_on_a_tag_fetches_the_tags_and_detaches_onto_it_without_a_pull() {
+  fake_install
+  export STUB_GIT_TAGS="v0.9.0 v1.0.0 v1.1.0"
+  DPDS_CHANNEL=v1.0.0 run_dpds --yes update
+  assert_rc 0 "$ERR"
+  assert_update_detaches_onto v1.0.0
+  assert_log_lacks '^git checkout (--detach )?v(0.9.0|1.1.0)'
+  # the rebuild is the usual one: frontend, both cargo builds, the controller is installed
+  assert_log_has '^npm run build'
+  assert_log_has '^cargo build.*dpds-controller'
+  assert_file_has "$DPDS_PREFIX/bin/dpds-controller" 'STUB-BINARY-dpds-controller'
+}
+
+test_update_on_a_tag_from_a_detached_head_or_another_branch_works_and_never_pulls() {
+  # a pull on a detached HEAD fails in real git: staying on a tag means every later update must not pull
+  fake_install
+  export STUB_GIT_TAGS="v1.0.0"
+  local br
+  for br in HEAD nightly main feature-x; do
+    : >"$STUB_LOG"
+    STUB_GIT_BRANCH="$br" DPDS_CHANNEL=v1.0.0 run_dpds --yes update
+    CTX="on '$br'" assert_rc 0 "$ERR"
+    CTX="on '$br'" assert_update_detaches_onto v1.0.0
+  done
+}
+
+test_update_on_a_tag_restarts_only_a_service_that_was_active() {
+  fake_install
+  export STUB_GIT_TAGS="v1.0.0"
+  STUB_ACTIVE=1 DPDS_CHANNEL=v1.0.0 run_dpds --yes update
+  assert_rc 0 "$ERR"
+  assert_log_has '^systemctl disable --now dpds-controller$'
+  assert_log_has '^systemctl enable --now dpds-controller$'
+  : >"$STUB_LOG"
+  STUB_ACTIVE=0 DPDS_CHANNEL=v1.0.0 run_dpds --yes update
+  assert_rc 0 "$ERR"
+  assert_log_lacks '^systemctl (enable|start|restart)'
+}
+
+test_update_on_a_tag_that_does_not_exist_names_it_and_changes_nothing() {
+  fake_install
+  export STUB_ACTIVE=1
+  local tags
+  for tags in "" "v0.9.0 v1.1.0 v1.0" "v1.0.1"; do
+    : >"$STUB_LOG"
+    STUB_GIT_TAGS="$tags" DPDS_CHANNEL=v1.0.0 run_dpds --yes update
+    CTX="tags '$tags'" assert_rc_nonzero
+    CTX="tags '$tags'" assert_err_has "v1.0.0"
+    CTX="tags '$tags'" assert_nothing_changed_by_update
+    # the lookup was tried (after fetching the tags), that is how the tag was found missing
+    CTX="tags '$tags'" assert_log_has '^git fetch.*--tags'
+    CTX="tags '$tags'" assert_log_has '^git rev-parse .*refs/tags/v1.0.0\^\{commit\}'
+  done
+}
+
+test_update_on_a_tag_refuses_a_dirty_tree_before_any_git_change() {
+  fake_install
+  export STUB_GIT_DIRTY=1 STUB_GIT_TAGS="v1.0.0" STUB_GIT_BRANCH=feature-x
+  DPDS_CHANNEL=v1.0.0 run_dpds --yes update
+  assert_rc_nonzero
+  grep -Eiq 'uncommitted|dirty|working tree|local changes' <<<"$ERR" || fail "stderr does not explain the dirty tree: $ERR"
+  assert_log_lacks '^git (fetch|checkout|pull)'
+  assert_nothing_changed_by_update
+}
+
+test_update_on_a_tag_checks_the_prerequisites_before_any_git_call() {
+  fake_install
+  export STUB_NO_LIBDPDK=1 STUB_GIT_TAGS="v1.0.0"
+  DPDS_CHANNEL=v1.0.0 run_dpds --yes update
+  assert_rc_nonzero
+  assert_no_invalid_channel
+  assert_err_has "libdpdk"
+  assert_log_lacks '^git (fetch|checkout|pull)'
+  assert_log_lacks '^cargo build'
+}
+
+test_a_failing_git_step_stops_a_tag_update_before_any_build() {
+  fake_install
+  export STUB_ACTIVE=1 STUB_GIT_TAGS="v1.0.0"
+  local sub
+  for sub in fetch checkout rev-parse; do
+    : >"$STUB_LOG"
+    STUB_GIT_FAIL_SUB="$sub" DPDS_CHANNEL=v1.0.0 run_dpds --yes update
+    CTX="git $sub fails" assert_rc_nonzero
+    CTX="git $sub fails" assert_no_invalid_channel
+    # the tag path was really taken up to the failing step
+    CTX="git $sub fails" assert_log_has '^git fetch.*--tags'
+    CTX="git $sub fails" assert_log_lacks '^(cargo build|npm ci|npm run build)'
+    CTX="git $sub fails" assert_log_lacks '^systemctl (enable|disable|daemon-reload)'
+  done
+  # a failing fetch stops before the checkout, a failing checkout (of the tag) was the detach
+  : >"$STUB_LOG"
+  STUB_GIT_FAIL_SUB=fetch DPDS_CHANNEL=v1.0.0 run_dpds --yes update
+  assert_log_lacks '^git checkout'
+  : >"$STUB_LOG"
+  STUB_GIT_FAIL_SUB=checkout DPDS_CHANNEL=v1.0.0 run_dpds --yes update
+  assert_log_has '^git checkout --detach v1.0.0$'
+  assert_log_lacks '^git pull'
+}
+
+# --- flags and the other channels ---
+test_the_flags_override_a_tag_channel_in_the_environment() {
+  fake_install
+  export STUB_GIT_TAGS="v1.0.0"
+  DPDS_CHANNEL=v1.0.0 run_dpds --nightly --yes update
+  assert_rc 0 "$ERR"
+  CTX="v1.0.0 --nightly" assert_update_follows nightly
+  : >"$STUB_LOG"
+  DPDS_CHANNEL=v1.0.0 run_dpds --stable --yes update
+  assert_rc 0 "$ERR"
+  CTX="v1.0.0 --stable" assert_update_follows main
+  # also over an invalid value, and with install and status the flag's channel is the one shown
+  : >"$STUB_LOG"
+  DPDS_CHANNEL=v1 run_dpds --nightly --yes update
+  assert_rc 0 "$ERR"
+  CTX="v1 --nightly" assert_update_follows nightly
+}
+
+test_both_flags_are_still_an_error_with_a_tag_channel() {
+  export STUB_GIT_TAGS="v1.0.0"
+  DPDS_CHANNEL=v1.0.0 run_dpds --nightly --stable update
+  assert_rc_nonzero
+  assert_err_has "--nightly"
+  assert_err_has "--stable"
+  assert_log_empty
+}
+
+test_a_branch_channel_after_a_tag_goes_back_to_the_branch() {
+  # staying on a tag: the checkout is detached; the next update on a branch channel switches back and pulls as before
+  fake_install
+  export STUB_GIT_TAGS="v1.0.0" STUB_GIT_BRANCH=HEAD
+  DPDS_CHANNEL=nightly run_dpds --yes update
+  assert_rc 0 "$ERR"
+  assert_update_follows nightly
+  : >"$STUB_LOG"
+  run_dpds --yes update
+  assert_rc 0 "$ERR"
+  assert_update_follows main
+}
+
+# --- install ---
+test_install_with_a_tag_channel_stays_read_only() {
+  export STUB_GIT_TAGS="v1.0.0"
+  local br
+  for br in main HEAD feature-x; do
+    : >"$STUB_LOG"
+    STUB_GIT_BRANCH="$br" DPDS_CHANNEL=v1.0.0 run_dpds --yes install
+    CTX="on '$br'" assert_rc 0 "$ERR"
+    CTX="on '$br'" assert_log_lacks '^git (fetch|checkout|pull|merge|reset|switch|clean|stash)'
+    CTX="on '$br'" assert_log_lacks '--tags'
+    CTX="on '$br'" assert_exec "$DPDS_PREFIX/bin/dpds-controller"
+    CTX="on '$br'" assert_file "$(installed_unit)"
+  done
+}
+
+test_install_warns_when_head_is_not_the_tags_commit_and_still_installs() {
+  export STUB_GIT_TAGS="v1.0.0 v1.1.0"
+  local case_ cur head
+  # on a branch, detached at another commit, detached at another tag's commit
+  for case_ in "main|headcommit-0000" "HEAD|headcommit-0000" "HEAD|commit-of-v1.1.0" "feature-x|commit-of-v1.1.0"; do
+    IFS='|' read -r cur head <<<"$case_"
+    : >"$STUB_LOG"
+    rm -rf "$DPDS_PREFIX/bin/dpds-controller" "$DPDS_ETC_DIR" "$(installed_unit)"
+    STUB_GIT_BRANCH="$cur" STUB_GIT_HEAD_COMMIT="$head" DPDS_CHANNEL=v1.0.0 run_dpds --yes install
+    CTX="on '$cur' at $head" assert_rc 0 "$ERR"
+    CTX="on '$cur' at $head" assert_tag_warning v1.0.0
+    CTX="on '$cur' at $head" assert_exec "$DPDS_PREFIX/bin/dpds-controller"
+    CTX="on '$cur' at $head" assert_file "$(installed_unit)"
+    CTX="on '$cur' at $head" assert_log_lacks '^git (fetch|checkout|pull)'
+    # it names HEAD's side as well: the branch, or "detached" for a detached checkout
+    local w; w="$(grep -Ei 'warn' <<<"$OUT$ERR")"
+    if [[ "$cur" == HEAD ]]; then
+      CTX="on '$cur' at $head" grep -qi 'detached' <<<"$w" || fail "[$cur] the WARN line does not say HEAD is detached: $w"
+    else
+      grep -qF -- "$cur" <<<"$w" || fail "[$cur] the WARN line does not name the checked-out branch: $w"
+    fi
+  done
+}
+
+test_install_is_silent_when_head_is_the_tags_commit() {
+  export STUB_GIT_TAGS="v1.0.0 v1.1.0"
+  local br
+  for br in HEAD main; do
+    : >"$STUB_LOG"
+    STUB_GIT_BRANCH="$br" STUB_GIT_HEAD_COMMIT="commit-of-v1.0.0" DPDS_CHANNEL=v1.0.0 run_dpds --yes install
+    CTX="on '$br'" assert_rc 0 "$ERR"
+    ! grep -Ei 'warn' <<<"$OUT$ERR" | grep -Eqi 'detached|branch|tag|v1\.0\.0|update|HEAD' \
+      || fail "[$br] unexpected warning at the tag's commit: $(grep -Ei warn <<<"$OUT$ERR")"
+    CTX="on '$br'" assert_exec "$DPDS_PREFIX/bin/dpds-controller"
+  done
+}
+
+test_install_with_a_tag_channel_works_when_the_tag_is_unknown_or_there_is_no_git() {
+  # warn-only: never a failure of install
+  STUB_GIT_TAGS="" DPDS_CHANNEL=v1.0.0 run_dpds --yes install
+  assert_rc 0 "$ERR"
+  assert_exec "$DPDS_PREFIX/bin/dpds-controller"
+  rm -f "$DPDS_PREFIX/bin/dpds-controller"
+  : >"$STUB_LOG"
+  STUB_GIT_NOT_A_REPO=1 DPDS_CHANNEL=v1.0.0 run_dpds --yes install
+  assert_rc 0 "$ERR"
+  assert_exec "$DPDS_PREFIX/bin/dpds-controller"
+}
+
+# --- status ---
+test_status_shows_a_tag_channel_with_its_tag() {
+  seed_unit
+  export STUB_GIT_TAGS="v1.0.0" DPDS_CHANNEL=v1.0.0
+  run_dpds status
+  assert_rc 0 "$ERR"
+  assert_out_has "Channel: v1.0.0 (tag v1.0.0), checkout: "
+  plain_line_with "7.8.9" || fail "the installed version is gone from status: $OUT"
+  # a branch checkout shows its branch, a detached one says so
+  STUB_GIT_BRANCH=feature-x run_dpds status
+  assert_rc 0 "$ERR"
+  assert_out_has "Channel: v1.0.0 (tag v1.0.0), checkout: "
+  grep -F 'Channel:' <<<"$OUT" | grep -qF 'feature-x' || fail "status does not print the branch of the checkout: $OUT"
+  STUB_GIT_BRANCH=HEAD run_dpds status
+  assert_rc 0 "$ERR"
+  grep -F 'Channel:' <<<"$OUT" | grep -qi 'detached' || fail "status does not say the checkout is detached: $OUT"
+  ! grep -qi 'unbound' <<<"$ERR" || fail "status trips over an unset variable: $ERR"
+}
+
+test_status_of_a_tag_channel_exits_zero_without_git() {
+  seed_unit
+  export STUB_GIT_NOT_A_REPO=1
+  DPDS_CHANNEL=v1.0.0 run_dpds status
+  assert_rc 0 "$ERR"
+  assert_out_has "Channel: v1.0.0 (tag v1.0.0)"
+  plain_line_with "7.8.9" || fail "the version is gone when git fails: $OUT"
+}
+
+test_status_of_the_branch_channels_is_unchanged() {
+  seed_unit
+  run_dpds status
+  assert_rc 0 "$ERR"
+  assert_out_has "Channel: latest (branch main), checkout: branch main"
+  STUB_GIT_BRANCH=nightly DPDS_CHANNEL=nightly run_dpds status
+  assert_out_has "Channel: nightly (branch nightly), checkout: branch nightly"
+  ! grep -qF '(tag ' <<<"$OUT" || fail "a branch channel is shown as a tag: $OUT"
+}
+
+test_a_tag_channel_does_not_change_the_other_commands() {
+  seed_unit
+  fake_install
+  export STUB_GIT_TAGS="v1.0.0"
+  local c
+  for c in check start stop restart status uninstall; do
+    : >"$STUB_LOG"
+    DPDS_CHANNEL=v1.0.0 run_dpds --yes "$c"
+    CTX="$c" assert_log_lacks '^git (fetch|checkout|pull)'
+    CTX="$c" assert_no_invalid_channel
+  done
+}
+
+# --- documentation: usage text and header comment ---
+test_help_documents_the_release_tag_form() {
+  run_dpds --help
+  assert_rc 0
+  assert_out_has "DPDS_CHANNEL=v1.0.0"
+  grep -Eqi 'release tag' <<<"$OUT" || fail "--help does not say what a release tag is: $OUT"
+  grep -E 'v1\.0\.0' <<<"$OUT" | grep -Eqi 'tag|release' || fail "--help does not tie v1.0.0 to a release: $OUT"
+  # the branch channels are still documented, latest is still the default
+  assert_out_has "latest"
+  assert_out_has "nightly"
+  grep -Ei 'default' <<<"$OUT" | grep -qi 'latest' || fail "--help does not say that latest is the default: $OUT"
+}
+
+test_the_header_comment_of_the_script_documents_the_release_tag_form() {
+  local header; header="$(grep -E '^#' "$SCRIPT" | head -60)"
+  grep -qF 'v1.0.0' <<<"$header" || fail "the header comment never gives a tag example (v1.0.0)"
+  grep -Eqi 'release tag|tag' <<<"$header" || fail "the header comment never mentions tags"
 }
 
 # ------------------------------------------------------------------ tests: spec v18 (status shows the installed version)

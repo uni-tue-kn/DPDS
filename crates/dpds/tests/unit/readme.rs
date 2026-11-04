@@ -337,8 +337,8 @@ fn the_readme_warns_that_main_holds_the_c_version_until_nightly_is_merged() {
 #[test]
 fn the_readme_no_longer_describes_the_tag_selection_or_nightly_as_the_default() {
     let text = readme();
+    // (spec25: `git fetch --tags` is back, for the release-tag channel, so it is no longer in this list)
     for gone in [
-        "git fetch --tags",
         "highest `v*` tag",
         "git pull nightly",
         "instead of nightly",
@@ -353,6 +353,58 @@ fn the_readme_no_longer_describes_the_tag_selection_or_nightly_as_the_default() 
         section.contains("DPDS_CHANNEL=nightly ./dpds.sh")
             || section.contains("./dpds.sh --nightly update"),
         "the command block shows no nightly update example"
+    );
+}
+
+// ---- spec25: DPDS_CHANNEL accepts a release tag -----------------------------------------------------
+
+#[test]
+fn the_readme_documents_dpds_channel_with_a_release_tag() {
+    let section = controller_section(&readme());
+    // the example of the spec, in the command block or in the text
+    assert!(
+        section.contains("DPDS_CHANNEL=v1.0.0 ./dpds.sh update"),
+        "no `DPDS_CHANNEL=v1.0.0 ./dpds.sh update` example in the controller section"
+    );
+    let lower = section.to_lowercase();
+    let tag_paragraphs: Vec<String> = paragraphs(&lower)
+        .into_iter()
+        .filter(|p| p.contains("v1.0.0") && p.contains("dpds_channel"))
+        .collect();
+    assert!(
+        !tag_paragraphs.is_empty(),
+        "no paragraph explains DPDS_CHANNEL with a release tag like v1.0.0"
+    );
+    // the rest may be spread over the paragraphs of the section that talk about tags
+    let all = paragraphs(&lower)
+        .into_iter()
+        .filter(|p| p.contains("tag"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        all.contains("tag") && all.contains("release"),
+        "it must say that the value is a release tag: {all}"
+    );
+    assert!(
+        all.contains("update"),
+        "it must say what `update` does with a tag: {all}"
+    );
+    // staying on a tag keeps that version until the channel changes
+    assert!(
+        (all.contains("keep") || all.contains("stay") || all.contains("remain"))
+            && all.contains("until")
+            && all.contains("channel"),
+        "it must say that later updates keep that version until the channel changes: {all}"
+    );
+    // tags exist only once a version has reached main
+    assert!(
+        all.contains("main") && (all.contains("only") || all.contains("once")),
+        "it must say that tags exist only once a version has reached main: {all}"
+    );
+    // the pattern of a valid tag is stated, so a wrong value is no surprise
+    assert!(
+        all.contains("vx.y.z") || all.contains("x.y.z") || all.contains("v<"),
+        "it must show the form of a tag (vX.Y.Z): {all}"
     );
 }
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # dpds.sh - build, install and run the DPDS controller (a systemd service that also serves the web frontend).
 #
-# Usage: [DPDS_CHANNEL=latest|nightly] ./dpds.sh [--nightly|--stable] [--yes] {check|install|update|start|stop|restart|status|uninstall}
+# Usage: [DPDS_CHANNEL=latest|nightly|vX.Y.Z] ./dpds.sh [--nightly|--stable] [--yes] {check|install|update|start|stop|restart|status|uninstall}
 #
 # The controller (dpds-controller) runs natively on the host as root and starts dpds as its child
 # process. It embeds the web frontend at build time and serves it on its own port. install and
@@ -12,13 +12,18 @@
 # and runs the service and never changes host settings. The controller only reports hints
 # (`dpds.sh check`).
 #
-# Channels (like P4TG's P4TG_CHANNEL): DPDS_CHANNEL is latest (the default) or nightly. latest follows
-# the branch main, nightly the branch nightly. --nightly and --stable override the variable. update
-# switches to the channel's branch (git fetch, checkout, pull --ff-only); install builds the tree as
-# it is and only warns when it is on another branch.
+# Channels (like P4TG's P4TG_CHANNEL): DPDS_CHANNEL is latest (the default), nightly or a release tag
+# such as v1.0.0. latest follows the branch main, nightly the branch nightly. --nightly and --stable
+# override the variable. update switches to the channel's branch (git fetch, checkout, pull --ff-only);
+# install builds the tree as it is and only warns when it is on another branch.
+#
+# A release tag (vX.Y.Z, exists once that version has reached main) pins one release:
+# DPDS_CHANNEL=v1.0.0 ./dpds.sh update runs git fetch --tags and checks out that tag (detached, no
+# pull), so later updates keep that version until the channel changes. install warns when HEAD is not
+# at the tag.
 #
 # Environment overrides:
-#   DPDS_CHANNEL      release channel, latest or nightly                (default latest)
+#   DPDS_CHANNEL      release channel: latest, nightly or a tag (v1.0.0) (default latest)
 #   DPDS_PREFIX       install prefix, binaries go to $DPDS_PREFIX/bin   (default /usr/local)
 #   DPDS_ETC_DIR      config dir, holds controller.env                   (default /etc/dpds)
 #   DPDS_SYSTEMD_DIR  where the unit file is installed                   (default /etc/systemd/system)
@@ -64,6 +69,7 @@ DEFAULT_PORT=8100
 CHANNEL="${DPDS_CHANNEL:-}"
 CHANNEL_OVERRIDE=""
 CHANNEL_BRANCH=""
+CHANNEL_TAG=""
 ASSUME_YES=0
 
 #################
@@ -113,15 +119,19 @@ validate_settings() {
   fi
 }
 
-# Resolves the channel (flags override DPDS_CHANNEL, default latest) and its branch.
+# Resolves the channel (flags override DPDS_CHANNEL, default latest) and its branch, or its tag.
 resolve_channel() {
   CHANNEL="${CHANNEL_OVERRIDE:-${CHANNEL:-latest}}"
   case "$CHANNEL" in
     latest) CHANNEL_BRANCH="main" ;;
     nightly) CHANNEL_BRANCH="nightly" ;;
     *)
-      error "Invalid DPDS channel '$CHANNEL' (expected 'latest' or 'nightly')"
-      exit 1
+      if [[ "$CHANNEL" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        CHANNEL_TAG="$CHANNEL"
+      else
+        error "Invalid DPDS channel '$CHANNEL' (expected 'latest', 'nightly' or a release tag like 'v1.0.0')"
+        exit 1
+      fi
       ;;
   esac
 }
@@ -146,6 +156,25 @@ warn_branch_mismatch() {
     where="The checkout is on branch $current"
   fi
   warn "$where, but the $CHANNEL channel follows branch $CHANNEL_BRANCH. $1"
+}
+
+# warn_tag_mismatch HINT: warns, naming the tag and the checkout, when HEAD is not at the tag's
+# commit (also when the tag is not known locally yet). Silent when it is, and when there is no git
+# work tree.
+warn_tag_mismatch() {
+  local current where tag_commit="" head
+  current="$(checkout_branch)" || return 0
+  tag_commit="$(git rev-parse -q --verify "refs/tags/$CHANNEL_TAG^{commit}" 2>/dev/null)" || tag_commit=""
+  head="$(git rev-parse HEAD 2>/dev/null)" || head=""
+  if [[ -n "$tag_commit" && "$head" == "$tag_commit" ]]; then
+    return 0
+  fi
+  if [[ -z "$current" ]]; then
+    where="HEAD is detached"
+  else
+    where="The checkout is on branch $current"
+  fi
+  warn "$where, not at the release tag $CHANNEL_TAG that the channel names. $1"
 }
 
 confirm() {
@@ -414,7 +443,11 @@ cmd_check() {
 
 cmd_install() {
   require_prerequisites
-  warn_branch_mismatch "Installing the tree as it is; run $0 update to switch."
+  if [[ -n "$CHANNEL_TAG" ]]; then
+    warn_tag_mismatch "Installing the tree as it is; run $0 update to switch."
+  else
+    warn_branch_mismatch "Installing the tree as it is; run $0 update to switch."
+  fi
   install_flow
 }
 
@@ -487,7 +520,11 @@ cmd_status() {
   else
     checkout="unknown (not a git work tree)"
   fi
-  info "Channel: $CHANNEL (branch $CHANNEL_BRANCH), checkout: $checkout"
+  if [[ -n "$CHANNEL_TAG" ]]; then
+    info "Channel: $CHANNEL (tag $CHANNEL_TAG), checkout: $checkout"
+  else
+    info "Channel: $CHANNEL (branch $CHANNEL_BRANCH), checkout: $checkout"
+  fi
   info "Service"
   systemctl status --no-pager "$SERVICE" || true
   info "Controller API and web frontend (http://$addr/)"
@@ -514,15 +551,27 @@ cmd_update() {
   # Refuse before touching anything.
   local was_active=0
   refuse_dirty_tree
-  warn_branch_mismatch "Switching to $CHANNEL_BRANCH."
+  if [[ -z "$CHANNEL_TAG" ]]; then
+    warn_branch_mismatch "Switching to $CHANNEL_BRANCH."
+  fi
 
   if systemctl is-active --quiet "$SERVICE"; then
     was_active=1
   fi
-  info "Updating the repository to the $CHANNEL channel (branch $CHANNEL_BRANCH)"
-  git fetch
-  git checkout "$CHANNEL_BRANCH"
-  git pull --ff-only
+  if [[ -n "$CHANNEL_TAG" ]]; then
+    info "Updating the repository to the release tag $CHANNEL_TAG"
+    git fetch --tags
+    if ! git rev-parse -q --verify "refs/tags/$CHANNEL_TAG^{commit}" >/dev/null; then
+      error "The release tag $CHANNEL_TAG does not exist (tags appear once a version has reached main). Nothing was changed."
+      exit 1
+    fi
+    git checkout --detach "$CHANNEL_TAG"
+  else
+    info "Updating the repository to the $CHANNEL channel (branch $CHANNEL_BRANCH)"
+    git fetch
+    git checkout "$CHANNEL_BRANCH"
+    git pull --ff-only
+  fi
   install_flow
   if (( was_active )); then
     info "$SERVICE was running, restarting it"
@@ -548,9 +597,11 @@ cmd_uninstall() {
 }
 
 usage() {
-  echo "Usage: [DPDS_CHANNEL=latest|nightly] $0 [--nightly|--stable] [--yes] {check|install|update|start|stop|restart|status|uninstall}"
+  echo "Usage: [DPDS_CHANNEL=latest|nightly|vX.Y.Z] $0 [--nightly|--stable] [--yes] {check|install|update|start|stop|restart|status|uninstall}"
   echo ""
-  echo "Channel: DPDS_CHANNEL is latest (the default, branch main) or nightly (branch nightly)."
+  echo "Channel: DPDS_CHANNEL is latest (the default, branch main), nightly (branch nightly) or a release tag like v1.0.0."
+  echo "  DPDS_CHANNEL=v1.0.0 $0 update installs exactly that release (git fetch --tags, checkout --detach, no pull);"
+  echo "  later updates keep it until the channel changes. A release tag exists once that version has reached main."
   echo ""
   echo "Options:"
   echo "  --nightly    Use the nightly channel (branch nightly), overriding DPDS_CHANNEL"
@@ -560,7 +611,7 @@ usage() {
   echo "Commands:"
   echo "  check        Check the prerequisites (Rust, clang/lld, DPDK $DPDK_MIN, Node/npm), then print the host hints (dpds-controller check)"
   echo "  install      Check prerequisites, build the frontend (npm ci, npm run build) and the binaries, run the host check, ask to continue, install binaries and unit"
-  echo "  update       Switch to the channel's branch (git fetch, checkout, pull --ff-only), rebuild the frontend and the binaries, reinstall, restart if it was running"
+  echo "  update       Switch to the channel's branch (git fetch, checkout, pull --ff-only) or release tag (git fetch --tags, checkout --detach), rebuild the frontend and the binaries, reinstall, restart if it was running"
   echo "  start        Enable and start the controller service (it serves the web frontend)"
   echo "  stop         Disable and stop the controller service"
   echo "  restart      Stop, then start"

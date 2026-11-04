@@ -647,6 +647,7 @@ server on port 5173 proxies `/api` to a controller on `127.0.0.1:8100` (`DPDS_CO
 ./dpds.sh restart    # stop, then start
 ./dpds.sh update     # switch to the channel's branch and pull it, rebuild, reinstall; restarts only if it was running
 ./dpds.sh --nightly update # the same on the nightly channel (or DPDS_CHANNEL=nightly ./dpds.sh update)
+DPDS_CHANNEL=v1.0.0 ./dpds.sh update # install exactly the release v1.0.0 (see the channel paragraph below)
 ./dpds.sh uninstall  # remove binaries and unit (and the /var/lib/dpds-controller of an older version); keeps controller.env
 ```
 
@@ -655,13 +656,20 @@ channel, the branch of the checkout and the installed version, as reported by `/
 
 The release channel is set with the environment variable `DPDS_CHANNEL`, like P4TG's
 `P4TG_CHANNEL`: `latest` (the default) follows the branch `main`, `nightly` follows the branch
-`nightly`. Any other value is an error. The flags `--nightly` (channel `nightly`) and `--stable`
+`nightly`, and a release tag such as `v1.0.0` pins that release. Any other value is an error. The flags `--nightly` (channel `nightly`) and `--stable`
 (channel `latest`) override the variable; giving both is an error. `update` refuses a working tree
 with uncommitted changes, then runs `git fetch`, `git checkout <branch>` and `git pull --ff-only`
 for the channel's branch before it builds anything, and warns when it switches from another branch
 or from a detached HEAD. `install` makes no git call: it builds the tree as it is and warns when
-the checkout is not on the channel's branch (run `update` to switch). Tags `vX.Y.Z` stay for the
-releases page, and `git checkout vX.Y.Z` by hand builds one.
+the checkout is not on the channel's branch (run `update` to switch).
+
+`DPDS_CHANNEL=v1.0.0 ./dpds.sh update` installs exactly that release. The value is a release tag of the
+form `vX.Y.Z` (digits only, so `v1.0.0-rc1` and `1.0.0` are errors). `update` then runs `git fetch --tags`
+and `git checkout --detach v1.0.0` (no pull; the checkout is detached) before it builds anything, and
+refuses a tag that does not exist. Later `update`s keep that version until the channel changes, so use
+`DPDS_CHANNEL=latest` or `--nightly` to leave it. Tags exist only once a version has reached `main`: CI
+creates `vX.Y.Z` when a merge to `main` raises the version. `install` warns when the checkout is not at
+the tag's commit (run `update`).
 
 Until `nightly` is merged into `main`, `main` still holds the C version of DPDS, which has no
 controller and no `dpds.sh`. For now use `--nightly` or `DPDS_CHANNEL=nightly` (for example
