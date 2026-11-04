@@ -2602,36 +2602,32 @@ fn the_readme_without_hardware_examples_start_cleanly_and_stop_with_sigint() {
 }
 
 // ---------------------------------------------------------------------------
-// memory locking (spec v17): `dpds` calls mlockall(MCL_CURRENT | MCL_FUTURE) first thing,
-// before EAL init, like PREOF. A failure is a warning, never fatal.
+// memory locking (spec v17, v24): `dpds` calls mlockall(MCL_CURRENT | MCL_FUTURE) first thing,
+// before EAL init, like PREOF, unless a finite hard RLIMIT_MEMLOCK makes that break EAL (v24).
+// A failure or a skipped lock is a warning, never fatal.
 // ---------------------------------------------------------------------------
 
-/// `CAP_IPC_LOCK` (capability number 14) in the effective set of this process: such a process
-/// may lock memory whatever `RLIMIT_MEMLOCK` says, and so may its children.
-fn has_cap_ipc_lock() -> bool {
-    let status = fs::read_to_string("/proc/self/status").unwrap();
-    let eff = status
-        .lines()
-        .find_map(|l| l.strip_prefix("CapEff:"))
-        .expect("CapEff in /proc/self/status")
-        .trim();
-    u64::from_str_radix(eff, 16).unwrap() & (1 << 14) != 0
+/// Is this process root (euid 0)? Spec v24 keys the "lock whatever the limit says" rule on the
+/// effective uid, not on the capability: root has `CAP_IPC_LOCK`, so the limit does not apply.
+fn is_root() -> bool {
+    // SAFETY: geteuid(2) has no arguments and cannot fail.
+    unsafe { libc::geteuid() == 0 }
 }
 
-/// Can this process give a child `RLIMIT_MEMLOCK = limit`? Raising it above the hard limit needs
-/// `CAP_SYS_RESOURCE`; lowering never needs anything.
-fn can_set_memlock_limit(limit: libc::rlim_t) -> bool {
+/// Can this process give a child `RLIMIT_MEMLOCK` of `soft`/`hard`? Raising the hard limit above
+/// the current hard limit needs `CAP_SYS_RESOURCE`; lowering never needs anything.
+fn can_set_memlock_limits(soft: libc::rlim_t, hard: libc::rlim_t) -> bool {
     let mut cur = libc::rlimit {
         rlim_cur: 0,
         rlim_max: 0,
     };
     let rc = unsafe { libc::getrlimit(libc::RLIMIT_MEMLOCK, &mut cur) };
     assert_eq!(rc, 0);
-    limit <= cur.rlim_max
+    soft <= hard && hard <= cur.rlim_max
 }
 
-/// `Env::spawn`, with `RLIMIT_MEMLOCK` of the child (soft and hard) set to `limit` bytes.
-fn spawn_with_memlock_limit(env: &Env, limit: libc::rlim_t) -> Run {
+/// `Env::spawn`, with `RLIMIT_MEMLOCK` of the child set to `soft` / `hard` bytes.
+fn spawn_with_memlock_limits(env: &Env, soft: libc::rlim_t, hard: libc::rlim_t) -> Run {
     use std::os::unix::process::CommandExt;
     let mut cmd = Command::new(DPDS);
     cmd.args(env.args())
@@ -2643,8 +2639,8 @@ fn spawn_with_memlock_limit(env: &Env, limit: libc::rlim_t) -> Run {
     unsafe {
         cmd.pre_exec(move || {
             let l = libc::rlimit {
-                rlim_cur: limit,
-                rlim_max: limit,
+                rlim_cur: soft,
+                rlim_max: hard,
             };
             if libc::setrlimit(libc::RLIMIT_MEMLOCK, &l) == 0 {
                 Ok(())
@@ -2679,10 +2675,25 @@ fn vm_lck_kb(pid: u32) -> u64 {
         .unwrap()
 }
 
+/// The soft and hard `Max locked memory` of a process, as printed by `/proc/<pid>/limits`
+/// (bytes, or the word `unlimited`).
+fn memlock_limits_of(pid: u32) -> (String, String) {
+    let limits = fs::read_to_string(format!("/proc/{pid}/limits")).unwrap();
+    let line = limits
+        .lines()
+        .find(|l| l.starts_with("Max locked memory"))
+        .expect("Max locked memory in /proc/<pid>/limits");
+    let mut cols = line["Max locked memory".len()..].split_whitespace();
+    (
+        cols.next().unwrap().to_string(),
+        cols.next().unwrap().to_string(),
+    )
+}
+
 /// A net_null run (`--no-huge`, no root needed) that has finished its startup.
-fn started_null_run(env: &mut Env, limit: libc::rlim_t) -> Run {
+fn started_null_run(env: &mut Env, soft: libc::rlim_t, hard: libc::rlim_t) -> Run {
     env.vdevs.push("net_null0".into());
-    let mut run = spawn_with_memlock_limit(env, limit);
+    let mut run = spawn_with_memlock_limits(env, soft, hard);
     run.command_list(); // fails fast, with the output, if dpds exits early
     thread::sleep(Duration::from_millis(1500));
     assert!(
@@ -2693,58 +2704,154 @@ fn started_null_run(env: &mut Env, limit: libc::rlim_t) -> Run {
     run
 }
 
+const MIB: libc::rlim_t = 1024 * 1024;
+
+/// The warning of spec v24 case 4 (a finite hard limit): no `mlockall` call, a warning that names
+/// the soft limit in KiB, and before anything EAL prints.
+fn assert_rlimit_warning(err: &str, limit_kib: u64, run: &Run) {
+    let want =
+        format!("WARNING: RLIMIT_MEMLOCK is {limit_kib} KiB, not unlimited: continuing unlocked");
+    let at = err
+        .find(&want)
+        .unwrap_or_else(|| panic!("no `{want}` on stderr\n{}", run.output()));
+    assert!(
+        !err.contains("mlockall failed"),
+        "mlockall is not even called with a finite hard limit, so it cannot fail\n{}",
+        run.output()
+    );
+    if let Some(eal) = err.find("EAL") {
+        assert!(
+            at < eal,
+            "the warning must come before EAL init\n{}",
+            run.output()
+        );
+    }
+}
+
+fn stop_cleanly(mut run: Run) {
+    run.signal(libc::SIGINT);
+    assert_clean_exit(run.wait_exit(), &run);
+}
+
 #[test]
-fn a_failing_mlockall_is_a_warning_and_dpds_runs_on_unlocked() {
+fn a_finite_hard_limit_skips_mlockall_warns_and_dpds_forwards_unlocked() {
+    // the GitHub runner's situation: a normal user with 8 MiB for soft and hard limit. mlockall
+    // would succeed at first and then make EAL's own allocations fail.
+    require_cpus(2);
+    let _g = serial();
+    if is_root() {
+        eprintln!("skipped: root locks whatever the limit says (spec v24 case 1)");
+        return;
+    }
+    let cfg = config_json(0, 0.0);
+    let mut env = Env::new(&cfg);
+    let input = frames(0, 200);
+    add_pcap_port(&mut env, 0, &input);
+    let out = env.path("out0.pcap");
+    let mut run = spawn_with_memlock_limits(&env, 8 * MIB, 8 * MIB);
+    run.wait_until("all frames forwarded", START_TIMEOUT, |_| {
+        read_pcap(&out).len() >= input.len()
+    });
+    let err = run.stderr.lock().unwrap().clone();
+    assert_rlimit_warning(&err, 8192, &run);
+    assert_eq!(vm_lck_kb(run.child.id()), 0, "{}", run.output());
+    assert!(read_pcap(&out) == input, "forwarded frames differ");
+    stop_cleanly(run);
+}
+
+#[test]
+fn a_finite_hard_limit_above_the_soft_limit_also_skips_mlockall() {
+    // soft 8 MiB, hard 1 GiB: raising the soft limit to the hard limit would still not make it
+    // unlimited, so the rule is "finite hard limit: don't lock". The warning names a limit in KiB.
+    require_cpus(2);
+    let _g = serial();
+    if is_root() {
+        eprintln!("skipped: root locks whatever the limit says (spec v24 case 1)");
+        return;
+    }
+    let mut env = Env::new(&config_json(0, 0.0));
+    let run = started_null_run(&mut env, 8 * MIB, 1024 * MIB);
+    let err = run.stderr.lock().unwrap().clone();
+    assert!(
+        err.contains("WARNING: RLIMIT_MEMLOCK is ")
+            && err.contains(" KiB, not unlimited: continuing unlocked"),
+        "no RLIMIT_MEMLOCK warning on stderr\n{}",
+        run.output()
+    );
+    assert!(!err.contains("mlockall failed"), "{}", run.output());
+    assert_eq!(vm_lck_kb(run.child.id()), 0, "{}", run.output());
+    stop_cleanly(run);
+}
+
+#[test]
+fn a_finite_soft_limit_under_an_unlimited_hard_limit_is_raised_and_everything_is_locked() {
+    require_cpus(2);
+    let _g = serial();
+    if !can_set_memlock_limits(8 * MIB, libc::RLIM_INFINITY) {
+        eprintln!("skipped: this process cannot give a child an unlimited hard memlock limit");
+        return;
+    }
+    let mut env = Env::new(&config_json(0, 0.0));
+    let run = started_null_run(&mut env, 8 * MIB, libc::RLIM_INFINITY);
+    let err = run.stderr.lock().unwrap().clone();
+    assert!(
+        !err.contains("WARNING"),
+        "no warning at all: {}",
+        run.output()
+    );
+    assert!(!err.contains("RLIMIT_MEMLOCK"), "{}", run.output());
+    assert!(!err.contains("mlockall"), "{}", run.output());
+    // dpds raised its own soft limit to the (unlimited) hard limit before locking
+    let (soft, hard) = memlock_limits_of(run.child.id());
+    assert_eq!(
+        (soft.as_str(), hard.as_str()),
+        ("unlimited", "unlimited"),
+        "soft limit not raised\n{}",
+        run.output()
+    );
+    // MCL_FUTURE: the 256 MiB EAL heap (`-m 256`) is mapped after the call, so it is locked too
+    let locked_kb = vm_lck_kb(run.child.id());
+    assert!(
+        locked_kb >= 128 * 1024,
+        "VmLck is only {locked_kb} kB: the soft limit must be raised, then everything locked\n{}",
+        run.output()
+    );
+    stop_cleanly(run);
+}
+
+#[test]
+fn a_zero_memlock_limit_is_a_warning_naming_the_limit_and_dpds_runs_on_unlocked() {
     require_cpus(2);
     let _g = serial();
     let mut env = Env::new(&config_json(0, 0.0));
-    // a zero memlock limit makes mlockall fail with ENOMEM for a process without CAP_IPC_LOCK
-    let mut run = started_null_run(&mut env, 0);
+    let run = started_null_run(&mut env, 0, 0);
     let err = run.stderr.lock().unwrap().clone();
-    if has_cap_ipc_lock() {
-        // root/CAP_IPC_LOCK (e.g. CI containers): the lock cannot be made to fail, so it works
+    if is_root() {
+        // root has CAP_IPC_LOCK: the limit does not apply, so it locks (spec v24 case 1)
+        assert!(!err.contains("RLIMIT_MEMLOCK"), "{}", run.output());
         assert!(!err.contains("mlockall"), "{}", run.output());
         assert!(vm_lck_kb(run.child.id()) > 0, "{}", run.output());
     } else {
-        let at = err
-            .find("mlockall failed")
-            .unwrap_or_else(|| panic!("no mlockall warning on stderr\n{}", run.output()));
-        assert!(
-            err[at..].contains("continuing unlocked"),
-            "PREOF's wording: `WARNING: mlockall failed, continuing unlocked: <error>`\n{}",
-            run.output()
-        );
-        assert!(
-            err.contains("WARNING"),
-            "the warning is marked WARNING\n{}",
-            run.output()
-        );
-        // it is the very first thing: before anything EAL prints
-        if let Some(eal) = err.find("EAL") {
-            assert!(
-                at < eal,
-                "the warning must come before EAL init\n{}",
-                run.output()
-            );
-        }
+        assert_rlimit_warning(&err, 0, &run);
         assert_eq!(vm_lck_kb(run.child.id()), 0, "{}", run.output());
     }
     // not fatal: it keeps running and stops cleanly
-    run.signal(libc::SIGINT);
-    assert_clean_exit(run.wait_exit(), &run);
+    stop_cleanly(run);
 }
 
 #[test]
 fn with_the_limit_lifted_dpds_locks_its_whole_memory_without_a_warning() {
     require_cpus(2);
     let _g = serial();
-    if !can_set_memlock_limit(libc::RLIM_INFINITY) && !has_cap_ipc_lock() {
+    if !can_set_memlock_limits(libc::RLIM_INFINITY, libc::RLIM_INFINITY) && !is_root() {
         eprintln!("skipped: this process cannot give a child an unlimited memlock limit");
         return;
     }
     let mut env = Env::new(&config_json(0, 0.0));
-    let mut run = started_null_run(&mut env, libc::RLIM_INFINITY);
+    let run = started_null_run(&mut env, libc::RLIM_INFINITY, libc::RLIM_INFINITY);
     let err = run.stderr.lock().unwrap().clone();
+    assert!(!err.contains("WARNING"), "{}", run.output());
+    assert!(!err.contains("RLIMIT_MEMLOCK"), "{}", run.output());
     assert!(!err.contains("mlockall"), "{}", run.output());
     // MCL_FUTURE: the 256 MiB EAL heap (`-m 256`) is mapped after the call, so it is locked and
     // resident as well, not only what existed at the time of the call.
@@ -2754,8 +2861,7 @@ fn with_the_limit_lifted_dpds_locks_its_whole_memory_without_a_warning() {
         "VmLck is only {locked_kb} kB: dpds must lock current and future mappings\n{}",
         run.output()
     );
-    run.signal(libc::SIGINT);
-    assert_clean_exit(run.wait_exit(), &run);
+    stop_cleanly(run);
 }
 
 // ---------------------------------------------------------------------------

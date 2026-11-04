@@ -355,3 +355,57 @@ fn the_readme_no_longer_describes_the_tag_selection_or_nightly_as_the_default() 
         "the command block shows no nightly update example"
     );
 }
+
+// ---- spec 24: mlockall and a finite RLIMIT_MEMLOCK -------------------------------------------------
+//
+// With a finite hard limit `dpds` does not call `mlockall` at all (the lock would succeed while the
+// process is small and then make EAL's later allocations fail). The README's "Memory locking"
+// section documents the four cases.
+
+#[test]
+fn the_memory_locking_section_documents_the_four_rlimit_cases() {
+    let text = readme();
+    let sec = section(&text, "Memory locking");
+    let flat = sec.split_whitespace().collect::<Vec<_>>().join(" ");
+    let lower = flat.to_lowercase();
+    // the limit is named, with the shell command that lifts it
+    assert!(flat.contains("RLIMIT_MEMLOCK"), "no RLIMIT_MEMLOCK: {flat}");
+    assert!(
+        flat.contains("ulimit -l unlimited"),
+        "no `ulimit -l unlimited`: {flat}"
+    );
+    // case 4: the warning, with its distinctive wording
+    assert!(
+        flat.contains("not unlimited: continuing unlocked"),
+        "the skip warning (`RLIMIT_MEMLOCK is <n> KiB, not unlimited: continuing unlocked`) is not shown: {flat}"
+    );
+    assert!(
+        flat.contains("KiB"),
+        "the warning names the limit in KiB: {flat}"
+    );
+    // cases 1-3 by their conditions: root, unlimited soft limit, soft raised under an unlimited hard limit
+    assert!(lower.contains("root"), "case root is missing: {flat}");
+    assert!(
+        lower.contains("soft") && lower.contains("hard"),
+        "the soft and the hard limit must both be distinguished: {flat}"
+    );
+    assert!(
+        lower.contains("raise"),
+        "case 'soft finite, hard unlimited: dpds raises the soft limit' is missing: {flat}"
+    );
+    // a lock that still fails keeps today's warning
+    assert!(
+        flat.contains("mlockall failed, continuing unlocked"),
+        "a failing mlockall keeps its own warning: {flat}"
+    );
+    // the old claim is wrong now: a too low limit is no longer 'mlockall failed' in general
+    assert!(
+        !flat.contains("with too low a `RLIMIT_MEMLOCK` `dpds` prints"),
+        "the old sentence says every low limit gives the mlockall warning: {flat}"
+    );
+    // the unit's setting stays documented
+    assert!(
+        flat.contains("LimitMEMLOCK=infinity"),
+        "LimitMEMLOCK=infinity: {flat}"
+    );
+}

@@ -212,14 +212,25 @@ allocated and resident before the first packet is forwarded, so no worker lcore 
 fault while it polls. The forwarding loops allocate nothing; the only allocations after startup
 are the small telemetry replies, built on DPDK's telemetry thread.
 
-A failure is not fatal: without `CAP_IPC_LOCK` and with too low a `RLIMIT_MEMLOCK` `dpds` prints
-`WARNING: mlockall failed, continuing unlocked: <error>` and runs unlocked. Locked memory counts
-against that limit, and the pools and buffers are large (see
-[Budgets, rings and pools](#budgets-rings-and-pools)). Root has `CAP_IPC_LOCK`; run by hand as
-another user, raise the limit (`ulimit -l unlimited`, or `memlock` in
-`/etc/security/limits.conf`). The unit `packaging/dpds-controller.service` sets
-`LimitMEMLOCK=infinity` explicitly, so the `dpds` child of the controller can lock whatever it
-needs.
+Locked memory counts against `RLIMIT_MEMLOCK`, and the pools and buffers are large (see
+[Budgets, rings and pools](#budgets-rings-and-pools)). `mlockall` would even succeed while the
+process is still small and then make every later allocation count against a finite limit, so EAL
+initialisation would fail. Before locking, `dpds` therefore looks at the effective user and at the
+soft and the hard limit:
+
+1. Root (it has `CAP_IPC_LOCK`, which ignores the limit): lock.
+2. The soft limit is unlimited: lock.
+3. The soft limit is finite but the hard limit is unlimited: `dpds` raises the soft limit to
+   unlimited, then locks.
+4. The hard limit is finite: `dpds` does not call `mlockall`, prints
+   `WARNING: RLIMIT_MEMLOCK is <n> KiB, not unlimited: continuing unlocked (locking would make later allocations fail; run as root or set LimitMEMLOCK=infinity / ulimit -l unlimited)`
+   (`<n>` is the soft limit) and runs unlocked.
+
+If the lock itself still fails in cases 1 to 3, `dpds` prints
+`WARNING: mlockall failed, continuing unlocked: <error>` and runs unlocked. Run by hand as another
+user, raise the limits (`ulimit -l unlimited`, or `memlock` in `/etc/security/limits.conf`). The
+unit `packaging/dpds-controller.service` sets `LimitMEMLOCK=infinity` explicitly, so the `dpds`
+child of the controller can lock whatever it needs.
 
 ### Shutdown
 

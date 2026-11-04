@@ -72,13 +72,83 @@ const MCL_CURRENT: i32 = 1;
 /// `mlockall(2)` flag (`<sys/mman.h>`, Linux): lock every page mapped later too.
 const MCL_FUTURE: i32 = 2;
 
-extern "C" {
-    fn mlockall(flags: i32) -> i32;
+/// `getrlimit(2)` resource (`<sys/resource.h>`, Linux): locked-memory limit.
+const RLIMIT_MEMLOCK: i32 = 8;
+/// `RLIM_INFINITY` (Linux, 64-bit `rlim_t`).
+const RLIM_INFINITY: u64 = u64::MAX;
+
+/// `struct rlimit` (Linux, 64-bit `rlim_t`).
+#[repr(C)]
+struct Rlimit {
+    cur: u64,
+    max: u64,
 }
 
-/// `mlockall(MCL_CURRENT | MCL_FUTURE)`. Failure (no `CAP_IPC_LOCK` and a low
-/// `RLIMIT_MEMLOCK`) is the caller's warning, not an error: unlocked still works.
+extern "C" {
+    fn mlockall(flags: i32) -> i32;
+    fn geteuid() -> u32;
+    fn getrlimit(resource: i32, rlim: *mut Rlimit) -> i32;
+    fn setrlimit(resource: i32, rlim: *const Rlimit) -> i32;
+}
+
+/// What `lock_memory` does for a given effective uid and `RLIMIT_MEMLOCK`.
+#[derive(Debug, PartialEq, Eq)]
+enum MemlockPlan {
+    /// Call `mlockall`.
+    Lock,
+    /// Raise the soft limit to unlimited (the hard limit allows it), then call `mlockall`.
+    RaiseThenLock,
+    /// Don't lock: `mlockall` would succeed while the process is small, then `MCL_FUTURE` makes
+    /// every later mapping count against the finite limit and EAL's allocations fail.
+    Skip,
+}
+
+fn memlock_plan(euid: u32, soft: u64, hard: u64) -> MemlockPlan {
+    if euid == 0 || soft == RLIM_INFINITY {
+        MemlockPlan::Lock
+    } else if hard == RLIM_INFINITY {
+        MemlockPlan::RaiseThenLock
+    } else {
+        MemlockPlan::Skip
+    }
+}
+
+/// `mlockall(MCL_CURRENT | MCL_FUTURE)`, unless a finite `RLIMIT_MEMLOCK` makes it harmful (see
+/// [`MemlockPlan`]; the skip prints its own warning and returns `Ok`). Failure (no
+/// `CAP_IPC_LOCK` and a low limit) is the caller's warning, not an error: unlocked still works.
 fn lock_memory() -> std::result::Result<(), std::io::Error> {
+    let mut lim = Rlimit { cur: 0, max: 0 };
+    // SAFETY: getrlimit writes one `struct rlimit` into `lim`, which has that layout.
+    if unsafe { getrlimit(RLIMIT_MEMLOCK, &mut lim) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: geteuid takes no arguments and touches no memory.
+    match memlock_plan(unsafe { geteuid() }, lim.cur, lim.max) {
+        MemlockPlan::Lock => {}
+        MemlockPlan::RaiseThenLock => {
+            let unlimited = Rlimit {
+                cur: RLIM_INFINITY,
+                max: lim.max,
+            };
+            // SAFETY: setrlimit reads one `struct rlimit` from `unlimited`.
+            if unsafe { setrlimit(RLIMIT_MEMLOCK, &unlimited) } != 0 {
+                let e = std::io::Error::last_os_error();
+                return Err(std::io::Error::new(
+                    e.kind(),
+                    format!("cannot raise RLIMIT_MEMLOCK: {e}"),
+                ));
+            }
+        }
+        MemlockPlan::Skip => {
+            eprintln!(
+                "WARNING: RLIMIT_MEMLOCK is {} KiB, not unlimited: continuing unlocked (locking \
+                 would make later allocations fail; run as root or set LimitMEMLOCK=infinity / \
+                 ulimit -l unlimited)",
+                lim.cur / 1024
+            );
+            return Ok(());
+        }
+    }
     // SAFETY: mlockall takes only flags and touches no Rust memory.
     if unsafe { mlockall(MCL_CURRENT | MCL_FUTURE) } == 0 {
         Ok(())
@@ -572,7 +642,7 @@ fn serve(
 
 #[cfg(test)]
 mod tests {
-    use super::lock_memory;
+    use super::{lock_memory, memlock_plan, MemlockPlan, RLIM_INFINITY};
 
     /// Smoke test only (PREOF's `lock_memory_does_not_panic`): `lock_memory` wraps a raw
     /// `mlockall(MCL_CURRENT | MCL_FUTURE)`, which legitimately fails without `CAP_IPC_LOCK` and
@@ -582,5 +652,46 @@ mod tests {
     fn lock_memory_does_not_panic() {
         let result: Result<(), std::io::Error> = lock_memory();
         let _ = result;
+    }
+
+    const MIB8: u64 = 8 << 20;
+
+    #[test]
+    fn root_always_locks() {
+        for (soft, hard) in [
+            (0, 0),
+            (MIB8, MIB8),
+            (MIB8, RLIM_INFINITY),
+            (RLIM_INFINITY, RLIM_INFINITY),
+        ] {
+            assert_eq!(memlock_plan(0, soft, hard), MemlockPlan::Lock);
+        }
+    }
+
+    #[test]
+    fn an_unlimited_soft_limit_locks() {
+        assert_eq!(
+            memlock_plan(1000, RLIM_INFINITY, RLIM_INFINITY),
+            MemlockPlan::Lock
+        );
+    }
+
+    #[test]
+    fn a_finite_soft_limit_under_an_unlimited_hard_limit_is_raised() {
+        assert_eq!(
+            memlock_plan(1000, MIB8, RLIM_INFINITY),
+            MemlockPlan::RaiseThenLock
+        );
+        assert_eq!(
+            memlock_plan(1000, 0, RLIM_INFINITY),
+            MemlockPlan::RaiseThenLock
+        );
+    }
+
+    #[test]
+    fn a_finite_hard_limit_skips_the_lock() {
+        for (soft, hard) in [(MIB8, MIB8), (0, 0), (1024, MIB8)] {
+            assert_eq!(memlock_plan(1000, soft, hard), MemlockPlan::Skip);
+        }
     }
 }
