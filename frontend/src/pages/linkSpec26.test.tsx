@@ -222,16 +222,18 @@ describe('link editor: the name follows the controller rule (1 to 32 of A-Z a-z 
     expect(storedLinks()[0].name).toBe('a-b');
   });
 
-  it('editing: a stored link whose name breaks the rule cannot be saved unchanged (tester choice: the rule applies at save)', async () => {
+  // Spec 27b item 1: a stored link whose name breaks the rule is no longer opened and refused on Save; the document is corrupt
+  // (alert with Reset, stored text untouched, no editor). Renaming a valid link to a bad name is refused in the test above.
+  it('editing: a stored link whose name breaks the rule makes the document corrupt: the alert, no form, nothing written', async () => {
     seedLinks([fx.link({ name: 'old name' })]);
-    const user = userEvent.setup();
-    renderApp('/links/1');
-    await screen.findByRole('heading', { level: 1, name: 'Edit link' });
-    await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue('old name'));
+    const before = rawStore();
     const writes = watchStoreWrites();
-    await save(user);
-    expect(await screen.findByRole('alert')).toHaveTextContent(/\bName\b/);
+    renderApp('/links/1');
+    expect(await screen.findByRole('alert')).toHaveTextContent(/local configuration/i);
+    expect(screen.getByRole('button', { name: /^reset/i })).toBeInTheDocument();
+    expect(screen.queryByLabelText('Name')).not.toBeInTheDocument();
     expect(writes()).toBe(0);
+    expect(rawStore()).toBe(before);
   });
 
   it('editing: a stored link with a valid name still saves', async () => {

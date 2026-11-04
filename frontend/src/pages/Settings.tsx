@@ -4,7 +4,15 @@ import { Button, Card, Form, InputGroup, Modal } from 'react-bootstrap';
 import ErrorAlert from '../components/ErrorAlert';
 import { errorMessage } from '../common/format';
 import { FieldLabel, InfoTip } from './FieldLabel';
-import { isLinksFile, readConfig, replaceLinks, updateConfig, useLocalConfig } from '../common/localConfig';
+import {
+  isLinksFile,
+  linksProblem,
+  parseStored,
+  readRaw,
+  replaceLinks,
+  updateConfig,
+  useLocalConfig,
+} from '../common/localConfig';
 import type { Link, Settings as SettingsDto } from '../api/types';
 
 interface FormState {
@@ -50,13 +58,21 @@ function readText(file: File): Promise<string> {
   });
 }
 
-/** Downloads `{version: 1, links}` as `dpds-links-<date>.json`: the links as stored, ids included, no settings. */
+const pad = (n: number) => String(n).padStart(2, '0');
+const localDate = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+
+/**
+ * Downloads `{version: 1, links}` as `dpds-links-<local date>.json`: the links as stored, ids included, no settings.
+ * An unreadable store is the rescue case: its stored text is downloaded unchanged.
+ */
 function downloadLinks() {
-  const text = JSON.stringify({ version: 1, links: readConfig().doc.links }, null, 2);
+  const raw = readRaw();
+  const stored = parseStored(raw);
+  const text = stored.corrupt ? (raw ?? '') : JSON.stringify({ version: 1, links: stored.doc.links }, null, 2);
   const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
   const a = document.createElement('a');
   a.href = url;
-  a.download = `dpds-links-${new Date().toISOString().slice(0, 10)}.json`;
+  a.download = `dpds-links-${localDate(new Date())}.json`;
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -112,8 +128,13 @@ export default function Settings() {
       setError(`"${file.name}" is not a valid JSON links file: ${errorMessage(e)}`);
       return;
     }
-    if (isLinksFile(parsed)) setPendingImport(parsed.links);
-    else setError(`"${file.name}" is not a DPDS links file (a version 1 document with a list of links)`);
+    if (!isLinksFile(parsed)) {
+      setError(`"${file.name}" is not a DPDS links file (a version 1 document with a list of links)`);
+      return;
+    }
+    const problem = linksProblem(parsed.links);
+    if (problem !== null) setError(`"${file.name}" cannot be imported. ${problem}`);
+    else setPendingImport(parsed.links as Link[]);
   };
 
   const confirmImport = () => {

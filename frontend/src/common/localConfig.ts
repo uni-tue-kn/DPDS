@@ -4,6 +4,7 @@
 // Reading never writes. Writes always start from a fresh read of the store, so two pages never overwrite each other.
 // A value that cannot be read is reported (`corrupt`) and left untouched until the user resets it.
 import { useMemo, useSyncExternalStore } from 'react';
+import { linkProblem } from '../pages/linkForm';
 import type { Link, LinkInput, LocalConfig, Settings, StartRequest } from '../api/types';
 
 export const STORAGE_KEY = 'dpds.config.v1';
@@ -18,7 +19,6 @@ export const emptyConfig = (): LocalConfig => ({
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const isString = (v: unknown) => typeof v === 'string';
-const isId = (v: unknown) => typeof v === 'number' && Number.isInteger(v) && v > 0;
 
 function isSettings(v: unknown): boolean {
   return (
@@ -30,12 +30,32 @@ function isSettings(v: unknown): boolean {
   );
 }
 
-const isLink = (v: unknown) =>
-  isObject(v) && isId(v.id) && isString(v.name) && isString(v.ingress) && isString(v.egress) && isObject(v.config);
+/**
+ * What is wrong with a list of links, or null when it is fine: the first link the editor would not accept unchanged
+ * (named by position and name), or the first repeated id or name.
+ */
+export function linksProblem(links: unknown[]): string | null {
+  const ids = new Map<unknown, number>();
+  const names = new Map<unknown, number>();
+  for (const [i, l] of links.entries()) {
+    const name = isObject(l) && typeof l.name === 'string' && l.name !== '' ? ` ("${l.name}")` : '';
+    const where = `Link ${i + 1}${name}`;
+    const problem = linkProblem(l);
+    if (problem !== null) return `${where}: ${problem}`;
+    const { id, name: n } = l as Link;
+    if (ids.has(id)) return `Duplicate link id ${id}: links ${ids.get(id)} and ${i + 1}`;
+    if (names.has(n)) return `Duplicate link name "${n}": links ${names.get(n)} and ${i + 1}`;
+    ids.set(id, i + 1);
+    names.set(n, i + 1);
+  }
+  return null;
+}
 
-/** True for a version 1 document with well-formed links and settings (unknown extra members are fine). */
+/** True for a version 1 document with valid links and well-formed settings (unknown extra members are fine). */
 export function isLocalConfig(v: unknown): v is LocalConfig {
-  return isObject(v) && v.version === 1 && Array.isArray(v.links) && v.links.every(isLink) && isSettings(v.settings);
+  return (
+    isObject(v) && v.version === 1 && Array.isArray(v.links) && linksProblem(v.links) === null && isSettings(v.settings)
+  );
 }
 
 export interface Stored {
@@ -43,9 +63,9 @@ export interface Stored {
   doc: LocalConfig;
 }
 
-/** True for a version 1 document with well-formed links: the file of an export (other members are ignored). */
-export function isLinksFile(v: unknown): v is { version: 1; links: Link[] } {
-  return isObject(v) && v.version === 1 && Array.isArray(v.links) && v.links.every(isLink);
+/** True for a version 1 document with a list of links: the shape of an export file (check the links with `linksProblem`). */
+export function isLinksFile(v: unknown): v is { version: 1; links: unknown[] } {
+  return isObject(v) && v.version === 1 && Array.isArray(v.links);
 }
 
 /** Parses a stored value: absent = the empty document, anything unreadable = corrupt (with the empty document to show). */
@@ -83,9 +103,9 @@ export function useLocalConfig(): Stored {
   return useMemo(() => parseStored(raw), [raw]);
 }
 
-/** Replaces the stored document. */
-export function writeConfig(doc: LocalConfig): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(doc));
+/** Replaces the stored document; only `version`, `links` and `settings` are written. */
+export function writeConfig({ version, links, settings }: LocalConfig): void {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify({ version, links, settings }));
   notify();
 }
 

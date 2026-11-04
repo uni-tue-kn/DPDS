@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import { Button, Card, Col, Form, Row } from 'react-bootstrap';
 import { Link as RouterLink, useLocation, useNavigate, useParams } from 'react-router';
@@ -9,7 +9,15 @@ import { useLoad } from '../common/useLoad';
 import { saveLink, useLocalConfig } from '../common/localConfig';
 import ConfigFieldset from './ConfigFieldset';
 import { FieldLabel, RequiredNote } from './FieldLabel';
-import { configToForm, defaultConfigForm, formToDto, parseWorker, portError } from './linkForm';
+import {
+  LINK_NAME,
+  LINK_NAME_RULE,
+  configToForm,
+  defaultConfigForm,
+  formToDto,
+  parseWorker,
+  portError,
+} from './linkForm';
 import type { ConfigForm } from './linkForm';
 import type { Interface, Link, LinkInput } from '../api/types';
 
@@ -97,7 +105,7 @@ function Editor({
     try {
       if (name.trim() === '') throw new Error('Name is required');
       if (!LINK_NAME.test(name.trim())) {
-        throw new Error('Name must be 1 to 32 characters: letters A-Z a-z, digits, underscore, dot or dash');
+        throw new Error(LINK_NAME_RULE);
       }
       if (others.some((l) => l.name === name.trim())) throw new Error(`A link named "${name.trim()}" already exists`);
       const ports = [
@@ -182,9 +190,6 @@ function Editor({
   );
 }
 
-/** The controller's link-name rule (`valid_name` in `api.rs`). */
-const LINK_NAME = /^[A-Za-z0-9_.-]{1,32}$/;
-
 /** The first free `<name>_copy`, `<name>_copy2`, ...; the base is shortened so the result has at most 32 characters. */
 function copyName(name: string, taken: Link[]): string {
   const used = new Set(taken.map((l) => l.name));
@@ -198,15 +203,23 @@ function copyName(name: string, taken: Link[]): string {
 export default function LinkEditor() {
   const { id } = useParams();
   // "Duplicate" in the Links list opens the new-link editor with `{ copyOf: <link id> }` as router state.
-  const copyOf = (useLocation().state as { copyOf?: number } | null)?.copyOf;
+  const location = useLocation();
+  const navigate = useNavigate();
+  const copyOf = (location.state as { copyOf?: number } | null)?.copyOf;
   const linkId = id === undefined ? undefined : Number(id);
   const interfaces = useLoad(api.getInterfaces);
   const { doc, corrupt } = useLocalConfig();
   const link = linkId === undefined ? undefined : doc.links.find((l) => l.id === linkId);
   const source = linkId === undefined ? doc.links.find((l) => l.id === copyOf) : undefined;
-  const copy = source && { ...source, name: copyName(source.name, doc.links), ingress: '', egress: '' };
+  const copy = source && { ...source, name: copyName(source.name, doc.links), ingress: '', egress: '', worker: null };
   const missing = linkId !== undefined && link === undefined && !corrupt;
   const ready = interfaces.data !== undefined && !missing && (linkId === undefined || link !== undefined);
+
+  // The copy is taken once: after the form is filled the history entry loses its state, so Back and reload start empty.
+  const { pathname, search, hash } = location;
+  useEffect(() => {
+    if (copyOf !== undefined && ready) navigate({ pathname, search, hash }, { replace: true });
+  }, [copyOf, ready, navigate, pathname, search, hash]);
 
   return (
     <>

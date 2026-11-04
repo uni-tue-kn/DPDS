@@ -1,6 +1,7 @@
 import { screen, within } from '@testing-library/react';
 import type { UserEvent } from '@testing-library/user-event';
 import type { ConfigDto } from '../api/types';
+import * as fx from '../test/fixtures';
 import { PAGES, cfg } from '../test/configPages';
 import type { ConfigPage } from '../test/configPages';
 import {
@@ -10,7 +11,9 @@ import {
   TIME_UNITS,
   numberField,
   pickUnit,
+  renderApp,
   section,
+  seedLinks,
   shownBase,
   typeInto,
   typeRate,
@@ -178,8 +181,8 @@ const TIME_CASES: [number, number, string][] = [
   [1500000000, 1.5, 's'],
   [2000000000, 2, 's'],
 ];
+// (no 0 bit/s row: the limiter Rate must be greater than 0 (spec25), so a stored 0 is an invalid link, spec27b item 1)
 const RATE_CASES: [number, number, string][] = [
-  [0, 0, 'Gbit/s'],
   [999, 999, 'bit/s'],
   [1500, 1.5, 'kbit/s'],
   [2500000, 2.5, 'Mbit/s'],
@@ -241,6 +244,13 @@ describe.each(PAGES)('$name: display unit of a stored value, and the exact round
   it.each(RATE_CASES)('limiter rate %d bit/s is shown as %d %s and saved back unchanged', async (bps, shown, unit) => {
     const c = await roundTrip(cfg({}, { rate_bps: bps }), 'Rate', shown, unit);
     expect(must(c.limiter).rate_bps).toBe(bps);
+  });
+
+  it('a stored limiter rate of 0 bit/s is an invalid link: the document is corrupt, the editor shows the alert (spec27b)', async () => {
+    seedLinks([fx.link({ config: cfg({}, { rate_bps: 0 }) })]);
+    renderApp('/links/1');
+    expect(await screen.findByRole('alert')).toHaveTextContent(/local configuration/i);
+    expect(screen.queryByLabelText('Rate')).not.toBeInTheDocument();
   });
 
   it.each(PPS_CASES)(

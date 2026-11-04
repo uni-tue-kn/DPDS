@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { vi } from 'vitest';
 import type { EmulationState, Link } from '../api/types';
 import { api } from '../test/mockApi';
+import { EDGE_LINKS, INVALID_LINKS } from '../test/invalidLinks';
 import * as fx from '../test/fixtures';
 import { DEFAULT_SETTINGS, rawStore, renderApp, seedRaw, seedStore, storedDoc } from '../test/helpers';
 import type { StoredDoc } from '../test/helpers';
@@ -494,5 +495,230 @@ describe('Settings: import is possible whatever the emulation does (nothing is s
     expect(await screen.findByTestId('pending-restart')).toBeInTheDocument();
     expect(api.startEmulation).not.toHaveBeenCalled();
     expect(api.stopEmulation).not.toHaveBeenCalled();
+  });
+});
+
+// ---- spec27b ------------------------------------------------------------------------------------------------------------------
+
+// Item 1 (import side): a link is valid only if the link editor would accept it unchanged. Item 2: duplicate ids and names are
+// refused, and an import error names the first offending link (its position, its name when it has one) and what is wrong.
+/** The error text without the words "version 1" (they would match a position by accident). */
+const positionText = (text: string) => text.replace(/version\s*1/gi, '');
+
+describe('spec27b: import refuses links the editor would not accept', () => {
+  async function importFile(content: unknown) {
+    const user = await open();
+    await user.upload(fileInput(), jsonFile(content));
+    return user;
+  }
+  const refused = async (before: string | null) => {
+    await waitFor(() => expect(screen.getAllByRole('alert').length).toBeGreaterThan(0));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(rawStore()).toBe(before);
+  };
+
+  it.each(INVALID_LINKS)(
+    '$label is refused: inline alert saying what is wrong, no dialog, nothing written',
+    async ({ link, problem }) => {
+      seedStore(stored({ links: [fx.loopLink({ id: 9 })] }));
+      const before = rawStore();
+      await importFile({ version: 1, links: [link] });
+      await refused(before);
+      expect(alertTexts()).toMatch(problem);
+    },
+  );
+
+  it('the error names the offending link: its position and its name', async () => {
+    seedStore(stored());
+    const before = rawStore();
+    await importFile({
+      version: 1,
+      links: [fx.link({ id: 1, name: 'fine' }), { ...fx.link({ id: 2, name: 'broken' }), config: {} }],
+    });
+    await refused(before);
+    const text = alertTexts();
+    expect(text).toContain('broken');
+    expect(positionText(text)).toMatch(/\b[12]\b/); // the position of the second link, counted from 0 or from 1
+  });
+
+  it('with several bad links it names the FIRST one only', async () => {
+    seedStore(stored());
+    const before = rawStore();
+    await importFile({
+      version: 1,
+      links: [
+        fx.link({ id: 1, name: 'fine' }),
+        fx.link({ id: 2, name: 'first-bad', ingress: '' }),
+        fx.link({ id: 3, name: 'second-bad', egress: '' }),
+      ],
+    });
+    await refused(before);
+    expect(alertTexts()).toContain('first-bad');
+    expect(alertTexts()).not.toContain('second-bad');
+    expect(alertTexts()).toMatch(/ingress/i);
+  });
+
+  it('a link that has no usable name is still located by its position', async () => {
+    await importFile({ version: 1, links: [fx.link({ id: 1, name: 'fine' }), { ...fx.link({ id: 2 }), name: 7 }] });
+    await refused(null);
+    expect(positionText(alertTexts())).toMatch(/\b[12]\b/);
+    expect(alertTexts()).toMatch(/name/i);
+  });
+
+  it('a link that is not even an object is located by its position too', async () => {
+    await importFile({ version: 1, links: [fx.link({ id: 1, name: 'fine' }), 'oops'] });
+    await refused(null);
+    expect(positionText(alertTexts())).toMatch(/\b[12]\b/);
+  });
+
+  it('two links with the same id are refused and the error names the id', async () => {
+    seedStore(stored());
+    const before = rawStore();
+    await importFile({
+      version: 1,
+      links: [fx.link({ id: 7, name: 'one' }), fx.loopLink({ id: 3 }), fx.link({ id: 7, name: 'two' })],
+    });
+    await refused(before);
+    expect(alertTexts()).toMatch(/duplicate/i);
+    expect(alertTexts()).toMatch(/\b7\b/);
+  });
+
+  it('two links with the same name are refused and the error names the name', async () => {
+    seedStore(stored());
+    const before = rawStore();
+    await importFile({
+      version: 1,
+      links: [fx.link({ id: 1, name: 'same' }), fx.loopLink({ id: 2 }), fx.link({ id: 3, name: 'same' })],
+    });
+    await refused(before);
+    expect(alertTexts()).toMatch(/duplicate/i);
+    expect(alertTexts()).toContain('same');
+  });
+
+  it('nothing is written when the duplicate is the only fault, and a corrected file is accepted afterwards', async () => {
+    const user = await importFile({
+      version: 1,
+      links: [fx.link({ id: 1, name: 'same' }), fx.link({ id: 2, name: 'same' })],
+    });
+    await refused(null);
+    await user.upload(
+      fileInput(),
+      jsonFile({ version: 1, links: [fx.link({ id: 1, name: 'a' }), fx.link({ id: 2, name: 'b' })] }),
+    );
+    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Confirm import' }));
+    await waitFor(() => expect(storedDoc().links.map((l) => l.name)).toEqual(['a', 'b']));
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it.each(EDGE_LINKS)('%s is accepted: the confirm dialog opens', async (_label, link) => {
+    await importFile({ version: 1, links: [link] });
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('an accepted file is stored verbatim, edge members included', async () => {
+    const links = EDGE_LINKS.slice(0, 3).map(([, l], i) => ({ ...l, id: i + 1, name: `edge${i}` }));
+    const user = await importFile({ version: 1, links });
+    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Confirm import' }));
+    await waitFor(() => expect(storedDoc().links).toHaveLength(3));
+    expect(storedDoc().links).toEqual(JSON.parse(JSON.stringify(links)));
+  });
+});
+
+// Item 5: Export on an unreadable store is the rescue path: the stored text, unchanged, under the same file name.
+describe('spec27b: Export on a corrupt store downloads the stored text', () => {
+  const brokenLink = { ...fx.link(), config: {} };
+  const TEXTS: [string, string][] = [
+    ['text that is not JSON', '{not json'],
+    ['an empty string', ''],
+    ['JSON of another shape', '[1, 2]'],
+    [
+      'a document of a newer version',
+      JSON.stringify({ version: 7, links: [fx.link()], settings: fx.settings() }, null, 4),
+    ],
+    [
+      'a document with an invalid link, with its own spacing',
+      JSON.stringify({ version: 1, links: [brokenLink], settings: fx.settings() }, null, 4),
+    ],
+  ];
+
+  it.each(TEXTS)('%s: the blob is exactly the stored text', async (_label, raw) => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-04T12:00:00Z'));
+    seedRaw(raw);
+    const user = userEvent.setup();
+    renderApp('/settings');
+    await screen.findByLabelText('Poll interval (ms)');
+    await user.click(exportBtn());
+    await waitFor(() => expect(clicks).toHaveLength(1));
+    expect(clicks[0].download).toBe('dpds-links-2026-11-04.json');
+    expect(created).toHaveLength(1);
+    expect(await readBlob(created[0])).toBe(raw);
+  });
+
+  it('Export is enabled, shows no error of its own, and the stored text stays untouched', async () => {
+    const raw = '{not json';
+    seedRaw(raw);
+    const user = userEvent.setup();
+    renderApp('/settings');
+    await screen.findByLabelText('Poll interval (ms)');
+    expect(exportBtn()).toBeEnabled();
+    await user.click(exportBtn());
+    await waitFor(() => expect(clicks).toHaveLength(1));
+    expect(rawStore()).toBe(raw);
+    // the one alert on the page is the corrupt-config alert, not an export error
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    expect(screen.getByRole('alert')).toHaveTextContent(/local configuration/i);
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  });
+
+  it('a readable store is still exported as { version: 1, links }, not as its raw text', async () => {
+    seedRaw(JSON.stringify({ version: 1, links: LINKS(), settings: SETTINGS(), future: 1 }, null, 4));
+    const user = await open();
+    await user.click(exportBtn());
+    await waitFor(() => expect(created).toHaveLength(1));
+    expect(await readBlob(created[0])).toBe(JSON.stringify(linksFile(), null, 2));
+  });
+});
+
+// Item 7: the date in the file name is the local one.
+describe('spec27b: the export file name carries the local date', () => {
+  const original = process.env.TZ;
+  afterEach(() => {
+    if (original === undefined) Reflect.deleteProperty(process.env, 'TZ');
+    else process.env.TZ = original;
+  });
+
+  it.each([
+    // [time zone, the instant, the local date there] (the UTC date differs from the local one in each row)
+    ['Pacific/Auckland', '2026-11-04T23:30:00Z', '2026-11-05'], // UTC+13: already the next day
+    ['Pacific/Kiritimati', '2026-11-04T10:30:00Z', '2026-11-05'], // UTC+14
+    ['America/Los_Angeles', '2026-11-05T03:00:00Z', '2026-11-04'], // UTC-8: still the previous day
+    ['Pacific/Pago_Pago', '2026-11-05T05:00:00Z', '2026-11-04'], // UTC-11
+  ])('in %s at %s the file is dpds-links-%s.json', async (zone, instant, localDate) => {
+    process.env.TZ = zone;
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(instant));
+    const d = new Date();
+    // guard: the test environment really switched zones (otherwise this test proves nothing)
+    const local = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    expect(local).toBe(localDate);
+    expect(instant.slice(0, 10)).not.toBe(localDate);
+    seedStore(stored());
+    const user = await open();
+    await user.click(exportBtn());
+    await waitFor(() => expect(clicks).toHaveLength(1));
+    expect(clicks[0].download).toBe(`dpds-links-${localDate}.json`);
+  });
+
+  it('a single-digit month and day are zero-padded (2026-01-05)', async () => {
+    process.env.TZ = 'Europe/Berlin';
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-01-05T10:00:00Z'));
+    const user = await open();
+    await user.click(exportBtn());
+    await waitFor(() => expect(clicks).toHaveLength(1));
+    expect(clicks[0].download).toBe('dpds-links-2026-01-05.json');
   });
 });

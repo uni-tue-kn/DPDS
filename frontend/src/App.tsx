@@ -142,7 +142,8 @@ function CorruptConfigAlert() {
     <div role="alert" className="alert alert-danger d-flex align-items-center gap-3">
       <span>
         The local configuration of this browser cannot be read (damaged, or written by a newer version), so nothing is
-        shown and nothing can be started. It stays untouched until you reset it.
+        shown and nothing can be started. It stays untouched until you reset it. Export on the Settings page saves the
+        stored text.
       </span>
       <Button variant="danger" size="sm" className="text-nowrap" onClick={resetConfig}>
         Reset local configuration

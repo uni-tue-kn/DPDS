@@ -1,5 +1,6 @@
 // Form model of the link editor: every number is kept as the typed string so inputs can be emptied and
 // retyped; `formToDto` validates and converts back to the wire type.
+import { errorMessage } from '../common/format';
 import type { ConfigDto, DelayerDto, Distribution, LimiterMode, LossModelDto } from '../api/types';
 import {
   PPS_UNITS,
@@ -270,6 +271,7 @@ export function portError(port: string): string | null {
 }
 
 function delayerToDto(f: ConfigForm, frame: number | null): DelayerDto {
+  if (!DISTRIBUTIONS.includes(f.distribution)) throw new Error(`Delayer distribution "${f.distribution}" is unknown`);
   return {
     distribution: f.distribution,
     mean_ns: unitNum(f.mean_ns, TIME_UNITS, 'Mean delay'),
@@ -292,6 +294,11 @@ function lossToDto(f: ConfigForm): LossModelDto {
       };
 }
 
+function limiterToDto(f: ConfigForm, frame: number | null) {
+  if (!LIMITER_MODES.includes(f.limiter_mode)) throw new Error(`Unknown limiter mode "${f.limiter_mode}"`);
+  return { mode: f.limiter_mode, rate_bps: limiterRate(f.rate_bps, frame) };
+}
+
 function configToDto(f: ConfigForm, frame: number | null): ConfigDto {
   const bins = optInt(f.hist_bins, 'Histogram bins');
   const lo_ns = f.hist_lo.text.trim() === '' ? null : unitNum(f.hist_lo, TIME_UNITS, 'Histogram lo');
@@ -300,7 +307,7 @@ function configToDto(f: ConfigForm, frame: number | null): ConfigDto {
     buffer_capacity: nonNegativeInt(f.buffer_capacity, 'Buffer capacity'),
     reordering: f.reordering,
     delayer: f.delayer_added ? delayerToDto(f, frame) : null,
-    limiter: f.limiter_added ? { mode: f.limiter_mode, rate_bps: limiterRate(f.rate_bps, frame) } : null,
+    limiter: f.limiter_added ? limiterToDto(f, frame) : null,
     loss_model: f.dropper_added ? lossToDto(f) : null,
     seed: seed(f.seed),
     histogram: bins == null && lo_ns == null && hi_ns == null ? null : { bins, lo_ns, hi_ns },
@@ -331,4 +338,38 @@ export function parseWorker(s: string): number | null {
   const n = Number(t);
   if (!/^\d+$/.test(t) || !Number.isSafeInteger(n)) throw new Error(`Worker lcore: "${t}" is not a core number`);
   return n;
+}
+
+/** The controller's link-name rule (`valid_name` in `api.rs`). */
+export const LINK_NAME = /^[A-Za-z0-9_.-]{1,32}$/;
+export const LINK_NAME_RULE = 'Name must be 1 to 32 characters: letters A-Z a-z, digits, underscore, dot or dash';
+
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/**
+ * What is wrong with a stored or imported link, or null when the link editor would accept it unchanged: the name rule,
+ * non-empty ports, an optional worker and frame size, and a config that survives the editor's own round trip
+ * (`configToForm` then `formToDto`).
+ */
+export function linkProblem(v: unknown): string | null {
+  try {
+    if (!isObject(v)) throw new Error('Link is not an object');
+    if (typeof v.id !== 'number' || !Number.isInteger(v.id) || v.id < 1) {
+      throw new Error('Link id must be a positive whole number');
+    }
+    if (typeof v.name !== 'string' || !LINK_NAME.test(v.name)) throw new Error(LINK_NAME_RULE);
+    if (typeof v.ingress !== 'string' || v.ingress === '') throw new Error('Ingress port is required');
+    if (typeof v.egress !== 'string' || v.egress === '') throw new Error('Egress port is required');
+    if (v.worker != null) {
+      if (typeof v.worker !== 'number') throw new Error('Worker lcore must be a number');
+      parseWorker(String(v.worker));
+    }
+    const frame = v.avg_frame_size_byte ?? null;
+    if (frame !== null && typeof frame !== 'number') throw new Error('Average frame size must be a number');
+    if (!isObject(v.config)) throw new Error('Link config is missing');
+    formToDto(configToForm(v.config as unknown as ConfigDto, frame));
+    return null;
+  } catch (e) {
+    return errorMessage(e);
+  }
 }

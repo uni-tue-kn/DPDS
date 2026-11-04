@@ -1,6 +1,9 @@
-import { cleanup, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { UserEvent } from '@testing-library/user-event';
+import { MemoryRouter, useLocation, useNavigate } from 'react-router';
+import type { Location, NavigateFunction } from 'react-router';
+import App from '../App';
 import type { Link } from '../api/types';
 import * as fx from '../test/fixtures';
 import { rawStore, renderApp, sameConfig, seedLinks, storedDoc, storedLinks, watchStoreWrites } from '../test/helpers';
@@ -9,7 +12,9 @@ import { rawStore, renderApp, sameConfig, seedLinks, storedDoc, storedLinks, wat
 // between Edit and Delete. It opens the NEW-link editor pre-filled with a copy: same config, worker and frame size, and
 // the name `<name>_copy` (taken: `<name>_copy2`, `_copy3` ...; the base is shortened so the whole name has at most 32
 // characters). Ingress and Egress are left UNSET (both are required, so the user must pick ports before saving; a copy on the
-// source's ports would collide with it at start). Nothing is stored until the user saves; saving goes through the normal checks.
+// source's ports would collide with it at start). Spec27b item 3: the worker lcore is cleared too (automatic): an explicit core
+// would collide with the source at start as well. The seed and the frame size are still copied. Nothing is stored until the
+// user saves; saving goes through the normal checks. Item 6: the router state of Duplicate is consumed once (see the last block).
 // Tester's choices where the spec is silent: the shortened base is `name.slice(0, 32 - suffix.length)`; the names that count as
 // taken are those of ALL stored links (exact match); the URL of the editor is not pinned (only its heading "New link").
 
@@ -82,13 +87,22 @@ describe('Links list: the Duplicate button', () => {
 });
 
 describe('Duplicate: the editor opens pre-filled with the copy', () => {
-  it('name <name>_copy, same worker, same frame size, and NO ports (Ingress and Egress are unset)', async () => {
+  it('name <name>_copy, same frame size, and NO ports and NO worker (Ingress, Egress and Worker lcore are unset)', async () => {
     const user = await listPage();
     await duplicate(user, 'a-b');
     expect(nameField()).toHaveValue('a-b_copy');
     expect(screen.getByLabelText('Ingress')).toHaveValue('');
     expect(screen.getByLabelText('Egress')).toHaveValue('');
-    expect(screen.getByLabelText('Worker lcore')).toHaveValue(5);
+    expect(screen.getByLabelText('Worker lcore')).toHaveValue(null); // a-b has worker 5: not copied (automatic)
+    expect(screen.getByLabelText('Average frame size')).toHaveValue(512);
+  });
+
+  it('the seed is still copied (a link with seed 99 and worker 5)', async () => {
+    const seeded = framed(fx.link({ worker: 5, config: fx.config({ seed: 99 }) }), 512);
+    const user = await listPage([seeded]);
+    await duplicate(user, 'a-b');
+    expect(screen.getByLabelText('Seed')).toHaveValue(99);
+    expect(screen.getByLabelText('Worker lcore')).toHaveValue(null);
     expect(screen.getByLabelText('Average frame size')).toHaveValue(512);
   });
 
@@ -240,7 +254,7 @@ describe('Duplicate: nothing is stored until Save', () => {
     expect(await rowOf('a-b_copy')).toBeInTheDocument();
   });
 
-  it('the stored copy has the same config, worker and frame size as the source and the ports that were chosen', async () => {
+  it('the stored copy has the same config and frame size as the source, the ports that were chosen and NO worker', async () => {
     const user = await listPage(abAndLoop());
     await duplicate(user, 'a-b');
     await pickPorts(user);
@@ -250,7 +264,8 @@ describe('Duplicate: nothing is stored until Save', () => {
     expect(copy.ingress).toBe('0000:65:00.1');
     expect(copy.egress).toBe('0000:65:00.0');
     expect([copy.ingress, copy.egress]).not.toEqual([src.ingress, src.egress]);
-    expect(copy.worker ?? null).toBe(5);
+    expect(copy.worker ?? null).toBeNull(); // automatic, although a-b has worker 5
+    expect(src.worker).toBe(5); // the source keeps its own
     expect(copy.avg_frame_size_byte).toBe(512);
     sameConfig(copy.config, src.config);
   });
@@ -457,5 +472,112 @@ describe('Duplicate: the list afterwards', () => {
         .map((c) => c.textContent);
     expect(cells(copy)).toEqual(cells(src));
     expect(within(copy).getByRole('button', { name: 'Duplicate a-b_copy' })).toBeInTheDocument();
+  });
+});
+
+interface Spy {
+  location: Location;
+  navigate: NavigateFunction;
+}
+function RouterSpy({ spy }: { spy: Partial<Spy> }) {
+  spy.location = useLocation();
+  spy.navigate = useNavigate();
+  return null;
+}
+
+// Spec 27b item 6: the router state `{ copyOf }` of Duplicate is consumed once. After the form is filled, the history entry is
+// replaced (not pushed) without the state, so Back / Forward / reload do not pre-fill it again. The tests watch the router
+// from a spy component next to the app (MemoryRouter has no browser buttons: navigate(-1) / navigate(1) are Back and Forward).
+describe('Duplicate: the router state is consumed once', () => {
+  async function openList(links: Link[] = [ab(), ba()]) {
+    seedLinks(links);
+    const spy: Partial<Spy> = {};
+    render(
+      <MemoryRouter initialEntries={['/links']}>
+        <RouterSpy spy={spy} />
+        <App />
+      </MemoryRouter>,
+    );
+    await screen.findByText(links[0].name);
+    return { user: userEvent.setup(), spy };
+  }
+  const go = (spy: Partial<Spy>, delta: number) =>
+    act(async () => {
+      spy.navigate?.(delta);
+    });
+  const copyOfOf = (spy: Partial<Spy>) => (spy.location?.state as { copyOf?: unknown } | null)?.copyOf;
+
+  it('after the form is filled the location no longer carries the copy', async () => {
+    const { user, spy } = await openList();
+    await duplicate(user, 'b-a');
+    expect(nameField()).toHaveValue('b-a_copy');
+    await waitFor(() => expect(copyOfOf(spy)).toBeUndefined());
+    expect(spy.location?.pathname).toBe('/links/new');
+  });
+
+  it('the form keeps its pre-filled values and stays editable after the state is gone', async () => {
+    const { user, spy } = await openList();
+    await duplicate(user, 'b-a');
+    await waitFor(() => expect(copyOfOf(spy)).toBeUndefined());
+    expect(nameField()).toHaveValue('b-a_copy');
+    expect(screen.getByLabelText('Buffer capacity')).toHaveValue(5000);
+    expect(screen.getByLabelText('Seed')).toHaveValue(42);
+    expect(screen.getByLabelText('Delay distribution')).toHaveValue('GammaDistribution');
+    await user.type(nameField(), '2');
+    expect(nameField()).toHaveValue('b-a_copy2');
+    expect(screen.getByLabelText('Buffer capacity')).toHaveValue(5000);
+  });
+
+  it('the entry is REPLACED, not pushed: Back leads straight to the list', async () => {
+    const { user, spy } = await openList();
+    await duplicate(user, 'b-a');
+    await waitFor(() => expect(copyOfOf(spy)).toBeUndefined());
+    await go(spy, -1);
+    expect(await screen.findByRole('heading', { level: 1, name: 'Links' })).toBeInTheDocument();
+    expect(spy.location?.pathname).toBe('/links');
+  });
+
+  it('Forward to the form again shows an EMPTY new-link form, not the copy', async () => {
+    const { user, spy } = await openList();
+    await duplicate(user, 'b-a');
+    await waitFor(() => expect(copyOfOf(spy)).toBeUndefined());
+    await go(spy, -1);
+    await screen.findByRole('heading', { level: 1, name: 'Links' });
+    await go(spy, 1);
+    await screen.findByRole('heading', { level: 1, name: 'New link' });
+    await waitFor(() => expect(screen.getAllByRole('option', { name: /enp101s0f0/ })).not.toHaveLength(0));
+    expect(nameField()).toHaveValue('');
+    expect(screen.getByLabelText('Ingress')).toHaveValue('');
+    expect(screen.getByLabelText('Buffer capacity')).toHaveValue(100000); // the defaults of a new form, not b-a's 5000
+    expect(screen.getByLabelText('Seed')).toHaveValue(null);
+  });
+
+  it('a second Duplicate after Back still pre-fills (each click carries its own state)', async () => {
+    const { user, spy } = await openList();
+    await duplicate(user, 'b-a');
+    await waitFor(() => expect(copyOfOf(spy)).toBeUndefined());
+    await go(spy, -1);
+    await duplicate(user, 'a-b');
+    expect(nameField()).toHaveValue('a-b_copy');
+    expect(screen.getByLabelText('Average frame size')).toHaveValue(512);
+    await waitFor(() => expect(copyOfOf(spy)).toBeUndefined());
+  });
+
+  it('the replace writes nothing to the store', async () => {
+    const { user, spy } = await openList();
+    const before = rawStore();
+    const writes = watchStoreWrites();
+    await duplicate(user, 'a-b');
+    await waitFor(() => expect(copyOfOf(spy)).toBeUndefined());
+    expect(writes()).toBe(0);
+    expect(rawStore()).toBe(before);
+  });
+
+  it('a plain "New link" never carries a copy', async () => {
+    const { user, spy } = await openList();
+    await user.click(screen.getByRole('link', { name: /new link/i }));
+    await screen.findByRole('heading', { level: 1, name: 'New link' });
+    expect(copyOfOf(spy)).toBeUndefined();
+    expect(nameField()).toHaveValue('');
   });
 });

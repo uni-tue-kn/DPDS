@@ -4,6 +4,7 @@ import { vi } from 'vitest';
 import { api } from '../test/mockApi';
 import * as fx from '../test/fixtures';
 import { linkPage } from '../test/configPages';
+import { EDGE_LINKS, INVALID_LINKS } from '../test/invalidLinks';
 import {
   STORAGE_KEY,
   emptyDoc,
@@ -214,6 +215,188 @@ describe('spec27: the document has no presets member', () => {
     await user.click(screen.getByRole('button', { name: 'Confirm delete' }));
     await waitFor(() => expect(storedDoc().links).toEqual([]));
     expect(Object.keys(storedDoc()).sort()).toEqual(['links', 'settings', 'version']);
+  });
+});
+
+// Spec 27b item 1: a link is valid only if the link editor would accept it unchanged. A stored document with an invalid link is
+// corrupt like any other unreadable value: the alert with Reset, the stored text untouched, no page that throws.
+describe('spec27b: a stored document with an invalid link is corrupt', () => {
+  const docWith = (...links: unknown[]) => JSON.stringify({ version: 1, links, settings: fx.settings() });
+
+  it.each(INVALID_LINKS)('$label: the alert with Reset on /links, the text untouched, no table', async ({ link }) => {
+    const raw = docWith(link);
+    seedRaw(raw);
+    renderApp('/links');
+    const alert = await alertOf();
+    expect(alert).toHaveTextContent(/local configuration/i);
+    expect(within(alert).getByRole('button', { name: /^reset/i })).toBeInTheDocument();
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
+    expect(screen.queryByText(/no links configured/i)).not.toBeInTheDocument();
+    expect(rawStore()).toBe(raw);
+  });
+
+  it.each(['/', '/links', '/settings', '/hints', '/links/new', '/links/1'])(
+    'an empty config ({}) raises the alert on %s too and nothing throws',
+    async (path) => {
+      seedRaw(docWith({ ...fx.link(), config: {} }));
+      renderApp(path);
+      expect(await alertOf()).toHaveTextContent(/local configuration/i);
+      expect(resetButton()).toBeInTheDocument();
+    },
+  );
+
+  it('one invalid link among valid ones makes the whole document corrupt (nothing is listed)', async () => {
+    seedRaw(docWith(fx.link(), { ...fx.loopLink(), config: {} }, fx.linkRev()));
+    renderApp('/links');
+    await alertOf();
+    expect(screen.queryByText('a-b')).not.toBeInTheDocument();
+    expect(screen.queryByText('b-a')).not.toBeInTheDocument();
+  });
+
+  it('Start is disabled and nothing is started while the document is corrupt this way', async () => {
+    seedRaw(docWith({ ...fx.link(), config: {} }));
+    const user = userEvent.setup();
+    renderApp('/');
+    await alertOf();
+    const start = await screen.findByRole('button', { name: /^start$/i });
+    expect(start).toBeDisabled();
+    await user.click(start);
+    expect(api.startEmulation).not.toHaveBeenCalled();
+  });
+
+  it('Reset removes it: the alert goes away and the app starts from the empty document', async () => {
+    seedRaw(docWith({ ...fx.link(), config: {} }));
+    const user = userEvent.setup();
+    renderApp('/links');
+    await alertOf();
+    await user.click(resetButton());
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
+    expect(storedOrEmpty()).toEqual(emptyDoc());
+    expect(await screen.findByText(/no links/i)).toBeInTheDocument();
+  });
+
+  it('the new-link editor shows the alert and leaves the stored text untouched', async () => {
+    const raw = docWith({ ...fx.link(), config: {} });
+    seedRaw(raw);
+    renderApp('/links/new');
+    await alertOf();
+    expect(rawStore()).toBe(raw);
+  });
+
+  it.each(EDGE_LINKS)('%s is still a valid link: no alert, the link is listed', async (_label, link) => {
+    seedRaw(docWith(link));
+    renderApp('/links');
+    expect(await screen.findByText(String(link.name))).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('the fixtures every other test seeds (a-b, b-a, loop) are valid', async () => {
+    seedRaw(docWith(fx.link(), fx.linkRev(), fx.loopLink()));
+    renderApp('/links');
+    expect(await screen.findByText('a-b')).toBeInTheDocument();
+    expect(screen.getByText('b-a')).toBeInTheDocument();
+    expect(screen.getByText('loop')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+});
+
+// Spec 27b item 4: writes store exactly { version: 1, links, settings }. A legacy `presets` member (or any unknown one) of the
+// stored document is dropped on the next write; reading alone still leaves the stored text alone.
+describe('spec27b: every write stores exactly version, links and settings', () => {
+  const KEYS = ['links', 'settings', 'version'];
+  const legacy = (links: unknown[] = [fx.loopLink()]) =>
+    JSON.stringify({
+      version: 1,
+      links,
+      presets: [{ id: 4, name: 'wan', config: fx.config3() }],
+      future: { a: 1 },
+      settings: fx.settings({ main_lcore: 2 }),
+    });
+
+  it('reading alone leaves the legacy members in the stored text', async () => {
+    const raw = legacy();
+    seedRaw(raw);
+    renderApp('/links');
+    expect(await screen.findByText('loop')).toBeInTheDocument();
+    await waitFor(() => expect(api.getEmulation).toHaveBeenCalled());
+    expect(rawStore()).toBe(raw);
+  });
+
+  it('saving a new link drops them', async () => {
+    seedRaw(legacy());
+    const user = await linkPage.openNew();
+    await linkPage.ready(user);
+    await linkPage.save(user);
+    await screen.findByRole('heading', { level: 1, name: 'Links' });
+    expect(Object.keys(storedDoc()).sort()).toEqual(KEYS);
+    expect(storedDoc().links.map((l) => l.name)).toEqual(['loop', 'my-link']);
+    expect(storedDoc().settings).toEqual(fx.settings({ main_lcore: 2 }));
+  });
+
+  it('saving an edited link drops them', async () => {
+    seedRaw(legacy([fx.link()]));
+    const user = userEvent.setup();
+    renderApp('/links/1');
+    await screen.findByRole('heading', { level: 1, name: 'Edit link' });
+    await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue('a-b'));
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+    await screen.findByRole('heading', { level: 1, name: 'Links' });
+    expect(Object.keys(storedDoc()).sort()).toEqual(KEYS);
+    expect(storedDoc().links).toEqual([fx.link()]);
+  });
+
+  it('deleting a link drops them', async () => {
+    seedRaw(legacy([fx.link(), fx.loopLink()]));
+    const user = userEvent.setup();
+    renderApp('/links');
+    await user.click(await screen.findByRole('button', { name: 'Delete a-b' }));
+    await user.click(screen.getByRole('button', { name: 'Confirm delete' }));
+    await waitFor(() => expect(storedDoc().links.map((l) => l.name)).toEqual(['loop']));
+    expect(Object.keys(storedDoc()).sort()).toEqual(KEYS);
+    expect(storedDoc().settings).toEqual(fx.settings({ main_lcore: 2 }));
+  });
+
+  it('saving the settings drops them', async () => {
+    seedRaw(legacy());
+    const user = userEvent.setup();
+    renderApp('/settings');
+    await user.type(await screen.findByLabelText('Poll interval (ms)'), '0');
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+    await screen.findByRole('status');
+    expect(Object.keys(storedDoc()).sort()).toEqual(KEYS);
+    expect(storedDoc().links).toEqual([fx.loopLink()]);
+    expect(storedDoc().settings.poll_interval_ms).toBe(5000);
+  });
+
+  it('"Load running configuration" drops them', async () => {
+    seedRaw(legacy([]));
+    api.getEmulation.mockResolvedValue(
+      fx.emulation('running', { config: fx.runningConfig([fx.link()], fx.settings({ poll_interval_ms: 900 })) }),
+    );
+    const user = userEvent.setup();
+    renderApp('/links');
+    await user.click(await screen.findByRole('button', { name: 'Load running configuration' }));
+    await waitFor(() => expect(storedDoc().links).toHaveLength(1));
+    expect(Object.keys(storedDoc()).sort()).toEqual(KEYS);
+    expect(storedDoc().settings.poll_interval_ms).toBe(900);
+  });
+});
+
+// Spec 27b item 5: the corrupt-config alert tells where the stored text can be saved.
+describe('spec27b: the corrupt-config alert points to Export on the Settings page', () => {
+  it.each(['{not json', JSON.stringify({ version: 7, links: [], settings: fx.settings() })])(
+    'for the stored text %s',
+    async (raw) => {
+      seedRaw(raw);
+      renderApp('/');
+      expect(await alertOf()).toHaveTextContent(/Export on the Settings page saves the stored text/i);
+    },
+  );
+
+  it.each(['/links', '/settings'])('on %s too', async (path) => {
+    seedRaw('{not json');
+    renderApp(path);
+    expect(await alertOf()).toHaveTextContent(/Export on the Settings page saves the stored text/i);
   });
 });
 

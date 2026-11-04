@@ -1,8 +1,9 @@
 import { screen } from '@testing-library/react';
 import type { UserEvent } from '@testing-library/user-event';
+import * as fx from '../test/fixtures';
 import { PAGES, cfg } from '../test/configPages';
 import type { ConfigPage } from '../test/configPages';
-import { numberField, typeInto, unitOf } from '../test/helpers';
+import { numberField, rawStore, renderApp, seedLinks, typeInto, unitOf, watchStoreWrites } from '../test/helpers';
 import { must } from '../test/must';
 
 // spec19 item 6. The form refuses negative values for times, rates, capacity and the initialization rate, and loss
@@ -90,25 +91,6 @@ describe.each(PAGES)('$name: negative values are refused in the unit the user ty
     await typeInto(user, body(), 'Mean delay', '5');
     await page.save(user);
     expect(must(page.created().delayer).mean_ns).toBe(5000000);
-  });
-
-  it.each([
-    ['mean_ns', { mean_ns: -5000000 }, /Mean delay/],
-    ['std_ns', { std_ns: -1000 }, /Delay std/],
-  ] as const)('a stored negative %s (hand-edited state) is refused on Save as well', async (_name, delayer, name) => {
-    const user = await page.openStored(cfg(delayer));
-    await page.save(user);
-    const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toMatch(name);
-    expect(page.requests()).toBe(0);
-  });
-
-  it('a stored negative rate of the added limiter is refused on Save', async () => {
-    const user = await page.openStored(cfg({}, { rate_bps: -1e9 }));
-    await page.save(user);
-    const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toMatch(/\bRate\b/);
-    expect(page.requests()).toBe(0);
   });
 
   // The boundary: zero is not negative (a deterministic zero delay, no spread and an unbounded-by-count buffer are valid).
@@ -219,15 +201,6 @@ describe.each(PAGES)('$name: loss probabilities must lie within [0, 1]', (page: 
     },
   );
 
-  it('a stored probability outside [0, 1] is refused on Save as well', async () => {
-    const base = cfg();
-    const user = await page.openStored({ ...base, loss_model: { type: 'Random', p: 1.5 } });
-    await page.save(user);
-    const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toMatch(/Random loss probability/);
-    expect(page.requests()).toBe(0);
-  });
-
   it('only the chosen model is checked: an out-of-range value in the hidden Random field does not block Gilbert-Elliot', async () => {
     const user = await page.openFull();
     await ready(user, 'Random');
@@ -247,5 +220,28 @@ describe.each(PAGES)('$name: loss probabilities must lie within [0, 1]', (page: 
     await typeInto(user, body(), 'Random loss probability', '0.5');
     await page.save(user);
     expect(page.created().loss_model).toEqual({ type: 'Random', p: 0.5 });
+  });
+});
+
+// Spec 27b item 1: a link is valid only if the link editor would accept it unchanged, so a stored link with a negative value or a
+// probability outside [0, 1] can no longer be opened and refused on Save: the whole document is corrupt (the alert with Reset, the
+// stored text untouched, no editor). The editor's own refusals are pinned above with the bad value TYPED into a valid link.
+describe('a stored link with an out-of-range value makes the document corrupt (spec27b)', () => {
+  it.each([
+    ['a negative mean_ns', cfg({ mean_ns: -5000000 })],
+    ['a negative std_ns', cfg({ std_ns: -1000 })],
+    ['a negative rate of the added limiter', cfg({}, { rate_bps: -1e9 })],
+    ['a loss probability above 1', { ...cfg(), loss_model: { type: 'Random' as const, p: 1.5 } }],
+  ])('%s: the editor shows the corrupt-config alert, not the form', async (_what, config) => {
+    seedLinks([fx.link({ config })]);
+    const before = rawStore();
+    const writes = watchStoreWrites();
+    renderApp('/links/1');
+    expect(await screen.findByRole('alert')).toHaveTextContent(/local configuration/i);
+    expect(screen.getByRole('button', { name: /^reset/i })).toBeInTheDocument();
+    expect(screen.queryByLabelText('Name')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^save$/i })).not.toBeInTheDocument();
+    expect(writes()).toBe(0);
+    expect(rawStore()).toBe(before);
   });
 });
