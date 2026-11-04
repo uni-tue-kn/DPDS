@@ -5,7 +5,7 @@ use serde_json::Value;
 use utoipa::ToSchema;
 
 use crate::cdf::DelayModel;
-use crate::dto::ConfigDto;
+use crate::dto::{ConfigDto, DelayerDto};
 
 /// One poll of the telemetry socket, kept as the raw replies.
 #[derive(Debug, Clone, Default)]
@@ -236,7 +236,8 @@ impl HistogramView {
 
     /// Fills the `expected*` fields from the direction's delay distribution.
     pub fn add_expected(&mut self, config: &ConfigDto) {
-        let (model, exact) = DelayModel::from_delayer(&config.delayer);
+        let delayer = config.delayer.clone().unwrap_or_else(DelayerDto::none);
+        let (model, exact) = DelayModel::from_delayer(&delayer);
         let (bins, under, over) =
             model.expected_counts(self.lo_ns, self.bin_ns, self.bins.len(), self.count);
         self.expected = Some(bins);
@@ -249,7 +250,7 @@ impl HistogramView {
         });
         self.expected_note = config
             .limiter
-            .activate
+            .is_some()
             .then(|| "excludes limiter queueing delay".to_string());
     }
 }

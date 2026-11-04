@@ -1,12 +1,16 @@
 //! REST API in-process (fake supervisor, fake telemetry, fake sysfs).
-//! See the header of `common/mod.rs` for the HTTP contract assumed.
+//! See the header of `common.rs` for the HTTP contract assumed. Spec 22: the configuration is
+//! the body of `POST /api/emulation/start`; the validation rules of the former links and
+//! settings routes apply to that body (more of them in `input_validation.rs`, `v12.rs`,
+//! `launch_revalidation.rs`, `management_guard.rs`); the running configuration and
+//! `POST /api/emulation/validate` are in `start_body.rs`.
 
 use std::time::Duration;
 
 use crate::common::*;
+use dpds_controller::api::{self, Deps};
 use dpds_controller::dto::ConfigDto;
 use dpds_controller::eal::{drain_timeout, eal_argv, links_file_json, EalInput, EalPort};
-use dpds_controller::store;
 use dpds_controller::supervisor::State;
 use serde_json::{json, Value};
 
@@ -14,10 +18,12 @@ fn app() -> TestApp {
     TestApp::new(FakeHost::bare_metal())
 }
 
-async fn start_ok(a: &TestApp) -> Value {
-    let r = a.post("/api/emulation/start", json!({})).await;
-    assert_eq!(r.status, 202, "{}", r.text());
-    r.json()
+async fn start_ok(a: &TestApp, links: Vec<Value>) -> Value {
+    a.start_ok(links).await
+}
+
+fn one(name: &str, ingress: &str, egress: &str) -> Value {
+    link(name, ingress, egress, None)
 }
 
 // ---- online / interfaces / hints ----------------------------------------
@@ -56,13 +62,13 @@ async fn host_hints_are_the_shared_hint_array() {
     let r = a.get("/api/host/hints").await;
     assert_eq!(r.status, 200);
     let v = r.json();
-    for id in HINT_IDS {
+    for id in ["isolation", "governor", "irqbalance", "hugepages"] {
         let _ = hint(&v, id);
     }
     let direct = hints_json(&a.host, &Default::default());
     assert_eq!(
         v, direct,
-        "the API serves compute_hints() for the stored state"
+        "GET serves the host-only hints, whatever was started"
     );
 }
 
@@ -73,140 +79,49 @@ async fn host_hints_have_no_mprq_hint_and_never_discuss_devargs() {
     assert_no_devargs_hint(&v);
 }
 
-// ---- links ---------------------------------------------------------------
+// ---- the start body: structure ---------------------------------------------------
 
 #[tokio::test]
-async fn links_start_empty() {
-    let r = app().get("/api/links").await;
-    assert_eq!(r.status, 200);
-    assert_eq!(r.json(), json!([]));
-}
-
-#[tokio::test]
-async fn create_get_list_update_delete_link() {
+async fn start_with_a_whole_body_is_a_202_with_the_emulation_view() {
     let a = app();
-    let r = a.create_link("a-to-b", NIC0, NIC1).await;
-    assert_eq!(r.status, 201, "{}", r.text());
-    let created = r.json();
-    let id = created["id"].as_u64().expect("numeric id");
-    assert_eq!(created["name"], "a-to-b");
-    assert_eq!(created["ingress"], NIC0);
-    assert_eq!(created["egress"], NIC1);
-    assert_eq!(created["config"]["delayer"]["mean_ns"], 1.0e6);
-    assert!(absent(&created, "worker"));
-    // the paired-link shape is gone from the stored link
-    for old in ["ports", "configs", "workers"] {
-        assert!(
-            created.get(old).is_none(),
-            "`{old}` must not exist: {created}"
-        );
-    }
-
-    let r = a.get(&format!("/api/links/{id}")).await;
-    assert_eq!(r.status, 200);
-    assert_eq!(r.json(), created);
-    assert_eq!(a.get("/api/links").await.json(), json!([created]));
-
-    let mut upd = link_body("a-to-b2", NIC0, NIC1);
-    upd["worker"] = json!(6);
-    upd["config"] = cfg_json(3.0e6, 0.0);
-    let r = a.put(&format!("/api/links/{id}"), upd).await;
-    assert_eq!(r.status, 200, "{}", r.text());
-    let u = r.json();
-    assert_eq!(u["id"], id);
-    assert_eq!(u["name"], "a-to-b2");
-    assert_eq!(u["worker"], 6);
-    assert_eq!(u["config"]["delayer"]["mean_ns"], 3.0e6);
-    assert_eq!(a.get(&format!("/api/links/{id}")).await.json(), u);
-
-    // ingress and egress can be changed
-    let r = a
-        .put(
-            &format!("/api/links/{id}"),
-            link_body("a-to-b2", NIC1, NIC0),
-        )
-        .await;
-    assert_eq!(r.status, 200, "{}", r.text());
-    assert_eq!(r.json()["ingress"], NIC1);
-    assert_eq!(r.json()["egress"], NIC0);
-    assert!(absent(&r.json(), "worker"));
-
-    let r = a.delete(&format!("/api/links/{id}")).await;
-    assert_eq!(r.status, 204);
-    let r = a.get(&format!("/api/links/{id}")).await;
-    assert_eq!(r.status, 404);
-    r.message();
-    assert_eq!(a.get("/api/links").await.json(), json!([]));
-}
-
-#[tokio::test]
-async fn pci_ports_are_stored_in_lower_case() {
-    let a = app();
-    let r = a.create_link("up", "0000:17:00.0", "0000:65:00.0").await;
-    assert_eq!(r.status, 201);
-    let r = a
-        .post(
-            "/api/links",
-            link_body("up2", "0000:B3:00.0", "0000:B3:00.0"),
-        )
-        .await;
-    assert_eq!(r.status, 201, "{}", r.text());
-    assert_eq!(r.json()["ingress"], INTEL);
-    assert_eq!(r.json()["egress"], INTEL);
-}
-
-#[tokio::test]
-async fn unknown_link_id_is_404_with_message_for_get_put_delete() {
-    let a = app();
-    let r = a.get("/api/links/99").await;
-    assert_eq!(r.status, 404);
-    r.message();
-    let r = a
-        .put("/api/links/99", link_body("x", "net_null0", "net_null0"))
-        .await;
-    assert_eq!(r.status, 404);
-    r.message();
-    let r = a.delete("/api/links/99").await;
-    assert_eq!(r.status, 404);
-    r.message();
-}
-
-#[tokio::test]
-async fn link_ids_are_not_reused() {
-    let a = app();
-    let first = a.create_link("one", "net_null0", "net_null0").await.json()["id"]
-        .as_u64()
-        .unwrap();
-    a.delete(&format!("/api/links/{first}")).await;
-    let second = a.create_link("one", "net_null0", "net_null0").await.json()["id"]
-        .as_u64()
-        .unwrap();
-    assert_ne!(first, second);
+    let r = a.start_links(vec![one("a-to-b", NIC0, NIC1)]).await;
+    assert_eq!(r.status, 202, "{}", r.text());
+    let v = r.json();
+    assert!(
+        ["starting", "running"].contains(&v["state"].as_str().unwrap()),
+        "{v}"
+    );
 }
 
 #[tokio::test]
 async fn link_name_validation() {
-    let a = app();
     let ok32 = "a".repeat(32);
     for (i, name) in [ok32.as_str(), "a_b.c-D9"].iter().enumerate() {
+        let a = app();
         let p = format!("net_null{i}");
-        let r = a.create_link(name, &p, &p).await;
-        assert_eq!(r.status, 201, "{name}: {}", r.text());
+        let r = a.start_links(vec![one(name, &p, &p)]).await;
+        assert_eq!(r.status, 202, "{name}: {}", r.text());
     }
     for bad in ["", &"a".repeat(33), "a b", "a/b", "ä", "a,b"] {
-        let r = a.create_link(bad, "net_null9", "net_null9").await;
+        let a = app();
+        let r = a
+            .start_links(vec![one(bad, "net_null9", "net_null9")])
+            .await;
         assert_eq!(r.status, 400, "name {bad:?}");
         r.message();
+        assert!(a.supervisor.plans().is_empty());
     }
 }
 
 #[tokio::test]
 async fn link_structure_validation() {
     // control: the same shape with valid values is accepted (so the 400s below are about the values)
-    let ok = app();
     assert_eq!(
-        ok.create_link("x", "net_null0", "net_null1").await.status,
-        201
+        app()
+            .start_links(vec![one("x", "net_null0", "net_null1")])
+            .await
+            .status,
+        202
     );
     let a = app();
     let cfg = || cfg_json(1e6, 0.0);
@@ -240,8 +155,8 @@ async fn link_structure_validation() {
             json!({"name":"x","ingress":"net_null0","egress":"net_null1","config":cfg_json(1e6,-1.0)}),
         ),
     ];
-    for (what, body) in cases {
-        let r = a.post("/api/links", body).await;
+    for (what, l) in cases {
+        let r = a.start_links(vec![l]).await;
         assert_eq!(r.status, 400, "{what}: {}", r.text());
         let m = r.message();
         match what {
@@ -250,41 +165,31 @@ async fn link_structure_validation() {
             _ => {}
         }
     }
-    assert_eq!(
-        a.get("/api/links").await.json(),
-        json!([]),
-        "rejected links must not be stored"
+    assert!(
+        a.supervisor.plans().is_empty(),
+        "rejected links must not start"
     );
+    assert_eq!(a.get("/api/emulation").await.json()["state"], "stopped");
 }
 
 #[tokio::test]
 async fn the_paired_link_shape_is_refused() {
-    let ok = app();
-    assert_eq!(
-        ok.create_link("x", "net_null0", "net_null1").await.status,
-        201
-    );
     let a = app();
     let cfg = cfg_json(1e6, 0.0);
     let cases = [
         json!({"name":"x","ports":["net_null0","net_null1"],"configs":[cfg.clone(),cfg.clone()]}),
         json!({"name":"x","ports":["net_null0"],"configs":[cfg.clone()],"workers":[2]}),
     ];
-    for body in cases {
-        let r = a.post("/api/links", body.clone()).await;
-        assert!(r.status == 400 || r.status == 422, "{body}: {}", r.status);
+    for l in cases {
+        let r = a.start_links(vec![l.clone()]).await;
+        assert_eq!(r.status, 400, "{l}: {}", r.text());
         r.message();
     }
-    assert_eq!(a.get("/api/links").await.json(), json!([]));
+    assert!(a.supervisor.plans().is_empty());
 }
 
 #[tokio::test]
 async fn incomplete_directed_links_are_refused() {
-    let ok = app();
-    assert_eq!(
-        ok.create_link("x", "net_null0", "net_null1").await.status,
-        201
-    );
     let a = app();
     let cfg = cfg_json(1e6, 0.0);
     let cases = [
@@ -294,62 +199,137 @@ async fn incomplete_directed_links_are_refused() {
         json!({"name":"x","ingress":"net_null0","egress":"net_null1","config":cfg.clone(),"worker":"two"}),
         json!({"name":"x","ingress":"net_null0","egress":"net_null1","config":cfg.clone(),"worker":[2]}),
         json!({"name":"x","ingress":["net_null0"],"egress":"net_null1","config":cfg.clone()}),
+        json!({"name":"x","ingress":"net_null0","egress":"net_null1","config":cfg.clone(),"worker":-1}),
     ];
-    for body in cases {
-        let r = a.post("/api/links", body.clone()).await;
-        assert!(r.status == 400 || r.status == 422, "{body}: {}", r.status);
+    for l in cases {
+        let r = a.start_links(vec![l.clone()]).await;
+        assert_eq!(r.status, 400, "{l}: {}", r.text());
         r.message();
     }
-    assert_eq!(a.get("/api/links").await.json(), json!([]));
+    assert!(a.supervisor.plans().is_empty());
+}
+
+#[tokio::test]
+async fn a_link_in_the_body_has_no_id_and_no_other_extras() {
+    // ids are assigned by the controller (see start_body.rs): a client-supplied one is an unknown
+    // field, like every other key the API does not know
+    let a = app();
+    for (extra, value) in [
+        ("id", json!(7)),
+        ("comment", json!("x")),
+        ("lcore", json!(2)),
+    ] {
+        let mut l = one("x", "net_null0", "net_null0");
+        l[extra] = value;
+        let r = a.start_links(vec![l]).await;
+        assert_eq!(r.status, 400, "{extra}: {}", r.text());
+        assert!(r.message().contains(extra), "{extra}: {}", r.text());
+    }
+    assert!(a.supervisor.plans().is_empty());
+}
+
+#[tokio::test]
+async fn the_body_denies_unknown_fields_at_the_top_level_and_in_the_settings() {
+    let a = app();
+    let base = || setup(vec![one("x", "net_null0", "net_null0")]).body();
+    for (path, key) in [
+        (vec![], "presets"),
+        (vec![], "version"),
+        (vec![], "format"),
+        (vec![], "pending_restart"),
+        (vec!["settings"], "mlx5_devargs"),
+        (vec!["settings"], "state_dir"),
+        (vec!["settings"], "poll_interval"),
+    ] {
+        let mut b = base();
+        let mut node = &mut b;
+        for p in &path {
+            node = &mut node[*p];
+        }
+        node[key] = json!(1);
+        let r = a.post("/api/emulation/start", b).await;
+        assert_eq!(r.status, 400, "{path:?}.{key}: {}", r.text());
+        assert!(r.message().contains(key), "{path:?}.{key}: {}", r.text());
+    }
+    assert!(a.supervisor.plans().is_empty());
+}
+
+#[tokio::test]
+async fn an_empty_link_list_is_nothing_to_start() {
+    let a = app();
+    for r in [
+        a.start(&setup(vec![])).await,
+        a.validate(&setup(vec![])).await,
+    ] {
+        assert_eq!(r.status, 400, "{}", r.text());
+        assert!(
+            r.message().to_lowercase().contains("nothing to start"),
+            "{}",
+            r.text()
+        );
+    }
+    assert!(a.supervisor.plans().is_empty());
+    assert_eq!(a.get("/api/emulation").await.json()["state"], "stopped");
 }
 
 #[tokio::test]
 async fn malformed_bodies_get_a_json_message() {
     let a = app();
-    let r = a.request("POST", "/api/links", None).await; // empty body, no content type
+    let r = a.request("POST", "/api/emulation/start", None).await; // empty body, no content type
     assert_eq!(r.status, 415, "{}", r.status);
     r.message();
-    let r = a.post("/api/links", json!({"name": "x"})).await; // missing fields
-    assert!(r.status == 400 || r.status == 422, "{}", r.status);
+    let r = a.post("/api/emulation/start", json!({"name": "x"})).await; // wrong shape
+    assert_eq!(r.status, 400, "{}", r.status);
     r.message();
-    let mut body = link_body("x", "net_null0", "net_null0");
-    body["config"]["delayer"]["distribution"] = json!("Bogus");
-    let r = a.post("/api/links", body).await;
-    assert!(r.status == 400 || r.status == 422, "{}", r.status);
-    r.message();
-}
-
-#[tokio::test]
-async fn duplicate_link_name_is_a_409_and_updates_keep_their_own_name() {
-    let a = app();
-    assert_eq!(a.create_link("a", NIC0, NIC1).await.status, 201);
-    let r = a.create_link("a", "net_null0", "net_null1").await;
-    assert_eq!(r.status, 409);
-    r.message();
-    // updating a link keeps its own name and ports
-    let id = a.get("/api/links").await.json()[0]["id"].as_u64().unwrap();
-    assert_eq!(
-        a.put(&format!("/api/links/{id}"), link_body("a", NIC0, NIC1))
-            .await
-            .status,
-        200
-    );
-    // renaming onto another link's name conflicts
-    let other = a.create_link("c", NIC1, NIC0).await.json()["id"]
-        .as_u64()
-        .unwrap();
     let r = a
-        .put(&format!("/api/links/{other}"), link_body("a", NIC1, NIC0))
+        .post(
+            "/api/emulation/start",
+            json!({"links": "none", "settings": settings_json()}),
+        )
         .await;
-    assert_eq!(r.status, 409);
+    assert_eq!(r.status, 400, "{}", r.status);
+    r.message();
+    let mut l = one("x", "net_null0", "net_null0");
+    l["config"]["delayer"]["distribution"] = json!("Bogus");
+    let r = a.start_links(vec![l]).await;
+    assert_eq!(r.status, 400, "{}", r.status);
+    r.message();
+    assert!(a.supervisor.plans().is_empty());
 }
 
 #[tokio::test]
-async fn a_port_reused_as_ingress_is_a_409_naming_the_other_link() {
+async fn settings_validation() {
     let a = app();
-    assert_eq!(a.create_link("first", NIC0, NIC1).await.status, 201);
+    let mut zero = setup(vec![one("x", "net_null0", "net_null0")]);
+    zero.settings["poll_interval_ms"] = json!(0);
+    let r = a.start(&zero).await;
+    assert_eq!(r.status, 400, "{}", r.text());
+    assert!(r.message().contains("poll_interval_ms"), "{}", r.text());
+    assert_eq!(a.validate(&zero).await.status, 400);
+    assert!(a.supervisor.plans().is_empty());
+}
+
+#[tokio::test]
+async fn duplicate_link_names_in_a_body_are_a_409() {
+    let a = app();
+    let r = a
+        .start_links(vec![
+            one("a", NIC0, NIC1),
+            one("a", "net_null0", "net_null1"),
+        ])
+        .await;
+    assert_eq!(r.status, 409, "{}", r.text());
+    r.message();
+    assert!(a.supervisor.plans().is_empty());
+}
+
+#[tokio::test]
+async fn a_port_reused_as_ingress_is_a_409_naming_the_other_link_and_the_port() {
+    let a = app();
     // NIC0 is already the ingress of `first`; the egress differs
-    let r = a.create_link("second", NIC0, INTEL).await;
+    let r = a
+        .start_links(vec![one("first", NIC0, NIC1), one("second", NIC0, INTEL)])
+        .await;
     assert_eq!(r.status, 409, "{}", r.text());
     let m = r.message();
     assert!(
@@ -357,17 +337,15 @@ async fn a_port_reused_as_ingress_is_a_409_naming_the_other_link() {
         "the message must name the other link: {m}"
     );
     assert!(m.contains(NIC0), "the message must name the port: {m}");
-    assert_eq!(
-        a.get("/api/links").await.json().as_array().unwrap().len(),
-        1
-    );
+    assert!(a.supervisor.plans().is_empty());
 }
 
 #[tokio::test]
-async fn a_port_reused_as_egress_is_a_409_naming_the_other_link() {
+async fn a_port_reused_as_egress_is_a_409_naming_the_other_link_and_the_port() {
     let a = app();
-    assert_eq!(a.create_link("first", NIC0, NIC1).await.status, 201);
-    let r = a.create_link("second", INTEL, NIC1).await;
+    let r = a
+        .start_links(vec![one("first", NIC0, NIC1), one("second", INTEL, NIC1)])
+        .await;
     assert_eq!(r.status, 409, "{}", r.text());
     let m = r.message();
     assert!(
@@ -375,80 +353,70 @@ async fn a_port_reused_as_egress_is_a_409_naming_the_other_link() {
         "the message must name the other link: {m}"
     );
     assert!(m.contains(NIC1), "the message must name the port: {m}");
-    assert_eq!(
-        a.get("/api/links").await.json().as_array().unwrap().len(),
-        1
-    );
+    assert!(a.supervisor.plans().is_empty());
 }
 
 #[tokio::test]
 async fn a_hairpin_conflicts_like_any_other_link() {
-    let a = app();
-    assert_eq!(
-        a.create_link("loop", "net_null0", "net_null0").await.status,
-        201
-    );
-    // net_null0 is taken as ingress and as egress
-    let r = a.create_link("x", "net_null0", "net_null1").await;
-    assert_eq!(r.status, 409);
-    assert!(r.message().contains("loop"));
-    let r = a.create_link("y", "net_null1", "net_null0").await;
-    assert_eq!(r.status, 409);
-    assert!(r.message().contains("loop"));
+    // net_null0 is taken as ingress and as egress by `loop`
+    for other in [
+        one("x", "net_null0", "net_null1"),
+        one("y", "net_null1", "net_null0"),
+    ] {
+        let a = app();
+        let r = a
+            .start_links(vec![one("loop", "net_null0", "net_null0"), other])
+            .await;
+        assert_eq!(r.status, 409, "{}", r.text());
+        assert!(r.message().contains("loop"));
+    }
     // a different port is fine
-    assert_eq!(
-        a.create_link("z", "net_null1", "net_null1").await.status,
-        201
-    );
+    let a = app();
+    let r = a
+        .start_links(vec![
+            one("loop", "net_null0", "net_null0"),
+            one("z", "net_null1", "net_null1"),
+        ])
+        .await;
+    assert_eq!(r.status, 202, "{}", r.text());
 }
 
 #[tokio::test]
 async fn a_port_may_be_ingress_of_one_link_and_egress_of_another() {
     let a = app();
-    assert_eq!(a.create_link("a-to-b", NIC0, NIC1).await.status, 201);
-    // the classic bidirectional pair is simply two links
-    assert_eq!(a.create_link("b-to-a", NIC1, NIC0).await.status, 201);
-    // a ring through a third port: INTEL is not used yet; NIC0 is ingress and NIC1 egress already
-    let r = a.create_link("c", INTEL, INTEL).await;
-    assert_eq!(r.status, 201, "{}", r.text());
+    // the classic bidirectional pair is simply two links, and INTEL is free for a hairpin
+    let r = a
+        .start_links(vec![
+            one("a-to-b", NIC0, NIC1),
+            one("b-to-a", NIC1, NIC0),
+            one("c", INTEL, INTEL),
+        ])
+        .await;
+    assert_eq!(r.status, 202, "{}", r.text());
 }
 
 #[tokio::test]
-async fn a_port_may_not_be_ingress_twice_even_when_it_is_the_other_links_hairpin() {
+async fn a_hairpin_link_is_accepted_and_reported() {
     let a = app();
-    assert_eq!(a.create_link("h", NIC0, NIC0).await.status, 201);
-    let r = a.create_link("x", NIC0, NIC1).await;
-    assert_eq!(r.status, 409);
-    assert!(r.message().contains('h'));
+    let r = a.start_links(vec![one("loop", NIC0, NIC0)]).await;
+    assert_eq!(r.status, 202, "{}", r.text());
+    let v = a.get("/api/emulation").await.json();
+    assert_eq!(v["config"]["links"][0]["ingress"], NIC0, "{v}");
+    assert_eq!(v["config"]["links"][0]["egress"], NIC0, "{v}");
 }
 
 #[tokio::test]
-async fn a_hairpin_link_is_accepted_and_stored() {
+async fn a_three_link_ring_is_accepted_in_body_order() {
     let a = app();
-    let r = a.create_link("loop", NIC0, NIC0).await;
-    assert_eq!(r.status, 201, "{}", r.text());
-    let v = r.json();
-    assert_eq!(v["ingress"], NIC0);
-    assert_eq!(v["egress"], NIC0);
-    let stored = store::load(a.state_dir.path()).unwrap();
-    let on_disk = serde_json::to_value(&stored.links[0]).unwrap();
-    assert_eq!(on_disk["ingress"], NIC0);
-    assert_eq!(on_disk["egress"], NIC0);
-}
-
-#[tokio::test]
-async fn a_three_link_ring_is_accepted() {
-    let a = app();
-    for (name, i, e) in [
+    let ring = [
         ("a-to-b", NIC0, NIC1),
         ("b-to-c", NIC1, INTEL),
         ("c-to-a", INTEL, NIC0),
-    ] {
-        let r = a.create_link(name, i, e).await;
-        assert_eq!(r.status, 201, "{name}: {}", r.text());
-    }
-    let links = a.get("/api/links").await.json();
-    let got: Vec<(String, String, String)> = links
+    ];
+    a.start_ok(ring.iter().map(|(n, i, e)| one(n, i, e)).collect())
+        .await;
+    let v = a.get("/api/emulation").await.json();
+    let got: Vec<(String, String, String)> = v["config"]["links"]
         .as_array()
         .unwrap()
         .iter()
@@ -460,195 +428,14 @@ async fn a_three_link_ring_is_accepted() {
             )
         })
         .collect();
-    assert_eq!(
-        got,
-        [
-            ("a-to-b".to_string(), NIC0.to_string(), NIC1.to_string()),
-            ("b-to-c".to_string(), NIC1.to_string(), INTEL.to_string()),
-            ("c-to-a".to_string(), INTEL.to_string(), NIC0.to_string()),
-        ]
-    );
+    let want: Vec<(String, String, String)> = ring
+        .iter()
+        .map(|(n, i, e)| (n.to_string(), i.to_string(), e.to_string()))
+        .collect();
+    assert_eq!(got, want);
 }
 
-#[tokio::test]
-async fn update_onto_a_port_used_by_another_link_is_a_409_and_a_link_may_keep_its_own_ports() {
-    let a = app();
-    let first = a.create_link("first", NIC0, NIC1).await.json()["id"]
-        .as_u64()
-        .unwrap();
-    let second = a.create_link("second", NIC1, INTEL).await.json()["id"]
-        .as_u64()
-        .unwrap();
-    // `second` takes the ingress of `first`
-    let r = a
-        .put(
-            &format!("/api/links/{second}"),
-            link_body("second", NIC0, INTEL),
-        )
-        .await;
-    assert_eq!(r.status, 409, "{}", r.text());
-    assert!(r.message().contains("first"));
-    // ... or its egress
-    let r = a
-        .put(
-            &format!("/api/links/{second}"),
-            link_body("second", NIC1, NIC1),
-        )
-        .await;
-    assert_eq!(r.status, 409, "{}", r.text());
-    assert!(r.message().contains("first"));
-    // `second` was not changed by the refused updates
-    let v = a.get(&format!("/api/links/{second}")).await.json();
-    assert_eq!(
-        (v["ingress"].as_str(), v["egress"].as_str()),
-        (Some(NIC1), Some(INTEL))
-    );
-    // swapping the ports of `first` with itself is fine, and so is a new free pair
-    assert_eq!(
-        a.put(
-            &format!("/api/links/{first}"),
-            link_body("first", NIC0, NIC1)
-        )
-        .await
-        .status,
-        200
-    );
-    assert_eq!(
-        a.put(
-            &format!("/api/links/{first}"),
-            link_body("first", NIC0, NIC0)
-        )
-        .await
-        .status,
-        200
-    );
-}
-
-#[tokio::test]
-async fn deleting_a_link_frees_its_ports() {
-    let a = app();
-    let id = a.create_link("first", NIC0, NIC1).await.json()["id"]
-        .as_u64()
-        .unwrap();
-    assert_eq!(a.create_link("second", NIC0, NIC1).await.status, 409);
-    a.delete(&format!("/api/links/{id}")).await;
-    assert_eq!(a.create_link("second", NIC0, NIC1).await.status, 201);
-}
-
-#[tokio::test]
-async fn links_are_persisted_and_survive_a_controller_restart() {
-    let mut a = app();
-    a.create_link("a-to-b", NIC0, NIC1).await;
-    a.create_link("b-to-a", NIC1, NIC0).await;
-    let stored = store::load(a.state_dir.path()).unwrap();
-    assert_eq!(stored.links.len(), 2);
-    assert_eq!(stored.links[0].name, "a-to-b");
-    assert_eq!(stored.links[1].name, "b-to-a");
-    let before = a.get("/api/links").await.json();
-    a.restart();
-    assert_eq!(a.get("/api/links").await.json(), before);
-    // ids keep counting after a restart
-    let id2 = a.create_link("c", "net_null0", "net_null0").await.json()["id"]
-        .as_u64()
-        .unwrap();
-    assert!(id2 > before[1]["id"].as_u64().unwrap());
-}
-
-#[tokio::test]
-async fn router_refuses_a_corrupt_state_file() {
-    let tmp = tempfile::tempdir().unwrap();
-    std::fs::write(tmp.path().join(store::STATE_FILE_NAME), "{garbage").unwrap();
-    let host = FakeHost::bare_metal();
-    let r = dpds_controller::api::router(dpds_controller::api::Deps {
-        state_dir: tmp.path().to_path_buf(),
-        roots: host.roots(),
-        supervisor: FakeSupervisor::new(),
-        telemetry: FakeTelemetry::new(),
-        dpds_bin: "/x".into(),
-        runtime_dir: "/y".into(),
-        dpds_has_telemetry: false,
-        is_root: false,
-    });
-    assert!(r.is_err());
-}
-
-// ---- settings ------------------------------------------------------------
-
-#[tokio::test]
-async fn settings_defaults_put_and_persistence() {
-    let a = app();
-    let r = a.get("/api/settings").await;
-    assert_eq!(r.status, 200);
-    let v = r.json();
-    assert!(absent(&v, "main_lcore"));
-    assert!(absent(&v, "mlx5_devargs"), "{v}");
-    assert_eq!(v["eal_extra_args"], json!([]));
-    assert_eq!(v["poll_interval_ms"], 500);
-
-    let new = json!({"main_lcore": 1,
-                     "eal_extra_args": ["--no-huge","-m","256"], "poll_interval_ms": 250});
-    let r = a.put("/api/settings", new.clone()).await;
-    assert_eq!(r.status, 200, "{}", r.text());
-    assert_eq!(strip_nulls(&r.json()), new);
-    assert_eq!(a.get("/api/settings").await.json(), r.json());
-    assert_eq!(
-        store::load(a.state_dir.path())
-            .unwrap()
-            .settings
-            .poll_interval_ms,
-        250
-    );
-}
-
-#[tokio::test]
-async fn settings_validation() {
-    let a = app();
-    let base = json!({"main_lcore": null, "eal_extra_args": [], "poll_interval_ms": 500});
-    let mut zero = base.clone();
-    zero["poll_interval_ms"] = json!(0);
-    let r = a.put("/api/settings", zero).await;
-    assert_eq!(r.status, 400);
-    r.message();
-}
-
-/// Spec v17: the mlx5 devargs are fixed to PREOF's `txq_mpw_en=1`, so the field is gone and a
-/// body that still carries it is refused by `deny_unknown_fields`, naming the field.
-#[tokio::test]
-async fn a_settings_body_with_mlx5_devargs_is_a_400_naming_the_field_and_changes_nothing() {
-    let a = app();
-    let before = a.get("/api/settings").await.json();
-    for devargs in ["txq_mpw_en=1", "", "mprq_en=1", "txq_mpw_en=1,rx_vec_en=1"] {
-        let body = json!({"main_lcore": 1, "mlx5_devargs": devargs,
-                          "eal_extra_args": ["--no-huge"], "poll_interval_ms": 250});
-        let r = a.put("/api/settings", body).await;
-        assert_eq!(r.status, 400, "{devargs:?}: {}", r.text());
-        assert!(
-            r.message().contains("mlx5_devargs"),
-            "{devargs:?}: {}",
-            r.message()
-        );
-    }
-    assert_eq!(a.get("/api/settings").await.json(), before);
-    assert_eq!(
-        store::load(a.state_dir.path())
-            .unwrap()
-            .settings
-            .poll_interval_ms,
-        500
-    );
-}
-
-#[tokio::test]
-async fn the_settings_without_mlx5_devargs_are_accepted_and_echoed_without_it() {
-    let a = app();
-    let body = json!({"main_lcore": null, "eal_extra_args": [], "poll_interval_ms": 500});
-    let r = a.put("/api/settings", body).await;
-    assert_eq!(r.status, 200, "{}", r.text());
-    assert!(absent(&r.json(), "mlx5_devargs"), "{}", r.text());
-    assert!(absent(&a.get("/api/settings").await.json(), "mlx5_devargs"));
-}
-
-// ---- emulation -----------------------------------------------------------
+// ---- the launch plan -------------------------------------------------------------
 
 #[tokio::test]
 async fn emulation_when_stopped_and_empty() {
@@ -660,63 +447,25 @@ async fn emulation_when_stopped_and_empty() {
     assert!(absent(&v, "pid"));
     assert!(absent(&v, "started_at"));
     assert!(absent(&v, "error"));
+    assert!(absent(&v, "config"), "{v}");
+    assert!(absent(&v, "main_lcore"), "{v}");
     assert_eq!(v["directions"], json!([]));
-    assert_eq!(v["pending_restart"], false);
+    assert!(v.get("pending_restart").is_none(), "{v}");
     assert_eq!(v["log_tail"], json!([]));
-}
-
-#[tokio::test]
-async fn emulation_when_stopped_shows_the_planned_lcores() {
-    let a = app();
-    a.create_link("a-to-b", NIC0, NIC1).await;
-    a.create_link("b-to-a", NIC1, NIC0).await;
-    let v = a.get("/api/emulation").await.json();
-    assert_eq!(v["state"], "stopped");
-    assert_eq!(v["main_lcore"], 0);
-    let d = v["directions"].as_array().unwrap();
-    assert_eq!(d.len(), 2);
-    for (i, (link, rx, tx)) in [("a-to-b", NIC0, NIC1), ("b-to-a", NIC1, NIC0)]
-        .iter()
-        .enumerate()
-    {
-        assert_eq!(
-            (
-                d[i]["dir"].clone(),
-                d[i]["link"].clone(),
-                d[i]["rx"].clone(),
-                d[i]["tx"].clone()
-            ),
-            (json!(i), json!(link), json!(rx), json!(tx)),
-            "{d:?}"
-        );
-    }
-    // the worker prefers the NUMA node of the INGRESS NIC (NIC0: node 0, NIC1: node 1)
-    assert!([2, 3].contains(&(d[0]["lcore"].as_u64().unwrap() as u32)));
-    assert!([6, 7].contains(&(d[1]["lcore"].as_u64().unwrap() as u32)));
-}
-
-#[tokio::test]
-async fn start_without_links_is_a_400() {
-    let a = app();
-    let r = a.post("/api/emulation/start", json!({})).await;
-    assert_eq!(r.status, 400);
-    r.message();
-    assert!(a.supervisor.plans().is_empty());
 }
 
 #[tokio::test]
 async fn start_hands_the_supervisor_a_complete_launch_plan() {
     let a = app();
-    assert_eq!(a.create_link("a-to-b", NIC0, NIC1).await.status, 201);
-    let mut b = link_body("b-to-a", NIC1, NIC0);
+    let mut b = one("b-to-a", NIC1, NIC0);
     b["config"] = cfg_json(2.0e6, 1.0e5);
-    assert_eq!(a.post("/api/links", b).await.status, 201);
-    assert_eq!(
-        a.create_link("loop", "net_null0", "net_null0").await.status,
-        201
-    );
+    let links = vec![
+        one("a-to-b", NIC0, NIC1),
+        b,
+        one("loop", "net_null0", "net_null0"),
+    ];
 
-    let v = start_ok(&a).await;
+    let v = start_ok(&a, links.clone()).await;
     assert!(
         ["starting", "running"].contains(&v["state"].as_str().unwrap()),
         "{v}"
@@ -730,10 +479,15 @@ async fn start_hands_the_supervisor_a_complete_launch_plan() {
     assert_eq!(plan.links_file, a.runtime_dir.join("links.json"));
     assert_eq!(plan.main_lcore, 0);
 
-    let stored = store::load(a.state_dir.path()).unwrap();
+    // the links file is the v2 file of exactly the links of the body, in order
+    let typed: Vec<_> = links
+        .iter()
+        .enumerate()
+        .map(|(i, l)| model_link(i as u32 + 1, l))
+        .collect();
     assert_eq!(
         plan.links_json,
-        links_file_json(&stored.links, &plan.directions).unwrap()
+        links_file_json(&typed, &plan.directions).unwrap()
     );
 
     // one direction (= one worker) per link, numbered in link order
@@ -811,12 +565,10 @@ async fn start_hands_the_supervisor_a_complete_launch_plan() {
     assert!(plan.argv.contains(&format!("{NIC0},txq_mpw_en=1")));
     assert!(plan.argv.windows(2).any(|w| w == ["--vdev", "net_null0"]));
 
-    let cores: Vec<dpds_core::Config> = stored
-        .links
+    let cores: Vec<dpds_core::Config> = links
         .iter()
         .map(|l| {
-            let v = serde_json::to_value(l).unwrap();
-            let c: ConfigDto = serde_json::from_value(v["config"].clone()).unwrap();
+            let c: ConfigDto = serde_json::from_value(l["config"].clone()).unwrap();
             c.to_core().unwrap()
         })
         .collect();
@@ -827,14 +579,15 @@ async fn start_hands_the_supervisor_a_complete_launch_plan() {
 #[tokio::test]
 async fn a_three_link_ring_plans_three_workers_and_three_ports_once() {
     let a = app();
-    for (name, i, e) in [
-        ("a-to-b", NIC0, NIC1),
-        ("b-to-c", NIC1, INTEL),
-        ("c-to-a", INTEL, NIC0),
-    ] {
-        assert_eq!(a.create_link(name, i, e).await.status, 201, "{name}");
-    }
-    start_ok(&a).await;
+    start_ok(
+        &a,
+        vec![
+            one("a-to-b", NIC0, NIC1),
+            one("b-to-c", NIC1, INTEL),
+            one("c-to-a", INTEL, NIC0),
+        ],
+    )
+    .await;
     let plan = &a.supervisor.plans()[0];
     assert_eq!(plan.directions.len(), 3);
     let rxtx: Vec<(&str, &str)> = plan
@@ -868,11 +621,7 @@ async fn a_three_link_ring_plans_three_workers_and_three_ports_once() {
 #[tokio::test]
 async fn a_hairpin_is_one_port_one_worker() {
     let a = app();
-    assert_eq!(
-        a.create_link("loop", "net_null0", "net_null0").await.status,
-        201
-    );
-    start_ok(&a).await;
+    start_ok(&a, vec![one("loop", "net_null0", "net_null0")]).await;
     let plan = &a.supervisor.plans()[0];
     assert_eq!(plan.directions.len(), 1);
     assert_eq!(
@@ -893,11 +642,9 @@ async fn a_hairpin_is_one_port_one_worker() {
 #[tokio::test]
 async fn the_worker_override_of_a_link_reaches_plan_and_links_file() {
     let a = app();
-    let mut b = link_body("a-to-b", NIC0, NIC1);
-    b["worker"] = json!(7);
-    assert_eq!(a.post("/api/links", b).await.status, 201);
-    assert_eq!(a.create_link("b-to-a", NIC1, NIC0).await.status, 201);
-    start_ok(&a).await;
+    let mut l = one("a-to-b", NIC0, NIC1);
+    l["worker"] = json!(7);
+    start_ok(&a, vec![l, one("b-to-a", NIC1, NIC0)]).await;
     let plan = &a.supervisor.plans()[0];
     assert_eq!(plan.directions[0].lcore, 7);
     assert_eq!(plan.links_json["links"][0]["lcore"], 7);
@@ -909,16 +656,12 @@ async fn the_worker_override_of_a_link_reaches_plan_and_links_file() {
 }
 
 #[tokio::test]
-async fn settings_extra_args_reach_the_argv_and_the_devargs_stay_fixed() {
+async fn settings_extra_args_and_main_lcore_reach_the_argv_and_the_devargs_stay_fixed() {
     let a = app();
-    a.put(
-        "/api/settings",
-        json!({"main_lcore": 1,
-        "eal_extra_args": ["--no-huge", "-m", "256"], "poll_interval_ms": 500}),
-    )
-    .await;
-    a.create_link("l", NIC0, NIC0).await;
-    start_ok(&a).await;
+    let mut s = setup_main(vec![one("l", NIC0, NIC0)], 1);
+    s.settings["eal_extra_args"] = json!(["--no-huge", "-m", "256"]);
+    let r = a.start(&s).await;
+    assert_eq!(r.status, 202, "{}", r.text());
     let plan = &a.supervisor.plans()[0];
     assert_eq!(plan.main_lcore, 1);
     assert!(plan.argv.contains(&format!("{NIC0},txq_mpw_en=1")));
@@ -932,8 +675,7 @@ async fn settings_extra_args_reach_the_argv_and_the_devargs_stay_fixed() {
 #[tokio::test]
 async fn start_stop_state_transitions() {
     let a = app();
-    a.create_link("loop", "net_null0", "net_null0").await;
-    start_ok(&a).await;
+    start_ok(&a, vec![one("loop", "net_null0", "net_null0")]).await;
 
     let v = a.get("/api/emulation").await.json();
     assert_eq!(v["state"], "running");
@@ -942,10 +684,11 @@ async fn start_stop_state_transitions() {
     assert_eq!(v["directions"].as_array().unwrap().len(), 1);
     assert_eq!(v["main_lcore"], 0);
     assert!(!v["log_tail"].as_array().unwrap().is_empty());
-    assert_eq!(v["pending_restart"], false);
 
-    // can't start twice
-    let r = a.post("/api/emulation/start", json!({})).await;
+    // can't start twice, not even with the same body
+    let r = a
+        .start_links(vec![one("loop", "net_null0", "net_null0")])
+        .await;
     assert_eq!(r.status, 409);
     r.message();
     assert_eq!(a.supervisor.plans().len(), 1);
@@ -965,13 +708,11 @@ async fn start_stop_state_transitions() {
 #[tokio::test]
 async fn start_is_refused_while_starting_or_stopping() {
     let a = app();
-    assert_eq!(
-        a.create_link("loop", "net_null0", "net_null0").await.status,
-        201
-    );
     for s in [State::Starting, State::Stopping] {
         a.supervisor.force_status(status(s));
-        let r = a.post("/api/emulation/start", json!({})).await;
+        let r = a
+            .start_links(vec![one("loop", "net_null0", "net_null0")])
+            .await;
         assert_eq!(r.status, 409, "{s:?}");
     }
     assert!(a.supervisor.plans().is_empty());
@@ -982,12 +723,13 @@ async fn start_is_refused_while_starting_or_stopping() {
 #[tokio::test]
 async fn failed_start_is_reported_with_error_and_log_tail_and_can_be_retried() {
     let a = app();
-    a.create_link("loop", "net_null0", "net_null0").await;
     a.supervisor.fail_next_start(
         "dpds exited with status 1",
         &["EAL: Error", "dpds: cannot create mbuf pool"],
     );
-    let r = a.post("/api/emulation/start", json!({})).await;
+    let r = a
+        .start_links(vec![one("loop", "net_null0", "net_null0")])
+        .await;
     assert_eq!(r.status, 202);
 
     let v = a.get("/api/emulation").await.json();
@@ -999,8 +741,8 @@ async fn failed_start_is_reported_with_error_and_log_tail_and_can_be_retried() {
     );
     assert!(absent(&v, "pid"));
 
-    // retry from failed
-    start_ok(&a).await;
+    // retry from failed, with a body again
+    start_ok(&a, vec![one("loop", "net_null0", "net_null0")]).await;
     assert_eq!(a.get("/api/emulation").await.json()["state"], "running");
     assert_eq!(a.supervisor.plans().len(), 2);
 }
@@ -1008,98 +750,34 @@ async fn failed_start_is_reported_with_error_and_log_tail_and_can_be_retried() {
 #[tokio::test]
 async fn start_with_not_enough_isolated_cores_is_a_400_and_does_not_spawn() {
     let a = app();
-    for i in 0..5 {
-        let p = format!("net_null{i}");
-        a.create_link(&format!("l{i}"), &p, &p).await;
-    }
-    let r = a.post("/api/emulation/start", json!({})).await;
+    let links = (0..5)
+        .map(|i| {
+            let p = format!("net_null{i}");
+            one(&format!("l{i}"), &p, &p)
+        })
+        .collect();
+    let r = a.start_links(links).await;
     assert_eq!(r.status, 400);
     assert!(r.message().contains("isolated"));
     assert!(a.supervisor.plans().is_empty());
 }
 
 #[tokio::test]
-async fn edits_while_running_are_stored_and_flag_pending_restart() {
-    let a = app();
-    let id = a.create_link("l", "net_null0", "net_null0").await.json()["id"]
-        .as_u64()
-        .unwrap();
-    assert_eq!(
-        a.get("/api/emulation").await.json()["pending_restart"],
-        false
-    );
-    // edit while stopped: no flag
-    a.put(
-        &format!("/api/links/{id}"),
-        link_body("l2", "net_null0", "net_null0"),
-    )
-    .await;
-    assert_eq!(
-        a.get("/api/emulation").await.json()["pending_restart"],
-        false
-    );
-
-    start_ok(&a).await;
-    assert_eq!(
-        a.get("/api/emulation").await.json()["pending_restart"],
-        false
-    );
-
-    let mut edited = link_body("l3", "net_null0", "net_null0");
-    edited["config"] = cfg_json(9.0e6, 0.0);
-    let r = a.put(&format!("/api/links/{id}"), edited).await;
-    assert_eq!(r.status, 200);
-    let v = a.get("/api/emulation").await.json();
-    assert_eq!(v["state"], "running");
-    assert_eq!(v["pending_restart"], true);
-    assert_eq!(
-        a.get(&format!("/api/links/{id}")).await.json()["name"],
-        "l3"
-    );
-    // the running plan was not touched
-    assert_eq!(a.supervisor.plans().len(), 1);
-
-    // restart picks the edit up and clears the flag
-    a.post("/api/emulation/stop", json!({})).await;
-    start_ok(&a).await;
-    assert_eq!(
-        a.get("/api/emulation").await.json()["pending_restart"],
-        false
-    );
-    assert_eq!(a.supervisor.plans()[1].links_json["links"][0]["name"], "l3");
-}
-
-#[tokio::test]
-async fn every_kind_of_edit_while_running_flags_pending_restart() {
-    for what in ["create", "delete", "settings"] {
-        let a = app();
-        let id = a.create_link("l", "net_null0", "net_null0").await.json()["id"]
-            .as_u64()
-            .unwrap();
-        start_ok(&a).await;
-        match what {
-            "create" => assert_eq!(
-                a.create_link("m", "net_null1", "net_null1").await.status,
-                201
-            ),
-            "delete" => assert_eq!(a.delete(&format!("/api/links/{id}")).await.status, 204),
-            _ => {
-                let r = a
-                    .put(
-                        "/api/settings",
-                        json!({"main_lcore": 1,
-                    "eal_extra_args": [], "poll_interval_ms": 500}),
-                    )
-                    .await;
-                assert_eq!(r.status, 200);
-            }
-        }
-        assert_eq!(
-            a.get("/api/emulation").await.json()["pending_restart"],
-            true,
-            "{what}"
-        );
-    }
+async fn start_without_the_telemetry_build_of_dpds_is_a_400() {
+    let host = FakeHost::bare_metal();
+    let router = api::router(Deps {
+        roots: host.roots(),
+        supervisor: FakeSupervisor::new(),
+        telemetry: FakeTelemetry::new(),
+        dpds_bin: "/usr/local/bin/dpds".into(),
+        runtime_dir: "/run/dpds-controller-test".into(),
+        dpds_has_telemetry: false,
+        is_root: false,
+    });
+    let body = setup(vec![one("l", "net_null0", "net_null0")]).body();
+    let r = call(&router, "POST", "/api/emulation/start", Some(body)).await;
+    assert_eq!(r.status, 400, "{}", r.text());
+    assert!(r.message().contains("telemetry"), "{}", r.text());
 }
 
 // ---- stats ---------------------------------------------------------------
@@ -1266,11 +944,9 @@ async fn openapi_json_documents_every_path() {
     let expect: &[(&str, &[&str])] = &[
         ("/api/online", &["get"]),
         ("/api/interfaces", &["get"]),
-        ("/api/host/hints", &["get"]),
-        ("/api/links", &["get", "post"]),
-        ("/api/links/{id}", &["get", "put", "delete"]),
-        ("/api/settings", &["get", "put"]),
+        ("/api/host/hints", &["get", "post"]),
         ("/api/emulation/start", &["post"]),
+        ("/api/emulation/validate", &["post"]),
         ("/api/emulation/stop", &["post"]),
         ("/api/emulation", &["get"]),
         ("/api/stats", &["get"]),
@@ -1294,4 +970,28 @@ async fn openapi_json_documents_every_path() {
         "{:?}",
         schemas.keys().collect::<Vec<_>>()
     );
+    // spec 22: the stored-config API is gone from the document, schemas included
+    for gone in [
+        "/api/links",
+        "/api/links/{id}",
+        "/api/presets",
+        "/api/presets/{id}",
+        "/api/settings",
+        "/api/export",
+        "/api/import",
+    ] {
+        assert!(paths.get(gone).is_none(), "{gone} is still documented");
+    }
+    for gone in [
+        "Preset",
+        "PresetInput",
+        "ExportDoc",
+        "ImportSummary",
+        "LinkInput",
+    ] {
+        assert!(
+            !schemas.contains_key(gone),
+            "schema {gone} is still documented"
+        );
+    }
 }

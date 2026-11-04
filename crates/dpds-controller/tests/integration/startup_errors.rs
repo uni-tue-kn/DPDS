@@ -16,13 +16,10 @@ use crate::common::*;
 /// Runs `dpds-controller <args>` on a free loopback address and waits for it to exit.
 /// A process that keeps running (it accepted the options) is killed and fails the test.
 fn run_to_exit(args: &[&str], envs: &[(&str, &str)]) -> (Option<i32>, String) {
-    let state = tempfile::tempdir().unwrap();
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_dpds-controller"));
     cmd.args(args)
         .arg("--bind")
         .arg(free_addr())
-        .arg("--state-dir")
-        .arg(state.path().join("state"))
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
     for (k, v) in envs {

@@ -41,39 +41,22 @@ fn machine_hostname() -> String {
     String::from_utf8_lossy(&buf[..end]).into_owned()
 }
 
-/// `(method, path, body)` of every `/api` route, mutating ones included.
+/// `(method, path, body)` of every `/api` route, the POSTs included.
 fn all_routes() -> Vec<(&'static str, &'static str, Option<Value>)> {
+    let body = setup(vec![link("evil", "net_null0", "net_null0", None)]).body();
     vec![
         ("GET", "/api/online", None),
         ("GET", "/api/interfaces", None),
         ("GET", "/api/host/hints", None),
-        ("GET", "/api/links", None),
-        ("GET", "/api/links/1", None),
-        ("GET", "/api/settings", None),
         ("GET", "/api/emulation", None),
         ("GET", "/api/stats", None),
         ("GET", "/api/stats/0/delay_histogram", None),
         ("GET", "/api/version", None),
         ("GET", "/api/openapi.json", None),
         ("GET", "/api/docs/", None),
-        (
-            "POST",
-            "/api/links",
-            Some(link_body("evil", "net_null0", "net_null0")),
-        ),
-        (
-            "PUT",
-            "/api/links/1",
-            Some(link_body("evil", "net_null0", "net_null0")),
-        ),
-        ("DELETE", "/api/links/1", None),
-        (
-            "PUT",
-            "/api/settings",
-            Some(json!({"main_lcore": 1,
-                        "eal_extra_args": [], "poll_interval_ms": 7})),
-        ),
-        ("POST", "/api/emulation/start", Some(json!({}))),
+        ("POST", "/api/host/hints", Some(body.clone())),
+        ("POST", "/api/emulation/validate", Some(body.clone())),
+        ("POST", "/api/emulation/start", Some(body)),
         ("POST", "/api/emulation/stop", Some(json!({}))),
     ]
 }
@@ -116,42 +99,28 @@ fn a_foreign_host_is_rejected_on_every_api_route() {
 }
 
 #[test]
-fn rejected_mutating_requests_change_nothing() {
+fn a_rejected_start_changes_nothing() {
     let c = ControllerProcess::start(&["serve", "--bind", "{addr}"], &[]);
     let good = c.addr.clone();
-    let body = link_body("evil", "net_null0", "net_null0");
-    let (st, _) = call(
-        &c.addr,
-        "POST",
-        "/api/links",
-        "attacker.example",
-        Some(&body),
-    );
-    assert!(rejected(st), "{st}");
-    let settings = json!({"main_lcore": 1,
-                          "eal_extra_args": [], "poll_interval_ms": 7});
-    let (st, _) = call(
-        &c.addr,
-        "PUT",
-        "/api/settings",
-        "attacker.example",
-        Some(&settings),
-    );
-    assert!(rejected(st), "{st}");
-
-    let (st, text) = call(&c.addr, "GET", "/api/links", &good, None);
+    let body = setup(vec![link("evil", "net_null0", "net_null0", None)]).body();
+    for path in [
+        "/api/emulation/start",
+        "/api/emulation/validate",
+        "/api/host/hints",
+    ] {
+        let (st, _) = call(&c.addr, "POST", path, "attacker.example", Some(&body));
+        assert!(rejected(st), "{path}: {st}");
+    }
+    let (st, text) = call(&c.addr, "GET", "/api/emulation", &good, None);
     assert_eq!(st, 200);
-    assert_eq!(
-        serde_json::from_str::<Value>(text.trim()).unwrap(),
-        json!([])
-    );
-    let (_, text) = call(&c.addr, "GET", "/api/settings", &good, None);
-    let s: Value = serde_json::from_str(text.trim()).unwrap();
-    assert_eq!(s["poll_interval_ms"], 500, "{s}");
+    let v: Value = serde_json::from_str(text.trim()).unwrap();
+    assert_eq!(v["state"], "stopped", "{v}");
+    assert!(v.get("config").is_none_or(Value::is_null), "{v}");
 
-    // the same POST with the right Host works
-    let (st, text) = call(&c.addr, "POST", "/api/links", &good, Some(&body));
-    assert_eq!(st, 201, "{text}");
+    // the same POST with the right Host is answered by the API (what it answers depends on the
+    // machine running the tests: no isolated cores, no dpds binary), not by the guard
+    let (st, text) = call(&c.addr, "POST", "/api/emulation/start", &good, Some(&body));
+    assert!(!rejected(st) && st != 202, "{st} {text}");
 }
 
 #[test]
@@ -183,15 +152,15 @@ fn ip_literals_localhost_and_the_machine_hostname_are_accepted() {
     for host in &hosts {
         assert_online(&c.addr, host);
     }
-    // and mutating routes work with them
+    // and the POST routes get past the guard with them (their own answer depends on the machine)
     let (st, text) = call(
         &c.addr,
         "POST",
-        "/api/links",
+        "/api/host/hints",
         "localhost:8100",
-        Some(&link_body("ok", "net_null0", "net_null0")),
+        Some(&setup(vec![link("ok", "net_null0", "net_null0", None)]).body()),
     );
-    assert_eq!(st, 201, "{text}");
+    assert_eq!(st, 200, "{text}");
 }
 
 #[test]
@@ -203,7 +172,7 @@ fn the_port_is_stripped_before_the_comparison() {
         "attacker.example:8100",
         "attacker.example:1",
     ] {
-        let (st, _) = call(&c.addr, "GET", "/api/links", host, None);
+        let (st, _) = call(&c.addr, "GET", "/api/emulation", host, None);
         assert!(rejected(st), "{host}: {st}");
     }
     // ... and any port keeps an accepted one accepted

@@ -39,7 +39,7 @@ describe('v16 constants of the contract', () => {
 
 describe.each(PAGES)('$name: unit selects', (page: ConfigPage) => {
   it.each(UNIT_FIELDS)('%s has exactly one unit select named "<label> unit" with the contracted options', async (label, units) => {
-    await page.openNew();
+    await page.openFull();
     const sel = unitSelect(body(), label);
     expect(sel.tagName).toBe('SELECT');
     expect(screen.getAllByLabelText(`${label} unit`)).toHaveLength(1);
@@ -48,7 +48,7 @@ describe.each(PAGES)('$name: unit selects', (page: ConfigPage) => {
   });
 
   it.each(UNIT_FIELDS)('the unit select of %s is the next form control right of its input', async (label) => {
-    await page.openNew();
+    await page.openFull();
     const controls = Array.from(document.querySelectorAll('input, select, textarea, button'));
     const i = controls.indexOf(numberField(body(), label));
     expect(i).toBeGreaterThanOrEqual(0);
@@ -56,7 +56,7 @@ describe.each(PAGES)('$name: unit selects', (page: ConfigPage) => {
   });
 
   it('only those seven fields have a unit select (no unit for capacity, seed, bins or probabilities)', async () => {
-    await page.openNew();
+    await page.openFull();
     expect(screen.getAllByLabelText(/ unit$/)).toHaveLength(UNIT_FIELDS.length);
     for (const none of ['Buffer capacity', 'Seed', 'Histogram bins', 'Random loss probability']) {
       expect(screen.queryByLabelText(`${none} unit`)).not.toBeInTheDocument();
@@ -64,7 +64,7 @@ describe.each(PAGES)('$name: unit selects', (page: ConfigPage) => {
   });
 
   it('no label carries a unit suffix any more', async () => {
-    await page.openNew();
+    await page.openFull();
     for (const old of ['Mean delay (ns)', 'Delay std (ns)', 'Half-life period (ns)', 'Initialization rate (pps)', 'Rate (bit/s)',
       'Histogram lo (ns)', 'Histogram hi (ns)']) {
       expect(screen.queryByLabelText(old)).not.toBeInTheDocument();
@@ -74,13 +74,13 @@ describe.each(PAGES)('$name: unit selects', (page: ConfigPage) => {
 
 describe.each(PAGES)('$name: defaults of a new form', (page: ConfigPage) => {
   it('the initialization rate starts EMPTY with the unit select on Mpps', async () => {
-    await page.openNew();
+    await page.openFull();
     expect(numberField(body(), 'Initialization rate')).toHaveValue(null);
     expect(unitOf(body(), 'Initialization rate')).toBe('Mpps');
   });
 
   it('empty or zero fields show the default units: half-life ms, histogram lo/hi ms', async () => {
-    await page.openNew();
+    await page.openFull();
     expect(unitOf(body(), 'Half-life period')).toBe('ms');
     expect(numberField(body(), 'Half-life period')).toHaveValue(0);
     for (const l of ['Histogram lo', 'Histogram hi']) {
@@ -90,7 +90,7 @@ describe.each(PAGES)('$name: defaults of a new form', (page: ConfigPage) => {
   });
 
   it('keeps the old default values: mean 1 ms, std 1e5 ns, rate 10 Gbit/s, capacity 100000', async () => {
-    await page.openNew();
+    await page.openFull();
     expect(numberField(body(), 'Mean delay')).toHaveValue(1);
     expect(unitOf(body(), 'Mean delay')).toBe('ms');
     expect(shownBase(body(), 'Delay std')).toBe(100000); // 100 us or 0.1 ms: the display is free
@@ -100,21 +100,21 @@ describe.each(PAGES)('$name: defaults of a new form', (page: ConfigPage) => {
   });
 
   it('sends those defaults in base units untouched', async () => {
-    const user = await page.openNew();
+    const user = await page.openFull();
     await page.ready(user);
     await page.save(user);
     const c = page.created();
-    expect(c.delayer.mean_ns).toBe(1000000);
-    expect(c.delayer.std_ns).toBe(100000);
-    expect(c.delayer.half_life_period_ns).toBe(0);
-    expect(c.delayer.initialization_rate_pps).toBe(10000000); // the helper's rate (TEST_RATE pps)
-    expect(c.limiter.rate_bps).toBe(1e10);
+    expect(c.delayer!.mean_ns).toBe(1000000);
+    expect(c.delayer!.std_ns).toBe(100000);
+    expect(c.delayer!.half_life_period_ns).toBe(0);
+    expect(c.delayer!.initialization_rate_pps).toBe(10000000); // the helper's rate (TEST_RATE pps)
+    expect(c.limiter!.rate_bps).toBe(1e10);
     expect(c.buffer_capacity).toBe(100000);
     expect(c.histogram ?? null).toBeNull();
   });
 
   it('saving the untouched form is still refused for the empty initialization rate (unit default is not a value)', async () => {
-    const user = await page.openNew();
+    const user = await page.openFull();
     await user.type(screen.getByLabelText('Name'), 'x');
     if (page.name === 'link editor') {
       await user.selectOptions(screen.getByLabelText('Ingress'), '0000:65:00.0');
@@ -153,14 +153,14 @@ describe.each(PAGES)('$name: display unit of a stored value, and the exact round
 
   it.each(TIME_CASES)('mean delay %d ns is shown as %d %s and saved back unchanged', async (ns, shown, unit) => {
     const c = await roundTrip(cfg({ mean_ns: ns }), 'Mean delay', shown, unit);
-    expect(c.delayer.mean_ns).toBe(ns);
+    expect(c.delayer!.mean_ns).toBe(ns);
   });
 
   it.each([[1001, 1.001, MU], [1005000, 1.005, 'ms'], [0, 0, 'ms'], [10000000, 10, 'ms']] as [number, number, string][])(
     'delay std %d ns is shown as %d %s and saved back unchanged',
     async (ns, shown, unit) => {
       const c = await roundTrip(cfg({ std_ns: ns }), 'Delay std', shown, unit);
-      expect(c.delayer.std_ns).toBe(ns);
+      expect(c.delayer!.std_ns).toBe(ns);
     },
   );
 
@@ -168,18 +168,18 @@ describe.each(PAGES)('$name: display unit of a stored value, and the exact round
     'half-life %d ns is shown as %d %s and saved back unchanged',
     async (ns, shown, unit) => {
       const c = await roundTrip(cfg({ half_life_period_ns: ns }), 'Half-life period', shown, unit);
-      expect(c.delayer.half_life_period_ns).toBe(ns);
+      expect(c.delayer!.half_life_period_ns).toBe(ns);
     },
   );
 
   it.each(RATE_CASES)('limiter rate %d bit/s is shown as %d %s and saved back unchanged', async (bps, shown, unit) => {
     const c = await roundTrip(cfg({}, { rate_bps: bps }), 'Rate', shown, unit);
-    expect(c.limiter.rate_bps).toBe(bps);
+    expect(c.limiter!.rate_bps).toBe(bps);
   });
 
   it.each(PPS_CASES)('initialization rate %d pps is shown as %d %s and saved back unchanged', async (pps, shown, unit) => {
     const c = await roundTrip(cfg({ initialization_rate_pps: pps }), 'Initialization rate', shown, unit);
-    expect(c.delayer.initialization_rate_pps).toBe(pps);
+    expect(c.delayer!.initialization_rate_pps).toBe(pps);
   });
 
   it.each([
@@ -211,7 +211,7 @@ describe.each(PAGES)('$name: display unit of a stored value, and the exact round
 
 describe.each(PAGES)('$name: changing a unit converts the shown value', (page: ConfigPage) => {
   it('2500 ns -> 2.5 us -> 0.0025 ms -> 0.0000025 s -> back to 2500 ns, and the saved value never changes', async () => {
-    const user = await page.openNew();
+    const user = await page.openFull();
     await typeInto(user, body(), 'Mean delay', '2500', 'ns');
     await pickUnit(user, body(), 'Mean delay', MU);
     expect(numberField(body(), 'Mean delay')).toHaveValue(2.5);
@@ -224,7 +224,7 @@ describe.each(PAGES)('$name: changing a unit converts the shown value', (page: C
     await pickUnit(user, body(), 'Mean delay', MU);
     await page.ready(user);
     await page.save(user);
-    expect(page.created().delayer.mean_ns).toBe(2500);
+    expect(page.created().delayer!.mean_ns).toBe(2500);
   });
 
   it.each([
@@ -237,13 +237,13 @@ describe.each(PAGES)('$name: changing a unit converts the shown value', (page: C
   ] as [string, number, string, string, number, number][])(
     '%s: %d %s converted to %s shows %d and still means %d ns',
     async (label, typed, from, to, shown, ns) => {
-      const user = await page.openNew();
+      const user = await page.openFull();
       await typeInto(user, body(), label, String(typed), from);
       await pickUnit(user, body(), label, to);
       expect(numberField(body(), label)).toHaveValue(shown);
       await page.ready(user);
       await page.save(user);
-      const d = page.created().delayer;
+      const d = page.created().delayer!;
       expect(label === 'Mean delay' ? d.mean_ns : d.std_ns).toBe(ns);
     },
   );
@@ -256,9 +256,7 @@ describe.each(PAGES)('$name: changing a unit converts the shown value', (page: C
     ['Initialization rate', 1.5, 'kpps', 'pps', 1500],
     ['Initialization rate', 1500, 'pps', 'Mpps', 0.0015],
   ] as [string, number, string, string, number][])('%s: %d %s converted to %s shows %d', async (label, typed, from, to, shown) => {
-    const user = await page.openNew();
-    // Rate is disabled while the limiter is off (v16 contract): switch it on first
-    if (label === 'Rate') await user.click(screen.getByLabelText('Limiter active'));
+    const user = await page.openFull();
     await typeInto(user, body(), label, String(typed), from);
     await pickUnit(user, body(), label, to);
     expect(numberField(body(), label)).toHaveValue(shown);
@@ -266,7 +264,7 @@ describe.each(PAGES)('$name: changing a unit converts the shown value', (page: C
   });
 
   it('half-life and histogram fields convert too', async () => {
-    const user = await page.openNew();
+    const user = await page.openFull();
     await user.click(screen.getByLabelText('Activate correlation'));
     await typeInto(user, body(), 'Half-life period', '4', 'ms');
     await pickUnit(user, body(), 'Half-life period', MU);
@@ -280,7 +278,7 @@ describe.each(PAGES)('$name: changing a unit converts the shown value', (page: C
   });
 
   it('an empty field stays empty when its unit changes (histogram lo, initialization rate)', async () => {
-    const user = await page.openNew();
+    const user = await page.openFull();
     await pickUnit(user, body(), 'Histogram lo', MU);
     expect(numberField(body(), 'Histogram lo')).toHaveValue(null);
     await pickUnit(user, body(), 'Initialization rate', 'kpps');
@@ -289,7 +287,7 @@ describe.each(PAGES)('$name: changing a unit converts the shown value', (page: C
   });
 
   it('changing the unit of one field leaves the others alone', async () => {
-    const user = await page.openNew();
+    const user = await page.openFull();
     const before = shownBase(body(), 'Delay std');
     await pickUnit(user, body(), 'Mean delay', MU);
     expect(shownBase(body(), 'Delay std')).toBe(before);
@@ -303,64 +301,63 @@ describe.each(PAGES)('$name: changing a unit converts the shown value', (page: C
     await pickUnit(user, body(), 'Mean delay', 's');
     expect(numberField(body(), 'Mean delay')).toHaveValue(0.001234567);
     await page.save(user);
-    expect(page.updated().delayer.mean_ns).toBe(1234567);
+    expect(page.updated().delayer!.mean_ns).toBe(1234567);
   });
 });
 
 type Pick = (c: ConfigDto) => number | null | undefined;
-type Prep = 'correlation' | 'limiter' | undefined;
-// [label, unit, typed text, expected base value, where it ends up, switch that enables the field]
+type Prep = 'correlation' | undefined;
+// [label, unit, typed text, expected base value, where it ends up, switch that enables the field (v22: the limiter has none)]
 const PAYLOAD: [string, string, string, number, Pick, Prep][] = [
-  ['Mean delay', 'ns', '2500', 2500, (c) => c.delayer.mean_ns, undefined],
-  ['Mean delay', MU, '2.5', 2500, (c) => c.delayer.mean_ns, undefined],
-  ['Mean delay', 'ms', '0.1', 100000, (c) => c.delayer.mean_ns, undefined],
-  ['Mean delay', 'ms', '1.005', 1005000, (c) => c.delayer.mean_ns, undefined],
-  ['Mean delay', 'ms', '8.2', 8200000, (c) => c.delayer.mean_ns, undefined],
-  ['Mean delay', MU, '1.001', 1001, (c) => c.delayer.mean_ns, undefined],
-  ['Mean delay', 's', '1.5', 1500000000, (c) => c.delayer.mean_ns, undefined],
-  ['Mean delay', 's', '0.001', 1000000, (c) => c.delayer.mean_ns, undefined],
-  ['Mean delay', 'ns', '1.5', 1.5, (c) => c.delayer.mean_ns, undefined], // f64 on the wire: no rounding to an integer
-  ['Delay std', MU, '1.1', 1100, (c) => c.delayer.std_ns, undefined],
-  ['Delay std', 'ms', '0.25', 250000, (c) => c.delayer.std_ns, undefined],
-  ['Half-life period', 'ms', '2', 2000000, (c) => c.delayer.half_life_period_ns, 'correlation'],
-  ['Half-life period', MU, '1.1', 1100, (c) => c.delayer.half_life_period_ns, 'correlation'],
+  ['Mean delay', 'ns', '2500', 2500, (c) => c.delayer!.mean_ns, undefined],
+  ['Mean delay', MU, '2.5', 2500, (c) => c.delayer!.mean_ns, undefined],
+  ['Mean delay', 'ms', '0.1', 100000, (c) => c.delayer!.mean_ns, undefined],
+  ['Mean delay', 'ms', '1.005', 1005000, (c) => c.delayer!.mean_ns, undefined],
+  ['Mean delay', 'ms', '8.2', 8200000, (c) => c.delayer!.mean_ns, undefined],
+  ['Mean delay', MU, '1.001', 1001, (c) => c.delayer!.mean_ns, undefined],
+  ['Mean delay', 's', '1.5', 1500000000, (c) => c.delayer!.mean_ns, undefined],
+  ['Mean delay', 's', '0.001', 1000000, (c) => c.delayer!.mean_ns, undefined],
+  ['Mean delay', 'ns', '1.5', 1.5, (c) => c.delayer!.mean_ns, undefined], // f64 on the wire: no rounding to an integer
+  ['Delay std', MU, '1.1', 1100, (c) => c.delayer!.std_ns, undefined],
+  ['Delay std', 'ms', '0.25', 250000, (c) => c.delayer!.std_ns, undefined],
+  ['Half-life period', 'ms', '2', 2000000, (c) => c.delayer!.half_life_period_ns, 'correlation'],
+  ['Half-life period', MU, '1.1', 1100, (c) => c.delayer!.half_life_period_ns, 'correlation'],
   ['Histogram lo', 'ms', '1.005', 1005000, (c) => c.histogram?.lo_ns, undefined],
   ['Histogram lo', 'ns', '100', 100, (c) => c.histogram?.lo_ns, undefined],
   ['Histogram hi', 's', '2', 2000000000, (c) => c.histogram?.hi_ns, undefined],
   ['Histogram hi', MU, '9', 9000, (c) => c.histogram?.hi_ns, undefined],
-  ['Rate', 'bit/s', '1000', 1000, (c) => c.limiter.rate_bps, 'limiter'],
-  ['Rate', 'kbit/s', '1.1', 1100, (c) => c.limiter.rate_bps, 'limiter'],
-  ['Rate', 'Mbit/s', '1.5', 1500000, (c) => c.limiter.rate_bps, 'limiter'],
-  ['Rate', 'Gbit/s', '1.5', 1500000000, (c) => c.limiter.rate_bps, 'limiter'],
-  ['Rate', 'Gbit/s', '0.067', 67000000, (c) => c.limiter.rate_bps, 'limiter'], // 0.067 * 1e9 = 67000000.00000001 in floating point
-  ['Rate', 'Gbit/s', '0.267', 267000000, (c) => c.limiter.rate_bps, 'limiter'],
-  ['Initialization rate', 'pps', '1.5', 1.5, (c) => c.delayer.initialization_rate_pps, undefined],
-  ['Initialization rate', 'kpps', '1500', 1500000, (c) => c.delayer.initialization_rate_pps, undefined],
-  ['Initialization rate', 'Mpps', '12.5', 12500000, (c) => c.delayer.initialization_rate_pps, undefined],
-  ['Initialization rate', 'Mpps', '0.1', 100000, (c) => c.delayer.initialization_rate_pps, undefined],
-  ['Initialization rate', 'Mpps', '1.1', 1100000, (c) => c.delayer.initialization_rate_pps, undefined],
+  ['Rate', 'bit/s', '1000', 1000, (c) => c.limiter!.rate_bps, undefined],
+  ['Rate', 'kbit/s', '1.1', 1100, (c) => c.limiter!.rate_bps, undefined],
+  ['Rate', 'Mbit/s', '1.5', 1500000, (c) => c.limiter!.rate_bps, undefined],
+  ['Rate', 'Gbit/s', '1.5', 1500000000, (c) => c.limiter!.rate_bps, undefined],
+  ['Rate', 'Gbit/s', '0.067', 67000000, (c) => c.limiter!.rate_bps, undefined], // 0.067 * 1e9 = 67000000.00000001 in floating point
+  ['Rate', 'Gbit/s', '0.267', 267000000, (c) => c.limiter!.rate_bps, undefined],
+  ['Initialization rate', 'pps', '1.5', 1.5, (c) => c.delayer!.initialization_rate_pps, undefined],
+  ['Initialization rate', 'kpps', '1500', 1500000, (c) => c.delayer!.initialization_rate_pps, undefined],
+  ['Initialization rate', 'Mpps', '12.5', 12500000, (c) => c.delayer!.initialization_rate_pps, undefined],
+  ['Initialization rate', 'Mpps', '0.1', 100000, (c) => c.delayer!.initialization_rate_pps, undefined],
+  ['Initialization rate', 'Mpps', '1.1', 1100000, (c) => c.delayer!.initialization_rate_pps, undefined],
 ];
 
 describe.each(PAGES)('$name: payload in base units', (page: ConfigPage) => {
   it.each(PAYLOAD)('%s: %s %s is sent as %d', async (label, unit, text, expected, pick, prep) => {
-    const user = await page.openNew();
+    const user = await page.openFull();
     await page.ready(user);
     if (prep === 'correlation') await user.click(screen.getByLabelText('Activate correlation'));
-    if (prep === 'limiter') await user.click(screen.getByLabelText('Limiter active'));
     await typeInto(user, body(), label, text, unit);
     await page.save(user);
     expect(pick(page.created())).toBe(expected);
   });
 
   it('every other field keeps its base value when one is edited (units do not leak between fields)', async () => {
-    const user = await page.openNew();
+    const user = await page.openFull();
     await page.ready(user);
     await typeInto(user, body(), 'Mean delay', '3', 's');
     await page.save(user);
     const c = page.created();
-    expect(c.delayer.std_ns).toBe(100000);
-    expect(c.limiter.rate_bps).toBe(1e10);
-    expect(c.delayer.initialization_rate_pps).toBe(10000000);
+    expect(c.delayer!.std_ns).toBe(100000);
+    expect(c.limiter!.rate_bps).toBe(1e10);
+    expect(c.delayer!.initialization_rate_pps).toBe(10000000);
   });
 });
 
@@ -370,18 +367,17 @@ describe.each(PAGES)('$name: validation per field (messages name the field, neve
   async function ready(user: UserEvent, prep?: Prep) {
     await page.ready(user);
     if (prep === 'correlation') await user.click(screen.getByLabelText('Activate correlation'));
-    if (prep === 'limiter') await user.click(screen.getByLabelText('Limiter active'));
   }
 
   it.each([
     ['Mean delay', /Mean delay/, undefined],
     ['Delay std', /Delay std/, undefined],
     ['Half-life period', /Half-life period/, 'correlation'],
-    ['Rate', /\bRate\b/, 'limiter'],
+    ['Rate', /\bRate\b/, undefined],
     ['Initialization rate', /Initialization rate/, undefined],
     ['Buffer capacity', /Buffer capacity/, undefined],
   ] as [string, RegExp, Prep][])('an empty %s is refused: alert naming the field, no request', async (label, name, prep) => {
-    const user = await page.openNew();
+    const user = await page.openFull();
     await ready(user, prep);
     await user.clear(numberField(body(), label));
     await page.save(user);
@@ -392,7 +388,7 @@ describe.each(PAGES)('$name: validation per field (messages name the field, neve
   });
 
   it.each(['Histogram lo', 'Histogram hi'])('an empty %s is fine (automatic range)', async (label) => {
-    const user = await page.openNew();
+    const user = await page.openFull();
     await ready(user);
     expect(numberField(body(), label)).toHaveValue(null);
     await page.save(user);
@@ -402,18 +398,18 @@ describe.each(PAGES)('$name: validation per field (messages name the field, neve
   it.each([['0.5', 'Mpps', 500000], ['1', 'pps', 1], ['0.000001', 'Mpps', 1], ['0.001', 'kpps', 1], ['2.5', 'kpps', 2500]] as [string, string, number][])(
     'initialization rate %s %s is accepted (>= 1 pps after conversion) and sent as %d',
     async (text, unit, pps) => {
-      const user = await page.openNew();
+      const user = await page.openFull();
       await ready(user);
       await typeRate(user, text, unit);
       await page.save(user);
-      expect(page.created().delayer.initialization_rate_pps).toBe(pps);
+      expect(page.created().delayer!.initialization_rate_pps).toBe(pps);
     },
   );
 
   it.each([['0.9', 'pps'], ['0.0000009', 'Mpps'], ['0.0009', 'kpps'], ['0', 'Mpps'], ['-2', 'kpps']] as [string, string][])(
     'initialization rate %s %s is below 1 pps: refused with an alert naming the field, no request',
     async (text, unit) => {
-      const user = await page.openNew();
+      const user = await page.openFull();
       await ready(user);
       await typeRate(user, text, unit);
       await page.save(user);
@@ -425,7 +421,7 @@ describe.each(PAGES)('$name: validation per field (messages name the field, neve
   );
 
   it('a refused form keeps every typed value and unit and can be corrected and saved', async () => {
-    const user = await page.openNew();
+    const user = await page.openFull();
     await ready(user);
     await typeInto(user, body(), 'Mean delay', '2.5', MU);
     await typeRate(user, '0.5', 'pps');
@@ -437,20 +433,19 @@ describe.each(PAGES)('$name: validation per field (messages name the field, neve
     await typeRate(user, '2', 'Mpps');
     await page.save(user);
     const c = page.created();
-    expect(c.delayer.mean_ns).toBe(2500);
-    expect(c.delayer.initialization_rate_pps).toBe(2000000);
+    expect(c.delayer!.mean_ns).toBe(2500);
+    expect(c.delayer!.initialization_rate_pps).toBe(2000000);
   });
 });
 
 describe.each(PAGES)('$name: stored values of disabled fields survive the unit handling', (page: ConfigPage) => {
-  it('a disabled field with a stored value is sent back in base units (limiter inactive: 40 Gbit/s)', async () => {
-    const user = await page.openStored(cfg({}, { activate: false, rate_bps: 40000000000 }));
-    expect(numberField(body(), 'Rate')).toBeDisabled();
+  it('v22: a stored limiter is sent back as exactly {mode, rate_bps} in base units (40 Gbit/s)', async () => {
+    const user = await page.openStored(cfg({}, { rate_bps: 40000000000 }));
+    expect(numberField(body(), 'Rate')).toBeEnabled();
     await page.save(user);
-    const l = page.updated().limiter;
-    expect(l.activate).toBe(false);
+    const l = page.updated().limiter!;
     expect(l.rate_bps).toBe(40000000000);
-    expect(Object.keys(l).sort()).toEqual(['activate', 'mode', 'rate_bps']);
+    expect(Object.keys(l).sort()).toEqual(['mode', 'rate_bps']);
   });
 
   it('half-life with correlation off keeps its stored value (2.5 us)', async () => {
@@ -458,6 +453,6 @@ describe.each(PAGES)('$name: stored values of disabled fields survive the unit h
     expect(numberField(body(), 'Half-life period')).toBeDisabled();
     expect(numberField(body(), 'Half-life period')).toHaveValue(2.5);
     await page.save(user);
-    expect(page.updated().delayer.half_life_period_ns).toBe(2500);
+    expect(page.updated().delayer!.half_life_period_ns).toBe(2500);
   });
 });

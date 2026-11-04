@@ -4,6 +4,7 @@
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -13,7 +14,6 @@ use socket2::{Domain, SockAddr, Socket, Type};
 
 pub use crate::stats::Polled;
 use crate::stats::Snapshot;
-use crate::store;
 use crate::supervisor::{State, Supervisor};
 
 /// DPDK `--file-prefix` of the child; fixes the socket path below the runtime dir.
@@ -87,6 +87,9 @@ pub trait TelemetrySource: Send + Sync + 'static {
             .map(|p| vec![(p.age_ms, p.cur)])
             .unwrap_or_default()
     }
+
+    /// The poll interval of the run being started (a no-op for sources that do not poll).
+    fn set_poll_interval(&self, _ms: u64) {}
 }
 
 /// One full poll: ports, per-direction stats and histogram, per-port NIC stats.
@@ -141,22 +144,23 @@ struct Cache {
 }
 
 /// Polls the running `dpds` in a background thread and caches the result.
-/// Reads the poll interval from the stored settings on every cycle.
+/// Waits `interval_ms` between polls, read on every cycle.
 pub struct Poller {
     cell: Mutex<Option<Cache>>,
+    interval_ms: AtomicU64,
 }
 
+/// Poll interval until a start sets one.
+const DEFAULT_POLL_INTERVAL_MS: u64 = 500;
+
 impl Poller {
-    pub fn spawn(
-        state_dir: PathBuf,
-        runtime_dir: PathBuf,
-        supervisor: Arc<dyn Supervisor>,
-    ) -> Arc<Poller> {
+    pub fn spawn(runtime_dir: PathBuf, supervisor: Arc<dyn Supervisor>) -> Arc<Poller> {
         let poller = Arc::new(Poller {
             cell: Mutex::new(None),
+            interval_ms: AtomicU64::new(DEFAULT_POLL_INTERVAL_MS),
         });
         let p = poller.clone();
-        thread::spawn(move || p.run(&state_dir, &runtime_dir, supervisor.as_ref()));
+        thread::spawn(move || p.run(&runtime_dir, supervisor.as_ref()));
         poller
     }
 
@@ -203,12 +207,12 @@ impl Poller {
         }
     }
 
-    fn run(&self, state_dir: &Path, runtime_dir: &Path, supervisor: &dyn Supervisor) {
+    fn run(&self, runtime_dir: &Path, supervisor: &dyn Supervisor) {
         let mut conn: Option<Client> = None;
         let mut conn_pid: Option<u32> = None;
         loop {
-            let interval = store::load(state_dir).map_or(500, |s| s.settings.poll_interval_ms);
-            thread::sleep(Duration::from_millis(interval.max(1)));
+            let interval = self.interval_ms.load(Ordering::Relaxed);
+            thread::sleep(Duration::from_millis(interval));
             let status = supervisor.status();
             let pid = match (status.state, status.pid) {
                 (State::Running, Some(pid)) => pid,
@@ -250,6 +254,10 @@ impl Poller {
 }
 
 impl TelemetrySource for Poller {
+    fn set_poll_interval(&self, ms: u64) {
+        self.interval_ms.store(ms.max(1), Ordering::Relaxed);
+    }
+
     fn history(&self) -> Vec<(u64, Snapshot)> {
         let cell = self.cell();
         let Some(c) = cell.as_ref() else {

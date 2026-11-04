@@ -6,10 +6,10 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::host::{fmt_cpus, is_vdev, HostRoots};
-use crate::model::StoredState;
+use crate::model::RunConfig;
 
 /// A link as planned: traffic received on `rx` (the ingress), sent on `tx` (the
-/// egress), handled by `lcore`. `dir` is the link's index in stored order.
+/// egress), handled by `lcore`. `dir` is the link's index in start-body order.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct DirectionPlan {
     pub dir: u32,
@@ -41,8 +41,8 @@ fn err<T>(m: String) -> Result<T, LcoreError> {
 }
 
 /// Directions numbered in link order: the link is the direction.
-fn directions(state: &StoredState) -> Vec<Pending> {
-    state
+fn directions(config: &RunConfig) -> Vec<Pending> {
+    config
         .links
         .iter()
         .map(|l| Pending {
@@ -62,14 +62,14 @@ struct Pending {
     pinned: Option<u32>,
 }
 
-/// Plans lcores for the stored links. Per-link `worker` overrides are used
+/// Plans lcores for the links. Per-link `worker` overrides are used
 /// literally (any online core except the main lcore); the other links get free
 /// isolated cores, the lowest id first, preferring the NUMA node of the ingress NIC.
-pub fn assign_lcores(roots: &HostRoots, state: &StoredState) -> Result<Assignment, LcoreError> {
+pub fn assign_lcores(roots: &HostRoots, config: &RunConfig) -> Result<Assignment, LcoreError> {
     let online = roots.online_cpus();
     let isolated = roots.isolated_cpus();
 
-    let main_lcore = match state.settings.main_lcore {
+    let main_lcore = match config.settings.main_lcore {
         Some(m) if online.contains(&m) => m,
         Some(m) => return err(format!("main lcore {m} is not an online CPU")),
         None => match online.iter().find(|c| !isolated.contains(c)) {
@@ -78,7 +78,7 @@ pub fn assign_lcores(roots: &HostRoots, state: &StoredState) -> Result<Assignmen
         },
     };
 
-    let mut dirs = directions(state);
+    let mut dirs = directions(config);
 
     let mut used = vec![main_lcore];
     for d in &dirs {

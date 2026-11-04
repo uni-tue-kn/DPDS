@@ -63,11 +63,25 @@ pub struct DelayerDto {
     pub initialization_rate_pps: f64,
 }
 
+impl DelayerDto {
+    /// The delayer of a link without one: no delay. Its `initialization_rate_pps` is
+    /// never used (correlation is off); 1 is the smallest value `dpds-core` accepts.
+    pub fn none() -> DelayerDto {
+        DelayerDto {
+            distribution: DistributionDto::DeterministicDistribution,
+            mean_ns: 0.0,
+            std_ns: 0.0,
+            activate_correlation: false,
+            half_life_period_ns: 0.0,
+            initialization_rate_pps: 1.0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LimiterDto {
     pub mode: LimiterModeDto,
-    pub activate: bool,
     pub rate_bps: f64,
 }
 
@@ -83,13 +97,10 @@ pub enum LossModelDto {
         r: f64,
         k: f64,
         h: f64,
-        #[serde(default = "default_true")]
-        state_is_good: bool,
+        /// Absent: the model starts in the good state. Kept as sent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        state_is_good: Option<bool>,
     },
-}
-
-fn default_true() -> bool {
-    true
 }
 
 /// Optional delay histogram settings of a direction; anything omitted is
@@ -135,23 +146,28 @@ impl HistogramDto {
 }
 
 /// Mirror of `dpds_core::Config` plus the optional `histogram` of the direction
-/// (a `dpds` option that lives beside, not inside, the core config).
+/// (a `dpds` option that lives beside, not inside, the core config). A stage that is
+/// `null` or absent is not added: it maps to a no-op stage of the core config.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigDto {
     pub buffer_capacity: usize,
     pub reordering: bool,
-    pub delayer: DelayerDto,
-    pub limiter: LimiterDto,
-    pub loss_model: LossModelDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delayer: Option<DelayerDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limiter: Option<LimiterDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loss_model: Option<LossModelDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub histogram: Option<HistogramDto>,
-    /// Record the intended delay, lateness and histogram of this direction
-    /// (off: `dpds` skips that work; counters and drop causes stay).
-    #[serde(default = "default_true")]
-    pub delay_stats: bool,
+    /// Record the intended delay, lateness and histogram of this direction (absent: on;
+    /// off: `dpds` skips that work, counters and drop causes stay). Kept as sent, so the
+    /// running configuration echoes the request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delay_stats: Option<bool>,
 }
 
 impl From<DistributionDto> for RVDistribution {
@@ -166,32 +182,11 @@ impl From<DistributionDto> for RVDistribution {
     }
 }
 
-impl From<RVDistribution> for DistributionDto {
-    fn from(d: RVDistribution) -> Self {
-        match d {
-            RVDistribution::DeterministicDistribution => DistributionDto::DeterministicDistribution,
-            RVDistribution::LogNormalDistribution => DistributionDto::LogNormalDistribution,
-            RVDistribution::NormalDistribution => DistributionDto::NormalDistribution,
-            RVDistribution::GammaDistribution => DistributionDto::GammaDistribution,
-            RVDistribution::UniformDistribution => DistributionDto::UniformDistribution,
-        }
-    }
-}
-
 impl From<LimiterModeDto> for LimiterMode {
     fn from(m: LimiterModeDto) -> Self {
         match m {
             LimiterModeDto::Spacer => LimiterMode::Spacer,
             LimiterModeDto::TokenBucketFilter => LimiterMode::TokenBucketFilter,
-        }
-    }
-}
-
-impl From<LimiterMode> for LimiterModeDto {
-    fn from(m: LimiterMode) -> Self {
-        match m {
-            LimiterMode::Spacer => LimiterModeDto::Spacer,
-            LimiterMode::TokenBucketFilter => LimiterModeDto::TokenBucketFilter,
         }
     }
 }
@@ -218,57 +213,65 @@ impl ConfigDto {
                 self.buffer_capacity
             )));
         }
-        let loss_model = match self.loss_model {
-            LossModelDto::Random { p } => {
-                probability("p", p)?;
-                LossModel::Random(p)
+        let loss_model = match &self.loss_model {
+            None => LossModel::Random(0.0),
+            Some(LossModelDto::Random { p }) => {
+                probability("p", *p)?;
+                LossModel::Random(*p)
             }
-            LossModelDto::GilbertElliot {
+            Some(LossModelDto::GilbertElliot {
                 p,
                 r,
                 k,
                 h,
                 state_is_good,
-            } => {
+            }) => {
                 for (name, v) in [("p", p), ("r", r), ("k", k), ("h", h)] {
-                    probability(name, v)?;
+                    probability(name, *v)?;
                 }
-                LossModel::GilbertElliot(p, r, k, h, state_is_good)
+                LossModel::GilbertElliot(*p, *r, *k, *h, state_is_good.unwrap_or(true))
             }
         };
-        for (name, v) in [
-            ("mean_ns", self.delayer.mean_ns),
-            ("std_ns", self.delayer.std_ns),
-        ] {
+        let d = self.delayer.clone().unwrap_or_else(DelayerDto::none);
+        for (name, v) in [("mean_ns", d.mean_ns), ("std_ns", d.std_ns)] {
             if !v.is_finite() || v < 0.0 {
                 return Err(DtoError(format!(
                     "delayer {name} = {v}: must be finite and not negative"
                 )));
             }
         }
-        let l = &self.limiter;
-        if l.activate && !(l.rate_bps.is_finite() && l.rate_bps > 0.0) {
-            return Err(DtoError(format!(
-                "limiter rate_bps = {}: must be positive when the limiter is active",
-                l.rate_bps
-            )));
-        }
+        let limiter = match &self.limiter {
+            None => LimiterConfig {
+                mode: LimiterMode::Spacer,
+                activate: false,
+                rate_bps: 0.0,
+            },
+            Some(l) => {
+                if !(l.rate_bps.is_finite() && l.rate_bps > 0.0) {
+                    return Err(DtoError(format!(
+                        "limiter rate_bps = {}: must be positive",
+                        l.rate_bps
+                    )));
+                }
+                LimiterConfig {
+                    mode: l.mode.into(),
+                    activate: true,
+                    rate_bps: l.rate_bps,
+                }
+            }
+        };
         let config = Config {
             buffer_capacity: self.buffer_capacity,
             reordering: self.reordering,
             delayer: DelayerConfig {
-                distribution: self.delayer.distribution.into(),
-                mean_ns: self.delayer.mean_ns,
-                std_ns: self.delayer.std_ns,
-                activate_correlation: self.delayer.activate_correlation,
-                half_life_period_ns: self.delayer.half_life_period_ns,
-                initialization_rate_pps: self.delayer.initialization_rate_pps,
+                distribution: d.distribution.into(),
+                mean_ns: d.mean_ns,
+                std_ns: d.std_ns,
+                activate_correlation: d.activate_correlation,
+                half_life_period_ns: d.half_life_period_ns,
+                initialization_rate_pps: d.initialization_rate_pps,
             },
-            limiter: LimiterConfig {
-                mode: l.mode.into(),
-                activate: l.activate,
-                rate_bps: l.rate_bps,
-            },
+            limiter,
             loss_model,
             seed: self.seed,
         };
@@ -281,41 +284,5 @@ impl ConfigDto {
             h.validate()?;
         }
         Ok(config)
-    }
-
-    /// The DTO of a core config (without histogram settings).
-    pub fn from_core(c: &Config) -> ConfigDto {
-        ConfigDto {
-            buffer_capacity: c.buffer_capacity,
-            reordering: c.reordering,
-            delayer: DelayerDto {
-                distribution: c.delayer.distribution.into(),
-                mean_ns: c.delayer.mean_ns,
-                std_ns: c.delayer.std_ns,
-                activate_correlation: c.delayer.activate_correlation,
-                half_life_period_ns: c.delayer.half_life_period_ns,
-                initialization_rate_pps: c.delayer.initialization_rate_pps,
-            },
-            limiter: LimiterDto {
-                mode: c.limiter.mode.into(),
-                activate: c.limiter.activate,
-                rate_bps: c.limiter.rate_bps,
-            },
-            loss_model: match c.loss_model {
-                LossModel::Random(p) => LossModelDto::Random { p },
-                LossModel::GilbertElliot(p, r, k, h, state_is_good) => {
-                    LossModelDto::GilbertElliot {
-                        p,
-                        r,
-                        k,
-                        h,
-                        state_is_good,
-                    }
-                }
-            },
-            seed: c.seed,
-            histogram: None,
-            delay_stats: true,
-        }
     }
 }

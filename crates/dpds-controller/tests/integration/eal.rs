@@ -195,10 +195,11 @@ fn special_core() -> Config {
             half_life_period_ns: 1.0e6,
             initialization_rate_pps: 15e6,
         },
+        // no limiter stage in `cfg_json`: the missing stage is the inactive limiter, rate 0
         limiter: LimiterConfig {
             mode: LimiterMode::Spacer,
             activate: false,
-            rate_bps: 1.0e9,
+            rate_bps: 0.0,
         },
         loss_model: LossModel::GilbertElliot(0.01, 0.3, 1.0, 0.5, true),
         seed: Some(9),
@@ -208,9 +209,12 @@ fn special_core() -> Config {
 #[test]
 fn links_file_json_is_v2_one_entry_per_directed_link() {
     let links = vec![
-        link(1, "a-to-b", NIC0, NIC1, Some(2)),
-        link(2, "b-to-a", NIC1, NIC0, None),
-        link_cfg(3, "loop", "net_null0", "net_null0", special_cfg()),
+        model_link(1, &link("a-to-b", NIC0, NIC1, Some(2))),
+        model_link(2, &link("b-to-a", NIC1, NIC0, None)),
+        model_link(
+            3,
+            &link_cfg("loop", "net_null0", "net_null0", special_cfg()),
+        ),
     ];
     let dirs = vec![
         plan_dir(0, "a-to-b", NIC0, NIC1, 7),
@@ -249,8 +253,8 @@ fn links_file_json_carries_each_links_initialization_rate_in_its_config() {
     let mut b = cfg_json(1.0e6, 1.0e5);
     b["delayer"]["initialization_rate_pps"] = json!(7.5e6);
     let links = vec![
-        link_cfg(1, "slow", NIC0, NIC1, a),
-        link_cfg(2, "fast", NIC1, NIC0, b),
+        model_link(1, &link_cfg("slow", NIC0, NIC1, a)),
+        model_link(2, &link_cfg("fast", NIC1, NIC0, b)),
     ];
     let dirs = vec![
         plan_dir(0, "slow", NIC0, NIC1, 2),
@@ -271,7 +275,7 @@ fn links_file_json_carries_each_links_initialization_rate_in_its_config() {
 
 #[test]
 fn links_file_json_has_none_of_the_v1_keys() {
-    let l = vec![link(1, "a-to-b", NIC0, NIC1, Some(2))];
+    let l = vec![model_link(1, &link("a-to-b", NIC0, NIC1, Some(2)))];
     let d = [plan_dir(0, "a-to-b", NIC0, NIC1, 2)];
     let v = links_file_json(&l, &d).unwrap();
     for k in [
@@ -294,8 +298,8 @@ fn links_file_json_has_none_of_the_v1_keys() {
 fn lcores_are_taken_by_link_name_from_the_direction_plan_in_any_order() {
     // links in one order, plans in another: the lcore is looked up by link name
     let links = vec![
-        link(1, "first", NIC0, NIC1, None),
-        link(2, "second", NIC1, NIC0, None),
+        model_link(1, &link("first", NIC0, NIC1, None)),
+        model_link(2, &link("second", NIC1, NIC0, None)),
     ];
     let dirs = vec![
         plan_dir(1, "second", NIC1, NIC0, 2),
@@ -316,9 +320,9 @@ fn links_file_json_histogram_and_delay_stats_only_when_set() {
     let mut bins_only = cfg_json(1.0e6, 1.0e5);
     bins_only["histogram"] = json!({"bins": 100});
     let links = vec![
-        link(1, "plain", NIC0, NIC1, None),
-        link_cfg(2, "off", NIC1, NIC0, off),
-        link_cfg(3, "bins", INTEL, INTEL, bins_only),
+        model_link(1, &link("plain", NIC0, NIC1, None)),
+        model_link(2, &link_cfg("off", NIC1, NIC0, off)),
+        model_link(3, &link_cfg("bins", INTEL, INTEL, bins_only)),
     ];
     let dirs = vec![
         plan_dir(0, "plain", NIC0, NIC1, 2),
@@ -346,26 +350,126 @@ fn links_file_json_histogram_and_delay_stats_only_when_set() {
 
 #[test]
 fn links_file_json_has_no_limit_bit_in_the_limiter_of_a_link() {
-    let links = vec![link_cfg(1, "lim", "net_null0", "net_null0", {
-        let mut c = cfg_json(1.0e6, 0.0);
-        c["limiter"] = json!({"mode": "TokenBucketFilter", "activate": true, "rate_bps": 2.0e9});
-        c
-    })];
+    let links = vec![model_link(
+        1,
+        &link_cfg("lim", "net_null0", "net_null0", {
+            let mut c = cfg_json(1.0e6, 0.0);
+            c["limiter"] = json!({"mode": "TokenBucketFilter", "rate_bps": 2.0e9});
+            c
+        }),
+    )];
     let d = [plan_dir(0, "lim", "net_null0", "net_null0", 1)];
     let v = links_file_json(&links, &d).unwrap();
     let text = v.to_string();
     assert!(!text.contains("limit_bit"), "{text}");
+    // dpds parses `dpds_core::Config`: the present limiter stage is active there
     let lim = v["links"][0]["config"]["limiter"].as_object().unwrap();
     let mut keys: Vec<&str> = lim.keys().map(String::as_str).collect();
     keys.sort();
     assert_eq!(keys, ["activate", "mode", "rate_bps"], "{text}");
+    assert_eq!(lim["activate"], json!(true), "{text}");
+    assert_eq!(lim["mode"], json!("TokenBucketFilter"), "{text}");
+    assert_eq!(lim["rate_bps"], json!(2.0e9), "{text}");
 }
 
 #[test]
 fn links_file_json_fails_for_an_invalid_config() {
-    let l = link_cfg(1, "bad", "net_null0", "net_null0", cfg_json(1.0e6, -1.0));
+    let l = model_link(
+        1,
+        &link_cfg("bad", "net_null0", "net_null0", cfg_json(1.0e6, -1.0)),
+    );
     let d = [plan_dir(0, "bad", "net_null0", "net_null0", 1)];
     assert!(links_file_json(&[l], &d).is_err());
+}
+
+// ---- optional stages: what the links file carries for a missing stage -------------------------
+
+/// The `dpds_core::Config` a config with no stage at all maps to (spec 22): Deterministic 0 ns
+/// without correlation, half-life 0 and the internal rate 1; an inactive Spacer with rate 0;
+/// `Random(0)` loss.
+fn noop_core() -> Config {
+    Config {
+        buffer_capacity: 100000,
+        reordering: false,
+        delayer: DelayerConfig {
+            distribution: RVDistribution::DeterministicDistribution,
+            mean_ns: 0.0,
+            std_ns: 0.0,
+            activate_correlation: false,
+            half_life_period_ns: 0.0,
+            initialization_rate_pps: 1.0,
+        },
+        limiter: LimiterConfig {
+            mode: LimiterMode::Spacer,
+            activate: false,
+            rate_bps: 0.0,
+        },
+        loss_model: LossModel::Random(0.0),
+        seed: None,
+    }
+}
+
+fn file_config(cfg: serde_json::Value) -> serde_json::Value {
+    let l = model_link(1, &link_cfg("l", "net_null0", "net_null0", cfg));
+    let d = [plan_dir(0, "l", "net_null0", "net_null0", 1)];
+    links_file_json(&[l], &d).unwrap()["links"][0]["config"].clone()
+}
+
+#[test]
+fn a_config_without_stages_writes_the_noop_core_config() {
+    assert_eq!(
+        file_config(cfg_bare()),
+        serde_json::to_value(noop_core()).unwrap()
+    );
+    // `null` is the same as absent, for each stage
+    let mut c = cfg_bare();
+    c["delayer"] = json!(null);
+    c["limiter"] = json!(null);
+    c["loss_model"] = json!(null);
+    assert_eq!(file_config(c), serde_json::to_value(noop_core()).unwrap());
+}
+
+#[test]
+fn each_missing_stage_is_replaced_independently_and_the_present_ones_are_kept() {
+    let want = serde_json::to_value(noop_core()).unwrap();
+    // delayer only
+    let mut c = cfg_bare();
+    c["delayer"] = cfg_json(2.0e6, 1.0e5)["delayer"].clone();
+    let got = file_config(c);
+    assert_eq!(got["delayer"]["mean_ns"], json!(2.0e6));
+    assert_eq!(got["delayer"]["initialization_rate_pps"], json!(15.0e6));
+    assert_eq!(got["limiter"], want["limiter"]);
+    assert_eq!(got["loss_model"], want["loss_model"]);
+    // limiter only
+    let mut c = cfg_bare();
+    c["limiter"] = json!({"mode": "Spacer", "rate_bps": 5.0e9});
+    let got = file_config(c);
+    assert_eq!(got["delayer"], want["delayer"]);
+    assert_eq!(got["limiter"]["activate"], json!(true));
+    assert_eq!(got["limiter"]["rate_bps"], json!(5.0e9));
+    assert_eq!(got["loss_model"], want["loss_model"]);
+    // loss only
+    let mut c = cfg_bare();
+    c["loss_model"] = json!({"type": "Random", "p": 0.25});
+    let got = file_config(c);
+    assert_eq!(got["delayer"], want["delayer"]);
+    assert_eq!(got["limiter"], want["limiter"]);
+    assert_eq!(
+        got["loss_model"],
+        serde_json::to_value(LossModel::Random(0.25)).unwrap()
+    );
+}
+
+#[test]
+fn the_buffer_seed_and_reordering_survive_without_stages() {
+    let mut c = cfg_bare();
+    c["buffer_capacity"] = json!(777);
+    c["reordering"] = json!(true);
+    c["seed"] = json!(5);
+    let got = file_config(c);
+    assert_eq!(got["buffer_capacity"], json!(777));
+    assert_eq!(got["reordering"], json!(true));
+    assert_eq!(got["seed"], json!(5));
 }
 
 // ---- drain timeout -------------------------------------------------------
@@ -374,7 +478,9 @@ fn links_file_json_fails_for_an_invalid_config() {
 fn core(mean_ns: f64, std_ns: f64, limiter_on: bool, rate_bps: f64, capacity: u64) -> Config {
     let mut v = cfg_json(mean_ns, std_ns);
     v["buffer_capacity"] = json!(capacity);
-    v["limiter"] = json!({"mode":"Spacer","activate":limiter_on,"rate_bps":rate_bps});
+    if limiter_on {
+        v["limiter"] = json!({"mode":"Spacer","rate_bps":rate_bps});
+    }
     dto_from(v).to_core().unwrap()
 }
 
@@ -423,4 +529,25 @@ fn drain_timeout_is_the_maximum_over_directions() {
 fn drain_timeout_has_a_margin_even_without_delay() {
     let t = drain_timeout(&[core(0.0, 0.0, false, 1.0e9, 1000)]);
     assert!((secs(t) - 5.0).abs() < 1e-6, "{t:?}");
+}
+
+#[test]
+fn drain_timeout_of_configs_without_stages_is_the_margin_alone() {
+    // the missing limiter is inactive (rate 0: no division by it), the missing delayer is 0 ns
+    let none = dto_from(cfg_bare()).to_core().unwrap();
+    let t = drain_timeout(&[none]);
+    assert!((secs(t) - 5.0).abs() < 1e-9, "{t:?}");
+    // each stage alone still counts: a 2 s delay, a 12.336 s limiter drain
+    let mut dly = cfg_bare();
+    dly["delayer"] = json!({"distribution": "DeterministicDistribution", "mean_ns": 2.0e9,
+        "std_ns": 0.0, "activate_correlation": false, "half_life_period_ns": 0.0,
+        "initialization_rate_pps": 1.0});
+    let mut lim = cfg_bare();
+    lim["buffer_capacity"] = json!(1000);
+    lim["limiter"] = json!({"mode": "Spacer", "rate_bps": 1.0e6});
+    let t = drain_timeout(&[
+        dto_from(dly).to_core().unwrap(),
+        dto_from(lim).to_core().unwrap(),
+    ]);
+    assert!((secs(t) - 17.336).abs() < 1e-6, "{t:?}");
 }

@@ -178,7 +178,7 @@ allowed, every link gets a worker lcore.
   last two terms are 768 (the worker's mempool cache) and 64 (two bursts). The
   pool therefore always holds a full delay buffer plus both rings, so the NIC
   never runs out of mbufs before the DPDS buffer rejects a packet. Example: the
-  default `config.json` (`buffer_capacity` 1,000,000) with 4096-descriptor rings
+  config with `buffer_capacity` 1,000,000 and 4096-descriptor rings
   gives 1,000,000 + 4096 + 4096 + 768 + 64 = 1,009,024 mbufs per link. If a
   pool cannot be created (e.g. not enough hugepage memory), DPDS exits non-zero
   naming the link's index and the size it tried. A port that is only an
@@ -322,121 +322,57 @@ sudo ./target/release/dpds -l 0-2 --in-memory -a <PCI0>,txq_mpw_en=1 -a <PCI1>,t
 
 Tuning a testbed host (isolated cores, NIC settings) and launching, stopping and
 syncing DPDS there is done by the separate evaluation automation, not by this
-repository; the repository only provides the binary, the config files and the
-telemetry socket. The tuning advice DPDS depends on is under
+repository; the repository only provides the binary and the telemetry socket.
+The tuning advice DPDS depends on is under
 [Performance tuning](#-performance-tuning).
 
 ### Without hardware (virtual devices)
 
-No root, hugepages or NIC needed, e.g. to try the setup or in CI. Run them from
+No root, hugepages or NIC needed, e.g. to try the setup or in CI. DPDS ships no
+default config: the examples write theirs to a temporary file first. Run them from
 the repository root:
 
 ```bash
+# A config with a small buffer: its derived pool of 4096 + 4096 + 4096 + 768 + 64
+# = 13,120 mbufs (about 25 MB) fits into -m 256.
+cat > /tmp/dpds-demo.json <<'EOF'
+{
+  "buffer_capacity": 4096,
+  "reordering": false,
+  "delayer": {
+    "distribution": "NormalDistribution",
+    "mean_ns": 10000000,
+    "std_ns": 3000000,
+    "activate_correlation": true,
+    "half_life_period_ns": 30000000,
+    "initialization_rate_pps": 8100000
+  },
+  "limiter": {
+    "mode": "Spacer",
+    "activate": false,
+    "rate_bps": 100000000000
+  },
+  "loss_model": {
+    "Random": 0.0
+  }
+}
+EOF
+
 # One port that receives nothing and discards everything:
 ./target/release/dpds --no-huge -m 256 --no-pci --in-memory -l 0-1 \
-    --vdev=net_null0 -- --config config.vdev.json
+    --vdev=net_null0 -- --config /tmp/dpds-demo.json
 
 # Replay a pcap through DPDS, capture the result (1 port):
 ./target/release/dpds --no-huge -m 256 --no-pci --in-memory -l 0-1 \
-    --vdev=net_pcap0,rx_pcap=in.pcap,tx_pcap=out.pcap -- --config config.vdev.json
+    --vdev=net_pcap0,rx_pcap=in.pcap,tx_pcap=out.pcap -- --config /tmp/dpds-demo.json
 ```
 
-`config.vdev.json` is `config.json` with `buffer_capacity` 4096, so its
-[derived pool](#budgets-rings-and-pools) of 4096 + 4096 + 4096 + 768 + 64 =
-13,120 mbufs (about 25 MB) fits into `-m 256`. The default `config.json` derives
-about a million mbufs (about 1.8 GiB) per link; to use it here, raise `-m`
-accordingly. The second example needs an `in.pcap` in the working directory.
-Stop with `Ctrl-C`.
+The config is a 10 ms normally distributed delay with correlation, no rate limit and no loss;
+`initialization_rate_pps` is 8.1 Mpps, 100 Gb/s of 1518 byte frames. The second example needs an
+`in.pcap` in the working directory. A `buffer_capacity` of 1,000,000 derives about a million
+mbufs (about 1.8 GiB) per link; to use such a config here, raise `-m` accordingly. Stop with
+`Ctrl-C`.
 
-### Several links in one process (`--links`)
-
-`--links <file>` replaces the `--config*` flags and describes every link of the
-process in one JSON file: one main lcore plus one worker lcore per link.
-Starting or stopping DPDS applies to all links at once.
-
-A **link is one direction**: packets that arrive on its `ingress` port leave on
-its `egress` port with the link's one config applied. Each port may be the
-ingress of at most one link and the egress of at most one link, but its two
-partners need not be the same. NIC A -> NIC B, NIC B -> NIC C and NIC C -> NIC A
-are three links (a ring); the classic bump-in-the-wire is the two links A -> B
-and B -> A; `ingress == egress` is a loopback on one port.
-
-```json
-{ "links": [
-  { "name": "a-to-b", "ingress": "<PCI_A>", "egress": "<PCI_B>",
-    "config": { "...": "Config for A -> B" },
-    "lcore": 3,
-    "histogram": { "bins": 100, "lo_ns": 0, "hi_ns": 2000000 },
-    "delay_stats": false },
-  { "name": "b-to-c", "ingress": "<PCI_B>", "egress": "<PCI_C>",
-    "config": { "...": "Config for B -> C" },
-    "lcore": 2 },
-  { "name": "c-to-a", "ingress": "<PCI_C>", "egress": "<PCI_A>",
-    "config": { "...": "Config for C -> A" },
-    "lcore": 1 }
-] }
-```
-
-The bidirectional pair is the same thing with two entries, with one config per
-direction (use the same config twice for a symmetric link):
-
-```json
-{ "links": [
-  { "name": "forward", "ingress": "<PCI0>", "egress": "<PCI1>", "config": { "...": "Config for <PCI0> -> <PCI1>" } },
-  { "name": "return",  "ingress": "<PCI1>", "egress": "<PCI0>", "config": { "...": "Config for <PCI1> -> <PCI0>" } }
-] }
-```
-
-Every `config` is a complete [config](#configuration) (the `"..."` keys above
-stand for its fields). `lcore`, `histogram` and `delay_stats` are optional. A key
-the format does not know (a typo such as `lcores`, or the keys `ports`,
-`configs`, `histograms` of the removed paired-link format) is a startup error
-naming it.
-
-- **Ports** are DPDK device names: a PCI address as DPDK reports it
-  (`0000:65:00.0`) or a virtual device name (`net_null0`, `net_pcap0`). They are
-  matched against the probed devices by name, never by port id, so the order of
-  the `-a` / `--vdev` arguments does not matter. A port used as the ingress of two
-  links, or as the egress of two links, is a startup error naming the port and
-  the role. Every device DPDK probes must be used by some link (as ingress, as
-  egress or both), otherwise startup fails naming it: allow only the devices you
-  use. A port that is only an egress is never polled; one that is only an ingress
-  never transmits. The RX queue of an egress-only port is never polled, so any
-  traffic that arrives on that wire fills its ring and then shows up as NIC
-  `imissed` (mlx5: `rx_out_of_buffer`) for that port, and with telemetry in
-  `/nic/hw_first_loss,<port>`. Keep that wire free of traffic, or expect those
-  counters to rise.
-- **`name`**: 1 to 32 characters of `[A-Za-z0-9_.-]`, unique. It appears in
-  `/dpds/ports` and in error messages. (With `--config*` the links are named
-  `dir0` and `dir1`.)
-- **Link index**: links are numbered in file order; the telemetry commands take
-  this number (`/dpds/stats,<dir>`, the `dir<d>_*` keys of `/dpds/ports`).
-- **`lcore`**: the EAL must have exactly `1 + number of links` lcores. Without
-  `lcore` the i-th worker lcore (ascending lcore id) runs link i. With `lcore`
-  the link runs exactly on the listed lcore. Either every link has `lcore` or
-  none; the lcores must be distinct, must be EAL worker lcores (not the main
-  lcore) and together must cover every worker lcore. `/dpds/ports`
-  `dir<d>_lcore` reports the lcore actually used. This lets a caller place each
-  link next to its ingress NIC's NUMA node.
-- **`histogram`**: the range of the [delay histogram](docs/TELEMETRY.md#dpdsdelay_histdir).
-  Every field is optional: `bins` (an integer in 1..=500, default 256), `lo_ns`
-  and `hi_ns` (both >= 0, `lo_ns` < `hi_ns`). A missing field takes the
-  automatic value: the range `mean +- 6 std` of the link's config, widened by the
-  Spacer's queueing allowance and at least 1 us wide, clamped at 0 (the exact
-  rule is in [docs/TELEMETRY.md](docs/TELEMETRY.md#dpdsdelay_histdir)). The
-  histogram exists only in `--features telemetry` builds.
-- **`delay_stats`** (boolean, default `true`): `false` switches the delay
-  statistics and the histogram of that link off. Its worker then records neither
-  the intended delay, the lateness nor the histogram (the loop is the one of the
-  counters only, no per-packet and no per-burst cost); counters, drop causes and
-  first-loss stay. The six `delay_*` / `lateness_*` keys of `/dpds/stats,<dir>`
-  are absent, `/dpds/delay_hist,<dir>` is empty and `/dpds/ports` shows
-  `dir<d>_delay_stats` 0 (see
-  [docs/TELEMETRY.md](docs/TELEMETRY.md#delay-statistics-off)).
-- **Telemetry limit**: `/dpds/ports` must fit DPDK's telemetry dict of 256
-  entries (`3 + 5 * ports + 10 * links` keys, `ports` = distinct ports): a ring
-  of 16 ports (16 links) fits, 17 does not; 12 one-way links over 24 ports fit,
-  13 do not. More is a startup error naming the maximum 256.
 - **Pools**: every link has its own mbuf pool on the socket of its ingress port.
   A port that is only an egress still has an RX ring that is filled, so its
   descriptors are added to the pool of the link that transmits on it.
@@ -451,7 +387,7 @@ Example without hardware, a ring of three `net_null` devices (`-l 0-3`: the main
 lcore and one worker per link), run from the repository root:
 
 ```bash
-CONFIG=$(tr -d '\n ' < config.vdev.json)
+CONFIG='{"buffer_capacity":4096,"reordering":false,"delayer":{"distribution":"NormalDistribution","mean_ns":10000000,"std_ns":3000000,"activate_correlation":true,"half_life_period_ns":30000000,"initialization_rate_pps":8100000},"limiter":{"mode":"Spacer","activate":false,"rate_bps":100000000000},"loss_model":{"Random":0.0}}'
 printf '{"links":[{"name":"a-to-b","ingress":"net_null0","egress":"net_null1","config":%s},{"name":"b-to-c","ingress":"net_null1","egress":"net_null2","config":%s},{"name":"c-to-a","ingress":"net_null2","egress":"net_null0","config":%s}]}' \
     "$CONFIG" "$CONFIG" "$CONFIG" > /tmp/links.vdev.json
 ./target/release/dpds --no-huge -m 512 --no-pci --in-memory -l 0-3 \
@@ -461,12 +397,9 @@ printf '{"links":[{"name":"a-to-b","ingress":"net_null0","egress":"net_null1","c
 ### Configuration
 
 The emulation behaviour is controlled by one JSON config per link (a file for
-`--config`, `--config0`, `--config1`, the `config` object of a link in `--links`). The `config.json` in this repository is a
-working default (10 ms normally distributed delay, no rate limit, no loss,
-`initialization_rate_pps` for 100 Gb/s with 1518 byte frames);
-`config.vdev.json` is the same with a small `buffer_capacity` for the
-[virtual-device examples](#without-hardware-virtual-devices). Example with
-the Spacer enabled, bursty loss and a fixed seed:
+`--config`, `--config0`, `--config1`, the `config` object of a link in `--links`). DPDS ships no
+default config; the [virtual-device examples](#without-hardware-virtual-devices) write a small
+one inline. Example with the Spacer enabled, bursty loss and a fixed seed:
 
 ```json
 {
@@ -566,7 +499,7 @@ Query with the client that ships with DPDK (`--file-prefix` as given to DPDS,
 and the same `XDG_RUNTIME_DIR` when running as non-root):
 
 ```bash
-./target/release/dpds -l 0-2 --in-memory --file-prefix demo -a <PCI0> -a <PCI1> -- --config config.json &
+./target/release/dpds -l 0-2 --in-memory --file-prefix demo -a <PCI0> -a <PCI1> -- --config link.json &
 echo '/dpds/stats,0' | dpdk-telemetry.py -f demo
 echo '/dpds/ports' | dpdk-telemetry.py -f demo
 ```
@@ -661,9 +594,9 @@ For interactive use there is the controller with a REST API and a web frontend, 
 
 ## 🖥️ Controller and web frontend
 
-`dpds-controller` stores links and their configuration, discovers the host's
-network interfaces, starts and stops one `dpds` process for all links as its child process, and
-serves live telemetry. The controller also serves the React web frontend: the built frontend is
+`dpds-controller` discovers the host's network interfaces, starts and stops one `dpds` process for
+all links as its child process, and serves live telemetry. It stores nothing: it always starts
+empty, and the configuration travels with every start request. The controller also serves the React web frontend: the built frontend is
 embedded in the `dpds-controller` binary, so one service on one port gives the frontend at
 `http://<host>:<controller port>/` (default port 8100) and the REST API under `/api`. There is no
 Docker and no separate web server.
@@ -701,7 +634,7 @@ server on port 5173 proxies `/api` to a controller on `127.0.0.1:8100` (`DPDS_CO
 ./dpds.sh restart    # stop, then start
 ./dpds.sh update     # switch to the channel's branch and pull it, rebuild, reinstall; restarts only if it was running
 ./dpds.sh --nightly update # the same on the nightly channel (or DPDS_CHANNEL=nightly ./dpds.sh update)
-./dpds.sh uninstall  # remove binaries and unit; keeps the state dir and controller.env
+./dpds.sh uninstall  # remove binaries and unit (and the /var/lib/dpds-controller of an older version); keeps controller.env
 ```
 
 `--yes` skips the question that `install` and `update` ask after the host check. `status` prints the
@@ -721,11 +654,6 @@ Until `nightly` is merged into `main`, `main` still holds the C version of DPDS,
 controller and no `dpds.sh`. For now use `--nightly` or `DPDS_CHANNEL=nightly` (for example
 `DPDS_CHANNEL=nightly ./dpds.sh update`); the default channel `latest` only makes sense after that
 merge.
-
-An update that changes the format of the stored state can make an old `state.json` invalid: the
-controller then refuses to start, and `dpds.sh install` and `update` report it as an error in the host
-check. Its error names the file and, for an unknown field, the offending key. Edit the file and remove
-that key, or move the file away to start empty, which loses all links and presets.
 
 ### Versions and releases
 
@@ -748,46 +676,48 @@ request) and, when a newer release exists, shows a red arrow next to the version
 available" notice. Update with `./dpds.sh update --stable`. Any failure of the check, for example
 without internet access, means no notice.
 
+- **Configuration lives in the browser.** The frontend keeps links, presets and settings only in
+  the browser's localStorage, as P4TG does, so another or a cleared browser starts empty. Export
+  and import of the whole setup are a download and an upload of that document in the browser. The
+  controller reads and writes no configuration file, so an update can never leave it with a file it
+  cannot load. While the emulation runs, `GET /api/emulation` reports the configuration it was
+  started with in `config`, as the client sent it. The frontend compares it with its own to show
+  "pending restart" and offers "Load running configuration" to a browser without links.
+- **Start**: `POST /api/emulation/start` takes the whole configuration as its JSON body,
+  `{"links": [{name, ingress, egress, config, worker?}], "settings": {main_lcore, eal_extra_args,
+  poll_interval_ms}}`; unknown fields are a 400 (`deny_unknown_fields`). It answers 202 and starts
+  `dpds`, 400 when a rule is broken or `links` is empty (`nothing to start`), and 409 while the
+  emulation is starting, running or stopping. Nothing is spawned on an error.
+  `POST /api/emulation/validate` takes the same body, applies the same rules and answers 200
+  `{main_lcore, directions: [{dir, link, rx, tx, lcore}]}`, the lcores a start would use, or the same
+  400/409 errors. It starts nothing and ignores the state of the emulation; the frontend uses it
+  to show problems before Start.
 - **Links**: a link is one direction, `ingress` port to `egress` port, with one config
-  (`{name, ingress, egress, config, worker?}`; `GET|POST /api/links`, `GET|PUT|DELETE
-  /api/links/{id}`): packets received on the ingress leave on the egress with the config
-  applied. `ingress` and `egress` may be the same port (hairpin). A port is the ingress of at
-  most one link and the egress of at most one link (409 naming the other link and the port),
-  but its ingress and egress links need not share a partner: A to B, B to C and C to A are
-  three links, and the classic bidirectional pair is two links (A to B and B to A). Each link
-  gets one worker lcore: `worker` if set, else a free isolated core, preferring the NUMA node of
-  the ingress NIC. The links file handed to `dpds` always carries explicit lcores. The link
-  index (the order of `GET /api/links`) is the direction number of the telemetry and of
-  `/api/stats/{dir}/delay_histogram`; per link, rx statistics come from the ingress port and tx
-  statistics from the egress port. Hugepage and isolated-core hints count one pool and one core
-  per link. A state file with the older two-port link shape is refused at startup with an error
-  naming the file; re-create the links. Link names are checked again when the emulation starts.
-  The setup must fit `dpds`' 256-entry telemetry dict, `3 + 5 * distinct ports + 10 * links <= 256`
-  (for example 16 links over 16 ports, but not 17): create, update, import and start refuse a
-  setup above it with 400 naming 256.
-- **Config**: every link and preset carries the full `dpds-core` config (see
-  [Configuration](#configuration)), including `delayer.initialization_rate_pps`, which is required
-  and has no default (400 naming the field when missing, not finite or below 1). Set it to the
-  expected packet rate of the link. It is part of presets, export/import and the links file.
-- **Frontend**: `http://<host>:<controller port>/`, served by the controller itself. Pages for the dashboard (start/stop, per-link rates, drop
-  shares per cause, delay statistics and histogram), links, interfaces, host hints and settings.
-- **REST API**: served by the controller on port 8100 (`/api/...`), the same port as the frontend. The
-  interactive OpenAPI documentation is at `http://<host>:8100/api/docs`.
-- **Stored state** lives in `/var/lib/dpds-controller` and survives `stop` and `update`.
-- **Presets**: named configs (one per link) stored beside the links (`GET|POST /api/presets`,
-  `GET|PUT|DELETE /api/presets/{id}`; body `{name, description?, config}`). The name has 1 to 64
-  characters and is unique (409); the config is validated like a link config (400 naming the
-  field). Presets are not part of a run, so editing them while `dpds` runs does not set
-  `pending_restart`. Preset ids are never reused.
-- **Export and import**: `GET /api/export` returns the whole setup (`format`
-  `dpds-controller-export`, `version` 2, `settings`, `links`, `presets`; no ids, no runtime state).
-  `POST /api/import` (`?mode=replace`, the only mode) replaces links, presets and settings with such a
-  document. It is refused with 409 unless the emulation is `stopped`, checks the whole document
-  first (format and version, every link, preset and setting by the rules of the single endpoints,
-  unique names, no port reused as ingress or egress, unknown keys such as `id` are 400) and applies it
-  all or nothing in one state write. New ids continue the counters. The reply is
-  `{"links": n, "presets": m}`. A version 1 document (links with `ports` and `configs`) is
-  refused with 400.
+  (`{name, ingress, egress, config, worker?}` in the start body): packets received on the ingress
+  leave on the egress with the config applied. `ingress` and `egress` may be the same port
+  (hairpin). A port is the ingress of at most one link and the egress of at most one link (409
+  naming the other link and the port), but its ingress and egress links need not share a partner:
+  A to B, B to C and C to A are three links, and the classic bidirectional pair is two links (A to
+  B and B to A). Each link gets one worker lcore: `worker` if set, else a free isolated core,
+  preferring the NUMA node of the ingress NIC. The links file handed to `dpds` always carries
+  explicit lcores. The link index (the order of the start body) is the direction number of the
+  telemetry and of `/api/stats/{dir}/delay_histogram`; per link, rx statistics come from the
+  ingress port and tx statistics from the egress port. Hugepage and isolated-core hints count one
+  pool and one core per link. The setup must fit `dpds`' 256-entry telemetry dict,
+  `3 + 5 * distinct ports + 10 * links <= 256` (for example 16 links over 16 ports, but not 17):
+  start and validate refuse a setup above it with 400 naming 256.
+- **Config**: every link carries the full `dpds-core` config (see
+  [Configuration](#configuration)). The stages `delayer`, `limiter` and `loss_model` are optional:
+  `null` or absent means the stage is not added, and the link runs with a stage that does nothing
+  (no delay, no rate limit, no loss). The limiter has no `activate` flag; a present limiter is
+  active. A present stage needs all its fields, including `delayer.initialization_rate_pps`, which
+  has no default (400 naming the field when missing, not finite or below 1). Set it to the
+  expected packet rate of the link.
+- **Frontend**: `http://<host>:<controller port>/`, served by the controller itself. Pages for the
+  dashboard (start/stop, per-link rates, drop shares per cause, delay statistics and histogram),
+  links, presets, interfaces, host hints and settings.
+- **REST API**: served by the controller on port 8100 (`/api/...`), the same port as the frontend.
+  The interactive OpenAPI documentation is at `http://<host>:8100/api/docs`.
 - **Delay histogram extras** (`GET /api/stats/{dir}/delay_histogram`): `?window_s=10|60|300` returns
   only the samples of the last n seconds (difference to the poll that is at least n seconds old;
   `window_s` absent or 0 and runs younger than n seconds give the counts since start; `span_ms` is
@@ -809,8 +739,8 @@ without internet access, means no notice.
   for LogNormal/Gamma) is treated as a point mass.
 - **Stopping** the service stops `dpds` cleanly: it drains the delay buffers first, which can
   take as long as the longest configured delay. The unit's `TimeoutStopSec` is 600 s; after
-  that systemd kills `dpds` mid-drain. The controller adds a `drain_timeout` hint when a stored
-  link needs more than 590 s (delay mean + 6 std + limiter queue `buffer_capacity * 12336 bit / rate_bps`); shorten
+  that systemd kills `dpds` mid-drain. The controller adds a `drain_timeout` hint when a
+  link of the configuration needs more than 590 s (delay mean + 6 std + limiter queue `buffer_capacity * 12336 bit / rate_bps`); shorten
   the delay, the buffer or the limiter queue for such a link.
 - **Input allowlists**: the controller starts `dpds` as root, so it only accepts values it can
   vet. Ports are a PCI address or `net_null<N>` / `net_ring<N>` (no devargs, no `net_pcap`). Extra
@@ -820,8 +750,11 @@ without internet access, means no notice.
 - **Host check**: `dpds.sh check` and `install` run `dpds-controller check`, which prints one
   `OK`/`INFO`/`WARN`/`ERROR` line per hint: isolated cores (`isolcpus`, `nohz_full`,
   `rcu_nocbs`), hugepages, NIC driver, NUMA locality, CPU governor, irqbalance, IOMMU, MTU, PCIe
-  MaxReadReq. The same hints are served at `GET /api/host/hints` and shown in the frontend. Warnings do
-  not block the installation.
+  MaxReadReq. `GET /api/host/hints` serves the hints that depend on the host only and the frontend shows
+  them. `POST /api/host/hints` takes a start body and adds the link-dependent ones (NUMA locality,
+  hugepages for the links, management NIC, drain timeout, MTU and MaxReadReq of the used NICs); the
+  frontend calls it with its current configuration. `dpds-controller check` prints the host-only
+  hints. Warnings do not block the installation.
 - **Tuning is never applied.** Neither `dpds.sh`, the controller nor the frontend changes kernel
   parameters, hugepages, NIC settings or governors; they only report hints and suggestions.
 - **Security**: the controller runs as root and listens on all interfaces without
@@ -840,9 +773,8 @@ without internet access, means no notice.
 
 `dpds.sh status` probes the controller at the bind address from `controller.env`.
 
-`dpds.sh` reads `DPDS_PREFIX`, `DPDS_ETC_DIR`, `DPDS_STATE_DIR`, `DPDS_SYSTEMD_DIR` and
-`DPDS_BIND` (defaults `/usr/local`, `/etc/dpds`, `/var/lib/dpds-controller`,
-`/etc/systemd/system`, `0.0.0.0:8100`); `DPDS_BIND` only applies when `controller.env` is
+`dpds.sh` reads `DPDS_PREFIX`, `DPDS_ETC_DIR`, `DPDS_SYSTEMD_DIR` and
+`DPDS_BIND` (defaults `/usr/local`, `/etc/dpds`, `/etc/systemd/system`, `0.0.0.0:8100`); `DPDS_BIND` only applies when `controller.env` is
 created, which `install` never overwrites.
 
 ---
@@ -863,8 +795,6 @@ crates/dpds-core   Emulation library: delay, rate limiter, loss, packet buffer
 crates/dpdk        Safe wrapper around the DPDK calls the data plane needs
 crates/dpdk-sys    Raw bindgen bindings to DPDK
 Makefile           build / check-static-link (see below)
-config.json        Default emulation configuration
-config.vdev.json   Small configuration for the virtual-device examples
 docs/TELEMETRY.md  The telemetry commands and what every field means
 ```
 

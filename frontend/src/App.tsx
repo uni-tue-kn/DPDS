@@ -10,6 +10,7 @@ import Presets from './pages/Presets';
 import LinkEditor from './pages/LinkEditor';
 import Links from './pages/Links';
 import Settings from './pages/Settings';
+import { resetConfig, useLocalConfig } from './common/localConfig';
 import { startPolling } from './common/polling';
 import { isUpdateAvailable, RELEASES_URL } from './common/updateCheck';
 import type { OnlineView } from './api/types';
@@ -123,6 +124,21 @@ function Sidebar({ theme, onToggle }: { theme: Theme; onToggle: () => void }) {
   );
 }
 
+/** The stored configuration cannot be read: say so on every page and let the user reset it (it is never dropped silently). */
+function CorruptConfigAlert() {
+  const { corrupt } = useLocalConfig();
+  if (!corrupt) return null;
+  return (
+    <div role="alert" className="alert alert-danger d-flex align-items-center gap-3">
+      <span>
+        The local configuration of this browser cannot be read (damaged, or written by a newer version), so nothing is shown
+        and nothing can be started. It stays untouched until you reset it. "Export setup" on the Settings page saves the stored text first, if you need it.
+      </span>
+      <Button variant="danger" size="sm" className="text-nowrap" onClick={resetConfig}>Reset local configuration</Button>
+    </div>
+  );
+}
+
 export default function App() {
   const [theme, setTheme] = useState<Theme>(initialTheme);
 
@@ -141,6 +157,7 @@ export default function App() {
     <div className="app-shell">
       <Sidebar theme={theme} onToggle={toggle} />
       <main className="main-content">
+        <CorruptConfigAlert />
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/links" element={<Links />} />

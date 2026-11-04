@@ -1,7 +1,7 @@
 // Fixture builders for the API types. Deliberately distinct values so tests can tell fields apart.
 import type {
-  ConfigDto, Counters, DirectionPlan, DirectionStats, EmulationState, EmulationView, ExportDocument, Hint,
-  HistogramView, Interface, Link, OnlineView, PortStats, Preset, Settings, StatsView,
+  ConfigDto, Counters, DirectionPlan, DirectionStats, EmulationState, EmulationView, Hint,
+  HistogramView, Interface, Link, LinkInput, OnlineView, PortStats, Preset, RunningConfig, Settings, StatsView,
 } from '../api/types';
 
 export function online(over: Partial<OnlineView> = {}): OnlineView {
@@ -16,12 +16,20 @@ export function config(over: Partial<ConfigDto> = {}): ConfigDto {
       distribution: 'NormalDistribution', mean_ns: 1000, std_ns: 10,
       activate_correlation: false, half_life_period_ns: 0, initialization_rate_pps: 12500000,
     },
-    limiter: { mode: 'Spacer', activate: false, rate_bps: 1e9 },
+    limiter: null, // v22: stage not added (the list reads "none")
     loss_model: { type: 'Random', p: 0 },
     seed: null,
     histogram: null,
     delay_stats: true,
     ...over,
+  };
+}
+
+/** v22: no stage added at all: Buffer and Statistics only. */
+export function configBare(over: Partial<ConfigDto> = {}): ConfigDto {
+  return {
+    buffer_capacity: 1000, reordering: false, delayer: null, limiter: null, loss_model: null, seed: null, histogram: null,
+    delay_stats: true, ...over,
   };
 }
 
@@ -37,7 +45,7 @@ export function config2(): ConfigDto {
       distribution: 'GammaDistribution', mean_ns: 2500, std_ns: 300,
       activate_correlation: true, half_life_period_ns: 4000000, initialization_rate_pps: 8000000,
     },
-    limiter: { mode: 'TokenBucketFilter', activate: true, rate_bps: 40000000000 },
+    limiter: { mode: 'TokenBucketFilter', rate_bps: 40000000000 },
     loss_model: { type: 'GilbertElliot', p: 0.01, r: 0.2, k: 0.9, h: 0.3, state_is_good: false },
     seed: 42,
     histogram: { bins: 64, lo_ns: 100, hi_ns: 9000 },
@@ -54,7 +62,7 @@ export function config3(): ConfigDto {
       distribution: 'LogNormalDistribution', mean_ns: 7777, std_ns: 777,
       activate_correlation: false, half_life_period_ns: 555, initialization_rate_pps: 2500000,
     },
-    limiter: { mode: 'Spacer', activate: true, rate_bps: 5000000000 },
+    limiter: { mode: 'Spacer', rate_bps: 5000000000 },
     loss_model: { type: 'Random', p: 0.25 },
     seed: 7,
     histogram: { bins: 32, lo_ns: 1000, hi_ns: 50000 },
@@ -64,20 +72,6 @@ export function config3(): ConfigDto {
 
 export function preset(over: Partial<Preset> = {}): Preset {
   return { id: 1, name: 'wan', description: 'Typical WAN', config: config3(), ...over };
-}
-
-export function exportDoc(over: Partial<ExportDocument> = {}): ExportDocument {
-  return {
-    format: 'dpds-controller-export',
-    version: 2,
-    settings: settings(),
-    links: [
-      { name: 'a-b', ingress: '0000:65:00.0', egress: '0000:65:00.1', config: config(), worker: null },
-      { name: 'b-a', ingress: '0000:65:00.1', egress: '0000:65:00.0', config: config2(), worker: 5 },
-    ],
-    presets: [{ name: 'wan', description: 'Typical WAN', config: config3() }],
-    ...over,
-  };
 }
 
 /** One directed link (spec v10): ingress port -> egress port with one config. */
@@ -152,7 +146,7 @@ export function plan(): DirectionPlan[] {
 export function emulation(state: EmulationState, over: Partial<EmulationView> = {}): EmulationView {
   return {
     state, pid: state === 'running' ? 4242 : null, started_at: state === 'running' ? 1762000000 : null,
-    directions: plan(), main_lcore: 0, pending_restart: false, error: null, log_tail: [], ...over,
+    directions: plan(), main_lcore: 0, config: null, error: null, log_tail: [], ...over,
   };
 }
 
@@ -205,4 +199,25 @@ export function histogram(dir: number, over: Partial<HistogramView> = {}): Histo
     expected: [2, 12.5, 90.25, 45, 5.5], expected_underflow: 2.5, expected_overflow: 6.5, expected_model: 'exact',
     ...over,
   };
+}
+
+/**
+ * What `GET /api/emulation` reports as `config` while an emulation is starting/running: the accepted start request
+ * (links in start-body shape) plus the controller's own extras (assigned id/dir, planned lcore), which the frontend must
+ * ignore. Defaults to `fx.link()` / `fx.linkRev()` (named a-b and b-a) and `fx.settings()`.
+ */
+export function runningConfig(links: LinkInput[] = [link(), linkRev()], settings: Settings = settingsDefault()): RunningConfig {
+  return {
+    links: links.map((l, i) => ({
+      id: 100 + i, dir: i, lcore: 3 + i,
+      name: l.name, ingress: l.ingress, egress: l.egress, config: l.config, worker: l.worker ?? null,
+    })),
+    settings,
+  };
+}
+const settingsDefault = () => settings();
+
+/** `fx.emulation('running')` that reports `config` (default: `runningConfig()`). */
+export function runningEmulation(config: RunningConfig = runningConfig(), state: EmulationState = 'running'): EmulationView {
+  return emulation(state, { config });
 }

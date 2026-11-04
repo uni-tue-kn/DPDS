@@ -1,7 +1,10 @@
 import { useState } from 'react';
-import { Button, Modal, Table } from 'react-bootstrap';
+import { Badge, Button, Modal, Table } from 'react-bootstrap';
 import { Link as RouterLink } from 'react-router';
 import * as api from '../api/client';
+import { deleteLink, useLocalConfig } from '../common/localConfig';
+import { pendingRestart } from '../common/pendingRestart';
+import LoadRunning from './LoadRunning';
 import ErrorAlert from '../components/ErrorAlert';
 import { errorMessage } from '../common/format';
 import { useLoad } from '../common/useLoad';
@@ -11,27 +14,24 @@ import { delayCell, limiterCell, lossCell, reorderingCell } from './linkSummary'
 import type { Link } from '../api/types';
 
 export default function Links() {
-  const links = useLoad(api.getLinks);
+  const { doc, corrupt } = useLocalConfig();
   const emulation = useLoad(api.getEmulation);
   const label = usePortLabeler();
   const [target, setTarget] = useState<Link | null>(null);
   const [inspected, setInspected] = useState<Link | null>(null);
   const [actionError, setActionError] = useState<string>();
-  const [deleting, setDeleting] = useState(false);
 
-  const confirmDelete = async () => {
-    if (!target || deleting) return;
-    setDeleting(true);
-    setActionError(undefined);
+  const pending = pendingRestart(doc, emulation.data);
+  const links = corrupt ? [] : doc.links;
+
+  const confirmDelete = () => {
+    if (!target) return;
     try {
-      await api.deleteLink(target.id);
-      links.reload();
+      deleteLink(target.id);
     } catch (e) {
       setActionError(errorMessage(e));
-    } finally {
-      setDeleting(false);
-      setTarget(null);
     }
+    setTarget(null);
   };
 
   return (
@@ -42,23 +42,29 @@ export default function Links() {
           <i className="bi bi-plus-lg" aria-hidden="true" /> New link
         </RouterLink>
       </div>
-      {emulation.data?.pending_restart && (
+      <LoadRunning emulation={emulation.data} />
+      {pending.any && (
         <div data-testid="pending-restart" className="alert alert-warning">
           <i className="bi bi-exclamation-triangle" aria-hidden="true" /> Links or settings changed since the emulation started.
           Stop and start it again (restart) to apply them.
         </div>
       )}
-      <ErrorAlert message={links.error ?? actionError} />
-      {links.data && links.data.length === 0 && <p>No links configured yet.</p>}
-      {links.data && links.data.length > 0 && (
+      <ErrorAlert message={actionError} />
+      {!corrupt && links.length === 0 && <p>No links configured yet.</p>}
+      {links.length > 0 && (
         <Table striped size="sm" responsive>
           <thead className="table-dark">
             <tr><th>Name</th><th>Interfaces</th><th>Delay</th><th>Reordering</th><th>Limiter</th><th>Loss</th><th><span className="visually-hidden">Actions</span></th></tr>
           </thead>
           <tbody>
-            {links.data.map((l) => (
+            {links.map((l) => (
               <tr key={l.id}>
-                <td>{l.name}</td>
+                <td>
+                  {l.name}
+                  {pending.links.has(l.name) && (
+                    <Badge pill bg="warning" text="dark" className="ms-2" data-testid="link-pending-restart">pending restart</Badge>
+                  )}
+                </td>
                 <td>{`${label(l.ingress)} → ${label(l.egress)}`}</td>
                 <td>{delayCell(l.config)}</td>
                 <td>{reorderingCell(l.config)}</td>
@@ -86,7 +92,7 @@ export default function Links() {
         <Modal.Body>Delete link {target?.name}? This cannot be undone.</Modal.Body>
         <Modal.Footer>
           <Button variant="secondary" onClick={() => setTarget(null)}>Cancel</Button>
-          <Button variant="danger" disabled={deleting} onClick={confirmDelete}>Confirm delete</Button>
+          <Button variant="danger" onClick={confirmDelete}>Confirm delete</Button>
         </Modal.Footer>
       </Modal>
     </>

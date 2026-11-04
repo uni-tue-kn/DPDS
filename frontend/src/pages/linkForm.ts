@@ -1,6 +1,6 @@
 // Form model of the link editor: every number is kept as the typed string so inputs can be emptied and
 // retyped; `configToDto` validates and converts back to the wire type.
-import type { ConfigDto, Distribution, LimiterMode, LossModelDto } from '../api/types';
+import type { ConfigDto, DelayerDto, Distribution, LimiterMode, LossModelDto } from '../api/types';
 import { PPS_UNITS, RATE_UNITS, TIME_UNITS, emptyUnit, fromBase, toBase } from '../common/units';
 import type { Unit, UnitValue } from '../common/units';
 
@@ -16,13 +16,16 @@ export const GBIT = 3;
 export const MBIT = 2;
 
 export interface ConfigForm {
+  /** A stage that is not added is not sent; its typed values stay in the form while it is removed. */
+  delayer_added: boolean;
+  limiter_added: boolean;
+  dropper_added: boolean;
   distribution: Distribution;
   mean_ns: UnitValue;
   std_ns: UnitValue;
   activate_correlation: boolean;
   half_life_period_ns: UnitValue;
   initialization_rate_pps: UnitValue;
-  limiter_activate: boolean;
   limiter_mode: LimiterMode;
   rate_bps: UnitValue;
   loss_type: LossModelDto['type'];
@@ -44,13 +47,13 @@ export interface ConfigForm {
 /** Conditionally required fields: the form marks them and refuses them empty only while the rule holds. */
 export const stdRequired = (f: ConfigForm) => f.distribution !== 'DeterministicDistribution';
 export const halfLifeRequired = (f: ConfigForm) => f.activate_correlation;
-export const limiterRequired = (f: ConfigForm) => f.limiter_activate;
 
 export function defaultConfigForm(): ConfigForm {
   return {
+    delayer_added: false, limiter_added: false, dropper_added: false,
     distribution: 'NormalDistribution', mean_ns: fromBase(1e6, TIME_UNITS, MS), std_ns: fromBase(1e5, TIME_UNITS, MS),
     activate_correlation: false, half_life_period_ns: fromBase(0, TIME_UNITS, MS), initialization_rate_pps: emptyUnit(MPPS),
-    limiter_activate: false, limiter_mode: 'Spacer', rate_bps: fromBase(1e10, RATE_UNITS, GBIT),
+    limiter_mode: 'Spacer', rate_bps: fromBase(1e10, RATE_UNITS, GBIT),
     loss_type: 'Random', random_p: '0', ge_p: '0.01', ge_r: '0.2', ge_k: '1', ge_h: '0', ge_good: true,
     buffer_capacity: '100000', reordering: false, seed: '', hist_bins: '', hist_lo: emptyUnit(MS), hist_hi: emptyUnit(MS),
     delay_stats: true,
@@ -63,16 +66,9 @@ const optUnit = (v: number | null | undefined, units: Unit[], dflt: number) => (
 export function configToForm(c: ConfigDto): ConfigForm {
   const f: ConfigForm = {
     ...defaultConfigForm(),
-    distribution: c.delayer.distribution,
-    mean_ns: fromBase(c.delayer.mean_ns, TIME_UNITS, MS),
-    std_ns: fromBase(c.delayer.std_ns, TIME_UNITS, MS),
-    activate_correlation: c.delayer.activate_correlation,
-    half_life_period_ns: fromBase(c.delayer.half_life_period_ns, TIME_UNITS, MS),
-    initialization_rate_pps: fromBase(c.delayer.initialization_rate_pps, PPS_UNITS, MPPS),
-    limiter_activate: c.limiter.activate,
-    limiter_mode: c.limiter.mode,
-    rate_bps: fromBase(c.limiter.rate_bps, RATE_UNITS, GBIT),
-    loss_type: c.loss_model.type,
+    delayer_added: c.delayer != null,
+    limiter_added: c.limiter != null,
+    dropper_added: c.loss_model != null,
     buffer_capacity: String(c.buffer_capacity),
     reordering: c.reordering,
     seed: str(c.seed),
@@ -81,14 +77,31 @@ export function configToForm(c: ConfigDto): ConfigForm {
     hist_hi: optUnit(c.histogram?.hi_ns, TIME_UNITS, MS),
     delay_stats: c.delay_stats ?? true,
   };
-  if (c.loss_model.type === 'Random') {
-    f.random_p = String(c.loss_model.p);
-  } else {
-    f.ge_p = String(c.loss_model.p);
-    f.ge_r = String(c.loss_model.r);
-    f.ge_k = String(c.loss_model.k);
-    f.ge_h = String(c.loss_model.h);
-    f.ge_good = c.loss_model.state_is_good ?? true;
+  const d = c.delayer;
+  if (d) {
+    f.distribution = d.distribution;
+    f.mean_ns = fromBase(d.mean_ns, TIME_UNITS, MS);
+    f.std_ns = fromBase(d.std_ns, TIME_UNITS, MS);
+    f.activate_correlation = d.activate_correlation;
+    f.half_life_period_ns = fromBase(d.half_life_period_ns, TIME_UNITS, MS);
+    f.initialization_rate_pps = fromBase(d.initialization_rate_pps, PPS_UNITS, MPPS);
+  }
+  if (c.limiter) {
+    f.limiter_mode = c.limiter.mode;
+    f.rate_bps = fromBase(c.limiter.rate_bps, RATE_UNITS, GBIT);
+  }
+  const l = c.loss_model;
+  if (l) {
+    f.loss_type = l.type;
+    if (l.type === 'Random') {
+      f.random_p = String(l.p);
+    } else {
+      f.ge_p = String(l.p);
+      f.ge_r = String(l.r);
+      f.ge_k = String(l.k);
+      f.ge_h = String(l.h);
+      f.ge_good = l.state_is_good ?? true;
+    }
   }
   return f;
 }
@@ -165,9 +178,19 @@ export function portError(port: string): string | null {
     : `"${port}" is neither a PCI address (0000:65:00.0) nor a vdev (net_null0, net_ring0)`;
 }
 
-/** Throws an Error naming the offending field. */
-export function configToDto(f: ConfigForm): ConfigDto {
-  const loss_model: LossModelDto = f.loss_type === 'Random'
+function delayerToDto(f: ConfigForm): DelayerDto {
+  return {
+    distribution: f.distribution,
+    mean_ns: unitNum(f.mean_ns, TIME_UNITS, 'Mean delay'),
+    std_ns: unitNum(f.std_ns, TIME_UNITS, 'Delay std', stdRequired(f)),
+    activate_correlation: f.activate_correlation,
+    half_life_period_ns: unitNum(f.half_life_period_ns, TIME_UNITS, 'Half-life period', halfLifeRequired(f)),
+    initialization_rate_pps: initRate(f.initialization_rate_pps),
+  };
+}
+
+function lossToDto(f: ConfigForm): LossModelDto {
+  return f.loss_type === 'Random'
     ? { type: 'Random', p: prob(f.random_p, 'Random loss probability') }
     : {
       type: 'GilbertElliot',
@@ -177,26 +200,19 @@ export function configToDto(f: ConfigForm): ConfigDto {
       h: prob(f.ge_h, 'Gilbert-Elliot h'),
       state_is_good: f.ge_good,
     };
+}
+
+/** Throws an Error naming the offending field. Stages that are not added are sent as null and not validated. */
+export function configToDto(f: ConfigForm): ConfigDto {
   const bins = optInt(f.hist_bins, 'Histogram bins');
   const lo_ns = f.hist_lo.text.trim() === '' ? null : unitNum(f.hist_lo, TIME_UNITS, 'Histogram lo');
   const hi_ns = f.hist_hi.text.trim() === '' ? null : unitNum(f.hist_hi, TIME_UNITS, 'Histogram hi');
   return {
     buffer_capacity: nonNegativeInt(f.buffer_capacity, 'Buffer capacity'),
     reordering: f.reordering,
-    delayer: {
-      distribution: f.distribution,
-      mean_ns: unitNum(f.mean_ns, TIME_UNITS, 'Mean delay'),
-      std_ns: unitNum(f.std_ns, TIME_UNITS, 'Delay std', stdRequired(f)),
-      activate_correlation: f.activate_correlation,
-      half_life_period_ns: unitNum(f.half_life_period_ns, TIME_UNITS, 'Half-life period', halfLifeRequired(f)),
-      initialization_rate_pps: initRate(f.initialization_rate_pps),
-    },
-    limiter: {
-      mode: f.limiter_mode,
-      activate: f.limiter_activate,
-      rate_bps: unitNum(f.rate_bps, RATE_UNITS, 'Rate', limiterRequired(f)),
-    },
-    loss_model,
+    delayer: f.delayer_added ? delayerToDto(f) : null,
+    limiter: f.limiter_added ? { mode: f.limiter_mode, rate_bps: unitNum(f.rate_bps, RATE_UNITS, 'Rate') } : null,
+    loss_model: f.dropper_added ? lossToDto(f) : null,
     seed: seed(f.seed),
     histogram: bins == null && lo_ns == null && hi_ns == null ? null : { bins, lo_ns, hi_ns },
     delay_stats: f.delay_stats,

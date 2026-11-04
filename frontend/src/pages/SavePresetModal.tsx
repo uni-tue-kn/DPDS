@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { FormEvent } from 'react';
 import { Button, Form, Modal } from 'react-bootstrap';
-import * as api from '../api/client';
+import { savePreset } from '../common/localConfig';
 import ErrorAlert from '../components/ErrorAlert';
 import { errorMessage } from '../common/format';
 import type { ConfigDto, Preset } from '../api/types';
@@ -15,27 +15,22 @@ export default function SavePresetModal({ getConfig, onSaved, onClose }: {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [error, setError] = useState<string>();
-  const [saving, setSaving] = useState(false);
 
-  const submit = async (ev: FormEvent) => {
+  const submit = (ev: FormEvent) => {
     ev.preventDefault();
-    if (saving) return;
     setError(undefined);
     if (name.trim() === '') {
       setError('Name is required');
       return;
     }
-    setSaving(true);
     try {
-      const saved = await api.createPreset({
+      onSaved(savePreset({
         name: name.trim(),
         description: description.trim() === '' ? null : description.trim(),
         config: getConfig(),
-      });
-      onSaved(saved);
+      }));
     } catch (e) {
       setError(errorMessage(e));
-      setSaving(false);
     }
   };
 
@@ -56,7 +51,7 @@ export default function SavePresetModal({ getConfig, onSaved, onClose }: {
         </Modal.Body>
         <Modal.Footer>
           <Button variant="secondary" onClick={onClose}>Cancel</Button>
-          <Button type="submit" variant="primary" disabled={saving}>Save preset</Button>
+          <Button type="submit" variant="primary">Save preset</Button>
         </Modal.Footer>
       </Form>
     </Modal>

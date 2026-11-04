@@ -8,8 +8,9 @@
 //!   naming it, not a silently dropped setting;
 //! - an empty or invalid body WITH `Content-Type: application/json` is a 400 `{"message"}`.
 //!
-//! Not covered here (not observable without a slow disk): the store's fsync running outside
-//! the state mutex. `--runtime-dir` too long is in `startup_errors.rs`.
+//! Spec 22: the configs arrive in the body of `POST /api/emulation/start` (and validate, hints);
+//! there is no store and no stored link any more. `--runtime-dir` too long is in
+//! `startup_errors.rs`.
 
 use crate::common::*;
 use dpds_controller::dto::ConfigDto;
@@ -47,7 +48,7 @@ fn absurd_meminfo_hugepage_figures_saturate_instead_of_overflowing() {
         (max.as_str(), max.as_str(), max.as_str()),
     ] {
         let h = meminfo_only_host(total, free, size_kb);
-        let state = state_with(vec![link(1, "a", "net_null0", "net_null0", None)]);
+        let state = setup(vec![link("a", "net_null0", "net_null0", None)]);
         // in a debug build an unchecked multiplication panics here
         let hints = hints_json(&h, &state);
         let hp = hint(&hints, "hugepages");
@@ -62,7 +63,8 @@ async fn unknown_routes_are_a_404_with_a_json_message() {
     let a = app();
     for (method, path) in [
         ("GET", "/api/nope"),
-        ("GET", "/api/links/1/extra"),
+        ("GET", "/api/emulation/extra"),
+        ("GET", "/api/host/hints/extra"),
         ("POST", "/api/nope"),
         ("GET", "/api"),
         ("GET", "/api/"),
@@ -77,13 +79,14 @@ async fn unknown_routes_are_a_404_with_a_json_message() {
 async fn wrong_methods_are_a_405_with_a_json_message() {
     let a = app();
     for (method, path) in [
-        ("DELETE", "/api/settings"),
+        ("DELETE", "/api/host/hints"),
         ("POST", "/api/online"),
         ("PUT", "/api/stats"),
         ("GET", "/api/emulation/start"),
         ("GET", "/api/emulation/stop"),
-        ("PATCH", "/api/links"),
-        ("POST", "/api/links/1"),
+        ("GET", "/api/emulation/validate"),
+        ("PUT", "/api/emulation/start"),
+        ("POST", "/api/emulation"),
         ("DELETE", "/api/emulation"),
     ] {
         let r = a.request(method, path, None).await;
@@ -183,7 +186,15 @@ fn typos() -> Vec<Typo> {
         ),
         (
             "limiter",
-            Box::new(|c| c["limiter"]["rate_bpss"] = json!(1.0)),
+            Box::new(|c| {
+                c["limiter"] = json!({"mode": "Spacer", "rate_bps": 1.0e9, "rate_bpss": 1.0})
+            }),
+        ),
+        (
+            "limiter activate (gone)",
+            Box::new(|c| {
+                c["limiter"] = json!({"mode": "Spacer", "activate": true, "rate_bps": 1.0e9})
+            }),
         ),
         (
             "histogram",
@@ -202,27 +213,26 @@ fn typos() -> Vec<Typo> {
 async fn a_typo_in_a_config_is_a_400_naming_the_field() {
     for (what, edit) in typos() {
         let a = app();
-        let mut body = link_body("x", "net_null0", "net_null0");
+        let mut body = link("x", "net_null0", "net_null0", None);
         edit(&mut body["config"]);
-        let r = a.post("/api/links", body.clone()).await;
+        let s = setup(vec![body]);
+        let r = a.start(&s).await;
         assert_eq!(r.status, 400, "{what}: {}", r.text());
         r.message();
-        assert_eq!(a.get("/api/links").await.json(), json!([]), "{what} stored");
-        // on update as well
-        let id = a.create_link("y", "net_null1", "net_null1").await.json()["id"]
-            .as_u64()
-            .unwrap();
-        let r = a.put(&format!("/api/links/{id}"), body).await;
-        assert_eq!(r.status, 400, "{what} on update: {}", r.text());
+        assert!(a.supervisor.plans().is_empty(), "{what} was started");
+        let r = a.validate(&s).await;
+        assert_eq!(r.status, 400, "{what} on validate: {}", r.text());
+        let r = a.post("/api/host/hints", s.body()).await;
+        assert_eq!(r.status, 400, "{what} on hints: {}", r.text());
     }
 }
 
 #[tokio::test]
 async fn the_message_names_a_typo_in_the_seed() {
     let a = app();
-    let mut body = link_body("x", "net_null0", "net_null0");
+    let mut body = link("x", "net_null0", "net_null0", None);
     body["config"]["seeed"] = json!(7);
-    let r = a.post("/api/links", body).await;
+    let r = a.start_links(vec![body]).await;
     assert_eq!(r.status, 400);
     assert!(r.message().contains("seeed"), "{}", r.text());
 }
@@ -250,14 +260,10 @@ fn the_dtos_do_not_deserialize_with_unknown_fields() {
 #[tokio::test]
 async fn an_empty_or_invalid_json_body_is_a_400_with_a_message() {
     let a = app();
-    let id = a.create_link("l", "net_null0", "net_null0").await.json()["id"]
-        .as_u64()
-        .unwrap();
-    let put_link = format!("/api/links/{id}");
-    for (method, path) in [
-        ("POST", "/api/links"),
-        ("PUT", put_link.as_str()),
-        ("PUT", "/api/settings"),
+    for path in [
+        "/api/emulation/start",
+        "/api/emulation/validate",
+        "/api/host/hints",
     ] {
         for body in [
             "",
@@ -270,59 +276,48 @@ async fn an_empty_or_invalid_json_body_is_a_400_with_a_message() {
         ] {
             let r = a
                 .request_raw(
-                    method,
+                    "POST",
                     path,
                     Some("application/json"),
                     body.as_bytes().to_vec(),
                 )
                 .await;
-            assert_eq!(r.status, 400, "{method} {path} body {body:?}: {}", r.text());
+            assert_eq!(r.status, 400, "POST {path} body {body:?}: {}", r.text());
             r.message();
         }
     }
-    // nothing was changed
-    assert_eq!(
-        a.get("/api/links").await.json().as_array().unwrap().len(),
-        1
-    );
+    assert!(a.supervisor.plans().is_empty());
+    assert_eq!(a.get("/api/emulation").await.json()["state"], "stopped");
 }
 
 // ---- spec20: `limit_bit` is gone, the limit is derived from the buffer capacity ------------
 
 #[tokio::test]
-async fn a_link_with_limit_bit_is_a_400_naming_the_field_on_create_and_update() {
+async fn a_link_with_limit_bit_is_a_400_naming_the_field() {
     let a = app();
-    let mut body = link_body("x", "net_null0", "net_null0");
-    body["config"]["limiter"]["limit_bit"] = json!(1.0e6);
-    let r = a.post("/api/links", body.clone()).await;
+    let mut body = link("x", "net_null0", "net_null0", None);
+    body["config"]["limiter"] = json!({"mode": "Spacer", "rate_bps": 1.0e9, "limit_bit": 1.0e6});
+    let r = a.start_links(vec![body]).await;
     assert_eq!(r.status, 400, "{}", r.text());
     assert!(r.message().contains("limit_bit"), "{}", r.text());
-    assert_eq!(a.get("/api/links").await.json(), json!([]), "stored");
-
-    let id = a.create_link("y", "net_null1", "net_null1").await.json()["id"]
-        .as_u64()
-        .unwrap();
-    let before = a.get(&format!("/api/links/{id}")).await.json();
-    let r = a.put(&format!("/api/links/{id}"), body).await;
-    assert_eq!(r.status, 400, "{}", r.text());
-    assert!(r.message().contains("limit_bit"), "{}", r.text());
-    assert_eq!(a.get(&format!("/api/links/{id}")).await.json(), before);
+    assert!(a.supervisor.plans().is_empty());
 }
 
 #[tokio::test]
-async fn a_stored_link_has_no_limit_bit_in_its_limiter() {
+async fn a_running_links_limiter_has_no_limit_bit_and_no_activate() {
     let a = app();
-    let r = a.create_link("plain", "net_null0", "net_null0").await;
-    assert_eq!(r.status, 201, "{}", r.text());
-    for v in [r.json(), a.get("/api/links").await.json()] {
-        let text = v.to_string();
-        assert!(!text.contains("limit_bit"), "{text}");
-    }
-    let l = a.get("/api/links").await.json();
-    let lim = l[0]["config"]["limiter"].as_object().unwrap();
+    let mut l = link("plain", "net_null0", "net_null0", None);
+    l["config"]["limiter"] = json!({"mode": "Spacer", "rate_bps": 1.0e9});
+    a.start_ok(vec![l]).await;
+    let v = a.get("/api/emulation").await.json();
+    let text = v.to_string();
+    assert!(!text.contains("limit_bit"), "{text}");
+    let lim = v["config"]["links"][0]["config"]["limiter"]
+        .as_object()
+        .unwrap();
     let mut keys: Vec<&str> = lim.keys().map(String::as_str).collect();
     keys.sort();
-    assert_eq!(keys, ["activate", "mode", "rate_bps"], "{l}");
+    assert_eq!(keys, ["mode", "rate_bps"], "{v}");
 }
 
 #[tokio::test]
@@ -339,13 +334,13 @@ async fn the_openapi_document_has_no_limit_bit() {
         .expect("LimiterDto properties");
     let mut keys: Vec<&str> = props.keys().map(String::as_str).collect();
     keys.sort();
-    assert_eq!(keys, ["activate", "mode", "rate_bps"]);
+    assert_eq!(keys, ["mode", "rate_bps"]);
 }
 
 #[test]
 fn the_config_dto_rejects_limit_bit_and_does_not_serialize_it() {
     let mut c = cfg_json(1.0e6, 0.0);
-    c["limiter"]["limit_bit"] = json!(1.0e6);
+    c["limiter"] = json!({"mode": "Spacer", "rate_bps": 1.0e9, "limit_bit": 1.0e6});
     let err = serde_json::from_value::<dpds_controller::dto::ConfigDto>(c)
         .expect_err("limit_bit must be an unknown field")
         .to_string();

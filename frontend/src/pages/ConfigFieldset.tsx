@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import { Button, Col, Form, InputGroup, Row } from 'react-bootstrap';
 import {
-  configToForm, DISTRIBUTIONS, halfLifeRequired, LIMITER_MODES, limiterRequired, stdRequired,
+  configToForm, DISTRIBUTIONS, halfLifeRequired, LIMITER_MODES, stdRequired,
 } from './linkForm';
 import type { ConfigForm } from './linkForm';
 import { PPS_UNITS, RATE_UNITS, TIME_UNITS, changeUnit } from '../common/units';
@@ -33,11 +33,16 @@ type UnitKey = {
   [K in keyof ConfigForm]: ConfigForm[K] extends UnitValue ? K : never;
 }[keyof ConfigForm];
 
-function Section({ title, children }: { title: string; children: ReactNode }) {
+function Section({ title, onRemove, children }: { title: string; onRemove?: () => void; children: ReactNode }) {
   return (
     <fieldset className="config-section">
       <legend>{title}</legend>
       <Row>{children}</Row>
+      {onRemove && (
+        <Button type="button" variant="outline-secondary" size="sm" className="mb-3" onClick={onRemove}>
+          {`Remove ${title.toLowerCase()}`}
+        </Button>
+      )}
     </fieldset>
   );
 }
@@ -105,18 +110,27 @@ export default function ConfigFieldset({ title, value, onChange, presets, onSave
   );
 
   const select = (
-    key: 'distribution' | 'limiter_mode' | 'loss_type', label: string, options: readonly string[], disabled = false,
+    key: 'distribution' | 'limiter_mode' | 'loss_type', label: string, options: readonly string[],
   ) => (
     <Form.Group as={Col} md={4} className="mb-3" controlId={id(key)}>
       <Form.Label>{label}</Form.Label>
-      <Form.Select value={value[key]} disabled={disabled} onChange={(e) => set(key, e.target.value as never)}>
+      <Form.Select value={value[key]} onChange={(e) => set(key, e.target.value as never)}>
         {options.map((o) => <option key={o} value={o}>{o}</option>)}
       </Form.Select>
     </Form.Group>
   );
 
-  const limiterOff = !value.limiter_activate;
-  const limiterReq = limiterRequired(value);
+  /** A stage that is not added is one button; added, it is its subsection with a "Remove" control. */
+  const stage = (key: 'delayer_added' | 'limiter_added' | 'dropper_added', title: string, body: ReactNode) => {
+    const name = title.toLowerCase();
+    return value[key] ? (
+      <Section title={title} onRemove={() => set(key, false)}>{body}</Section>
+    ) : (
+      <div className="mb-3">
+        <Button type="button" variant="outline-primary" size="sm" onClick={() => set(key, true)}>{`Add ${name}`}</Button>
+      </div>
+    );
+  };
 
   return (
     <fieldset className="direction" aria-labelledby={id('title')}>
@@ -152,41 +166,46 @@ export default function ConfigFieldset({ title, value, onChange, presets, onSave
         {check('reordering', 'Reordering')}
         {text('seed', 'Seed', { hint: 'Empty: random seed.' })}
       </Section>
-      <Section title="Delayer">
-        {select('distribution', 'Delay distribution', DISTRIBUTIONS)}
-        {unitField('mean_ns', 'Mean delay', TIME_UNITS, { required: true })}
-        {unitField('std_ns', 'Delay std', TIME_UNITS, { required: stdRequired(value) })}
-        {check('activate_correlation', 'Activate correlation')}
-        {unitField('half_life_period_ns', 'Half-life period', TIME_UNITS, {
-          required: halfLifeRequired(value), disabled: !value.activate_correlation,
-        })}
-        {unitField('initialization_rate_pps', 'Initialization rate', PPS_UNITS, {
-          required: true,
-          hint: 'Expected packet rate of this link, e.g. about 8.1 Mpps for 100 Gb/s of 1518 B frames (rate / ((frame + 20 B) x 8))',
-        })}
-      </Section>
-      <Section title="Limiter">
-        {check('limiter_activate', 'Limiter active')}
-        {select('limiter_mode', 'Limiter mode', LIMITER_MODES, limiterOff)}
-        {unitField('rate_bps', 'Rate', RATE_UNITS, { required: limiterReq, disabled: limiterOff })}
-        <Col md={12} className="mb-3">
-          <Form.Text>{derivedLimitText(value.buffer_capacity)}</Form.Text>
-        </Col>
-      </Section>
-      <Section title="Dropper">
-        {select('loss_type', 'Loss model', ['Random', 'GilbertElliot'])}
-        {value.loss_type === 'Random' ? (
-          text('random_p', 'Random loss probability', { required: true })
-        ) : (
-          <>
-            {text('ge_p', 'Gilbert-Elliot p', { required: true })}
-            {text('ge_r', 'Gilbert-Elliot r', { required: true })}
-            {text('ge_k', 'Gilbert-Elliot k', { required: true })}
-            {text('ge_h', 'Gilbert-Elliot h', { required: true })}
-            {check('ge_good', 'Gilbert-Elliot starts in good state')}
-          </>
-        )}
-      </Section>
+      {stage('delayer_added', 'Delayer', (
+        <>
+          {select('distribution', 'Delay distribution', DISTRIBUTIONS)}
+          {unitField('mean_ns', 'Mean delay', TIME_UNITS, { required: true })}
+          {unitField('std_ns', 'Delay std', TIME_UNITS, { required: stdRequired(value) })}
+          {check('activate_correlation', 'Activate correlation')}
+          {unitField('half_life_period_ns', 'Half-life period', TIME_UNITS, {
+            required: halfLifeRequired(value), disabled: !value.activate_correlation,
+          })}
+          {unitField('initialization_rate_pps', 'Initialization rate', PPS_UNITS, {
+            required: true,
+            hint: 'Expected packet rate of this link, e.g. about 8.1 Mpps for 100 Gb/s of 1518 B frames (rate / ((frame + 20 B) x 8))',
+          })}
+        </>
+      ))}
+      {stage('limiter_added', 'Limiter', (
+        <>
+          {select('limiter_mode', 'Limiter mode', LIMITER_MODES)}
+          {unitField('rate_bps', 'Rate', RATE_UNITS, { required: true })}
+          <Col md={12} className="mb-3">
+            <Form.Text>{derivedLimitText(value.buffer_capacity)}</Form.Text>
+          </Col>
+        </>
+      ))}
+      {stage('dropper_added', 'Dropper', (
+        <>
+          {select('loss_type', 'Loss model', ['Random', 'GilbertElliot'])}
+          {value.loss_type === 'Random' ? (
+            text('random_p', 'Random loss probability', { required: true })
+          ) : (
+            <>
+              {text('ge_p', 'Gilbert-Elliot p', { required: true })}
+              {text('ge_r', 'Gilbert-Elliot r', { required: true })}
+              {text('ge_k', 'Gilbert-Elliot k', { required: true })}
+              {text('ge_h', 'Gilbert-Elliot h', { required: true })}
+              {check('ge_good', 'Gilbert-Elliot starts in good state')}
+            </>
+          )}
+        </>
+      ))}
       <Section title="Statistics">
         {check('delay_stats', 'Delay statistics')}
         {text('hist_bins', 'Histogram bins', { hint: 'Empty: 256 bins, mean +- 6 std. Max 500.' })}

@@ -17,7 +17,10 @@
 //!
 //! The controller runs with a fake sysfs/procfs (online CPUs 0..=n, CPUs 1..=n isolated => main
 //! lcore 0, one worker lcore per link) so the assignment does not depend on the test host's
-//! boot parameters; the EAL flags `--no-huge -m 256 --no-pci` come from `settings.eal_extra_args`.
+//! boot parameters; the EAL flags `--no-huge -m 256 --no-pci` come from `settings.eal_extra_args`
+//! of the start body. Spec 22: the controller stores nothing, so every start carries the whole
+//! configuration (`Controller::start_run`) and the running configuration is read back from
+//! `GET /api/emulation`.
 //!
 //! Spec v10: a link is one direction ingress -> egress. The tests use `net_null` hairpin links
 //! and a three-link ring over three `net_null` vdevs (`net_null` receives an endless stream of
@@ -75,7 +78,6 @@ fn dpds_bin() -> PathBuf {
 struct Controller {
     child: Child,
     addr: String,
-    _tmp: tempfile::TempDir,
     _host: FakeHost,
     runtime_dir: PathBuf,
 }
@@ -100,7 +102,6 @@ impl Controller {
         host.cmdline(&format!(
             "ro isolcpus={isolated} nohz_full={isolated} rcu_nocbs={isolated}"
         ));
-        let tmp = tempfile::tempdir().unwrap();
         // short path: the telemetry socket path must stay below 108 bytes
         let runtime_dir = PathBuf::from(format!("/tmp/dpdsc-{}", std::process::id()));
         let port = {
@@ -110,8 +111,6 @@ impl Controller {
         let addr = format!("127.0.0.1:{port}");
         let child = Command::new(CONTROLLER)
             .args(["serve", "--bind", &addr])
-            .arg("--state-dir")
-            .arg(tmp.path().join("state"))
             .arg("--dpds-bin")
             .arg(&dpds)
             .arg("--runtime-dir")
@@ -127,7 +126,6 @@ impl Controller {
         let c = Controller {
             child,
             addr,
-            _tmp: tmp,
             _host: host,
             runtime_dir,
         };
@@ -182,32 +180,14 @@ impl Controller {
         }
     }
 
-    fn configure(&self, eal_extra: &[&str], link_cfg: Value) {
-        self.settings(eal_extra);
-        self.create_link("loop", "net_null0", "net_null0", link_cfg);
-    }
-
-    fn settings(&self, eal_extra: &[&str]) {
-        let (s, v) = self.call(
-            "PUT",
-            "/api/settings",
-            Some(json!({
-                "main_lcore": null,
-                "eal_extra_args": eal_extra, "poll_interval_ms": 250
-            })),
-        );
-        assert_eq!(s, 200, "{v}");
-    }
-
-    fn create_link(&self, name: &str, ingress: &str, egress: &str, config: Value) {
-        let (s, v) = self.call(
-            "POST",
-            "/api/links",
-            Some(json!({
-                "name": name, "ingress": ingress, "egress": egress, "config": config
-            })),
-        );
-        assert_eq!(s, 201, "{v}");
+    /// `POST /api/emulation/start` with `links` and these EAL arguments (poll interval 250 ms).
+    fn start_run(&self, eal_extra: &[&str], links: Vec<Value>) -> (u16, Value) {
+        let body = json!({
+            "links": links,
+            "settings": {"main_lcore": null, "eal_extra_args": eal_extra,
+                         "poll_interval_ms": 250}
+        });
+        self.call("POST", "/api/emulation/start", Some(body))
     }
 
     /// Waits until every link `0..n` has seen packets; returns the last `/api/stats`.
@@ -263,6 +243,11 @@ fn process_gone(pid: i32) -> bool {
 
 const EAL: [&str; 4] = ["--no-huge", "-m", "256", "--no-pci"];
 
+/// The hairpin link `loop` on `net_null0` with `config`.
+fn loop_link(config: Value) -> Value {
+    json!({"name": "loop", "ingress": "net_null0", "egress": "net_null0", "config": config})
+}
+
 fn loop_config() -> Value {
     let mut c = cfg_json(1.0e6, 0.0);
     c["buffer_capacity"] = json!(4096);
@@ -276,9 +261,12 @@ fn loop_config() -> Value {
 fn full_rest_flow_create_start_stats_stop_drain() {
     let _g = serial();
     let c = Controller::start();
-    c.configure(&EAL, loop_config());
+    // a fresh controller has no configuration: nothing is stored, nothing is running
+    let idle = c.emulation();
+    assert_eq!(idle["state"], "stopped", "{idle}");
+    assert!(absent(&idle, "config"), "{idle}");
 
-    let (s, v) = c.call("POST", "/api/emulation/start", Some(json!({})));
+    let (s, v) = c.start_run(&EAL, vec![loop_link(loop_config())]);
     assert_eq!(s, 202, "{v}");
     let run = c.wait_state(&["running"], START_TIMEOUT);
     let pid = run["pid"].as_i64().expect("running state has a pid") as i32;
@@ -289,7 +277,15 @@ fn full_rest_flow_create_start_stats_stop_drain() {
     assert_eq!(run["directions"][0]["tx"], "net_null0");
     assert_eq!(run["directions"][0]["lcore"], 1);
     assert_eq!(run["main_lcore"], 0);
-    assert_eq!(run["pending_restart"], false);
+    assert!(run.get("pending_restart").is_none(), "{run}");
+    // the running configuration is the one the start carried
+    assert_eq!(run["config"]["links"][0]["name"], "loop", "{run}");
+    assert_eq!(run["config"]["links"][0]["ingress"], "net_null0", "{run}");
+    assert_eq!(
+        run["config"]["settings"]["eal_extra_args"],
+        json!(EAL),
+        "{run}"
+    );
 
     // counters move
     let first_rx = {
@@ -343,6 +339,10 @@ fn full_rest_flow_create_start_stats_stop_drain() {
     let stopped = c.wait_state(&["stopped"], STOP_TIMEOUT);
     assert!(absent(&stopped, "pid"));
     assert!(
+        absent(&stopped, "config"),
+        "a stopped controller reports no configuration: {stopped}"
+    );
+    assert!(
         process_gone(pid),
         "dpds child {pid} must be gone after stop"
     );
@@ -352,8 +352,8 @@ fn full_rest_flow_create_start_stats_stop_drain() {
         rt.display()
     );
 
-    // and it can be started again
-    let (s, v) = c.call("POST", "/api/emulation/start", Some(json!({})));
+    // and it can be started again, with a body again: the controller kept nothing
+    let (s, v) = c.start_run(&EAL, vec![loop_link(loop_config())]);
     assert_eq!(s, 202, "{v}");
     c.wait_state(&["running"], START_TIMEOUT);
 }
@@ -365,11 +365,10 @@ fn failed_start_is_reported_with_the_stderr_tail() {
     let c = Controller::start();
     // an argument that passes the controller's allowlist but that EAL rejects
     // (`-n 0`: "invalid memory channel parameter")
-    c.configure(
+    let (s, v) = c.start_run(
         &["--no-huge", "-m", "256", "--no-pci", "-n", "0"],
-        loop_config(),
+        vec![loop_link(loop_config())],
     );
-    let (s, v) = c.call("POST", "/api/emulation/start", Some(json!({})));
     assert_eq!(s, 202, "{v}");
     let v = c.wait_state(&["failed"], START_TIMEOUT);
     assert!(v["error"].as_str().is_some_and(|e| !e.is_empty()), "{v}");
@@ -388,8 +387,7 @@ fn failed_start_is_reported_with_the_stderr_tail() {
 fn controller_sigterm_stops_the_child_before_exiting() {
     let _g = serial();
     let mut c = Controller::start();
-    c.configure(&EAL, loop_config());
-    c.call("POST", "/api/emulation/start", Some(json!({})));
+    c.start_run(&EAL, vec![loop_link(loop_config())]);
     let run = c.wait_state(&["running"], START_TIMEOUT);
     let pid = run["pid"].as_i64().unwrap() as i32;
 
@@ -436,11 +434,15 @@ fn assert_mean_delay(d: &Value, ms: f64) {
 fn two_hairpin_links_run_with_their_own_config_and_the_v2_links_file() {
     let _g = serial();
     let c = Controller::start_with_workers(2);
-    c.settings(&EAL);
-    c.create_link("fast", "net_null0", "net_null0", delay_config(1.0));
-    c.create_link("slow", "net_null1", "net_null1", delay_config(3.0));
-
-    let (s, v) = c.call("POST", "/api/emulation/start", Some(json!({})));
+    let (s, v) = c.start_run(
+        &EAL,
+        vec![
+            json!({"name": "fast", "ingress": "net_null0", "egress": "net_null0",
+                   "config": delay_config(1.0)}),
+            json!({"name": "slow", "ingress": "net_null1", "egress": "net_null1",
+                   "config": delay_config(3.0)}),
+        ],
+    );
     assert_eq!(s, 202, "{v}");
     let run = c.wait_state(&["running"], START_TIMEOUT);
     let dirs = run["directions"].as_array().unwrap();
@@ -508,13 +510,16 @@ fn two_hairpin_links_run_with_their_own_config_and_the_v2_links_file() {
 fn a_three_link_ring_over_three_vdevs_runs_one_worker_per_link() {
     let _g = serial();
     let c = Controller::start_with_workers(3);
-    c.settings(&EAL);
     // A -> B, B -> C, C -> A: each port is ingress once and egress once
-    c.create_link("a-to-b", "net_null0", "net_null1", delay_config(1.0));
-    c.create_link("b-to-c", "net_null1", "net_null2", delay_config(2.0));
-    c.create_link("c-to-a", "net_null2", "net_null0", delay_config(3.0));
-
-    let (s, v) = c.call("POST", "/api/emulation/start", Some(json!({})));
+    let ring = |n: &str, i: &str, e: &str, ms: f64| json!({"name": n, "ingress": i, "egress": e, "config": delay_config(ms)});
+    let (s, v) = c.start_run(
+        &EAL,
+        vec![
+            ring("a-to-b", "net_null0", "net_null1", 1.0),
+            ring("b-to-c", "net_null1", "net_null2", 2.0),
+            ring("c-to-a", "net_null2", "net_null0", 3.0),
+        ],
+    );
     assert_eq!(s, 202, "{v}");
     let run = c.wait_state(&["running"], START_TIMEOUT);
     let dirs = run["directions"].as_array().unwrap();
@@ -555,6 +560,49 @@ fn a_three_link_ring_over_three_vdevs_runs_one_worker_per_link() {
         assert_eq!(file["links"][i]["egress"], *tx);
     }
 
+    assert_eq!(
+        c.call("POST", "/api/emulation/stop", Some(json!({}))).0,
+        202
+    );
+    c.wait_state(&["stopped"], STOP_TIMEOUT);
+}
+
+#[test]
+#[ignore = "needs target/release/dpds built with --features telemetry; run with -- --ignored"]
+fn a_link_without_any_stage_runs_with_zero_delay() {
+    // spec 22, optional stages: the missing delayer, limiter and loss model become the no-op core
+    // stages in the links file, and the real dpds accepts and runs them (the internal
+    // `initialization_rate_pps` of 1 is valid for it and never used without correlation)
+    let _g = serial();
+    let c = Controller::start();
+    let bare = json!({"buffer_capacity": 4096, "reordering": false});
+    let (s, v) = c.start_run(&EAL, vec![loop_link(bare.clone())]);
+    assert_eq!(s, 202, "{v}");
+    let run = c.wait_state(&["running"], START_TIMEOUT);
+    // the running configuration is the request as accepted: no stage appears
+    let cfg = &run["config"]["links"][0]["config"];
+    assert!(
+        absent(cfg, "delayer") && absent(cfg, "limiter") && absent(cfg, "loss_model"),
+        "{run}"
+    );
+    let file: Value =
+        serde_json::from_slice(&std::fs::read(c.runtime_dir.join("links.json")).unwrap()).unwrap();
+    assert_eq!(
+        file["links"][0]["config"]["limiter"]["activate"], false,
+        "{file}"
+    );
+    assert_eq!(
+        file["links"][0]["config"]["delayer"]["mean_ns"], 0.0,
+        "{file}"
+    );
+    let v = c.wait_for_traffic(1);
+    let d0 = &v["directions"][0];
+    assert!(f(d0, "delay_mean_ns") < 1000.0, "zero intended delay: {d0}");
+    assert_eq!(
+        d0["counters"]["loss_drops"].as_u64().unwrap_or(0),
+        0,
+        "{d0}"
+    );
     assert_eq!(
         c.call("POST", "/api/emulation/stop", Some(json!({}))).0,
         202

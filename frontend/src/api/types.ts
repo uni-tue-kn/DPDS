@@ -25,7 +25,6 @@ export interface DelayerDto {
 
 export interface LimiterDto {
   mode: LimiterMode;
-  activate: boolean;
   rate_bps: number;
 }
 
@@ -43,9 +42,10 @@ export interface HistogramDto {
 export interface ConfigDto {
   buffer_capacity: number;
   reordering: boolean;
-  delayer: DelayerDto;
-  limiter: LimiterDto;
-  loss_model: LossModelDto;
+  /** A stage that is null or absent is not added (the controller maps it to a no-op). */
+  delayer?: DelayerDto | null;
+  limiter?: LimiterDto | null;
+  loss_model?: LossModelDto | null;
   seed?: number | null;
   histogram?: HistogramDto | null;
   /** default true. false = the direction records no delay statistics / histogram. */
@@ -129,8 +129,8 @@ export interface EmulationView {
   started_at?: number | null;
   directions: DirectionPlan[];
   main_lcore?: number | null;
-  /** Links or settings changed since the emulation started. */
-  pending_restart: boolean;
+  /** The configuration the emulation was started with; null/absent while stopped or failed. */
+  config?: RunningConfig | null;
   error?: string | null;
   log_tail: string[];
 }
@@ -247,18 +247,27 @@ export interface Preset {
 
 export type PresetInput = Omit<Preset, 'id'>;
 
-/** `GET /api/export`: no ids, no runtime state. */
-export interface ExportDocument {
-  format: 'dpds-controller-export';
-  version: 2;
-  settings: Settings;
+/** Body of `POST /api/emulation/start` and `POST /api/host/hints`: the whole configuration, no ids, no presets. */
+export interface StartRequest {
   links: LinkInput[];
-  presets: PresetInput[];
+  settings: Settings;
 }
 
-export interface ImportSummary {
-  links: number;
-  presets: number;
+/**
+ * The accepted start request as `GET /api/emulation` reports it. Links carry extra keys of the controller (assigned id,
+ * index, planned lcore) that the frontend ignores.
+ */
+export interface RunningConfig {
+  links: LinkInput[];
+  settings: Settings;
+}
+
+/** The document kept in localStorage (key `dpds.config.v1`). */
+export interface LocalConfig {
+  version: 1;
+  links: Link[];
+  presets: Preset[];
+  settings: Settings;
 }
 
 export interface ErrorBody {

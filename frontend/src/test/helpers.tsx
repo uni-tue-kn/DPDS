@@ -1,3 +1,83 @@
+// ## v22 (spec22, user 2026-11-04): stateless controller, configuration only in the browser (supersedes EVERY REST
+//    statement below about links, presets, settings, export/import and pending_restart; the v16/v21 UI rules stay unless
+//    the "Optional stages" part says otherwise)
+// ### Local document ("v22 contract": the constants and helpers `STORAGE_KEY`, `seedStore`, `storedDoc` ... below pin it)
+//   - ONE `localStorage` key, `dpds.config.v1`, whose value is the JSON document
+//       { "version": 1, "links": Link[], "presets": Preset[], "settings": Settings }
+//     `Link` = {id, name, ingress, egress, config, worker?}, `Preset` = {id, name, description?, config}, `Settings` =
+//     {main_lcore, eal_extra_args, poll_interval_ms} (the types of src/api/types.ts). The key `theme` is separate.
+//   - Reading never writes: opening any page with an empty/absent store leaves the key absent. The first save (link,
+//     preset, settings, import, "Load running configuration") creates the document. Missing parts read as: no links, no
+//     presets, settings {main_lcore: null, eal_extra_args: [], poll_interval_ms: 500} (the old controller default).
+//   - IDS ARE ASSIGNED IN THE BROWSER: a new link / preset gets `max(existing ids of its own list) + 1`, the first one
+//     gets 1 (links and presets count separately). Editing keeps the id; ids are positive integers; `/links/:id` and
+//     `/presets/:id` look the id up in the local document (unknown id -> role=alert /not found/i, no editor).
+//     "Load running configuration" and import never invent ids differently: load assigns 1..n in the running order, import
+//     keeps the ids of the file (an imported document must already be a valid v1 document).
+//   - Names: a link name or preset name that another entry of the same list already has (exact match) is refused on save
+//     with role=alert /already exists/i and nothing is written. (The controller re-validates at start.)
+//   - Optional values are compared and persisted as "null or absent": tests treat `worker`, `seed`, `histogram`,
+//     `delay_stats`-less histograms, and a missing stage as equal whether the key is null or missing (`dropNulls` below).
+// ### Corrupt storage
+//   Value not JSON, JSON of the wrong shape (links/presets not arrays, settings missing ...), or `version` != 1 ->
+//   on EVERY page (checked on `/`, `/links`, `/settings`) a `role="alert"` whose text matches /local configuration/i and
+//   whose button named /^reset/i resets it. The alert appears without any user action, the stored string is left untouched
+//   until the button is clicked ("never silently drop"), and the Start button is disabled meanwhile. After Reset the
+//   alert is gone and the store is absent or an empty valid document (links [], presets [], default settings).
+// ### Start
+//   `api.startEmulation(body)` with body = { links: [{name, ingress, egress, config, worker?}], settings: {main_lcore,
+//   eal_extra_args, poll_interval_ms} } built from the local document: NO ids, NO presets, no other keys (the controller
+//   has deny_unknown_fields; the Rust tests use exactly this shape). `worker`/`main_lcore` may be null or absent when
+//   automatic. The client POSTs it as JSON to `/api/emulation/start`. Without local links nothing is sent: role=alert
+//   /no links|nothing to start/i. Stop is unchanged (`api.stopEmulation()`).
+// ### Pending restart (compares the local document with `emulation.config`, the running StartRequest)
+//   `EmulationView.config` = null/absent while stopped|failed, else {links: [...], settings} where every link holds at least
+//   {name, ingress, egress, config, worker?} (extra keys such as the assigned id/dir/lcore are ignored). Differences are
+//   computed on {name, ingress, egress, config, worker} per link (matched BY NAME; null == absent) and on settings.
+//   Only while the state is `starting` or `running`. The global notice is `data-testid="pending-restart"` (text
+//   /restart/i) on the Dashboard AND on the Links page; it shows iff any local link differs from, is missing in, or is
+//   extra to the running list, or the settings differ. On the Links page a link row that differs or is new also holds an
+//   element `data-testid="link-pending-restart"`; unchanged rows hold none. `pending_restart` is gone from the API.
+// ### Load running configuration
+//   A button named "Load running configuration" on the Dashboard and on the Links page, shown iff the emulation reports a
+//   `config` AND the local document has no links. Click -> the local document's links = the running links
+//   ({id 1..n, name, ingress, egress, config, worker}), its settings = the running settings, presets untouched; the pages
+//   then show the links and no pending-restart notice (the configurations are equal) and the button is gone.
+// ### Export / import (Settings page, no REST at all)
+//   "Export setup" downloads the local document (as stored, ids included) as `dpds-setup-<YYYY-MM-DD>.json`, through a
+//   Blob + object URL + `<a download>` click like before. With nothing stored it exports the empty document. "Import setup
+//   file" (file input) accepts a v1 document: valid -> confirm dialog (replace links, settings, presets) -> Confirm writes it
+//   verbatim to the store and shows role=status "<n> links" / "<m> presets"; Cancel writes nothing. Not JSON or not a valid
+//   v1 document -> role=alert mentioning JSON / the setup file, no dialog, nothing written. The input is enabled whatever the
+//   emulation state is (no `import-hint`; the Settings page does not need the emulation).
+// ### Host hints
+//   `api.getHostHints()` (GET /api/host/hints: host-only hints) and, only if the local document has links,
+//   `api.getHostHintsFor({links, settings})` (POST /api/host/hints with the start body above). The page lists both,
+//   de-duplicated by hint `id` (the POST answer wins). No local links -> no POST. A failing POST shows its message
+//   in a role=alert while the host-only hints stay; a failing GET shows its message.
+// ### Removed REST surface
+//   `src/api/client.ts` exports exactly: ApiError, getOnline, getInterfaces, getHostHints, getHostHintsFor, getEmulation,
+//   startEmulation, stopEmulation, getStats, getDelayHistogram. No function for /links, /presets, /settings, /export,
+//   /import. The mocked module (`mockApi.ts`) has the same surface, so a page that still calls a removed function fails.
+// ### Optional stages (delayer, limiter, dropper added on demand)
+//   - `ConfigDto.delayer`, `.limiter`, `.loss_model` are `X | null | undefined` (null/absent = stage not added).
+//     `LimiterDto` = {mode, rate_bps}: the `activate` flag is gone (present = active). A present stage has all fields.
+//   - Editor (link and preset): Buffer and Statistics are always shown. Delayer, Limiter, Dropper each start as ONE button
+//     "Add delayer" / "Add limiter" / "Add dropper" with no fields of that stage rendered (no group of that name). Click
+//     -> the subsection (role group named Delayer / Limiter / Dropper) with the fields, units and required markers of v16
+//     and a button "Remove delayer" / "Remove limiter" / "Remove dropper" INSIDE the subsection (it is its only extra
+//     control); the "Add ..." button is gone while the stage is added and comes back after removing. The sections keep
+//     the order Buffer, Delayer, Limiter, Dropper, Statistics whatever the clicking order. Removing then re-adding in the
+//     same form shows the values typed before. A stored config opens with exactly its present stages added. A removed or
+//     never added stage is sent as null or absent. There is no "Limiter active" switch. Newly added stages show the v16
+//     defaults (mean 1e6 ns, std 1e5 ns, half-life 0, correlation off, initialization rate EMPTY; Spacer, rate 1e10;
+//     Random, p 0). The derived-limit info line lives in the Limiter subsection, so it exists only while the limiter is added.
+//   - Links list: the Delay, Limiter and Loss cells read exactly `none` for a missing stage; the Limiter cell of a present
+//     limiter is "spacing <rate>" / "policing <rate>". Inspect panel: only added stages get their group
+//     (Buffer and Statistics always); every missing one is an element with own text exactly "Delayer: not added",
+//     "Limiter: not added", "Dropper: not added" and has no group. The Limiter group lists "Limiter mode" and "Rate" only.
+// ### Helpers added in this block: see below (`seedStore`, `storedDoc`, `startBodyOf`, `dropNulls`, `addStages` ...).
+//
 // Test helpers + THE FRONTEND CONTRACT the tests assume (spec v5 part D + v6 + v10 directed links + v12 + v16; the
 // tester's choices where the spec is silent are listed here so the implementer can follow them or ask the coordinator
 // to change them).
@@ -347,6 +427,7 @@ import type { UserEvent } from '@testing-library/user-event';
 import { vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
 import App from '../App';
+import type { ConfigDto, Link, Preset, Settings } from '../api/types';
 
 export function renderApp(path = '/') {
   return render(
@@ -479,4 +560,112 @@ export function allRequiredMarkers(): HTMLElement[] {
   const form = screen.getByRole('button', { name: /^save$/i }).closest('form');
   if (!form) throw new Error('Save button is not inside a form');
   return Array.from(form.querySelectorAll<HTMLElement>('.required-marker'));
+}
+
+// ---- v22: the local document, the start body, optional stages -----------------------------------------------------
+
+/** THE storage key of the local document (v22 contract). */
+export const STORAGE_KEY = 'dpds.config.v1';
+/** What the Settings page shows (and Start sends) while nothing is stored. */
+export const DEFAULT_SETTINGS: Settings = { main_lcore: null, eal_extra_args: [], poll_interval_ms: 500 };
+
+/** The document shape of the v22 contract. */
+export interface StoredDoc {
+  version: 1;
+  links: Link[];
+  presets: Preset[];
+  settings: Settings;
+}
+
+export function emptyDoc(): StoredDoc {
+  return { version: 1, links: [], presets: [], settings: { ...DEFAULT_SETTINGS } };
+}
+
+/** Writes a document (missing parts empty) to the store, as an earlier session of the app would have. */
+export function seedStore(over: Partial<StoredDoc> = {}): StoredDoc {
+  const doc: StoredDoc = { ...emptyDoc(), ...over };
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(doc));
+  return doc;
+}
+export const seedLinks = (links: Link[]) => seedStore({ links });
+export const seedPresets = (presets: Preset[]) => seedStore({ presets });
+export const seedSettings = (settings: Settings) => seedStore({ settings });
+/** Writes an arbitrary string (corruption tests). */
+export function seedRaw(value: string): void {
+  localStorage.setItem(STORAGE_KEY, value);
+}
+export const rawStore = () => localStorage.getItem(STORAGE_KEY);
+
+/** The stored document; fails when there is none. */
+export function storedDoc(): StoredDoc {
+  const raw = rawStore();
+  if (raw === null) throw new Error(`nothing stored under ${STORAGE_KEY}`);
+  return JSON.parse(raw) as StoredDoc;
+}
+/** The stored document, or the empty one while the key is absent. */
+export const storedOrEmpty = (): StoredDoc => (rawStore() === null ? emptyDoc() : storedDoc());
+export const storedLinks = () => storedDoc().links;
+export const storedPresets = () => storedDoc().presets;
+
+/** Recursively drops null / undefined object members ("null or absent" are the same optional value). */
+export function dropNulls<T>(v: T): T {
+  if (Array.isArray(v)) return v.map((x) => dropNulls(x)) as T;
+  if (v !== null && typeof v === 'object') {
+    return Object.fromEntries(
+      Object.entries(v as Record<string, unknown>).filter(([, x]) => x !== null && x !== undefined).map(([k, x]) => [k, dropNulls(x)]),
+    ) as T;
+  }
+  return v;
+}
+/** `a` and `b` are the same config modulo null/absent optional members. */
+export const sameConfig = (a: ConfigDto, b: ConfigDto) => expect(dropNulls(a)).toEqual(dropNulls(b));
+
+/** The stage of a config as null when it is absent. */
+export const stageOf = <K extends 'delayer' | 'limiter' | 'loss_model'>(c: ConfigDto, k: K): NonNullable<ConfigDto[K]> | null =>
+  (c[k] ?? null) as NonNullable<ConfigDto[K]> | null;
+
+const START_LINK_KEYS = ['name', 'ingress', 'egress', 'config', 'worker'];
+const START_SETTINGS_KEYS = ['main_lcore', 'eal_extra_args', 'poll_interval_ms'];
+
+/** The start body the document must produce: links without ids, settings, nothing else. */
+export function startBodyOf(doc: StoredDoc): { links: unknown[]; settings: unknown } {
+  return {
+    links: doc.links.map((l) => ({ name: l.name, ingress: l.ingress, egress: l.egress, config: l.config, worker: l.worker })),
+    settings: doc.settings,
+  };
+}
+
+/** `actual` (the argument of startEmulation / getHostHintsFor) has exactly the contracted shape and the content of `doc`. */
+export function expectStartBody(actual: unknown, doc: StoredDoc): void {
+  const body = actual as { links: Record<string, unknown>[]; settings: Record<string, unknown> };
+  expect(Object.keys(body).sort()).toEqual(['links', 'settings']);
+  expect(body.links).toHaveLength(doc.links.length);
+  for (const l of body.links) {
+    expect(Object.keys(l).filter((k) => !START_LINK_KEYS.includes(k))).toEqual([]);
+    expect(l).not.toHaveProperty('id');
+  }
+  expect(Object.keys(body.settings).filter((k) => !START_SETTINGS_KEYS.includes(k))).toEqual([]);
+  expect(dropNulls(JSON.parse(JSON.stringify(body)))).toEqual(dropNulls(JSON.parse(JSON.stringify(startBodyOf(doc)))));
+}
+
+export type Stage = 'delayer' | 'limiter' | 'dropper';
+export const STAGES: Stage[] = ['delayer', 'limiter', 'dropper'];
+export const STAGE_TITLE: Record<Stage, string> = { delayer: 'Delayer', limiter: 'Limiter', dropper: 'Dropper' };
+
+export const addButton = (s: Stage) => screen.getByRole('button', { name: `Add ${s}` });
+export const queryAddButton = (s: Stage) => screen.queryByRole('button', { name: `Add ${s}` });
+export const removeButton = (s: Stage) => screen.getByRole('button', { name: `Remove ${s}` });
+export const queryRemoveButton = (s: Stage) => screen.queryByRole('button', { name: `Remove ${s}` });
+export const queryStage = (s: Stage) => screen.queryByRole('group', { name: STAGE_TITLE[s] });
+
+/** Clicks "Add <stage>" for each of the stages (default: all three). */
+export async function addStages(user: UserEvent, stages: Stage[] = STAGES): Promise<void> {
+  for (const s of stages) await user.click(addButton(s));
+}
+
+/** Counts the writes of the local document from now on (spies on `localStorage.setItem`; call it after seeding). */
+export function watchStoreWrites(): () => number {
+  const spy = vi.spyOn(Storage.prototype, 'setItem');
+  spy.mockClear();
+  return () => spy.mock.calls.filter((c) => c[0] === STORAGE_KEY).length;
 }

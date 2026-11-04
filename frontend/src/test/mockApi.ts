@@ -1,10 +1,11 @@
 // Mock of the `../api/client` module (installed globally in setup.ts via vi.mock).
 // Tests import `api` from here to program and inspect the calls, and `ApiError` to build rejections.
+// v22: the surface is exactly the surviving REST client (no links / presets / settings / export / import functions): a page
+// that still calls a removed function fails with "is not a function".
 import { vi } from 'vitest';
 import type { Mock } from 'vitest';
 import type {
-  EmulationView, ExportDocument, Hint, HistogramView, ImportSummary, Interface, Link, LinkInput, OnlineView, Preset,
-  PresetInput, Settings, StatsView,
+  EmulationView, Hint, HistogramView, Interface, OnlineView, StartRequest, StatsView,
 } from '../api/types';
 import * as fx from './fixtures';
 
@@ -20,26 +21,15 @@ export class ApiError extends Error {
 export const api = {
   getOnline: vi.fn() as Mock<() => Promise<OnlineView>>,
   getInterfaces: vi.fn() as Mock<() => Promise<Interface[]>>,
+  /** GET /api/host/hints: host-only hints. */
   getHostHints: vi.fn() as Mock<() => Promise<Hint[]>>,
-  getLinks: vi.fn() as Mock<() => Promise<Link[]>>,
-  getLink: vi.fn() as Mock<(id: number) => Promise<Link>>,
-  createLink: vi.fn() as Mock<(input: LinkInput) => Promise<Link>>,
-  updateLink: vi.fn() as Mock<(id: number, input: LinkInput) => Promise<Link>>,
-  deleteLink: vi.fn() as Mock<(id: number) => Promise<void>>,
-  getSettings: vi.fn() as Mock<() => Promise<Settings>>,
-  updateSettings: vi.fn() as Mock<(s: Settings) => Promise<Settings>>,
+  /** POST /api/host/hints with a start request: the hints that depend on the links. */
+  getHostHintsFor: vi.fn() as Mock<(req: StartRequest) => Promise<Hint[]>>,
   getEmulation: vi.fn() as Mock<() => Promise<EmulationView>>,
-  startEmulation: vi.fn() as Mock<() => Promise<EmulationView>>,
+  startEmulation: vi.fn() as Mock<(req: StartRequest) => Promise<EmulationView>>,
   stopEmulation: vi.fn() as Mock<() => Promise<EmulationView>>,
   getStats: vi.fn() as Mock<() => Promise<StatsView>>,
   getDelayHistogram: vi.fn() as Mock<(dir: number, windowS?: number) => Promise<HistogramView>>,
-  getPresets: vi.fn() as Mock<() => Promise<Preset[]>>,
-  getPreset: vi.fn() as Mock<(id: number) => Promise<Preset>>,
-  createPreset: vi.fn() as Mock<(input: PresetInput) => Promise<Preset>>,
-  updatePreset: vi.fn() as Mock<(id: number, input: PresetInput) => Promise<Preset>>,
-  deletePreset: vi.fn() as Mock<(id: number) => Promise<void>>,
-  exportSetup: vi.fn() as Mock<() => Promise<ExportDocument>>,
-  importSetup: vi.fn() as Mock<(doc: ExportDocument) => Promise<ImportSummary>>,
 };
 
 /** The module object the `../api/client` import resolves to in tests. */
@@ -47,29 +37,16 @@ export function clientMock() {
   return { ...api, ApiError };
 }
 
-/** Reset every mock to a benign default (stopped emulation, one link, no stats). */
+/** Reset every mock to a benign default (stopped emulation, no stats). */
 export function resetApi(): void {
   for (const fn of Object.values(api)) fn.mockReset();
   api.getOnline.mockResolvedValue(fx.online());
   api.getInterfaces.mockResolvedValue(fx.interfaces());
   api.getHostHints.mockResolvedValue(fx.hints());
-  api.getLinks.mockResolvedValue([fx.link()]);
-  api.getLink.mockImplementation(async () => fx.link());
-  api.createLink.mockImplementation(async (input) => ({ id: 99, ...input }));
-  api.updateLink.mockImplementation(async (id, input) => ({ id, ...input }));
-  api.deleteLink.mockResolvedValue(undefined);
-  api.getSettings.mockResolvedValue(fx.settings());
-  api.updateSettings.mockImplementation(async (s) => s);
+  api.getHostHintsFor.mockResolvedValue([]);
   api.getEmulation.mockResolvedValue(fx.emulation('stopped'));
   api.startEmulation.mockResolvedValue(fx.emulation('starting'));
   api.stopEmulation.mockResolvedValue(fx.emulation('stopping'));
   api.getStats.mockResolvedValue(fx.stats([]));
   api.getDelayHistogram.mockImplementation(async (dir, windowS) => fx.histogram(dir, { window_s: windowS ?? 0 }));
-  api.getPresets.mockResolvedValue([]);
-  api.getPreset.mockImplementation(async (id) => fx.preset({ id }));
-  api.createPreset.mockImplementation(async (input) => ({ id: 77, ...input }));
-  api.updatePreset.mockImplementation(async (id, input) => ({ id, ...input }));
-  api.deletePreset.mockResolvedValue(undefined);
-  api.exportSetup.mockResolvedValue(fx.exportDoc());
-  api.importSetup.mockResolvedValue({ links: 1, presets: 1 });
 }

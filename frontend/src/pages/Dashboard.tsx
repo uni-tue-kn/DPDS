@@ -5,6 +5,9 @@ import ErrorAlert from '../components/ErrorAlert';
 import { errorMessage } from '../common/format';
 import { startPolling } from '../common/polling';
 import { usePortLabeler } from '../common/portLabel';
+import { readConfig, startRequestOf, useLocalConfig } from '../common/localConfig';
+import { pendingRestart } from '../common/pendingRestart';
+import LoadRunning from './LoadRunning';
 import DirectionCard from './DirectionCard';
 import PortsTable from './PortsTable';
 import type { Sample } from './DirectionCard';
@@ -37,6 +40,7 @@ export default function Dashboard() {
   const [actionError, setActionError] = useState<string>();
   const [busy, setBusy] = useState<'start' | 'stop'>();
   const label = usePortLabeler();
+  const { doc, corrupt } = useLocalConfig();
 
   useEffect(() => {
     let alive = true;
@@ -81,7 +85,15 @@ export default function Dashboard() {
     setBusy(which);
     setActionError(undefined);
     try {
-      setEmulation(await (which === 'start' ? api.startEmulation() : api.stopEmulation()));
+      if (which === 'stop') {
+        setEmulation(await api.stopEmulation());
+      } else {
+        // The configuration as it is stored now, so an edit made in another tab is included.
+        const stored = readConfig();
+        if (stored.corrupt) throw new Error('The local configuration cannot be read; reset it first.');
+        if (stored.doc.links.length === 0) throw new Error('No links configured: nothing to start. Add a link first.');
+        setEmulation(await api.startEmulation(startRequestOf(stored.doc)));
+      }
     } catch (err) {
       setActionError(errorMessage(err));
     } finally {
@@ -90,7 +102,7 @@ export default function Dashboard() {
   };
 
   const state = emulation?.state;
-  const canStart = state === 'stopped' || state === 'failed';
+  const canStart = (state === 'stopped' || state === 'failed') && !corrupt;
   const canStop = state === 'starting' || state === 'running';
   const plan = (dir: number) => emulation?.directions.find((p) => p.dir === dir);
   // The controller reports stale: true with no age_ms for a stopped emulation; that is not "old data".
@@ -124,8 +136,8 @@ export default function Dashboard() {
           <Button variant="primary" disabled={!canStop || busy !== undefined} onClick={() => act('stop')}>
             <i className="bi bi-stop-fill" aria-hidden="true" /> Stop
           </Button>
-          {emulation?.pending_restart && (
-            <Badge pill bg="warning" text="dark">Restart needed: links or settings changed</Badge>
+          {pendingRestart(doc, emulation).any && (
+            <Badge pill bg="warning" text="dark" data-testid="pending-restart">Restart needed: links or settings changed</Badge>
           )}
           {emulation?.pid != null && (
             <span className="text-body-secondary">pid {emulation.pid}, main lcore {emulation.main_lcore ?? 'n/a'}</span>
@@ -137,6 +149,7 @@ export default function Dashboard() {
           )}
         </Card.Body>
       </Card>
+      <LoadRunning emulation={emulation} />
       {emulation?.error && (
         <div className="alert alert-danger" role="alert">{emulation.error}</div>
       )}

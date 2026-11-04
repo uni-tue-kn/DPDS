@@ -1,8 +1,11 @@
-import { screen, within } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import { api, ApiError } from '../test/mockApi';
 import * as fx from '../test/fixtures';
-import { renderApp } from '../test/helpers';
+import { expectStartBody, renderApp, seedStore, seedLinks } from '../test/helpers';
 
+// v22: the page lists the host-only hints (`getHostHints`, GET /api/host/hints) plus, when the LOCAL document has links, the
+// link-dependent ones from `getHostHintsFor({links, settings})` (POST /api/host/hints with the start body); merged by hint id,
+// the POST answer wins. No local links -> no POST.
 // Groups are <section> regions named by an <h2> starting with Errors / Warnings / Info / OK (an optional
 // count may follow), in this order, empty groups omitted. Each group has `data-level` (error|warn|info|ok);
 // each hint is a listitem with the same `data-level` showing title, detail and suggestion. The level
@@ -83,5 +86,73 @@ describe('Host hints page', () => {
     renderApp('/hints');
     expect(await screen.findByText('Port 0000:65:00.0 is on node 1.')).toBeInTheDocument();
     expect(api.getInterfaces).not.toHaveBeenCalled();
+  });
+});
+
+describe('Host hints page: hints for the local configuration (v22)', () => {
+  const linkHint = { id: 'numa', level: 'warn' as const, title: 'NUMA mismatch', detail: 'a-b crosses nodes.', suggestion: 'Use node 0.' };
+
+  it('without local links only the host hints are asked for: no POST', async () => {
+    renderApp('/hints');
+    await screen.findByRole('region', { name: /^Errors/ });
+    expect(api.getHostHints).toHaveBeenCalledTimes(1);
+    expect(api.getHostHintsFor).not.toHaveBeenCalled();
+  });
+
+  it('with local links it POSTs the start body (links without ids, settings) and lists the host and the link hints together', async () => {
+    const doc = seedStore({ links: [fx.link(), fx.linkRev()], presets: [fx.preset()], settings: fx.settings({ main_lcore: 2, poll_interval_ms: 250 }) });
+    api.getHostHintsFor.mockResolvedValue([linkHint]);
+    renderApp('/hints');
+    const warns = await screen.findByRole('region', { name: /^Warnings/ });
+    await waitFor(() => expect(warns).toHaveTextContent('NUMA mismatch'));
+    expect(warns).toHaveTextContent('Few hugepages'); // host hint of the GET
+    expect(api.getHostHints).toHaveBeenCalledTimes(1);
+    expect(api.getHostHintsFor).toHaveBeenCalledTimes(1);
+    expectStartBody(api.getHostHintsFor.mock.calls[0][0], doc);
+    expect(within(warns).getAllByRole('listitem')).toHaveLength(3);
+  });
+
+  it('a hint id in both answers is listed once and the POST answer wins', async () => {
+    seedLinks([fx.link()]);
+    api.getHostHintsFor.mockResolvedValue([
+      { id: 'hugepages', level: 'error', title: 'Hugepages too few for the links', detail: 'a-b needs 8 GiB.', suggestion: 'Reserve 8 GiB.' },
+    ]);
+    renderApp('/hints');
+    const errors = await screen.findByRole('region', { name: /^Errors/ });
+    await waitFor(() => expect(errors).toHaveTextContent('Hugepages too few for the links'));
+    expect(screen.queryByText('Few hugepages')).not.toBeInTheDocument();
+    expect(screen.getAllByText(/hugepages/i).length).toBeGreaterThan(0);
+    expect(within(screen.getByRole('region', { name: /^Warnings/ })).getAllByRole('listitem')).toHaveLength(1); // governor only
+  });
+
+  it('a failing POST shows its message in an alert while the host hints stay', async () => {
+    seedLinks([fx.link()]);
+    api.getHostHintsFor.mockRejectedValue(new ApiError(409, 'port 0000:17:00.0 is a management NIC'));
+    renderApp('/hints');
+    expect(await screen.findByRole('alert')).toHaveTextContent('port 0000:17:00.0 is a management NIC');
+    expect(screen.getByRole('region', { name: /^Errors/ })).toHaveTextContent('No core isolation');
+  });
+
+  it('a failing GET still shows its error, also when there are links', async () => {
+    seedLinks([fx.link()]);
+    api.getHostHints.mockRejectedValue(new ApiError(500, 'procfs unreadable'));
+    renderApp('/hints');
+    expect(await screen.findByRole('alert')).toHaveTextContent('procfs unreadable');
+  });
+
+  it('an empty answer of both calls shows the empty message', async () => {
+    seedLinks([fx.link()]);
+    api.getHostHints.mockResolvedValue([]);
+    api.getHostHintsFor.mockResolvedValue([]);
+    renderApp('/hints');
+    expect(await screen.findByText(/no hints/i)).toBeInTheDocument();
+  });
+
+  it('reads the document but never writes it', async () => {
+    seedLinks([fx.link()]);
+    const before = localStorage.getItem('dpds.config.v1');
+    renderApp('/hints');
+    await screen.findByRole('region', { name: /^Errors/ });
+    expect(localStorage.getItem('dpds.config.v1')).toBe(before);
   });
 });

@@ -7,29 +7,47 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use crate::common::*;
-use dpds_controller::lcores::assign_lcores;
 use serde_json::json;
 
 // ---- hugepage need saturates -------------------------------------------------------
 
-#[test]
-fn an_absurd_buffer_capacity_makes_the_hugepage_need_saturate_not_wrap() {
+#[tokio::test]
+async fn an_absurd_buffer_capacity_makes_the_hugepage_need_saturate_not_wrap() {
     // u64::MAX buffers: (capacity + pool slack) * 1920 B overflows u64. A wrapped
-    // (small) need would turn this "ok"; a saturated one cannot fit.
-    let host = FakeHost::bare_metal(); // 2 x 2048 x 2 MiB free
+    // (small) need would turn this "ok"; a saturated one cannot fit. The hints of a body are
+    // advice, not a start: either they answer 200 with an error-level hugepage hint, or the
+    // body's capacity is refused (400 naming `buffer_capacity`, the cap is 2^31); a wrapped
+    // "ok" is the one outcome that is wrong.
+    let a = TestApp::new(FakeHost::bare_metal()); // 2 x 2048 x 2 MiB free
     let mut cfg = cfg_json(1.0e6, 0.0);
     cfg["buffer_capacity"] = json!(u64::MAX);
     let links = vec![
-        link_cfg(1, "a", "net_null0", "net_null0", cfg.clone()),
-        link_cfg(2, "b", "net_null1", "net_null1", cfg.clone()),
+        link_cfg("a", "net_null0", "net_null0", cfg.clone()),
+        link_cfg("b", "net_null1", "net_null1", cfg),
     ];
-    let hints = hints_json(&host, &state_with(links));
-    assert_eq!(
-        hint(&hints, "hugepages")["level"],
-        "error",
-        "{}",
-        hint(&hints, "hugepages")
-    );
+    let r = a.post("/api/host/hints", setup(links).body()).await;
+    match r.status {
+        200 => {
+            let hints = r.json();
+            assert_eq!(
+                hint(&hints, "hugepages")["level"],
+                "error",
+                "{}",
+                hint(&hints, "hugepages")
+            );
+        }
+        400 => assert!(r.message().contains("buffer_capacity"), "{}", r.text()),
+        other => panic!("unexpected status {other}: {}", r.text()),
+    }
+    // the largest valid capacity (2^31) on two links needs far more than the host has
+    let mut cfg = cfg_json(1.0e6, 0.0);
+    cfg["buffer_capacity"] = json!(2_147_483_648u64);
+    let links = vec![
+        link_cfg("a", "net_null0", "net_null0", cfg.clone()),
+        link_cfg("b", "net_null1", "net_null1", cfg),
+    ];
+    let hints = hints_json(&a.host, &setup(links));
+    assert_eq!(hint(&hints, "hugepages")["level"], "error");
 }
 
 // ---- nohz_full "(null)" --------------------------------------------------------------
@@ -68,11 +86,11 @@ fn isolated_cores_that_are_offline_are_never_assigned() {
     // 4 CPUs online, but the isolated list names 6-7 too
     let h = FakeHost::bare_metal();
     h.cpus(4, Some("2-3,6-7"), &[(0, "0-3")]);
-    let a = assign_lcores(
-        &h.roots(),
-        &state_with(vec![
-            link(1, "a", "net_null0", "net_null0", None),
-            link(2, "b", "net_null1", "net_null1", None),
+    let a = plan_for(
+        &h,
+        &setup(vec![
+            link("a", "net_null0", "net_null0", None),
+            link("b", "net_null1", "net_null1", None),
         ]),
     )
     .unwrap();
@@ -80,12 +98,12 @@ fn isolated_cores_that_are_offline_are_never_assigned() {
     lcores.sort_unstable();
     assert_eq!(lcores, [2, 3]);
     // a third direction has no online isolated core left
-    let e = assign_lcores(
-        &h.roots(),
-        &state_with(vec![
-            link(1, "a", "net_null0", "net_null0", None),
-            link(2, "b", "net_null1", "net_null1", None),
-            link(3, "c", "net_null2", "net_null2", None),
+    let e = plan_for(
+        &h,
+        &setup(vec![
+            link("a", "net_null0", "net_null0", None),
+            link("b", "net_null1", "net_null1", None),
+            link("c", "net_null2", "net_null2", None),
         ]),
     )
     .unwrap_err()
@@ -98,11 +116,11 @@ fn an_isolated_core_in_a_hole_of_the_online_list_is_skipped() {
     let h = FakeHost::bare_metal();
     h.cpus(8, Some("1-3"), &[(0, "0-7")]);
     h.write("sys/devices/system/cpu/online", "0-1,3-7\n"); // cpu2 is offline
-    let a = assign_lcores(
-        &h.roots(),
-        &state_with(vec![
-            link(1, "a", "net_null0", "net_null0", None),
-            link(2, "b", "net_null1", "net_null1", None),
+    let a = plan_for(
+        &h,
+        &setup(vec![
+            link("a", "net_null0", "net_null0", None),
+            link("b", "net_null1", "net_null1", None),
         ]),
     )
     .unwrap();
@@ -206,21 +224,18 @@ async fn handlers_that_read_sysfs_do_not_block_the_async_workers() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_concurrent_starts_launch_exactly_once() {
     let a = TestApp::new(FakeHost::bare_metal());
-    a.create_link("l", "net_null0", "net_null0").await;
+    let body = setup(vec![link("l", "net_null0", "net_null0", None)]).body();
     // the supervisor needs 300 ms to take the plan: the window in which a second
     // start could pass the state check
     a.supervisor.set_start_delay(Duration::from_millis(300));
     let tasks: Vec<_> = (0..2)
         .map(|_| {
             let router = a.router.clone();
+            let body = body.clone();
             tokio::spawn(async move {
-                let req = axum::http::Request::builder()
-                    .method("POST")
-                    .uri("/api/emulation/start")
-                    .header("content-type", "application/json")
-                    .body(axum::body::Body::from("{}"))
-                    .unwrap();
-                send(&router, req).await.status
+                call(&router, "POST", "/api/emulation/start", Some(body))
+                    .await
+                    .status
             })
         })
         .collect();
@@ -249,11 +264,8 @@ fn bind_without_the_serve_subcommand_is_honoured() {
 #[test]
 fn the_bind_env_without_the_serve_subcommand_is_honoured_too() {
     let addr = free_addr();
-    let state = tempfile::tempdir().unwrap();
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_dpds-controller"))
         .env("DPDS_CONTROLLER_BIND", &addr)
-        .arg("--state-dir")
-        .arg(state.path())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()

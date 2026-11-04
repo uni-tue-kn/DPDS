@@ -13,7 +13,7 @@ repository = "https://github.com/uni-tue-kn/DPDS"
 keywords = ["network", "emulator", "delay", "packet-loss", "rate-limiting"]
 categories = ["network-programming", "simulation"]
 # tests/metadata.rs and tests/config.rs read files outside the crate (the
-# workspace manifests, LICENSE and config.json), so they cannot pass from the
+# workspace manifests and LICENSE), so they cannot pass from the
 # unpacked package; they stay in the repository.
 include = [
     "src/**",

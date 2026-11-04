@@ -36,9 +36,7 @@ use crate::common::*;
 use crate::fake_telemetry::{short_tempdir, FakeTelemetryServer, Mode};
 use crate::histogram_extras::{cfg, hist, num_of, snap};
 use dpds_controller::api::{self, Deps};
-use dpds_controller::model::{Settings, StoredState};
 use dpds_controller::stats::{Polled, Snapshot};
-use dpds_controller::store;
 use dpds_controller::supervisor::{State, SupervisorStatus};
 use dpds_controller::telemetry::{socket_path, Poller, TelemetrySource};
 use serde_json::{json, Value};
@@ -101,44 +99,41 @@ impl TelemetrySource for ClockTelemetry {
 struct Rig {
     router: axum::Router,
     clock: Arc<ClockTelemetry>,
-    _dirs: tempfile::TempDir,
+    _host: FakeHost,
 }
 
 /// Links `a-to-b` (direction 0, Deterministic(150 ns): all expected mass in bin 1 of 0..400 / 100)
-/// and `b-to-a` (direction 1, Normal).
+/// and `b-to-a` (direction 1, Normal), started through the API (the configuration the histogram's
+/// expected counts follow is the one the emulation was started with).
 fn rig() -> Rig {
-    let dir = tempfile::tempdir().unwrap();
     let l0 = link_cfg(
-        1,
         "a-to-b",
         NIC0,
         NIC1,
         cfg("DeterministicDistribution", 150.0, 0.0),
     );
-    let l1 = link_cfg(
-        2,
-        "b-to-a",
-        NIC1,
-        NIC0,
-        cfg("NormalDistribution", 150.0, 30.0),
-    );
-    store::save(dir.path(), &state_with(vec![l0, l1])).unwrap();
+    let l1 = link_cfg("b-to-a", NIC1, NIC0, cfg("NormalDistribution", 150.0, 30.0));
     let clock = ClockTelemetry::new();
+    let host = FakeHost::bare_metal();
     let router = api::router(Deps {
-        state_dir: dir.path().to_path_buf(),
-        roots: FakeHost::bare_metal().roots(),
+        roots: host.roots(),
         supervisor: FakeSupervisor::new(),
         telemetry: clock.clone(),
         dpds_bin: PathBuf::from("/usr/local/bin/dpds"),
         runtime_dir: PathBuf::from("/run/dpds-controller-test"),
         dpds_has_telemetry: true,
         is_root: false,
-    })
-    .unwrap();
+    });
+    let start = setup(vec![l0, l1]).body();
+    let r = block_on({
+        let router = router.clone();
+        async move { call(&router, "POST", "/api/emulation/start", Some(start)).await }
+    });
+    assert_eq!(r.status, 202, "{}", r.text());
     Rig {
         router,
         clock,
-        _dirs: dir,
+        _host: host,
     }
 }
 
@@ -446,25 +441,13 @@ struct PollerRig {
     supervisor: Arc<FakeSupervisor>,
     serial: Arc<AtomicU64>,
     _server: FakeTelemetryServer,
-    _dirs: (tempfile::TempDir, tempfile::TempDir),
+    _dir: tempfile::TempDir,
 }
 
 /// A real `Poller` (50 ms interval) against a fake socket whose `/dpds/stats,0` answers
 /// `rx_pkts` = a serial number that grows with every query, so each snapshot is identifiable.
 fn poller_rig() -> PollerRig {
-    let state = tempfile::tempdir().unwrap();
     let rt = short_tempdir();
-    store::save(
-        state.path(),
-        &StoredState {
-            settings: Settings {
-                poll_interval_ms: 50,
-                ..Settings::default()
-            },
-            ..StoredState::default()
-        },
-    )
-    .unwrap();
     let supervisor = FakeSupervisor::new();
     supervisor.force_status(SupervisorStatus {
         pid: Some(4242),
@@ -496,13 +479,15 @@ fn poller_rig() -> PollerRig {
             }
         },
     );
-    let poller = Poller::spawn(state.path().to_path_buf(), runtime_dir, supervisor.clone());
+    let poller = Poller::spawn(runtime_dir, supervisor.clone());
+    // the interval comes with the start body in a real run; nothing stores it any more
+    poller.set_poll_interval(50);
     PollerRig {
         poller,
         supervisor,
         serial,
         _server: server,
-        _dirs: (state, rt),
+        _dir: rt,
     }
 }
 

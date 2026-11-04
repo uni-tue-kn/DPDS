@@ -1,7 +1,7 @@
 // Read-only views of a stored config for the Links list (one cell per section) and the inspect panel (every field).
 import { PPS_UNITS, RATE_UNITS, SIZE_UNITS, TIME_UNITS, formatUnit } from '../common/units';
 import { GBIT, MBIT, MPPS, MS } from './linkForm';
-import type { ConfigDto } from '../api/types';
+import type { ConfigDto, DelayerDto } from '../api/types';
 
 export const time = (ns: number) => formatUnit(ns, TIME_UNITS, MS);
 export const rate = (bps: number) => formatUnit(bps, RATE_UNITS, GBIT);
@@ -10,11 +10,12 @@ const size = (bit: number) => formatUnit(bit, SIZE_UNITS, MBIT);
 export const pps = (v: number) => formatUnit(v, PPS_UNITS, MPPS);
 
 /** "Normal" for "NormalDistribution". */
-export const distributionName = (d: ConfigDto['delayer']['distribution']) => d.replace(/Distribution$/, '');
+export const distributionName = (d: DelayerDto['distribution']) => d.replace(/Distribution$/, '');
 
-/** "Normal 10 ms / 1 ms"; the deterministic distribution has no std to show. */
+/** "Normal 10 ms / 1 ms"; the deterministic distribution has no std to show; "none" without a delayer. */
 export function delayCell(c: ConfigDto): string {
   const d = c.delayer;
+  if (!d) return 'none';
   const name = distributionName(d.distribution);
   return d.distribution === 'DeterministicDistribution'
     ? `${name} ${time(d.mean_ns)}`
@@ -25,13 +26,15 @@ export const reorderingCell = (c: ConfigDto) => (c.reordering ? '+' : '\u2212');
 
 /** "spacing 10 Gbit/s", "policing 10 Gbit/s" or "none". */
 export function limiterCell(c: ConfigDto): string {
-  if (!c.limiter.activate) return 'none';
-  return `${c.limiter.mode === 'Spacer' ? 'spacing' : 'policing'} ${rate(c.limiter.rate_bps)}`;
+  const l = c.limiter;
+  if (!l) return 'none';
+  return `${l.mode === 'Spacer' ? 'spacing' : 'policing'} ${rate(l.rate_bps)}`;
 }
 
-/** "Random p=0.01" or "Gilbert-Elliott p=0.01, r=0.2, h=0.3, k=0.9". */
+/** "Random p=0.01", "Gilbert-Elliott p=0.01, r=0.2, h=0.3, k=0.9" or "none". */
 export function lossCell(c: ConfigDto): string {
   const l = c.loss_model;
+  if (!l) return 'none';
   return l.type === 'Random' ? `Random p=${l.p}` : `Gilbert-Elliott p=${l.p}, r=${l.r}, h=${l.h}, k=${l.k}`;
 }
 

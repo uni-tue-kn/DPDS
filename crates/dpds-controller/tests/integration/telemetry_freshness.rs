@@ -19,33 +19,23 @@ use std::time::{Duration, Instant};
 use crate::common::*;
 use crate::fake_telemetry::{short_tempdir, FakeTelemetryServer, Mode};
 use dpds_controller::api::{self, Deps};
-use dpds_controller::model::{Settings, StoredState};
-use dpds_controller::store;
 use dpds_controller::supervisor::{State, SupervisorStatus};
-use dpds_controller::telemetry::{socket_path, Poller};
+use dpds_controller::telemetry::{socket_path, Poller, TelemetrySource};
 use serde_json::{json, Value};
 
 struct Rig {
     router: axum::Router,
     server: FakeTelemetryServer,
     _poller: Arc<Poller>,
-    _dirs: (tempfile::TempDir, tempfile::TempDir),
+    _dir: tempfile::TempDir,
 }
 
+/// Spec 22: the poll interval is no stored setting any more; it comes with the start body
+/// (`settings.poll_interval_ms`) and reaches the poller through `TelemetrySource::set_poll_interval`
+/// (ASSUMPTION of the tester: a trait method with a default no-op body, so fakes need not
+/// implement it; `Poller::spawn(runtime_dir, supervisor)` polls every 500 ms until told).
 fn rig(interval_ms: u64) -> Rig {
-    let state = tempfile::tempdir().unwrap();
     let rt = short_tempdir();
-    store::save(
-        state.path(),
-        &StoredState {
-            settings: Settings {
-                poll_interval_ms: interval_ms,
-                ..Settings::default()
-            },
-            ..StoredState::default()
-        },
-    )
-    .unwrap();
     let supervisor = FakeSupervisor::new();
     supervisor.force_status(SupervisorStatus {
         pid: Some(4242),
@@ -90,13 +80,9 @@ fn rig(interval_ms: u64) -> Rig {
     );
     let runtime_dir: PathBuf = rt.path().to_path_buf();
     let server = FakeTelemetryServer::serving(&socket_path(&runtime_dir), 4242, snap);
-    let poller = Poller::spawn(
-        state.path().to_path_buf(),
-        runtime_dir.clone(),
-        supervisor.clone(),
-    );
+    let poller = Poller::spawn(runtime_dir.clone(), supervisor.clone());
+    poller.set_poll_interval(interval_ms);
     let router = api::router(Deps {
-        state_dir: state.path().to_path_buf(),
         roots: FakeHost::bare_metal().roots(),
         supervisor,
         telemetry: poller.clone(),
@@ -104,13 +90,12 @@ fn rig(interval_ms: u64) -> Rig {
         runtime_dir,
         dpds_has_telemetry: true,
         is_root: false,
-    })
-    .unwrap();
+    });
     Rig {
         router,
         server,
         _poller: poller,
-        _dirs: (state, rt),
+        _dir: rt,
     }
 }
 
@@ -212,4 +197,86 @@ async fn transport_errors_count_as_failures_too() {
     r.server.break_all();
     let v = wait_for(&r, "the cache to be cleared", 10, |v| !has_data(v)).await;
     assert_eq!(v["stale"], true, "{v}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_poll_interval_of_the_start_body_reaches_the_poller() {
+    // a real poller, a fake dpds socket and a fake supervisor behind the real router: the
+    // controller keeps no settings, so `poll_interval_ms` of the start body is the only way the
+    // poller can learn it. At 100 ms about 10 polls fit in a second, at the default 500 only 2.
+    let rt = short_tempdir();
+    let runtime_dir: PathBuf = rt.path().to_path_buf();
+    let server = FakeTelemetryServer::serving(
+        &socket_path(&runtime_dir),
+        4242,
+        snapshot(
+            [
+                DirSample {
+                    uptime_ns: 1,
+                    rx_pkts: 1,
+                    tx_sent: 1,
+                    loss: 0,
+                    limiter: 0,
+                    full: 0,
+                    tx_drops: 0,
+                },
+                DirSample {
+                    uptime_ns: 1,
+                    rx_pkts: 1,
+                    tx_sent: 1,
+                    loss: 0,
+                    limiter: 0,
+                    full: 0,
+                    tx_drops: 0,
+                },
+            ],
+            [
+                PortSample {
+                    ibytes: 1,
+                    obytes: 1,
+                    imissed: 0,
+                    rx_nombuf: 0,
+                },
+                PortSample {
+                    ibytes: 1,
+                    obytes: 1,
+                    imissed: 0,
+                    rx_nombuf: 0,
+                },
+            ],
+        ),
+    );
+    let supervisor = FakeSupervisor::new();
+    let poller = Poller::spawn(runtime_dir.clone(), supervisor.clone());
+    let host = FakeHost::bare_metal();
+    let router = api::router(Deps {
+        roots: host.roots(),
+        supervisor,
+        telemetry: poller.clone(),
+        dpds_bin: PathBuf::from("/usr/local/bin/dpds"),
+        runtime_dir,
+        dpds_has_telemetry: true,
+        is_root: false,
+    });
+    let mut s = setup(vec![link("l", "net_null0", "net_null0", None)]);
+    s.settings["poll_interval_ms"] = json!(100);
+    let r = call(&router, "POST", "/api/emulation/start", Some(s.body())).await;
+    assert_eq!(r.status, 202, "{}", r.text());
+    tokio::time::sleep(Duration::from_millis(500)).await; // a pending default-length sleep ends
+    let before = server
+        .queries()
+        .iter()
+        .filter(|q| q.starts_with("/dpds/ports"))
+        .count();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let after = server
+        .queries()
+        .iter()
+        .filter(|q| q.starts_with("/dpds/ports"))
+        .count();
+    assert!(
+        after - before >= 8,
+        "poll_interval_ms = 100 must give >= 8 polls in 1.5 s, got {}",
+        after - before
+    );
 }

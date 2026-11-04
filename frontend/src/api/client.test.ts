@@ -1,4 +1,6 @@
 // Tests the REAL client module (setup.ts mocks it for everything else) against a stubbed fetch.
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { vi } from 'vitest';
 import * as fx from '../test/fixtures';
 
@@ -40,9 +42,6 @@ describe('api client (real module)', () => {
     ['getOnline', () => client.getOnline(), '/api/online'],
     ['getInterfaces', () => client.getInterfaces(), '/api/interfaces'],
     ['getHostHints', () => client.getHostHints(), '/api/host/hints'],
-    ['getLinks', () => client.getLinks(), '/api/links'],
-    ['getLink', () => client.getLink(3), '/api/links/3'],
-    ['getSettings', () => client.getSettings(), '/api/settings'],
     ['getEmulation', () => client.getEmulation(), '/api/emulation'],
     ['getStats', () => client.getStats(), '/api/stats'],
     ['getDelayHistogram', () => client.getDelayHistogram(2), '/api/stats/2/delay_histogram'],
@@ -53,63 +52,75 @@ describe('api client (real module)', () => {
     expect((lastCall().init.method ?? 'GET').toUpperCase()).toBe('GET');
   });
 
-  it('createLink POSTs the JSON body with a JSON content type', async () => {
-    const input = { name: 'a-b', ingress: '0000:65:00.0', egress: '0000:65:00.1', config: fx.config(), worker: null };
-    reply(201, { id: 5, ...input });
-    await expect(client.createLink(input)).resolves.toMatchObject({ id: 5 });
-    const { url, init } = lastCall();
-    expect(url).toBe('/api/links');
-    expect(init.method?.toUpperCase()).toBe('POST');
-    expect(header(init, 'content-type')).toMatch(/^application\/json/);
-    expect(JSON.parse(String(init.body))).toEqual(input);
-  });
-
-  it('updateLink PUTs to /api/links/{id}', async () => {
-    const input = { name: 'x', ingress: 'net_null0', egress: 'net_null0', config: fx.config(), worker: 3 };
-    reply(200, { id: 7, ...input });
-    await client.updateLink(7, input);
-    const { url, init } = lastCall();
-    expect(url).toBe('/api/links/7');
-    expect(init.method?.toUpperCase()).toBe('PUT');
-    expect(JSON.parse(String(init.body))).toEqual(input);
-    expect(header(init, 'content-type')).toMatch(/^application\/json/);
-  });
-
-  it('updateSettings PUTs /api/settings', async () => {
-    const s = fx.settings({ main_lcore: 1 });
-    reply(200, s);
-    await expect(client.updateSettings(s)).resolves.toEqual(s);
-    const { url, init } = lastCall();
-    expect(url).toBe('/api/settings');
-    expect(init.method?.toUpperCase()).toBe('PUT');
-    expect(JSON.parse(String(init.body))).toEqual(s);
-  });
-
-  it('deleteLink DELETEs and resolves on 204 without a body', async () => {
-    reply(204);
-    await expect(client.deleteLink(4)).resolves.toBeUndefined();
-    const { url, init } = lastCall();
-    expect(url).toBe('/api/links/4');
-    expect(init.method?.toUpperCase()).toBe('DELETE');
-    // the controller demands a JSON content type on every mutating request
-    expect(header(init, 'content-type')).toMatch(/^application\/json/);
-  });
-
-  it.each([
-    ['startEmulation', () => client.startEmulation(), '/api/emulation/start'],
-    ['stopEmulation', () => client.stopEmulation(), '/api/emulation/stop'],
-  ])('%s POSTs %s (202) with a JSON content type even without a body', async (_n, call, url) => {
+  // v22: whole configuration in the request body
+  it('startEmulation POSTs the start request (links without ids, settings) as JSON to /api/emulation/start, untouched', async () => {
+    const body = {
+      links: [
+        { name: 'a-b', ingress: '0000:65:00.0', egress: '0000:65:00.1', config: fx.config(), worker: null },
+        { name: 'b-a', ingress: '0000:65:00.1', egress: '0000:65:00.0', config: fx.config2(), worker: 5 },
+      ],
+      settings: { main_lcore: null, eal_extra_args: ['--no-huge'], poll_interval_ms: 500 },
+    };
     reply(202, fx.emulation('starting'));
-    await expect(call()).resolves.toMatchObject({ state: 'starting' });
-    const { url: u, init } = lastCall();
-    expect(u).toBe(url);
+    await expect(client.startEmulation(body)).resolves.toMatchObject({ state: 'starting' });
+    const { url, init } = lastCall();
+    expect(url).toBe('/api/emulation/start');
     expect(init.method?.toUpperCase()).toBe('POST');
     expect(header(init, 'content-type')).toMatch(/^application\/json/);
+    expect(JSON.parse(String(init.body))).toEqual(body);
+  });
+
+  it('getHostHintsFor POSTs the start request as JSON to /api/host/hints and returns the hints', async () => {
+    const body = { links: [{ name: 'a-b', ingress: '0000:65:00.0', egress: '0000:65:00.1', config: fx.config(), worker: null }], settings: fx.settings() };
+    reply(200, fx.hints());
+    await expect(client.getHostHintsFor(body)).resolves.toEqual(fx.hints());
+    const { url, init } = lastCall();
+    expect(url).toBe('/api/host/hints');
+    expect(init.method?.toUpperCase()).toBe('POST');
+    expect(header(init, 'content-type')).toMatch(/^application\/json/);
+    expect(JSON.parse(String(init.body))).toEqual(body);
+  });
+
+  it('getHostHints stays a body-less GET of /api/host/hints', async () => {
+    reply(200, []);
+    await client.getHostHints();
+    expect(lastCall().url).toBe('/api/host/hints');
+    expect((lastCall().init.method ?? 'GET').toUpperCase()).toBe('GET');
+    expect(lastCall().init.body).toBeUndefined();
+  });
+
+  it('the removed REST surface is gone: no function for links, presets, settings, export or import', () => {
+    for (const gone of [
+      'getLinks', 'getLink', 'createLink', 'updateLink', 'deleteLink', 'getSettings', 'updateSettings', 'getPresets', 'getPreset',
+      'createPreset', 'updatePreset', 'deletePreset', 'exportSetup', 'importSetup',
+    ]) {
+      expect(client, gone).not.toHaveProperty(gone);
+    }
+    expect(Object.keys(client).sort()).toEqual([
+      'ApiError', 'getDelayHistogram', 'getEmulation', 'getHostHints', 'getHostHintsFor', 'getInterfaces', 'getOnline', 'getStats',
+      'startEmulation', 'stopEmulation',
+    ]);
+  });
+
+  it('no request of the client source targets a removed route (a source check on top of the export list)', () => {
+    const src = readFileSync(join(process.cwd(), 'src/api/client.ts'), 'utf8');
+    const removed = /request(?:<[^(]*>)?\(\s*['"][A-Z]+['"]\s*,\s*[`'"]\/(links|presets|settings|export|import)\b/;
+    expect(src).not.toMatch(removed);
+  });
+
+  it('stopEmulation POSTs /api/emulation/stop (202) with a JSON content type even without a body', async () => {
+    reply(202, fx.emulation('stopping'));
+    await expect(client.stopEmulation()).resolves.toMatchObject({ state: 'stopping' });
+    const { url, init } = lastCall();
+    expect(url).toBe('/api/emulation/stop');
+    expect(init.method?.toUpperCase()).toBe('POST');
+    expect(header(init, 'content-type')).toMatch(/^application\/json/);
+    expect(init.body).toBeUndefined();
   });
 
   it('rejects with ApiError carrying status and the message of the error body', async () => {
     reply(400, { message: 'delayer.std_ns must be >= 0' });
-    const err = await client.createLink(fx.link()).catch((e: unknown) => e);
+    const err = await client.startEmulation({ links: [], settings: fx.settings() }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(client.ApiError);
     expect(err).toBeInstanceOf(Error);
     expect((err as InstanceType<Client['ApiError']>).status).toBe(400);
@@ -125,7 +136,7 @@ describe('api client (real module)', () => {
 
   it.each([404, 409, 413, 415, 500])('maps status %i to ApiError', async (status) => {
     reply(status, { message: `m${status}` });
-    const err = await client.getLink(1).catch((e: unknown) => e);
+    const err = await client.getEmulation().catch((e: unknown) => e);
     expect((err as InstanceType<Client['ApiError']>).status).toBe(status);
     expect((err as Error).message).toBe(`m${status}`);
   });

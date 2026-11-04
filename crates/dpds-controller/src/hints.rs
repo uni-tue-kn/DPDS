@@ -16,7 +16,7 @@ use crate::discovery::{discover, find, Interface};
 use crate::eal::drain_timeout;
 use crate::host::{fmt_cpus, read_trim, HostRoots};
 use crate::lcores::{assign_lcores, Assignment, LcoreError};
-use crate::model::StoredState;
+use crate::model::RunConfig;
 
 /// Mbuf size in hugepage memory (README: about 1.9 KB per mbuf).
 const BYTES_PER_MBUF: u64 = 1920;
@@ -70,17 +70,17 @@ fn hint(id: &str, level: Level, title: &str, detail: String, suggestion: &str) -
 
 struct Ctx<'a> {
     roots: &'a HostRoots,
-    state: &'a StoredState,
+    config: &'a RunConfig,
     interfaces: Vec<Interface>,
     assignment: Result<Assignment, LcoreError>,
 }
 
 impl Ctx<'_> {
-    /// Discovered NICs used by the stored links.
+    /// Discovered NICs used by the links.
     fn used_nics(&self) -> Vec<&Interface> {
         let mut used: Vec<&Interface> = Vec::new();
         for port in self
-            .state
+            .config
             .links
             .iter()
             .flat_map(|l| [&l.ingress, &l.egress])
@@ -96,12 +96,12 @@ impl Ctx<'_> {
 }
 
 /// All hints, in a fixed order, one per check.
-pub fn compute_hints(roots: &HostRoots, state: &StoredState) -> Vec<Hint> {
+pub fn compute_hints(roots: &HostRoots, config: &RunConfig) -> Vec<Hint> {
     let ctx = Ctx {
         roots,
-        state,
+        config,
         interfaces: discover(roots),
-        assignment: assign_lcores(roots, state),
+        assignment: assign_lcores(roots, config),
     };
     let mut hints: Vec<Hint> = management_nic(&ctx).into_iter().collect();
     hints.extend([
@@ -121,11 +121,11 @@ pub fn compute_hints(roots: &HostRoots, state: &StoredState) -> Vec<Hint> {
 
 // ---- drain vs systemd --------------------------------------------------------
 
-/// A warning when a stored link's drain timeout (the controller's stop wait)
+/// A warning when a link's drain timeout (the controller's stop wait)
 /// exceeds what the systemd unit allows.
 fn drain(ctx: &Ctx) -> Option<Hint> {
     let slow: Vec<String> = ctx
-        .state
+        .config
         .links
         .iter()
         .filter_map(|l| {
@@ -151,7 +151,7 @@ fn drain(ctx: &Ctx) -> Option<Hint> {
 
 // ---- management NIC ----------------------------------------------------------
 
-/// An error when a stored link uses a NIC that carries a kernel route.
+/// An error when a link uses a NIC that carries a kernel route.
 fn management_nic(ctx: &Ctx) -> Option<Hint> {
     let routed: Vec<String> = ctx
         .used_nics()
@@ -170,7 +170,7 @@ fn management_nic(ctx: &Ctx) -> Option<Hint> {
             "management_nic",
             Level::Error,
             "Management NIC",
-            format!("a stored link uses a NIC the host routes over: {}", routed.join("; ")),
+            format!("a link uses a NIC the host routes over: {}", routed.join("; ")),
             "Use NICs without a kernel route; binding the management NIC to DPDK cuts the host off the network. Start is refused.",
         )
     })
@@ -226,14 +226,14 @@ fn isolation(ctx: &Ctx) -> Hint {
 fn isolated_cores(ctx: &Ctx) -> Hint {
     let title = "Isolated cores";
     let isolated = ctx.roots.isolated_cpus();
-    let dirs = ctx.state.links.len();
+    let dirs = ctx.config.links.len();
     if dirs == 0 {
         return if isolated.is_empty() {
             hint(
                 "isolated_cores",
                 Level::Info,
                 title,
-                "no cores are isolated and no links are stored yet".into(),
+                "no cores are isolated and no links are configured yet".into(),
                 "Isolate one core per link.",
             )
         } else {
@@ -316,7 +316,7 @@ fn mib(bytes: u64) -> String {
 fn hugepages(ctx: &Ctx) -> Hint {
     let title = "Hugepages";
     let need: u64 = ctx
-        .state
+        .config
         .links
         .iter()
         .map(|l| &l.config)
@@ -328,7 +328,7 @@ fn hugepages(ctx: &Ctx) -> Hint {
         .fold(0u64, u64::saturating_add);
     let (total, free) = hugepage_bytes(ctx.roots);
     let no_huge = ctx
-        .state
+        .config
         .settings
         .eal_extra_args
         .iter()
@@ -354,7 +354,7 @@ fn hugepages(ctx: &Ctx) -> Hint {
         );
     }
     let detail = format!(
-        "{} free of {}, the stored links need about {}",
+        "{} free of {}, the links need about {}",
         mib(free),
         mib(total),
         mib(need)
@@ -386,7 +386,15 @@ fn numa(ctx: &Ctx) -> Hint {
     let title = "NUMA locality";
     let a = match &ctx.assignment {
         Ok(a) if !a.directions.is_empty() => a,
-        Ok(_) => return hint("numa", Level::Ok, title, "no links are stored".into(), ""),
+        Ok(_) => {
+            return hint(
+                "numa",
+                Level::Ok,
+                title,
+                "no links are configured".into(),
+                "",
+            )
+        }
         Err(_) => {
             return hint(
                 "numa",

@@ -1,7 +1,8 @@
-//! Read-only host hints (B6) on fake trees.
+//! Read-only host hints (B6) on fake trees. Spec 22: `GET /api/host/hints` gives the host-only
+//! hints, `POST /api/host/hints` with a start body adds the link-dependent ones for that
+//! configuration; the tests use `hints_json(host, setup)` (GET without links, POST with).
 
 use crate::common::*;
-use dpds_controller::model::StoredState;
 use serde_json::Value;
 
 const NEED_PER_MBUF: u64 = 1920; // README: ~1.9 KB per mbuf
@@ -12,8 +13,8 @@ fn pool_bytes_for(links: u64) -> u64 {
     links * (100_000 + 4096 * 2 + 768 + 64) * NEED_PER_MBUF
 }
 
-fn one_link_nic0() -> StoredState {
-    state_with(vec![link(1, "l", NIC0, NIC0, None)])
+fn one_link_nic0() -> Setup {
+    setup(vec![link("l", NIC0, NIC0, None)])
 }
 
 #[test]
@@ -59,7 +60,7 @@ fn fully_tuned_bare_metal_host_has_no_warning() {
 #[test]
 fn there_is_no_mprq_hint_and_no_hint_discusses_devargs() {
     for host in [FakeHost::bare_metal(), FakeHost::vm(), FakeHost::bare()] {
-        for state in [state_with(vec![]), one_link_nic0()] {
+        for state in [setup(vec![]), one_link_nic0()] {
             let h = hints_json(&host, &state);
             assert!(
                 h.as_array().unwrap().iter().all(|x| x["id"] != "mprq"),
@@ -74,7 +75,7 @@ fn there_is_no_mprq_hint_and_no_hint_discusses_devargs() {
 
 #[test]
 fn isolation_all_three_parameters_ok_only_isolcpus_warn_none_error() {
-    let st = state_with(vec![]);
+    let st = setup(vec![]);
     let h = FakeHost::bare_metal();
     assert_level(&hints_json(&h, &st), "isolation", "ok", "ok");
 
@@ -88,18 +89,18 @@ fn isolation_all_three_parameters_ok_only_isolcpus_warn_none_error() {
 
 #[test]
 fn isolation_on_a_host_without_any() {
-    let h = hints_json(&FakeHost::bare(), &state_with(vec![]));
+    let h = hints_json(&FakeHost::bare(), &setup(vec![]));
     assert_level(&h, "isolation", "error", "error");
 }
 
 // ---- isolated core count -------------------------------------------------
 
-fn vdev_links(n: u32) -> StoredState {
-    state_with(
+fn vdev_links(n: u32) -> Setup {
+    setup(
         (0..n)
             .map(|i| {
                 let p = format!("net_null{i}");
-                link(i + 1, &format!("l{i}"), &p, &p, None)
+                link(&format!("l{i}"), &p, &p, None)
             })
             .collect(),
     )
@@ -120,8 +121,9 @@ fn isolated_core_count_versus_links() {
         "error",
         "error",
     );
+    // no links at all (the host-only hints) or one harmless link: nothing to complain about
     assert_level(
-        &hints_json(&host, &state_with(vec![])),
+        &hints_json(&host, &filler()),
         "isolated_cores",
         "ok",
         "info",
@@ -142,10 +144,10 @@ fn hugepages_hint(need_factor_per_node: f64, links: u64) -> Value {
             } else {
                 format!("net_null{i}")
             };
-            link(i + 1, &format!("l{i}"), &port, &port, None)
+            link(&format!("l{i}"), &port, &port, None)
         })
         .collect();
-    hints_json(&host, &state_with(links))
+    hints_json(&host, &setup(links))
 }
 
 #[test]
@@ -177,7 +179,7 @@ fn no_hugepages_configured_with_links_is_an_error() {
 
 #[test]
 fn no_hugepages_configured_without_links_still_warns_at_least() {
-    let h = hints_json(&FakeHost::bare(), &state_with(vec![]));
+    let h = hints_json(&FakeHost::bare(), &setup(vec![]));
     assert_level(&h, "hugepages", "warn", "error");
 }
 
@@ -186,9 +188,9 @@ fn no_hugepages_configured_without_links_still_warns_at_least() {
 #[test]
 fn numa_workers_on_the_nic_node_ok_elsewhere_warn() {
     let host = FakeHost::bare_metal();
-    let local = state_with(vec![link(1, "l", NIC1, NIC1, Some(6))]);
+    let local = setup(vec![link("l", NIC1, NIC1, Some(6))]);
     assert_level(&hints_json(&host, &local), "numa", "ok", "ok");
-    let remote = state_with(vec![link(1, "l", NIC1, NIC1, Some(2))]);
+    let remote = setup(vec![link("l", NIC1, NIC1, Some(2))]);
     assert_level(&hints_json(&host, &remote), "numa", "warn", "warn");
 }
 
@@ -196,9 +198,9 @@ fn numa_workers_on_the_nic_node_ok_elsewhere_warn() {
 fn numa_a_worker_off_the_ingress_nic_node_warns_in_a_two_nic_link() {
     let host = FakeHost::bare_metal();
     // ingress NIC1 is on node 1 (cores 6-7): a worker on node 0 is remote
-    let remote = state_with(vec![link(1, "a-to-b", NIC1, NIC0, Some(2))]);
+    let remote = setup(vec![link("a-to-b", NIC1, NIC0, Some(2))]);
     assert_level(&hints_json(&host, &remote), "numa", "warn", "warn");
-    let local = state_with(vec![link(1, "a-to-b", NIC1, NIC0, Some(6))]);
+    let local = setup(vec![link("a-to-b", NIC1, NIC0, Some(6))]);
     assert_level(&hints_json(&host, &local), "numa", "ok", "ok");
 }
 
@@ -206,7 +208,7 @@ fn numa_a_worker_off_the_ingress_nic_node_warns_in_a_two_nic_link() {
 fn numa_unknown_on_a_vm_is_not_a_problem() {
     let h = hints_json(
         &FakeHost::vm(),
-        &state_with(vec![link(1, "l", "0000:00:05.0", "0000:00:05.0", None)]),
+        &setup(vec![link("l", "0000:00:05.0", "0000:00:05.0", None)]),
     );
     assert_level(&h, "numa", "ok", "info");
 }
@@ -224,7 +226,7 @@ fn governor_performance_ok_powersave_not_ok() {
 
 #[test]
 fn governor_missing_in_a_vm_is_ok_or_info() {
-    let h = hints_json(&FakeHost::vm(), &state_with(vec![]));
+    let h = hints_json(&FakeHost::vm(), &setup(vec![]));
     assert_level(&h, "governor", "ok", "info");
 }
 
@@ -233,15 +235,10 @@ fn governor_missing_in_a_vm_is_ok_or_info() {
 #[test]
 fn irqbalance_running_is_flagged() {
     let host = FakeHost::bare_metal();
-    assert_level(
-        &hints_json(&host, &state_with(vec![])),
-        "irqbalance",
-        "ok",
-        "ok",
-    );
+    assert_level(&hints_json(&host, &setup(vec![])), "irqbalance", "ok", "ok");
     host.processes(&[(812, "irqbalance")]);
     assert_level(
-        &hints_json(&host, &state_with(vec![])),
+        &hints_json(&host, &setup(vec![])),
         "irqbalance",
         "info",
         "warn",
@@ -254,7 +251,7 @@ fn irqbalance_running_is_flagged() {
 fn iommu_matters_only_when_a_vfio_nic_is_used() {
     let host = FakeHost::bare_metal();
     host.rebind(INTEL, "vfio-pci", true);
-    let vfio = state_with(vec![link(1, "l", INTEL, INTEL, None)]);
+    let vfio = setup(vec![link("l", INTEL, INTEL, None)]);
     assert_level(&hints_json(&host, &vfio), "iommu", "ok", "ok");
 
     host.iommu(false);
@@ -274,7 +271,7 @@ fn mtu_below_1500_on_a_used_nic_warns() {
     assert_level(&hints_json(&host, &one_link_nic0()), "mtu", "warn", "warn");
     // not used by the link -> no complaint
     assert_level(
-        &hints_json(&host, &state_with(vec![link(1, "l", NIC1, NIC1, None)])),
+        &hints_json(&host, &setup(vec![link("l", NIC1, NIC1, None)])),
         "mtu",
         "ok",
         "ok",
@@ -285,7 +282,7 @@ fn mtu_below_1500_on_a_used_nic_warns() {
 fn mtu_above_1500_is_fine() {
     let host = FakeHost::bare_metal(); // NIC1 has 9000
     assert_level(
-        &hints_json(&host, &state_with(vec![link(1, "l", NIC1, NIC1, None)])),
+        &hints_json(&host, &setup(vec![link("l", NIC1, NIC1, None)])),
         "mtu",
         "ok",
         "ok",
@@ -297,15 +294,10 @@ fn mtu_of_an_egress_only_and_of_an_ingress_only_nic_counts() {
     let host = FakeHost::bare_metal();
     host.write("sys/class/net/ens1f0/mtu", "1400\n"); // NIC0
     for l in [
-        link(1, "ingress-only", NIC0, NIC1, None),
-        link(1, "egress-only", NIC1, NIC0, None),
+        link("ingress-only", NIC0, NIC1, None),
+        link("egress-only", NIC1, NIC0, None),
     ] {
-        assert_level(
-            &hints_json(&host, &state_with(vec![l])),
-            "mtu",
-            "warn",
-            "warn",
-        );
+        assert_level(&hints_json(&host, &setup(vec![l])), "mtu", "warn", "warn");
     }
 }
 
@@ -339,7 +331,7 @@ fn maxreadreq_only_looks_at_used_nics() {
     assert_level(&h, "pcie_maxreadreq", "ok", "ok");
     let h = hints_json(
         &FakeHost::bare_metal(),
-        &state_with(vec![link(1, "l", INTEL, INTEL, None)]),
+        &setup(vec![link("l", INTEL, INTEL, None)]),
     );
     assert_level(&h, "pcie_maxreadreq", "warn", "warn");
 }
@@ -348,10 +340,10 @@ fn maxreadreq_only_looks_at_used_nics() {
 fn maxreadreq_looks_at_both_the_ingress_and_the_egress_nic() {
     // INTEL has 512 in the fixture; NIC0 has 4096
     for l in [
-        link(1, "in", INTEL, NIC0, None),
-        link(1, "out", NIC0, INTEL, None),
+        link("in", INTEL, NIC0, None),
+        link("out", NIC0, INTEL, None),
     ] {
-        let h = hints_json(&FakeHost::bare_metal(), &state_with(vec![l]));
+        let h = hints_json(&FakeHost::bare_metal(), &setup(vec![l]));
         assert_level(&h, "pcie_maxreadreq", "warn", "warn");
     }
 }
@@ -359,10 +351,10 @@ fn maxreadreq_looks_at_both_the_ingress_and_the_egress_nic() {
 #[test]
 fn a_ring_through_three_nics_needs_three_isolated_cores() {
     let host = FakeHost::bare_metal(); // 4 isolated
-    let ring = state_with(vec![
-        link(1, "a-to-b", NIC0, NIC1, None),
-        link(2, "b-to-c", NIC1, INTEL, None),
-        link(3, "c-to-a", INTEL, NIC0, None),
+    let ring = setup(vec![
+        link("a-to-b", NIC0, NIC1, None),
+        link("b-to-c", NIC1, INTEL, None),
+        link("c-to-a", INTEL, NIC0, None),
     ]);
     assert_level(&hints_json(&host, &ring), "isolated_cores", "ok", "ok");
     // with only 2 isolated cores the ring (three links) does not fit, a pair (two links) does
@@ -374,9 +366,9 @@ fn a_ring_through_three_nics_needs_three_isolated_cores() {
         "error",
         "error",
     );
-    let pair = state_with(vec![
-        link(1, "a-to-b", NIC0, NIC1, None),
-        link(2, "b-to-a", NIC1, NIC0, None),
+    let pair = setup(vec![
+        link("a-to-b", NIC0, NIC1, None),
+        link("b-to-a", NIC1, NIC0, None),
     ]);
     assert_level(&hints_json(&host, &pair), "isolated_cores", "ok", "ok");
 }
@@ -408,7 +400,7 @@ fn unreadable_config_space_is_info_not_a_failure() {
 fn vm_has_no_readable_pcie_state() {
     let h = hints_json(
         &FakeHost::vm(),
-        &state_with(vec![link(1, "l", "0000:00:05.0", "0000:00:05.0", None)]),
+        &setup(vec![link("l", "0000:00:05.0", "0000:00:05.0", None)]),
     );
     assert_level(&h, "pcie_maxreadreq", "info", "info");
 }
@@ -422,4 +414,156 @@ fn host_without_isolation_and_hugepages_reports_errors() {
     assert_level(&h, "isolated_cores", "error", "error");
     assert_level(&h, "hugepages", "error", "error");
     assert_level(&h, "governor", "info", "warn");
+}
+
+// ---- spec 22: GET is host-only, POST takes the configuration -----------------------------
+
+const HOST_ONLY_IDS: [&str; 4] = ["isolation", "governor", "irqbalance", "hugepages"];
+
+fn ids(h: &Value) -> Vec<String> {
+    h.as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn get_hints_are_the_host_only_hints_and_need_no_configuration() {
+    for host in [FakeHost::bare_metal(), FakeHost::vm(), FakeHost::bare()] {
+        let a = TestApp::new(host);
+        let r = a.get("/api/host/hints").await;
+        assert_eq!(r.status, 200, "{}", r.text());
+        let h = r.json();
+        for id in HOST_ONLY_IDS {
+            let x = hint(&h, id);
+            for k in ["id", "level", "title", "detail", "suggestion"] {
+                assert!(x.get(k).is_some(), "hint {id} lacks `{k}`: {x}");
+            }
+        }
+        // nothing that needs links: no hint about a management NIC or a drain timeout
+        for id in ["management_nic", "drain_timeout"] {
+            assert!(!ids(&h).contains(&id.to_string()), "{id} in GET: {h}");
+        }
+        assert_no_devargs_hint(&h);
+    }
+}
+
+#[tokio::test]
+async fn get_hints_do_not_change_when_an_emulation_runs() {
+    // the controller keeps no configuration: GET answers the same before and during a run
+    let a = TestApp::new(FakeHost::bare_metal());
+    let before = a.get("/api/host/hints").await.json();
+    a.start_ok(vec![link("l", NIC1, NIC1, None)]).await;
+    assert_eq!(a.get("/api/host/hints").await.json(), before);
+}
+
+#[tokio::test]
+async fn post_hints_add_the_link_dependent_ones_for_the_body() {
+    let a = TestApp::new(FakeHost::bare_metal());
+    let host_only = a.get("/api/host/hints").await.json();
+    let body = setup(vec![link("l", INTEL, INTEL, None)]).body();
+    let r = a.post("/api/host/hints", body).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let h = r.json();
+    for id in HINT_IDS {
+        let _ = hint(&h, id);
+    }
+    // the host-only ids are all there, once, and the NIC of the body is what the link-dependent
+    // ones look at: INTEL has MaxReadReq 512
+    for id in ids(&host_only) {
+        let _ = hint(&h, &id);
+    }
+    assert_level(&h, "pcie_maxreadreq", "warn", "warn");
+    // the same host, another body, another answer: the body is the only input
+    let body = setup(vec![link("l", NIC0, NIC0, None)]).body();
+    let h2 = a.post("/api/host/hints", body).await.json();
+    assert_level(&h2, "pcie_maxreadreq", "ok", "ok");
+}
+
+#[tokio::test]
+async fn post_hints_with_no_links_equal_the_get_hints() {
+    let a = TestApp::new(FakeHost::bare_metal());
+    let get = a.get("/api/host/hints").await.json();
+    let r = a.post("/api/host/hints", Setup::default().body()).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(r.json(), get);
+}
+
+#[tokio::test]
+async fn post_hints_refuse_a_malformed_body_and_a_wrong_content_type() {
+    let a = TestApp::new(FakeHost::bare_metal());
+    let mut unknown = setup(vec![link("l", NIC0, NIC0, None)]).body();
+    unknown["presets"] = serde_json::json!([]);
+    for body in [
+        serde_json::json!({}),
+        serde_json::json!({"links": 5, "settings": settings_json()}),
+        unknown,
+    ] {
+        let r = a.post("/api/host/hints", body.clone()).await;
+        assert_eq!(r.status, 400, "{body}: {}", r.text());
+        r.message();
+    }
+    let r = a
+        .request_raw(
+            "POST",
+            "/api/host/hints",
+            Some("text/plain"),
+            setup(vec![link("l", NIC0, NIC0, None)])
+                .body()
+                .to_string()
+                .into_bytes(),
+        )
+        .await;
+    assert_eq!(r.status, 415, "{}", r.text());
+    r.message();
+}
+
+#[tokio::test]
+async fn post_hints_start_nothing_and_store_nothing() {
+    let a = TestApp::new(FakeHost::bare_metal());
+    let before = a.get("/api/emulation").await.json();
+    let r = a
+        .post(
+            "/api/host/hints",
+            setup(vec![link("l", NIC0, NIC1, None)]).body(),
+        )
+        .await;
+    assert_eq!(r.status, 200);
+    assert!(a.supervisor.plans().is_empty());
+    assert_eq!(a.get("/api/emulation").await.json(), before);
+}
+
+#[tokio::test]
+async fn post_hints_know_the_management_nic_and_the_drain_timeout_of_the_body() {
+    let a = TestApp::new(FakeHost::bare_metal());
+    let h = a
+        .post(
+            "/api/host/hints",
+            setup(vec![link("m", MGMT, NIC1, None)]).body(),
+        )
+        .await
+        .json();
+    let m: Vec<&Value> = h
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|x| x["id"] == "management_nic")
+        .collect();
+    assert_eq!(m.len(), 1, "{h}");
+    assert_eq!(m[0]["level"], "error");
+    let mut slow = link("crawler", "net_null0", "net_null0", None);
+    slow["config"]["buffer_capacity"] = serde_json::json!(1000);
+    slow["config"]["limiter"] = serde_json::json!({"mode": "Spacer", "rate_bps": 1.0e3});
+    let h = a
+        .post("/api/host/hints", setup(vec![slow]).body())
+        .await
+        .json();
+    assert!(
+        h.as_array()
+            .unwrap()
+            .iter()
+            .any(|x| x["id"] == "drain_timeout"),
+        "{h}"
+    );
 }

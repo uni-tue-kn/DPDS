@@ -1,31 +1,25 @@
 import { useState } from 'react';
 import { Button, Modal, Table } from 'react-bootstrap';
 import { Link as RouterLink } from 'react-router';
-import * as api from '../api/client';
+import { deletePreset, useLocalConfig } from '../common/localConfig';
 import ErrorAlert from '../components/ErrorAlert';
 import { errorMessage } from '../common/format';
-import { useLoad } from '../common/useLoad';
 import type { Preset } from '../api/types';
 
 export default function Presets() {
-  const presets = useLoad(api.getPresets);
+  const { doc, corrupt } = useLocalConfig();
+  const presets = corrupt ? [] : doc.presets;
   const [target, setTarget] = useState<Preset | null>(null);
   const [actionError, setActionError] = useState<string>();
-  const [deleting, setDeleting] = useState(false);
 
-  const confirmDelete = async () => {
-    if (!target || deleting) return;
-    setDeleting(true);
-    setActionError(undefined);
+  const confirmDelete = () => {
+    if (!target) return;
     try {
-      await api.deletePreset(target.id);
-      presets.reload();
+      deletePreset(target.id);
     } catch (e) {
       setActionError(errorMessage(e));
-    } finally {
-      setDeleting(false);
-      setTarget(null);
     }
+    setTarget(null);
   };
 
   return (
@@ -36,15 +30,15 @@ export default function Presets() {
           <i className="bi bi-plus-lg" aria-hidden="true" /> New preset
         </RouterLink>
       </div>
-      <ErrorAlert message={presets.error ?? actionError} />
-      {presets.data && presets.data.length === 0 && <p>No presets yet.</p>}
-      {presets.data && presets.data.length > 0 && (
+      <ErrorAlert message={actionError} />
+      {!corrupt && presets.length === 0 && <p>No presets yet.</p>}
+      {presets.length > 0 && (
         <Table striped size="sm" responsive>
           <thead className="table-dark">
             <tr><th>Name</th><th>Description</th><th /></tr>
           </thead>
           <tbody>
-            {presets.data.map((p) => (
+            {presets.map((p) => (
               <tr key={p.id}>
                 <td>{p.name}</td>
                 <td>{p.description}</td>
@@ -66,7 +60,7 @@ export default function Presets() {
         <Modal.Body>Delete preset {target?.name}? Links that used it keep their settings. This cannot be undone.</Modal.Body>
         <Modal.Footer>
           <Button variant="secondary" onClick={() => setTarget(null)}>Cancel</Button>
-          <Button variant="danger" disabled={deleting} onClick={confirmDelete}>Confirm delete</Button>
+          <Button variant="danger" onClick={confirmDelete}>Confirm delete</Button>
         </Modal.Footer>
       </Modal>
     </>

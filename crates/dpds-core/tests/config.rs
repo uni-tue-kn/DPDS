@@ -104,26 +104,23 @@ fn from_file_parses_the_example_config_shipped_with_the_crate() {
     assert!(rate.is_finite() && rate >= 1.0, "example rate {rate}");
 }
 
+/// Spec 22: DPDS ships no default configuration. The two files of the repository root were
+/// deleted (a controller sends the whole configuration with every start; `dpds` examples write
+/// their config inline). `config.example.json` above is dpds-core's own library example, kept.
 #[test]
-fn from_file_parses_the_workspace_root_config() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config.json");
-    let cfg = Config::from_file(path).expect("config.json at the repo root must parse");
-    assert_eq!(cfg.buffer_capacity, 1_000_000);
-    assert!(!cfg.reordering);
-    assert!(!cfg.limiter.activate);
-    assert!(matches!(cfg.loss_model, LossModel::Random(p) if p == 0.0));
-    let rate = cfg.delayer.initialization_rate_pps;
-    assert!(rate.is_finite() && rate >= 1.0, "config.json rate {rate}");
-}
-
-#[test]
-fn from_file_parses_the_vdev_config() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config.vdev.json");
-    let cfg = Config::from_file(path).expect("config.vdev.json at the repo root must parse");
-    let rate = cfg.delayer.initialization_rate_pps;
+fn the_workspace_root_ships_no_default_config() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    for name in ["config.json", "config.vdev.json"] {
+        assert!(
+            !root.join(name).exists(),
+            "{name} at the repository root must be deleted (spec 22: no default configs)"
+        );
+    }
     assert!(
-        rate.is_finite() && rate >= 1.0,
-        "config.vdev.json rate {rate}"
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("config.example.json")
+            .is_file(),
+        "dpds-core's library example stays"
     );
 }
 
@@ -211,14 +208,11 @@ fn from_file_parses_the_limiter_without_limit_bit() {
 #[test]
 fn no_shipped_config_json_mentions_limit_bit() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    for rel in [
-        "config.example.json",
-        "../../config.json",
-        "../../config.vdev.json",
-    ] {
-        let text = std::fs::read_to_string(root.join(rel)).unwrap();
-        assert!(!text.contains("limit_bit"), "{rel} still has limit_bit");
-    }
+    let text = std::fs::read_to_string(root.join("config.example.json")).unwrap();
+    assert!(
+        !text.contains("limit_bit"),
+        "config.example.json still has limit_bit"
+    );
 }
 
 #[test]

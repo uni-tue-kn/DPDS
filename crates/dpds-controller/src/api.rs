@@ -4,7 +4,6 @@
 use std::collections::HashSet;
 use std::net::IpAddr;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use axum::extract::{
@@ -17,7 +16,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::json;
 use tokio::sync::Mutex as AsyncMutex;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
@@ -33,12 +32,11 @@ use crate::frontend::Frontend;
 use crate::hints::{compute_hints, Hint, Level};
 use crate::host::HostRoots;
 use crate::lcores::{assign_lcores, DirectionPlan};
-use crate::model::{Link, Preset, Settings, StoredState, MAX_NAME_CHARS};
+use crate::model::{Link, RunConfig, Settings, StartLink, StartRequest, MAX_NAME_CHARS};
 use crate::stats::{
     compute_stats, delay_histogram, delay_stats_on, uptime_ms, Clamped, Counters, DirectionStats,
     ExpectedModel, HistogramView, Percentiles, PortStats, StatsView,
 };
-use crate::store::{self, StoreError};
 use crate::supervisor::{LaunchPlan, State as RunState, Supervisor};
 use crate::telemetry::TelemetrySource;
 use crate::validate;
@@ -47,7 +45,6 @@ use crate::validate;
 const BODY_LIMIT: usize = 1024 * 1024;
 
 pub struct Deps {
-    pub state_dir: PathBuf,
     pub roots: HostRoots,
     pub supervisor: Arc<dyn Supervisor>,
     pub telemetry: Arc<dyn TelemetrySource>,
@@ -58,19 +55,19 @@ pub struct Deps {
     pub is_root: bool,
 }
 
+/// What the emulation was started with and how it was planned.
+#[derive(Clone)]
+struct Run {
+    config: RunConfig,
+    main_lcore: u32,
+    directions: Vec<DirectionPlan>,
+}
+
 struct App {
     deps: Deps,
     frontend: Frontend,
-    stored: Mutex<StoredState>,
-    /// Serialises edits, so the (slow) save runs without holding `stored`.
-    edits: Mutex<()>,
-    /// Edited since the running emulation started.
-    pending_restart: AtomicBool,
-    /// Directions and main lcore of the last launch.
-    last_plan: Mutex<Option<(u32, Vec<DirectionPlan>)>>,
-    /// The per-direction configs of the last launch (the histogram's expected counts
-    /// follow what is running, not what was edited since).
-    launched_configs: Mutex<Vec<ConfigDto>>,
+    /// The last start (reported and used only while the emulation is not stopped).
+    run: Mutex<Option<Run>>,
     /// Serialises start and stop: the state check and the launch are one step.
     lifecycle: AsyncMutex<()>,
 }
@@ -97,11 +94,6 @@ impl ApiError {
     }
     fn internal(m: impl Into<String>) -> ApiError {
         ApiError(StatusCode::INTERNAL_SERVER_ERROR, m.into())
-    }
-    /// A part of an import document is wrong: 400 (also for what the single
-    /// endpoints answer with 409), with the part named.
-    fn in_document(self, part: &str) -> ApiError {
-        ApiError(StatusCode::BAD_REQUEST, format!("{part}: {}", self.1))
     }
 }
 
@@ -183,12 +175,6 @@ impl<S: Send + Sync> FromRequestParts<S> for RequireJson {
     }
 }
 
-impl From<StoreError> for ApiError {
-    fn from(e: StoreError) -> ApiError {
-        ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
-    }
-}
-
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         (self.0, Json(json!({ "message": self.1 }))).into_response()
@@ -225,92 +211,21 @@ pub struct EmulationView {
     pid: Option<u32>,
     /// Unix seconds.
     started_at: Option<u64>,
+    /// The planned lcores of the run; empty while stopped.
     directions: Vec<DirectionPlan>,
     main_lcore: Option<u32>,
-    /// Links or settings changed since the emulation started.
-    pending_restart: bool,
+    /// The configuration the emulation was started with; null while stopped.
+    config: Option<RunConfig>,
     error: Option<String>,
     log_tail: Vec<String>,
 }
 
-/// Body of `POST /api/links` and `PUT /api/links/{id}`.
-#[derive(Deserialize, ToSchema)]
-pub struct LinkInput {
-    name: String,
-    /// DPDK device name packets are received on (PCI address or vdev).
-    ingress: String,
-    /// DPDK device name packets leave on; may equal `ingress` (hairpin). A port is
-    /// the ingress of at most one link and the egress of at most one link.
-    egress: String,
-    config: ConfigDto,
-    /// Worker lcore; automatic when absent.
-    worker: Option<u32>,
-}
-
-/// Body of `POST /api/presets` and `PUT /api/presets/{id}`.
-#[derive(Deserialize, ToSchema)]
-pub struct PresetInput {
-    /// 1 to 64 characters, unique.
-    name: String,
-    description: Option<String>,
-    config: ConfigDto,
-}
-
-/// `settings` of an export document (the fields of [`Settings`], unknown keys refused).
-#[derive(Serialize, Deserialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ExportSettings {
-    main_lcore: Option<u32>,
-    eal_extra_args: Vec<String>,
-    poll_interval_ms: u64,
-}
-
-/// A link of an export document: [`LinkInput`] without ids, unknown keys refused.
-#[derive(Serialize, Deserialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ExportLink {
-    name: String,
-    ingress: String,
-    egress: String,
-    config: ConfigDto,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    worker: Option<u32>,
-}
-
-/// A preset of an export document: [`PresetInput`], unknown keys refused.
-#[derive(Serialize, Deserialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ExportPreset {
-    name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    description: Option<String>,
-    config: ConfigDto,
-}
-
-/// `GET /api/export` and the body of `POST /api/import`: the stored setup without
-/// ids and runtime state.
-#[derive(Serialize, Deserialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ExportDoc {
-    /// Always `dpds-controller-export`.
-    format: String,
-    /// Always 2 (version 1 had two-port links).
-    version: u32,
-    settings: ExportSettings,
-    links: Vec<ExportLink>,
-    presets: Vec<ExportPreset>,
-}
-
-/// What an import stored.
+/// Answer of `POST /api/emulation/validate`: the plan a start would use.
 #[derive(Serialize, ToSchema)]
-pub struct ImportSummary {
-    links: usize,
-    presets: usize,
+pub struct PlanView {
+    main_lcore: u32,
+    directions: Vec<DirectionPlan>,
 }
-
-const EXPORT_FORMAT: &str = "dpds-controller-export";
-const EXPORT_VERSION: u32 = 2;
-const MAX_PRESET_NAME_CHARS: usize = 64;
 
 // ---- helpers -----------------------------------------------------------------
 
@@ -337,12 +252,11 @@ fn check_link_name(name: &str) -> Result<(), ApiError> {
 const MAX_TELEMETRY_DICT_ENTRIES: usize = 256;
 
 /// `dpds` publishes `3 + 5 * distinct ports + 10 * links` keys in one telemetry dict and
-/// refuses to start above 256: refuse such a setup here, before it is stored or launched.
-fn check_dict_limit<'a>(links: impl Iterator<Item = &'a Link>) -> Result<(), ApiError> {
+/// refuses to start above 256: refuse such a setup here, before it is launched.
+fn check_dict_limit(links: &[Link]) -> Result<(), ApiError> {
     let mut ports: Vec<&str> = Vec::new();
-    let mut count = 0;
+    let count = links.len();
     for l in links {
-        count += 1;
         for p in [l.ingress.as_str(), l.egress.as_str()] {
             if !ports.contains(&p) {
                 ports.push(p);
@@ -359,73 +273,38 @@ fn check_dict_limit<'a>(links: impl Iterator<Item = &'a Link>) -> Result<(), Api
     Ok(())
 }
 
-/// Validates a link and returns its ingress and egress, normalised (PCI addresses
-/// in lower case).
-fn validate_link(input: &LinkInput, others: &[&Link]) -> Result<(String, String), ApiError> {
-    check_link_name(&input.name)?;
-    let ingress = validate::port_name(&input.ingress).map_err(ApiError::bad)?;
-    let egress = validate::port_name(&input.egress).map_err(ApiError::bad)?;
-    input
-        .config
+/// Validates a link of the configuration against the links before it.
+fn validate_link(l: &Link, before: &[Link]) -> Result<(), ApiError> {
+    check_link_name(&l.name)?;
+    validate::port_name(&l.ingress).map_err(ApiError::bad)?;
+    validate::port_name(&l.egress).map_err(ApiError::bad)?;
+    l.config
         .to_core()
         .map_err(|e| ApiError::bad(format!("config: {e}")))?;
-    if let Some(o) = others.iter().find(|o| o.name == input.name) {
+    if let Some(o) = before.iter().find(|o| o.name == l.name) {
         return Err(ApiError::conflict(format!(
             "a link named {} already exists",
             o.name
         )));
     }
-    check_ports_free(&input.name, &ingress, &egress, others)?;
-    Ok((ingress, egress))
+    check_ports_free(l, before)
 }
 
 /// A port is the ingress of at most one link and the egress of at most one link.
-fn check_ports_free(
-    name: &str,
-    ingress: &str,
-    egress: &str,
-    others: &[&Link],
-) -> Result<(), ApiError> {
+fn check_ports_free(l: &Link, others: &[Link]) -> Result<(), ApiError> {
     for o in others {
-        if o.ingress == ingress {
+        if o.ingress == l.ingress {
             return Err(ApiError::conflict(format!(
-                "port {ingress} is already the ingress of link {} (link {name})",
-                o.name
+                "port {} is already the ingress of link {} (link {})",
+                l.ingress, o.name, l.name
             )));
         }
-        if o.egress == egress {
+        if o.egress == l.egress {
             return Err(ApiError::conflict(format!(
-                "port {egress} is already the egress of link {} (link {name})",
-                o.name
+                "port {} is already the egress of link {} (link {})",
+                l.egress, o.name, l.name
             )));
         }
-    }
-    Ok(())
-}
-
-fn parse_id(kind: &str, s: &str) -> Result<u32, ApiError> {
-    s.parse()
-        .map_err(|_| ApiError::not_found(format!("no {kind} {s}")))
-}
-
-/// Validates a preset against the others: name 1 to 64 characters and unique, the
-/// config like a link direction.
-fn validate_preset(name: &str, config: &ConfigDto, others: &[&Preset]) -> Result<(), ApiError> {
-    if name.trim().is_empty() {
-        return Err(ApiError::bad("preset name must not be empty"));
-    }
-    if name.chars().count() > MAX_PRESET_NAME_CHARS {
-        return Err(ApiError::bad(format!(
-            "preset name must be at most {MAX_PRESET_NAME_CHARS} characters"
-        )));
-    }
-    config
-        .to_core()
-        .map_err(|e| ApiError::bad(format!("config: {e}")))?;
-    if others.iter().any(|o| o.name == name) {
-        return Err(ApiError::conflict(format!(
-            "a preset named {name} already exists"
-        )));
     }
     Ok(())
 }
@@ -459,111 +338,54 @@ fn parse_window(query: Option<&str>) -> Result<u32, ApiError> {
     }
 }
 
+/// The validated configuration of a start body.
+fn validate_config(config: &RunConfig) -> Result<(), ApiError> {
+    if config.links.is_empty() {
+        return Err(ApiError::bad("nothing to start: the body has no links"));
+    }
+    validate_settings(&config.settings)?;
+    for (i, l) in config.links.iter().enumerate() {
+        validate_link(l, &config.links[..i])?;
+    }
+    check_dict_limit(&config.links)
+}
+
 impl App {
-    fn stored(&self) -> MutexGuard<'_, StoredState> {
-        lock(&self.stored)
-    }
-
-    /// Applies `edit` to a copy of the stored state, saves it, then swaps it in.
-    /// Runs on a blocking thread (the save syncs to disk), to completion even if
-    /// the request is dropped; readers of `stored` never wait for the disk.
-    ///
-    /// `touches_run`: the edit changes what a running emulation was started with, so
-    /// it sets `pending_restart` (presets do not).
-    async fn update<T: Send + 'static>(
-        self: &Arc<Self>,
-        touches_run: bool,
-        edit: impl FnOnce(&mut StoredState) -> Result<T, ApiError> + Send + 'static,
-    ) -> Result<T, ApiError> {
-        let app = self.clone();
-        blocking(move || app.update_blocking(touches_run, edit)).await?
-    }
-
-    fn update_blocking<T>(
-        &self,
-        touches_run: bool,
-        edit: impl FnOnce(&mut StoredState) -> Result<T, ApiError>,
-    ) -> Result<T, ApiError> {
-        let _serial = lock(&self.edits);
-        let mut next = self.stored().clone();
-        let out = edit(&mut next)?;
-        store::save(&self.deps.state_dir, &next)?;
-        *self.stored() = next;
-        if touches_run
-            && matches!(
-                self.deps.supervisor.status().state,
-                RunState::Starting | RunState::Running
-            )
-        {
-            self.pending_restart.store(true, Ordering::Relaxed);
-        }
-        Ok(out)
-    }
-
     fn emulation(&self) -> EmulationView {
         let st = self.deps.supervisor.status();
-        let launched = if st.state == RunState::Stopped {
+        let run = if st.state == RunState::Stopped {
             None
         } else {
-            lock(&self.last_plan).clone()
-        };
-        let (main_lcore, directions) = match launched {
-            Some((m, d)) => (Some(m), d),
-            None => match assign_lcores(&self.deps.roots, &self.stored()) {
-                Ok(a) => (Some(a.main_lcore), a.directions),
-                Err(_) => (None, Vec::new()),
-            },
+            lock(&self.run).clone()
         };
         EmulationView {
             state: st.state,
             pid: st.pid,
             started_at: st.started_at,
-            directions,
-            main_lcore,
-            pending_restart: self.pending_restart.load(Ordering::Relaxed)
-                && matches!(st.state, RunState::Starting | RunState::Running),
+            main_lcore: run.as_ref().map(|r| r.main_lcore),
+            directions: run.as_ref().map_or_else(Vec::new, |r| r.directions.clone()),
+            config: run.map(|r| r.config),
             error: st.error,
             log_tail: st.log_tail,
         }
     }
 
-    /// The config of global direction `d`: what the running emulation was started
-    /// with, else the stored one.
+    /// The config of direction `d` of the running emulation.
     fn direction_config(&self, d: usize) -> Option<ConfigDto> {
-        if self.deps.supervisor.status().state != RunState::Stopped {
-            let launched = lock(&self.launched_configs);
-            if !launched.is_empty() {
-                return launched.get(d).cloned();
-            }
+        if self.deps.supervisor.status().state == RunState::Stopped {
+            return None;
         }
-        self.stored().links.get(d).map(|l| l.config.clone())
+        let run = lock(&self.run);
+        Some(run.as_ref()?.config.links.get(d)?.config.clone())
     }
 
-    fn launch_plan(&self) -> Result<(LaunchPlan, u32, Vec<ConfigDto>), ApiError> {
-        let stored = self.stored().clone();
-        if stored.links.is_empty() {
-            return Err(ApiError::bad("no links are configured"));
-        }
-        // the state file may have been edited by hand or written by an older
-        // version: what reaches dpds' command line passes the same rules as an edit
-        for (i, l) in stored.links.iter().enumerate() {
-            check_link_name(&l.name)?;
-            if stored.links[..i].iter().any(|o| o.name == l.name) {
-                return Err(ApiError::conflict(format!(
-                    "a link named {} already exists",
-                    l.name
-                )));
-            }
-            validate::port_name(&l.ingress).map_err(ApiError::bad)?;
-            validate::port_name(&l.egress).map_err(ApiError::bad)?;
-            let before: Vec<&Link> = stored.links[..i].iter().collect();
-            check_ports_free(&l.name, &l.ingress, &l.egress, &before)?;
-        }
-        check_dict_limit(stored.links.iter())?;
-        validate::eal_extra_args(&stored.settings.eal_extra_args).map_err(ApiError::bad)?;
+    /// Validates the body and plans the launch (what start and validate share).
+    fn launch_plan(&self, req: StartRequest) -> Result<(LaunchPlan, RunConfig), ApiError> {
+        let config = req.into_run_config();
+        validate_config(&config)?;
         let interfaces = discover(&self.deps.roots);
         let mut ports: Vec<EalPort> = Vec::new();
-        for port in stored.links.iter().flat_map(|l| [&l.ingress, &l.egress]) {
+        for port in config.links.iter().flat_map(|l| [&l.ingress, &l.egress]) {
             let found = find(&interfaces, port);
             if let Some(i) = found.filter(|i| i.kernel_route) {
                 return Err(ApiError::conflict(format!(
@@ -578,11 +400,11 @@ impl App {
                 });
             }
         }
-        let assignment = assign_lcores(&self.deps.roots, &stored)
+        let assignment = assign_lcores(&self.deps.roots, &config)
             .map_err(|e| ApiError::bad(format!("cannot assign lcores: {e}")))?;
-        let links_json = links_file_json(&stored.links, &assignment.directions)
+        let links_json = links_file_json(&config.links, &assignment.directions)
             .map_err(|e| ApiError::bad(e.to_string()))?;
-        let configs = stored
+        let configs = config
             .links
             .iter()
             .map(|l| l.config.to_core().map_err(|e| ApiError::bad(e.to_string())))
@@ -594,7 +416,7 @@ impl App {
             main_lcore: assignment.main_lcore,
             worker_lcores: workers,
             ports,
-            eal_extra_args: stored.settings.eal_extra_args.clone(),
+            eal_extra_args: config.settings.eal_extra_args.clone(),
             links_file: links_file.clone(),
         });
         let plan = LaunchPlan {
@@ -607,8 +429,7 @@ impl App {
             main_lcore: assignment.main_lcore,
             drain_timeout: drain_timeout(&configs),
         };
-        let dtos = stored.links.iter().map(|l| l.config.clone()).collect();
-        Ok((plan, assignment.main_lcore, dtos))
+        Ok((plan, config))
     }
 }
 
@@ -640,154 +461,34 @@ async fn interfaces(State(app): Shared) -> Result<Json<Vec<Interface>>, ApiError
     Ok(Json(blocking(move || discover(&app.deps.roots)).await?))
 }
 
+/// The hints that depend on the host only.
 #[utoipa::path(
     get, path = "/api/host/hints",
     responses((status = 200, body = Vec<Hint>), (status = 500, body = ErrorBody))
 )]
 async fn host_hints(State(app): Shared) -> Result<Json<Vec<Hint>>, ApiError> {
-    let stored = app.stored().clone();
     Ok(Json(
-        blocking(move || compute_hints(&app.deps.roots, &stored)).await?,
+        blocking(move || compute_hints(&app.deps.roots, &RunConfig::default())).await?,
     ))
 }
 
-#[utoipa::path(get, path = "/api/links", responses((status = 200, body = Vec<Link>)))]
-async fn list_links(State(app): Shared) -> Json<Vec<Link>> {
-    Json(app.stored().links.clone())
-}
-
+/// The host hints plus the ones that depend on the links of a configuration. The
+/// configuration is only read: nothing is validated, started or kept.
 #[utoipa::path(
-    post, path = "/api/links", request_body = LinkInput,
+    post, path = "/api/host/hints", request_body = StartRequest,
     responses(
-        (status = 201, body = Link), (status = 400, body = ErrorBody), (status = 409, body = ErrorBody),
-        (status = 413, body = ErrorBody), (status = 415, body = ErrorBody), (status = 500, body = ErrorBody)
-    )
-)]
-async fn create_link(
-    State(app): Shared,
-    ApiJson(input): ApiJson<LinkInput>,
-) -> Result<(StatusCode, Json<Link>), ApiError> {
-    let link = app
-        .update(true, move |s| {
-            let (ingress, egress) = validate_link(&input, &s.links.iter().collect::<Vec<_>>())?;
-            let link = Link {
-                id: s.next_id,
-                name: input.name,
-                ingress,
-                egress,
-                config: input.config,
-                worker: input.worker,
-            };
-            check_dict_limit(s.links.iter().chain([&link]))?;
-            s.next_id += 1;
-            s.links.push(link.clone());
-            Ok(link)
-        })
-        .await?;
-    Ok((StatusCode::CREATED, Json(link)))
-}
-
-#[utoipa::path(
-    get, path = "/api/links/{id}", params(("id" = u32, Path, description = "link id")),
-    responses((status = 200, body = Link), (status = 404, body = ErrorBody))
-)]
-async fn get_link(State(app): Shared, Path(id): Path<String>) -> Result<Json<Link>, ApiError> {
-    let id = parse_id("link", &id)?;
-    let stored = app.stored();
-    stored
-        .links
-        .iter()
-        .find(|l| l.id == id)
-        .cloned()
-        .map(Json)
-        .ok_or_else(|| ApiError::not_found(format!("no link {id}")))
-}
-
-#[utoipa::path(
-    put, path = "/api/links/{id}", params(("id" = u32, Path, description = "link id")), request_body = LinkInput,
-    responses(
-        (status = 200, body = Link), (status = 400, body = ErrorBody), (status = 404, body = ErrorBody),
-        (status = 409, body = ErrorBody), (status = 413, body = ErrorBody), (status = 415, body = ErrorBody),
-        (status = 500, body = ErrorBody)
-    )
-)]
-async fn update_link(
-    State(app): Shared,
-    Path(id): Path<String>,
-    ApiJson(input): ApiJson<LinkInput>,
-) -> Result<Json<Link>, ApiError> {
-    let id = parse_id("link", &id)?;
-    let link = app
-        .update(true, move |s| {
-            if !s.links.iter().any(|l| l.id == id) {
-                return Err(ApiError::not_found(format!("no link {id}")));
-            }
-            let (ingress, egress) = validate_link(
-                &input,
-                &s.links.iter().filter(|l| l.id != id).collect::<Vec<_>>(),
-            )?;
-            let link = Link {
-                id,
-                name: input.name,
-                ingress,
-                egress,
-                config: input.config,
-                worker: input.worker,
-            };
-            check_dict_limit(s.links.iter().filter(|l| l.id != id).chain([&link]))?;
-            for l in &mut s.links {
-                if l.id == id {
-                    *l = link.clone();
-                }
-            }
-            Ok(link)
-        })
-        .await?;
-    Ok(Json(link))
-}
-
-#[utoipa::path(
-    delete, path = "/api/links/{id}", params(("id" = u32, Path, description = "link id")),
-    responses((status = 204), (status = 404, body = ErrorBody), (status = 500, body = ErrorBody))
-)]
-async fn delete_link(State(app): Shared, Path(id): Path<String>) -> Result<StatusCode, ApiError> {
-    let id = parse_id("link", &id)?;
-    app.update(true, move |s| {
-        let before = s.links.len();
-        s.links.retain(|l| l.id != id);
-        if s.links.len() == before {
-            return Err(ApiError::not_found(format!("no link {id}")));
-        }
-        Ok(())
-    })
-    .await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-#[utoipa::path(get, path = "/api/settings", responses((status = 200, body = Settings)))]
-async fn get_settings(State(app): Shared) -> Json<Settings> {
-    Json(app.stored().settings.clone())
-}
-
-#[utoipa::path(
-    put, path = "/api/settings", request_body = Settings,
-    responses(
-        (status = 200, body = Settings), (status = 400, body = ErrorBody), (status = 413, body = ErrorBody),
+        (status = 200, body = Vec<Hint>), (status = 400, body = ErrorBody), (status = 413, body = ErrorBody),
         (status = 415, body = ErrorBody), (status = 500, body = ErrorBody)
     )
 )]
-async fn put_settings(
+async fn host_hints_for(
     State(app): Shared,
-    ApiJson(settings): ApiJson<Settings>,
-) -> Result<Json<Settings>, ApiError> {
-    validate_settings(&settings)?;
-    let stored = settings.clone();
-    app.update(true, move |s| {
-        s.settings = stored;
-        Ok(())
-    })
-    .await?;
-    Ok(Json(settings))
+    ApiJson(req): ApiJson<StartRequest>,
+) -> Result<Json<Vec<Hint>>, ApiError> {
+    let config = req.into_run_config();
+    Ok(Json(
+        blocking(move || compute_hints(&app.deps.roots, &config)).await?,
+    ))
 }
 
 #[utoipa::path(
@@ -798,16 +499,17 @@ async fn get_emulation(State(app): Shared) -> Result<Json<EmulationView>, ApiErr
     Ok(Json(blocking(move || app.emulation()).await?))
 }
 
+/// Starts the emulation with the configuration in the body.
 #[utoipa::path(
-    post, path = "/api/emulation/start",
+    post, path = "/api/emulation/start", request_body = StartRequest,
     responses(
         (status = 202, body = EmulationView), (status = 400, body = ErrorBody), (status = 409, body = ErrorBody),
-        (status = 415, body = ErrorBody), (status = 500, body = ErrorBody)
+        (status = 413, body = ErrorBody), (status = 415, body = ErrorBody), (status = 500, body = ErrorBody)
     )
 )]
 async fn start(
     State(app): Shared,
-    _json: RequireJson,
+    ApiJson(req): ApiJson<StartRequest>,
 ) -> Result<(StatusCode, Json<EmulationView>), ApiError> {
     let _step = app.lifecycle.lock().await;
     let state = app.deps.supervisor.status().state;
@@ -823,10 +525,15 @@ async fn start(
         )));
     }
     let a = app.clone();
-    let (plan, main_lcore, configs) = blocking(move || a.launch_plan()).await??;
-    *lock(&app.last_plan) = Some((main_lcore, plan.directions.clone()));
-    *lock(&app.launched_configs) = configs;
-    app.pending_restart.store(false, Ordering::Relaxed);
+    let (plan, config) = blocking(move || a.launch_plan(req)).await??;
+    app.deps
+        .telemetry
+        .set_poll_interval(config.settings.poll_interval_ms);
+    *lock(&app.run) = Some(Run {
+        config,
+        main_lcore: plan.main_lcore,
+        directions: plan.directions.clone(),
+    });
     app.deps.supervisor.start(plan);
     Ok((
         StatusCode::ACCEPTED,
@@ -838,6 +545,26 @@ async fn start(
             .await?,
         ),
     ))
+}
+
+/// Checks a configuration like start does and answers the lcores it would run on. It
+/// ignores the state of the emulation and starts nothing.
+#[utoipa::path(
+    post, path = "/api/emulation/validate", request_body = StartRequest,
+    responses(
+        (status = 200, body = PlanView), (status = 400, body = ErrorBody), (status = 409, body = ErrorBody),
+        (status = 413, body = ErrorBody), (status = 415, body = ErrorBody), (status = 500, body = ErrorBody)
+    )
+)]
+async fn validate_start(
+    State(app): Shared,
+    ApiJson(req): ApiJson<StartRequest>,
+) -> Result<Json<PlanView>, ApiError> {
+    let (plan, _) = blocking(move || app.launch_plan(req)).await??;
+    Ok(Json(PlanView {
+        main_lcore: plan.main_lcore,
+        directions: plan.directions,
+    }))
 }
 
 #[utoipa::path(
@@ -890,7 +617,7 @@ async fn stats(State(app): Shared) -> Json<StatsView> {
 #[utoipa::path(
     get, path = "/api/stats/{dir}/delay_histogram",
     params(
-        ("dir" = u32, Path, description = "link index, in the order of GET /api/links"),
+        ("dir" = u32, Path, description = "link index, in the order of the start body"),
         ("window_s" = Option<u32>, Query, description = "0 (default, since start), 10, 60 or 300: only the samples of the last n seconds")
     ),
     responses((status = 200, body = HistogramView), (status = 400, body = ErrorBody), (status = 404, body = ErrorBody))
@@ -944,298 +671,26 @@ async fn histogram(
     Ok(Json(h))
 }
 
-// ---- presets -----------------------------------------------------------------
-
-#[utoipa::path(get, path = "/api/presets", responses((status = 200, body = Vec<Preset>)))]
-async fn list_presets(State(app): Shared) -> Json<Vec<Preset>> {
-    Json(app.stored().presets.clone())
-}
-
-#[utoipa::path(
-    post, path = "/api/presets", request_body = PresetInput,
-    responses(
-        (status = 201, body = Preset), (status = 400, body = ErrorBody), (status = 409, body = ErrorBody),
-        (status = 413, body = ErrorBody), (status = 415, body = ErrorBody), (status = 500, body = ErrorBody)
-    )
-)]
-async fn create_preset(
-    State(app): Shared,
-    ApiJson(input): ApiJson<PresetInput>,
-) -> Result<(StatusCode, Json<Preset>), ApiError> {
-    let preset = app
-        .update(false, move |s| {
-            validate_preset(
-                &input.name,
-                &input.config,
-                &s.presets.iter().collect::<Vec<_>>(),
-            )?;
-            let preset = Preset {
-                id: s.next_preset_id,
-                name: input.name,
-                description: input.description,
-                config: input.config,
-            };
-            s.next_preset_id += 1;
-            s.presets.push(preset.clone());
-            Ok(preset)
-        })
-        .await?;
-    Ok((StatusCode::CREATED, Json(preset)))
-}
-
-#[utoipa::path(
-    get, path = "/api/presets/{id}", params(("id" = u32, Path, description = "preset id")),
-    responses((status = 200, body = Preset), (status = 404, body = ErrorBody))
-)]
-async fn get_preset(State(app): Shared, Path(id): Path<String>) -> Result<Json<Preset>, ApiError> {
-    let id = parse_id("preset", &id)?;
-    app.stored()
-        .presets
-        .iter()
-        .find(|p| p.id == id)
-        .cloned()
-        .map(Json)
-        .ok_or_else(|| ApiError::not_found(format!("no preset {id}")))
-}
-
-#[utoipa::path(
-    put, path = "/api/presets/{id}", params(("id" = u32, Path, description = "preset id")), request_body = PresetInput,
-    responses(
-        (status = 200, body = Preset), (status = 400, body = ErrorBody), (status = 404, body = ErrorBody),
-        (status = 409, body = ErrorBody), (status = 413, body = ErrorBody), (status = 415, body = ErrorBody),
-        (status = 500, body = ErrorBody)
-    )
-)]
-async fn update_preset(
-    State(app): Shared,
-    Path(id): Path<String>,
-    ApiJson(input): ApiJson<PresetInput>,
-) -> Result<Json<Preset>, ApiError> {
-    let id = parse_id("preset", &id)?;
-    let preset = app
-        .update(false, move |s| {
-            if !s.presets.iter().any(|p| p.id == id) {
-                return Err(ApiError::not_found(format!("no preset {id}")));
-            }
-            validate_preset(
-                &input.name,
-                &input.config,
-                &s.presets.iter().filter(|p| p.id != id).collect::<Vec<_>>(),
-            )?;
-            let preset = Preset {
-                id,
-                name: input.name,
-                description: input.description,
-                config: input.config,
-            };
-            for p in &mut s.presets {
-                if p.id == id {
-                    *p = preset.clone();
-                }
-            }
-            Ok(preset)
-        })
-        .await?;
-    Ok(Json(preset))
-}
-
-#[utoipa::path(
-    delete, path = "/api/presets/{id}", params(("id" = u32, Path, description = "preset id")),
-    responses((status = 204), (status = 404, body = ErrorBody), (status = 500, body = ErrorBody))
-)]
-async fn delete_preset(State(app): Shared, Path(id): Path<String>) -> Result<StatusCode, ApiError> {
-    let id = parse_id("preset", &id)?;
-    app.update(false, move |s| {
-        let before = s.presets.len();
-        s.presets.retain(|p| p.id != id);
-        if s.presets.len() == before {
-            return Err(ApiError::not_found(format!("no preset {id}")));
-        }
-        Ok(())
-    })
-    .await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-// ---- export / import -----------------------------------------------------------
-
-#[utoipa::path(get, path = "/api/export", responses((status = 200, body = ExportDoc)))]
-async fn export(State(app): Shared) -> Json<ExportDoc> {
-    let s = app.stored();
-    Json(ExportDoc {
-        format: EXPORT_FORMAT.into(),
-        version: EXPORT_VERSION,
-        settings: ExportSettings {
-            main_lcore: s.settings.main_lcore,
-            eal_extra_args: s.settings.eal_extra_args.clone(),
-            poll_interval_ms: s.settings.poll_interval_ms,
-        },
-        links: s
-            .links
-            .iter()
-            .map(|l| ExportLink {
-                name: l.name.clone(),
-                ingress: l.ingress.clone(),
-                egress: l.egress.clone(),
-                config: l.config.clone(),
-                worker: l.worker,
-            })
-            .collect(),
-        presets: s
-            .presets
-            .iter()
-            .map(|p| ExportPreset {
-                name: p.name.clone(),
-                description: p.description.clone(),
-                config: p.config.clone(),
-            })
-            .collect(),
-    })
-}
-
-/// Refuses a document of another version before its parts are parsed, so that an old
-/// document gets a message about the version, not about an unknown link field.
-fn check_version(raw: &serde_json::Value) -> Result<(), ApiError> {
-    match raw.get("version").and_then(serde_json::Value::as_u64) {
-        Some(1) => Err(ApiError::bad(format!(
-            "version = 1: only version {EXPORT_VERSION} is supported (version 1 had links between two ports; re-create them as one link per direction, ingress to egress)"
-        ))),
-        Some(v) if v != u64::from(EXPORT_VERSION) => Err(ApiError::bad(format!(
-            "version = {v}: only version {EXPORT_VERSION} is supported"
-        ))),
-        _ => Ok(()),
-    }
-}
-
-/// Validates the whole document and replaces links, presets and settings of `s` by it,
-/// with new ids from the counters of `s`. On an error `s` is unchanged.
-fn apply_import(s: &mut StoredState, doc: ExportDoc) -> Result<(), ApiError> {
-    if doc.format != EXPORT_FORMAT {
-        return Err(ApiError::bad(format!(
-            "format = {:?}: expected {EXPORT_FORMAT:?}",
-            doc.format
-        )));
-    }
-    let settings = Settings {
-        main_lcore: doc.settings.main_lcore,
-        eal_extra_args: doc.settings.eal_extra_args,
-        poll_interval_ms: doc.settings.poll_interval_ms,
-    };
-    validate_settings(&settings).map_err(|e| e.in_document("settings"))?;
-    let mut links: Vec<Link> = Vec::new();
-    for (i, l) in doc.links.into_iter().enumerate() {
-        let input = LinkInput {
-            name: l.name,
-            ingress: l.ingress,
-            egress: l.egress,
-            config: l.config,
-            worker: l.worker,
-        };
-        let (ingress, egress) = validate_link(&input, &links.iter().collect::<Vec<_>>())
-            .map_err(|e| e.in_document(&format!("links[{i}]")))?;
-        links.push(Link {
-            id: s.next_id + u32::try_from(i).unwrap_or(u32::MAX),
-            name: input.name,
-            ingress,
-            egress,
-            config: input.config,
-            worker: input.worker,
-        });
-    }
-    check_dict_limit(links.iter()).map_err(|e| e.in_document("links"))?;
-    let mut presets: Vec<Preset> = Vec::new();
-    for (i, p) in doc.presets.into_iter().enumerate() {
-        validate_preset(&p.name, &p.config, &presets.iter().collect::<Vec<_>>())
-            .map_err(|e| e.in_document(&format!("presets[{i}]")))?;
-        presets.push(Preset {
-            id: s.next_preset_id + u32::try_from(i).unwrap_or(u32::MAX),
-            name: p.name,
-            description: p.description,
-            config: p.config,
-        });
-    }
-    s.next_id += u32::try_from(links.len()).unwrap_or(u32::MAX);
-    s.next_preset_id += u32::try_from(presets.len()).unwrap_or(u32::MAX);
-    s.links = links;
-    s.presets = presets;
-    s.settings = settings;
-    Ok(())
-}
-
-#[utoipa::path(
-    post, path = "/api/import",
-    params(("mode" = Option<String>, Query, description = "`replace` (the default and only mode): links, presets and settings are replaced")),
-    request_body = ExportDoc,
-    responses(
-        (status = 200, body = ImportSummary), (status = 400, body = ErrorBody), (status = 409, body = ErrorBody),
-        (status = 413, body = ErrorBody), (status = 415, body = ErrorBody), (status = 500, body = ErrorBody)
-    )
-)]
-async fn import(
-    State(app): Shared,
-    RawQuery(query): RawQuery,
-    ApiJson(raw): ApiJson<serde_json::Value>,
-) -> Result<Json<ImportSummary>, ApiError> {
-    if let Some(mode) = query_param(query.as_deref(), "mode").filter(|m| *m != "replace") {
-        return Err(ApiError::bad(format!(
-            "mode = {mode:?}: only mode=replace is supported"
-        )));
-    }
-    check_version(&raw)?;
-    let doc: ExportDoc = serde_json::from_value(raw)
-        .map_err(|e| ApiError::bad(format!("invalid request body: {e}")))?;
-    // start and stop hold this lock too: the emulation cannot leave `stopped` during the import
-    let _step = app.lifecycle.lock().await;
-    let state = app.deps.supervisor.status().state;
-    if state != RunState::Stopped {
-        return Err(ApiError::conflict(format!(
-            "cannot import while the emulation is {state:?}; stop it first"
-        )));
-    }
-    let summary = app
-        .update(true, move |s| {
-            apply_import(s, doc)?;
-            Ok(ImportSummary {
-                links: s.links.len(),
-                presets: s.presets.len(),
-            })
-        })
-        .await?;
-    Ok(Json(summary))
-}
-
 // ---- router ------------------------------------------------------------------
 
 #[derive(OpenApi)]
 #[openapi(
     info(
         title = "DPDS controller API",
-        description = "Stores DPDS links, supervises dpds and serves its telemetry."
+        description = "Starts and stops dpds with the configuration of the request and serves its telemetry. The controller stores no configuration."
     ),
     paths(
         online,
         version,
         interfaces,
         host_hints,
-        list_links,
-        create_link,
-        get_link,
-        update_link,
-        delete_link,
-        get_settings,
-        put_settings,
+        host_hints_for,
         get_emulation,
         start,
+        validate_start,
         stop,
         stats,
-        histogram,
-        list_presets,
-        create_preset,
-        get_preset,
-        update_preset,
-        delete_preset,
-        export,
-        import
+        histogram
     ),
     components(schemas(
         ConfigDto,
@@ -1246,8 +701,11 @@ async fn import(
         LimiterModeDto,
         LossModelDto,
         Link,
-        LinkInput,
+        StartLink,
+        StartRequest,
+        RunConfig,
         Settings,
+        PlanView,
         Interface,
         Hint,
         Level,
@@ -1263,64 +721,38 @@ async fn import(
         HistogramView,
         Percentiles,
         Clamped,
-        ExpectedModel,
-        Preset,
-        PresetInput,
-        ExportDoc,
-        ExportSettings,
-        ExportLink,
-        ExportPreset,
-        ImportSummary
+        ExpectedModel
     ))
 )]
 struct ApiDoc;
 
 /// The API plus the frontend the build embedded.
-pub fn router(deps: Deps) -> Result<Router, StoreError> {
+pub fn router(deps: Deps) -> Router {
     router_with(deps, Frontend::embedded())
 }
 
-/// The API, and `frontend` for every GET and HEAD outside `/api`. Fails if the stored state
-/// cannot be loaded (a corrupt file is never reset silently).
-pub fn router_with(deps: Deps, frontend: Frontend) -> Result<Router, StoreError> {
-    let stored = store::load(&deps.state_dir)?;
+/// The API, and `frontend` for every GET and HEAD outside `/api`.
+pub fn router_with(deps: Deps, frontend: Frontend) -> Router {
     let site = frontend.clone();
     let app = Arc::new(App {
         deps,
         frontend,
-        stored: Mutex::new(stored),
-        edits: Mutex::new(()),
-        pending_restart: AtomicBool::new(false),
-        last_plan: Mutex::new(None),
-        launched_configs: Mutex::new(Vec::new()),
+        run: Mutex::new(None),
         lifecycle: AsyncMutex::new(()),
     });
     let api = Router::new()
         .route("/api/online", get(online))
         .route("/api/version", get(version))
         .route("/api/interfaces", get(interfaces))
-        .route("/api/host/hints", get(host_hints))
-        .route("/api/links", get(list_links).post(create_link))
-        .route(
-            "/api/links/{id}",
-            get(get_link).put(update_link).delete(delete_link),
-        )
-        .route("/api/settings", get(get_settings).put(put_settings))
+        .route("/api/host/hints", get(host_hints).post(host_hints_for))
         .route("/api/emulation", get(get_emulation))
         .route("/api/emulation/start", post(start))
+        .route("/api/emulation/validate", post(validate_start))
         .route("/api/emulation/stop", post(stop))
         .route("/api/stats", get(stats))
         .route("/api/stats/{dir}/delay_histogram", get(histogram))
-        .route("/api/presets", get(list_presets).post(create_preset))
-        .route(
-            "/api/presets/{id}",
-            get(get_preset).put(update_preset).delete(delete_preset),
-        )
-        .route("/api/export", get(export))
-        .route("/api/import", post(import))
         .with_state(app);
-    Ok(api
-        .merge(SwaggerUi::new("/api/docs").url("/api/openapi.json", ApiDoc::openapi()))
+    api.merge(SwaggerUi::new("/api/docs").url("/api/openapi.json", ApiDoc::openapi()))
         .fallback(move |req: Request| {
             let site = site.clone();
             async move {
@@ -1338,7 +770,7 @@ pub fn router_with(deps: Deps, frontend: Frontend) -> Result<Router, StoreError>
                 "method not allowed on this route".into(),
             )
         })
-        .layer(DefaultBodyLimit::max(BODY_LIMIT)))
+        .layer(DefaultBodyLimit::max(BODY_LIMIT))
 }
 
 /// DNS-rebinding guard: only requests whose `Host` (port stripped, case

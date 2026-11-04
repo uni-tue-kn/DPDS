@@ -7,14 +7,14 @@ After=network.target
 Type=simple
 # Runs as root: the controller starts dpds (DPDK, NIC access) as its child process.
 User=root
-# Optional overrides (bind address, dpds binary, state dir); written by dpds.sh install.
+# Optional overrides (bind address, dpds binary); written by dpds.sh install.
 EnvironmentFile=-/etc/dpds/controller.env
 ExecStart=/usr/local/bin/dpds-controller serve
 
 # SIGTERM goes to the controller only. It stops its dpds child (SIGINT, then waits until the
 # delay buffers have drained) and exits. Only after TimeoutStopSec does systemd SIGKILL
 # the whole control group. The timeout must exceed the longest configured delay plus the
-# controller's own margin (the controller warns when a stored link needs more than 590 s).
+# controller's own margin (the controller warns when a link of the configuration needs more than 590 s).
 KillMode=mixed
 KillSignal=SIGTERM
 TimeoutStopSec=600

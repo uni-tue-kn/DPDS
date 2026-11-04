@@ -4,7 +4,7 @@ version.workspace = true
 edition = "2021"
 publish = false
 authors = ["Etienne Zink <etienne.zink@uni-tuebingen.de>"]
-description = "REST controller for DPDS: stores links, supervises the dpds child process, serves stats."
+description = "REST controller for DPDS: starts and supervises the dpds child process, serves stats."
 license = "Apache-2.0"
 
 [[bin]]

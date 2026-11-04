@@ -4,7 +4,7 @@ import { vi } from 'vitest';
 import type { EmulationState, StatsView } from '../api/types';
 import { api, ApiError } from '../test/mockApi';
 import * as fx from '../test/fixtures';
-import { deferred, field, renderApp, tick } from '../test/helpers';
+import { deferred, expectStartBody, field, renderApp, seedStore, storedDoc, tick } from '../test/helpers';
 
 const STATES: EmulationState[] = ['stopped', 'starting', 'running', 'stopping', 'failed'];
 
@@ -12,7 +12,13 @@ function twoDirections() {
   return fx.stats([fx.dirStats(0), fx.dirStats(1, { rx_pps: 500, tx_pps: 400, rx_bps: 2.5e6, tx_bps: 1.5e3 })]);
 }
 
+// v22: Start sends the whole LOCAL configuration (contract: "Start" in the v22 block of src/test/helpers.tsx). The tests of the
+// control block start with one stored link; pending restart and "Load running configuration" are in pendingRestart.test.tsx.
 describe('Dashboard: emulation state and control', () => {
+  beforeEach(() => {
+    seedStore({ links: [fx.link(), fx.linkRev()], presets: [fx.preset({ id: 4 })], settings: fx.settings({ main_lcore: 2, eal_extra_args: ['--no-huge'], poll_interval_ms: 250 }) });
+  });
+
   it.each(STATES)('shows a state badge for "%s"', async (state) => {
     api.getEmulation.mockResolvedValue(fx.emulation(state));
     renderApp('/');
@@ -55,6 +61,76 @@ describe('Dashboard: emulation state and control', () => {
     await waitFor(() => expect(screen.getByTestId('state-badge')).toHaveAttribute('data-state', 'starting'));
   });
 
+  it('Start sends the whole local configuration: links without ids, the settings, no presets, nothing else', async () => {
+    const user = userEvent.setup();
+    renderApp('/');
+    const btn = await screen.findByRole('button', { name: /^start$/i });
+    await waitFor(() => expect(btn).toBeEnabled());
+    await user.click(btn);
+    expect(api.startEmulation).toHaveBeenCalledTimes(1);
+    expectStartBody(api.startEmulation.mock.calls[0][0], storedDoc());
+    const body = api.startEmulation.mock.calls[0][0] as unknown as Record<string, unknown>;
+    expect(Object.keys(body).sort()).toEqual(['links', 'settings']);
+    expect(JSON.stringify(body)).not.toMatch(/"id"|presets|"version"|pending/);
+  });
+
+  it('the start body follows the stored document as it is NOW (an edit made before Start is included)', async () => {
+    const user = userEvent.setup();
+    renderApp('/');
+    const btn = await screen.findByRole('button', { name: /^start$/i });
+    await waitFor(() => expect(btn).toBeEnabled());
+    seedStore({ links: [fx.loopLink({ id: 7 })], settings: fx.settings({ poll_interval_ms: 100 }) });
+    await user.click(btn);
+    const body = api.startEmulation.mock.calls[0][0];
+    expect(body.links.map((l) => l.name)).toEqual(['loop']);
+    expect(body.settings.poll_interval_ms).toBe(100);
+  });
+
+  it('a link with stages left out is sent without them (null or absent), not with defaults', async () => {
+    seedStore({ links: [fx.link({ config: fx.configBare() })] });
+    const user = userEvent.setup();
+    renderApp('/');
+    const btn = await screen.findByRole('button', { name: /^start$/i });
+    await waitFor(() => expect(btn).toBeEnabled());
+    await user.click(btn);
+    const c = api.startEmulation.mock.calls[0][0].links[0].config;
+    expect(c.delayer ?? null).toBeNull();
+    expect(c.limiter ?? null).toBeNull();
+    expect(c.loss_model ?? null).toBeNull();
+  });
+
+  it('without local links Start sends nothing and says so in an alert', async () => {
+    localStorage.clear();
+    const user = userEvent.setup();
+    renderApp('/');
+    const btn = await screen.findByRole('button', { name: /^start$/i });
+    await waitFor(() => expect(btn).toBeEnabled());
+    await user.click(btn);
+    expect(await screen.findByRole('alert')).toHaveTextContent(/no links|nothing to start/i);
+    expect(api.startEmulation).not.toHaveBeenCalled();
+  });
+
+  it('with an empty links list stored the same applies', async () => {
+    seedStore({ links: [], presets: [fx.preset({ id: 4 })] });
+    const user = userEvent.setup();
+    renderApp('/');
+    const btn = await screen.findByRole('button', { name: /^start$/i });
+    await waitFor(() => expect(btn).toBeEnabled());
+    await user.click(btn);
+    expect(await screen.findByRole('alert')).toHaveTextContent(/no links|nothing to start/i);
+    expect(api.startEmulation).not.toHaveBeenCalled();
+  });
+
+  it('starting does not write the document', async () => {
+    const before = localStorage.getItem('dpds.config.v1');
+    const user = userEvent.setup();
+    renderApp('/');
+    const btn = await screen.findByRole('button', { name: /^start$/i });
+    await waitFor(() => expect(btn).toBeEnabled());
+    await user.click(btn);
+    expect(localStorage.getItem('dpds.config.v1')).toBe(before);
+  });
+
   it('Stop calls stopEmulation once', async () => {
     const user = userEvent.setup();
     api.getEmulation.mockResolvedValue(fx.emulation('running'));
@@ -78,6 +154,21 @@ describe('Dashboard: emulation state and control', () => {
     expect(api.startEmulation).toHaveBeenCalledTimes(1);
     expect(btn).toBeDisabled();
     d.resolve(fx.emulation('starting'));
+  });
+
+  it.each([
+    [400, 'links[0].config.delayer.std_ns must be finite and >= 0'],
+    [400, 'nothing to start'],
+    [409, 'an emulation is already running'],
+  ])('shows the message of a refused start (%i)', async (status, message) => {
+    const user = userEvent.setup();
+    api.startEmulation.mockRejectedValue(new ApiError(status, message));
+    renderApp('/');
+    const btn = await screen.findByRole('button', { name: /^start$/i });
+    await waitFor(() => expect(btn).toBeEnabled());
+    await user.click(btn);
+    expect(await screen.findByRole('alert')).toHaveTextContent(message);
+    expect(btn).toBeEnabled(); // can be retried
   });
 
   it('shows the API error message when start is refused (409)', async () => {

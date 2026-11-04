@@ -4,8 +4,10 @@ import { screen, within } from '@testing-library/react';
 import { PAGES, cfg } from '../test/configPages';
 import type { ConfigPage } from '../test/configPages';
 import * as fx from '../test/fixtures';
-import { numberField, section } from '../test/helpers';
+import { addButton, numberField, removeButton, section } from '../test/helpers';
 
+// v22: the limiter is an optional stage (no "Limiter active" switch, `activate` is gone), so the info line exists only while
+// the limiter is added (forms are opened with `openFull()` unless said otherwise).
 // Contract: "v21" block of src/test/helpers.tsx (spec20). The limiter's limit is derived by dpds-core from the buffer
 // capacity (capacity x 1542 B x 8 bit, the same for Spacer and Token Bucket Filter); `limit_bit` is gone from the API.
 // The form has no "Burst limit" field; the Limiter subsection shows the derived limit read-only. Every test runs
@@ -23,48 +25,49 @@ function infoElement(): HTMLElement {
 
 describe.each(PAGES)('$name: no burst limit field', (page: ConfigPage) => {
   it('has neither a "Burst limit" control, nor its unit select, nor any such text', async () => {
-    await page.openNew();
+    await page.openFull();
     expect(screen.queryByLabelText('Burst limit')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Burst limit unit')).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/burst/i)).not.toBeInTheDocument();
     expect(body().textContent).not.toMatch(/burst limit/i);
   });
 
-  it('the Limiter subsection holds exactly four controls: active, mode, rate and its unit', async () => {
-    await page.openNew();
+  it('the Limiter subsection holds exactly four controls: mode, rate, its unit and "Remove limiter"', async () => {
+    await page.openFull();
     const controls = Array.from(section('Limiter').querySelectorAll('input, select, textarea, button'));
     expect(controls).toHaveLength(4);
     expect(controls.map((c) => c.getAttribute('aria-label') ?? '').filter(Boolean)).not.toContain('Burst limit');
-    for (const l of ['Limiter active', 'Limiter mode', 'Rate', 'Rate unit']) {
+    for (const l of ['Limiter mode', 'Rate', 'Rate unit']) {
       expect(section('Limiter')).toContainElement(within(body()).getByLabelText(l));
     }
+    expect(within(section('Limiter')).getByRole('button', { name: 'Remove limiter' })).toBeInTheDocument();
+    expect(screen.queryByLabelText('Limiter active')).not.toBeInTheDocument();
   });
 
-  it('sends the limiter as exactly {mode, activate, rate_bps}', async () => {
-    const user = await page.openNew();
+  it('sends the limiter as exactly {mode, rate_bps}', async () => {
+    const user = await page.openFull();
     await page.ready(user);
-    await user.click(screen.getByLabelText('Limiter active'));
     await page.save(user);
-    expect(page.created().limiter).toEqual({ mode: 'Spacer', activate: true, rate_bps: 1e10 });
+    expect(page.created().limiter).toEqual({ mode: 'Spacer', rate_bps: 1e10 });
   });
 
-  it.each([true, false])('a stored limiter (active=%s) is sent back without any limit field', async (activate) => {
-    const user = await page.openStored(cfg({}, { activate, rate_bps: 4e10 }));
+  it('a stored limiter is sent back without any limit or activate field', async () => {
+    const user = await page.openStored(cfg({}, { rate_bps: 4e10 }));
     await page.save(user);
-    expect(page.updated().limiter).toEqual({ mode: 'Spacer', activate, rate_bps: 4e10 });
+    expect(page.updated().limiter).toEqual({ mode: 'Spacer', rate_bps: 4e10 });
   });
 });
 
 describe.each(PAGES)('$name: the derived limit is shown read-only', (page: ConfigPage) => {
   it('a new form (capacity 100000) shows "1233.6 Mbit" in the Limiter subsection', async () => {
-    await page.openNew();
+    await page.openFull();
     expect(numberField(body(), 'Buffer capacity')).toHaveValue(100000);
     expect(infoElement()).toHaveTextContent(infoWith('1233.6 Mbit'));
   });
 
   it.each([
-    [fx.config(), '12.336 Mbit'], // capacity 1000
-    [fx.config2(), '61.68 Mbit'], // capacity 5000, TBF, limiter active
+        [{ ...fx.config(), limiter: { mode: 'Spacer' as const, rate_bps: 1e9 } }, '12.336 Mbit'], // capacity 1000, with a limiter
+    [fx.config2(), '61.68 Mbit'], // capacity 5000, TBF
     [fx.config3(), '3959.856 kbit'], // capacity 321: 3 959 856 bit has 6 decimals in Mbit
   ])('a stored config shows capacity x 12336 bit in readable units (%#)', async (config, text) => {
     expect(config.buffer_capacity * BITS_PER_PACKET).toBeGreaterThan(0); // the value is derived, not stored
@@ -72,10 +75,8 @@ describe.each(PAGES)('$name: the derived limit is shown read-only', (page: Confi
     expect(infoElement()).toHaveTextContent(infoWith(text));
   });
 
-  it.each([
-    ['Spacer', false], ['Spacer', true], ['TokenBucketFilter', false], ['TokenBucketFilter', true],
-  ] as const)('is the same for %s with the limiter active=%s', async (mode, activate) => {
-    await page.openStored(cfg({}, { mode, activate }));
+  it.each(['Spacer', 'TokenBucketFilter'] as const)('is the same for %s', async (mode) => {
+    await page.openStored(cfg({}, { mode }));
     expect(infoElement()).toHaveTextContent(infoWith('12.336 Mbit'));
   });
 
@@ -86,21 +87,21 @@ describe.each(PAGES)('$name: the derived limit is shown read-only', (page: Confi
     ['10000', '123.36 Mbit'],
     ['1000000', '12.336 Gbit'],
   ])('follows the buffer capacity while it is edited: %s packets -> %s', async (capacity, text) => {
-    const user = await page.openNew();
+    const user = await page.openFull();
     await user.clear(numberField(body(), 'Buffer capacity'));
     await user.type(numberField(body(), 'Buffer capacity'), capacity);
     expect(infoElement()).toHaveTextContent(infoWith(text));
   });
 
   it('shows no number while the capacity is empty or not a number, and never "NaN"', async () => {
-    const user = await page.openNew();
+    const user = await page.openFull();
     await user.clear(numberField(body(), 'Buffer capacity'));
     expect(infoElement().textContent).not.toMatch(/=\s*\d/);
     expect(body().textContent).not.toMatch(/NaN|Infinity|undefined/);
   });
 
   it('is information, not a control: no input, no required marker, nothing in the payload', async () => {
-    const user = await page.openNew();
+    const user = await page.openFull();
     const info = infoElement();
     expect(info.closest('input, select, textarea, button')).toBeNull();
     expect(info.querySelector('input, select, textarea, button')).toBeNull();
@@ -112,8 +113,24 @@ describe.each(PAGES)('$name: the derived limit is shown read-only', (page: Confi
   });
 
   it('exists once per form', async () => {
-    await page.openNew();
+    await page.openFull();
     expect(screen.getAllByText(INFO)).toHaveLength(1);
+  });
+
+  it('v22: exists only while the limiter is added: not on a bare form, gone after "Remove limiter", back after "Add limiter"', async () => {
+    const user = await page.openNew();
+    expect(screen.queryByText(INFO)).not.toBeInTheDocument();
+    await user.click(addButton('limiter'));
+    expect(infoElement()).toHaveTextContent(infoWith('1233.6 Mbit'));
+    await user.click(removeButton('limiter'));
+    expect(screen.queryByText(INFO)).not.toBeInTheDocument();
+    await user.click(addButton('limiter'));
+    expect(screen.getAllByText(INFO)).toHaveLength(1);
+  });
+
+  it('v22: a stored config without a limiter shows no info line', async () => {
+    await page.openStored(fx.config());
+    expect(screen.queryByText(INFO)).not.toBeInTheDocument();
   });
 });
 

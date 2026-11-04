@@ -21,9 +21,9 @@
 //! }
 //! pub mod api {
 //!     /// Unchanged: the API plus `Frontend::embedded()`.
-//!     pub fn router(deps: Deps) -> Result<Router, StoreError>;
+//!     pub fn router(deps: Deps) -> Router;
 //!     /// New: the same router, serving `frontend` for everything outside `/api`.
-//!     pub fn router_with(deps: Deps, frontend: Frontend) -> Result<Router, StoreError>;
+//!     pub fn router_with(deps: Deps, frontend: Frontend) -> Router;
 //! }
 //! ```
 //!
@@ -85,16 +85,13 @@ const IMMUTABLE: &str = "public, max-age=31536000, immutable";
 /// A router with the guard of `main`, plus what has to stay alive for it.
 struct Site {
     router: Router,
-    _state: TempDir,
     _host: FakeHost,
 }
 
 fn site_with(frontend: Frontend, allowed_hosts: &[String]) -> Site {
-    let state = tempfile::tempdir().unwrap();
     let host = FakeHost::empty();
     let router = api::router_with(
         Deps {
-            state_dir: state.path().to_path_buf(),
             roots: host.roots(),
             supervisor: FakeSupervisor::new(),
             telemetry: FakeTelemetry::new(),
@@ -104,11 +101,9 @@ fn site_with(frontend: Frontend, allowed_hosts: &[String]) -> Site {
             is_root: false,
         },
         frontend,
-    )
-    .expect("router must build on an empty state dir");
+    );
     Site {
         router: api::with_host_guard(router, allowed_hosts),
-        _state: state,
         _host: host,
     }
 }
@@ -348,7 +343,7 @@ async fn unknown_api_paths_stay_a_json_404_and_never_fall_back() {
             ("GET", "/api/unknown"),
             ("GET", "/api"),
             ("GET", "/api/"),
-            ("GET", "/api/links/1/extra"),
+            ("GET", "/api/emulation/extra"),
             ("GET", "/api/assets/app.js"),
             ("POST", "/api/unknown"),
             ("DELETE", "/api/unknown/deep/path"),
@@ -371,7 +366,9 @@ async fn the_api_keeps_working_next_to_the_frontend() {
     let online = get(&s, "/api/online").await;
     assert_eq!(online.status, 200, "{}", online.text());
     online.json();
-    assert_eq!(get(&s, "/api/links").await.json(), serde_json::json!([]));
+    let emulation = get(&s, "/api/emulation").await;
+    assert_eq!(emulation.status, 200, "{}", emulation.text());
+    assert_eq!(emulation.json()["state"], "stopped");
     let openapi = get(&s, "/api/openapi.json").await;
     assert_eq!(openapi.status, 200);
     assert!(openapi.json()["paths"].is_object());
@@ -379,7 +376,7 @@ async fn the_api_keeps_working_next_to_the_frontend() {
     assert_eq!(docs.status, 200);
     assert!(!docs.text().contains(INDEX_MARKER), "Swagger UI shadowed");
     // wrong methods on API routes are still the API's JSON 405
-    let r = call(&s, "DELETE", "/api/settings", &[]).await;
+    let r = call(&s, "DELETE", "/api/emulation", &[]).await;
     assert_eq!(r.status, 405);
     r.message();
 }
@@ -553,10 +550,8 @@ async fn openapi_documents_the_version_endpoint() {
 
 #[tokio::test]
 async fn the_embedded_frontend_is_what_the_version_endpoint_says() {
-    let state = tempfile::tempdir().unwrap();
     let host = FakeHost::empty();
     let router = api::router(Deps {
-        state_dir: state.path().to_path_buf(),
         roots: host.roots(),
         supervisor: FakeSupervisor::new(),
         telemetry: FakeTelemetry::new(),
@@ -564,8 +559,7 @@ async fn the_embedded_frontend_is_what_the_version_endpoint_says() {
         runtime_dir: PathBuf::from("/run/dpds-controller-test"),
         dpds_has_telemetry: true,
         is_root: false,
-    })
-    .unwrap();
+    });
     let kind = router_get(&router, "/api/version").await.json()["frontend"]
         .as_str()
         .unwrap()
@@ -603,8 +597,7 @@ impl Logged {
         let addr = free_addr();
         let stderr = dir.path().join("stderr.log");
         let child = std::process::Command::new(env!("CARGO_BIN_EXE_dpds-controller"))
-            .args(["serve", "--bind", &addr, "--state-dir"])
-            .arg(dir.path().join("state"))
+            .args(["serve", "--bind", &addr])
             .stdout(std::process::Stdio::null())
             .stderr(std::fs::File::create(&stderr).unwrap())
             .spawn()

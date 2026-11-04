@@ -5,7 +5,7 @@ import { Link as RouterLink, useNavigate, useParams } from 'react-router';
 import * as api from '../api/client';
 import ErrorAlert from '../components/ErrorAlert';
 import { errorMessage } from '../common/format';
-import { useLoad } from '../common/useLoad';
+import { savePreset, useLocalConfig } from '../common/localConfig';
 import ConfigFieldset, { RequiredMarker, RequiredNote } from './ConfigFieldset';
 import { configToDto, configToForm, defaultConfigForm } from './linkForm';
 import type { ConfigForm } from './linkForm';
@@ -17,11 +17,9 @@ function Editor({ id, preset }: { id?: number; preset?: Preset }) {
   const [description, setDescription] = useState(preset?.description ?? '');
   const [config, setConfig] = useState<ConfigForm>(() => (preset ? configToForm(preset.config) : defaultConfigForm()));
   const [error, setError] = useState<string>();
-  const [saving, setSaving] = useState(false);
 
-  const submit = async (ev: FormEvent) => {
+  const submit = (ev: FormEvent) => {
     ev.preventDefault();
-    if (saving) return;
     setError(undefined);
     let input;
     try {
@@ -35,14 +33,11 @@ function Editor({ id, preset }: { id?: number; preset?: Preset }) {
       setError(errorMessage(e));
       return;
     }
-    setSaving(true);
     try {
-      if (id === undefined) await api.createPreset(input);
-      else await api.updatePreset(id, input);
+      savePreset(input, id);
       navigate('/presets');
     } catch (e) {
       setError(errorMessage(e));
-      setSaving(false);
     }
   };
 
@@ -66,7 +61,7 @@ function Editor({ id, preset }: { id?: number; preset?: Preset }) {
         </Card.Body>
       </Card>
       <ConfigFieldset title="Preset configuration" value={config} onChange={setConfig} />
-      <Button type="submit" variant="primary" className="me-2" disabled={saving}>Save</Button>
+      <Button type="submit" variant="primary" className="me-2">Save</Button>
       <RouterLink to="/presets" className="btn btn-outline-secondary">Cancel</RouterLink>
     </Form>
   );
@@ -75,14 +70,16 @@ function Editor({ id, preset }: { id?: number; preset?: Preset }) {
 export default function PresetEditor() {
   const { id } = useParams();
   const presetId = id === undefined ? undefined : Number(id);
-  const preset = useLoad(() => (presetId === undefined ? Promise.resolve(undefined) : api.getPreset(presetId)));
-  const ready = presetId === undefined || preset.data !== undefined;
+  const { doc, corrupt } = useLocalConfig();
+  const preset = presetId === undefined ? undefined : doc.presets.find((p) => p.id === presetId);
+  const missing = presetId !== undefined && preset === undefined && !corrupt;
+  const ready = presetId === undefined || preset !== undefined;
 
   return (
     <>
       <h1 className="mb-3">{presetId === undefined ? 'New preset' : 'Edit preset'}</h1>
-      <ErrorAlert message={preset.error} />
-      {ready && <Editor key={presetId ?? 'new'} id={presetId} preset={preset.data} />}
+      <ErrorAlert message={missing ? `Preset ${id} not found` : undefined} />
+      {ready && <Editor key={presetId ?? 'new'} id={presetId} preset={preset} />}
     </>
   );
 }

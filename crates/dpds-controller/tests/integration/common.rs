@@ -1,170 +1,80 @@
 //! Shared test support for `dpds-controller` (included with `mod common;`).
 //!
-//! # Test-facing Rust API the tests assume (library crate `dpds_controller`)
+//! # Spec 22: the stateless controller (contract the tests assume)
 //!
-//! One integration-test binary (`tests/integration/main.rs`), submodules per topic; no lint
-//! suppressions, every helper here is used by some test.
-//!
-//! The tests were written to spec v5 Part B; everything below that the spec
-//! does not fix is an ASSUMPTION of the tester, listed here so the implementer
-//! can follow it (or tell the coordinator which choice should change).
-//! Types returned to tests are inspected through `serde_json::to_value`
-//! wherever possible, so field types matter less than JSON names.
-//!
-//! All types below derive `Debug` and `Clone` unless noted (DirectionPlan, LaunchPlan, State, ...).
-//!
-//! Binary: `dpds-controller serve|check`; `check` accepts `--sysfs-root`, `--procfs-root`,
-//! `--state-dir` (missing dir = no links) and `--json`; text mode prints one line per hint
-//! containing the upper-case level (`OK`/`INFO`/`WARN`/`ERROR`) and the hint title; exit 1
-//! iff any hint has level error. `serve` also takes `--bind --state-dir --dpds-bin --runtime-dir
-//! --sysfs-root --procfs-root`; it sets RUNTIME_DIRECTORY (DPDK's runtime dir) to the runtime dir.
+//! The controller stores nothing. One integration-test binary (`tests/integration/main.rs`),
+//! submodules per topic; no lint suppressions, every helper here is used by some test.
+//! Tests go through HTTP and JSON wherever possible; the Rust items they still touch are:
 //!
 //! ```ignore
-//! pub mod host {        // roots of the host files, so tests can point at fake trees
-//!     pub struct HostRoots { pub sysfs: PathBuf, pub procfs: PathBuf }
-//! }
-//! pub mod model {       // stored state (B1); all: Clone + Debug + Default(where stated) + Serialize + Deserialize
-//!     // spec v10 (directed links): ONE direction per link, ingress port -> egress port.
-//!     // The tests build `Link` through serde (see `link()` below), so only the JSON names matter.
-//!     pub struct Link { pub id: u32, pub name: String, pub ingress: String, pub egress: String,
-//!                       pub config: ConfigDto, pub worker: Option<u32> }
-//!     // spec v17: no `mlx5_devargs` (fixed to PREOF's `txq_mpw_en=1`); the body is `deny_unknown_fields`
-//!     pub struct Settings { pub main_lcore: Option<u32>,
-//!                           pub eal_extra_args: Vec<String>, pub poll_interval_ms: u64 }
-//!     // Default: None, [], 500
-//!     pub struct StoredState { pub links: Vec<Link>, pub settings: Settings, pub next_id: u32 } // Default
-//! }
-//! pub mod dto {         // ConfigDto: named-field mirror of dpds_core::Config
-//!     // JSON: {buffer_capacity, reordering, delayer{distribution,mean_ns,std_ns,
-//!     //   activate_correlation,half_life_period_ns,initialization_rate_pps}, limiter{mode,activate,rate_bps},
-//!     //   loss_model: {"type":"Random","p":f} | {"type":"GilbertElliot","p","r","k","h",
-//!     //   "state_is_good": bool (optional, default true)}, seed: u64|null (optional)}
-//!     // distribution / mode are the dpds_core enum variant names as strings.
-//!     pub struct ConfigDto;  // Serialize + Deserialize + Clone + Debug
-//!     pub struct DtoError;   // Display
-//!     impl ConfigDto {
-//!         pub fn to_core(&self) -> Result<dpds_core::Config, DtoError>; // validates (Buffer::try_new on a ZERO-capacity copy)
-//!         pub fn from_core(c: &dpds_core::Config) -> ConfigDto;
-//!     }
-//! }
-//! pub mod store {       // B1 persistence
-//!     pub const STATE_FILE_NAME: &str = "state.json"; // {"links":[..],"settings":{..},"next_id":n}
-//!     pub struct StoreError;                           // Display, names the file path
-//!     pub fn load(dir: &Path) -> Result<StoredState, StoreError>; // missing dir/file => Ok(default); corrupt => Err
-//!     pub fn save(dir: &Path, s: &StoredState) -> Result<(), StoreError>; // creates dir, temp file + rename
-//! }
-//! pub mod discovery {   // B5
-//!     pub struct Interface; // Serialize; JSON keys: pci, vendor_id ("0x15b3"), device_id, vendor, driver,
-//!                           // netdev, mac, operstate, speed_mbps, mtu, numa_node, pcie_link{speed,width,
-//!                           // max_speed,max_width}, kernel_route, dpds_usable, reason  (absent data => null)
-//!     pub fn discover(roots: &HostRoots) -> Vec<Interface>;     // sorted by pci address
-//! }
-//! pub mod hints {       // B6
-//!     pub struct Hint;      // Serialize: {id, level: "ok"|"info"|"warn"|"error", title, detail, suggestion}
-//!     pub fn compute_hints(roots: &HostRoots, state: &StoredState) -> Vec<Hint>;
-//!     // ALWAYS exactly one hint per id (more ids may exist):
-//!     //   isolation, isolated_cores, hugepages, numa, governor, irqbalance, iommu, mtu,
-//!     //   pcie_maxreadreq, mprq
-//! }
-//! pub mod lcores {      // B7
-//!     pub struct DirectionPlan { pub dir: u32, pub link: String, pub rx: String, pub tx: String, pub lcore: u32 }
-//!     //   Serialize with exactly those keys (also used in /api/emulation `directions`)
-//!     pub struct Assignment { pub main_lcore: u32, pub directions: Vec<DirectionPlan> }
-//!     pub struct LcoreError; // Display
-//!     pub fn assign_lcores(roots: &HostRoots, state: &StoredState) -> Result<Assignment, LcoreError>;
-//!     // spec v10: one direction per link, `dir` = link index in stored order, rx = ingress, tx = egress,
-//!     // lcore = the link's `worker` override or a free isolated core, preferring the NUMA node of the
-//!     // INGRESS NIC. Assignments are literal and never re-sorted. The links file carries them explicitly.
-//! }
-//! pub mod eal {         // B3 pure functions
-//!     pub struct EalPort { pub name: String, pub driver: Option<String> } // driver = kernel driver of a PCI port
-//!     pub struct EalInput { pub main_lcore: u32, pub worker_lcores: Vec<u32>, pub ports: Vec<EalPort>,
-//!                           pub eal_extra_args: Vec<String>, pub links_file: PathBuf }
-//!     // spec v17: the argv appends `,txq_mpw_en=1` to every PCI port bound to mlx5_core, nothing else
-//!     pub fn eal_argv(i: &EalInput) -> Vec<String>;               // argv WITHOUT the binary name
-//!     // links file v2: {"links":[{"name","ingress","egress","config":{..},"lcore":n,
-//!     //   "histogram"?:{..}, "delay_stats"?:false}]}: `lcore` of link L = the `lcore` of the entry of
-//!     //   `directions` whose `link == L.name`. `delay_stats` only when off, `histogram` only when set.
-//!     pub fn links_file_json(links: &[Link], directions: &[DirectionPlan]) -> Result<serde_json::Value, DtoError>;
-//!     pub fn drain_timeout(configs: &[dpds_core::Config]) -> Duration;
-//! }
-//! pub mod stats {       // B2/B4 pure maths on telemetry snapshots (raw telemetry JSON objects)
-//!     #[derive(Clone, Default)]
-//!     pub struct Snapshot { pub ports: Value,      // reply of /dpds/ports
-//!                           pub dirs: Vec<Value>,  // dirs[d]  = reply of /dpds/stats,<d>
-//!                           pub eth: Vec<Value>,   // eth[p]   = reply of /ethdev/stats,<p> (p = DPDK port id)
-//!                           pub hists: Vec<Value> }// hists[d] = reply of /dpds/delay_hist,<d>
-//!     pub struct StatsView;     // Serialize, see tests/stats.rs for the JSON
-//!     pub fn compute_stats(prev: Option<&Snapshot>, cur: &Snapshot) -> StatsView;
-//!     pub struct HistogramView; // Serialize {dir, lo_ns, bin_ns, bins, underflow, overflow, edges_ns}
-//!     pub fn delay_histogram(cur: &Snapshot, dir: usize) -> Option<HistogramView>;
-//! }
-//! pub mod telemetry {
-//!     pub struct Polled { pub prev: Option<Snapshot>, pub cur: Snapshot }   // Clone
-//!     pub trait TelemetrySource: Send + Sync + 'static { fn latest(&self) -> Option<Polled>; }
-//! }
-//! pub mod supervisor {
-//!     pub enum State { Stopped, Starting, Running, Stopping, Failed }  // Copy, Debug, PartialEq, serde lowercase
-//!     pub struct LaunchPlan { pub dpds_bin: PathBuf, pub runtime_dir: PathBuf, pub links_file: PathBuf, // runtime_dir/links.json
-//!                             pub links_json: Value, pub argv: Vec<String>, pub directions: Vec<DirectionPlan>,
-//!                             pub main_lcore: u32, pub drain_timeout: Duration }   // Clone
-//!     pub struct SupervisorStatus { pub state: State, pub pid: Option<u32>, pub started_at: Option<u64> /*unix s*/,
-//!                                   pub error: Option<String>, pub log_tail: Vec<String> }   // Clone
-//!     pub trait Supervisor: Send + Sync + 'static {
-//!         fn start(&self, plan: LaunchPlan);   // never blocks; failures surface as state Failed
-//!         fn stop(&self);                      // never blocks
-//!         fn status(&self) -> SupervisorStatus;
-//!     }
-//!     pub struct ProcessSupervisor;            // the real one
-//!     impl ProcessSupervisor { pub fn new(start_timeout: Duration) -> Self }
-//! }
 //! pub mod api {
-//!     pub struct Deps { pub state_dir: PathBuf, pub roots: HostRoots, pub supervisor: Arc<dyn Supervisor>,
-//!                       pub telemetry: Arc<dyn TelemetrySource>, pub dpds_bin: PathBuf, pub runtime_dir: PathBuf,
-//!                       pub dpds_has_telemetry: bool, pub is_root: bool }
-//!     pub fn router(deps: Deps) -> Result<axum::Router, StoreError>;  // routes under /api, Swagger at /api/docs,
-//!                                                                    // OpenAPI JSON at /api/openapi.json
+//!     // `state_dir` is gone; nothing in `Deps` points at a directory the controller writes
+//!     pub struct Deps { pub roots: HostRoots, pub supervisor: Arc<dyn Supervisor>,
+//!                       pub telemetry: Arc<dyn TelemetrySource>, pub dpds_bin: PathBuf,
+//!                       pub runtime_dir: PathBuf, pub dpds_has_telemetry: bool, pub is_root: bool }
+//!     pub fn router(deps: Deps) -> axum::Router;                 // infallible: nothing is loaded
+//!     pub fn router_with(deps: Deps, f: Frontend) -> axum::Router;
 //! }
+//! pub mod model { pub struct Link {id,name,ingress,egress,config,worker}   // as in the running config
+//!                 pub struct Settings {main_lcore, eal_extra_args, poll_interval_ms}
+//!                 pub const MAX_NAME_CHARS: usize; }
+//! // gone: `store`, `model::StoredState`, `model::Preset`, `STATE_FILE_NAME`
+//! pub mod eal { eal_argv, EalInput, EalPort, links_file_json(&[Link], &[DirectionPlan]), drain_timeout(&[Config]) }
+//! pub mod dto { ConfigDto: Serialize + Deserialize, `to_core()` validates and maps (see below) }
 //! ```
 //!
-//! # Spec v12 additions
+//! `hints::compute_hints` and `lcores::assign_lcores` keep whatever signature the
+//! implementation gives them: the tests reach them through `POST /api/host/hints` and
+//! `POST /api/emulation/validate` (helpers [`hints_json`] and [`plan_for`] below).
 //!
-//! - `delayer.initialization_rate_pps` is REQUIRED in every `ConfigDto` (no default, serde error
-//!   naming the field -> 400), validated like `dpds_core` does (finite, >= 1, else 400 naming the
-//!   field), stored, exported/imported, part of presets and written into the links file.
-//! - `launch_plan` re-validates link names (the create rules: 1..=32 characters of `A-Za-z0-9_.-`,
-//!   unique) and the dpds telemetry dict limit `3 + 5 * distinct ports + 10 * links <= 256`
-//!   (the message names `256`); the same limit is checked on create, update and import.
-//! - `check_version`: for a version other than 2 the message names the supported version 2; only
-//!   for version 1 it keeps the hint about the old paired links.
-//! - OpenAPI `worker` of `Link`, `LinkInput` and `ExportLink` has `minimum: 0`.
+//! ## Binary
 //!
-//! # HTTP contract the API tests assume (beyond the spec text)
+//! `dpds-controller serve|check`. `check` takes `--sysfs-root --procfs-root --json` only (no
+//! state, no `--state-dir`: that flag is a usage error, exit 2, and so is it for `serve`);
+//! `DPDS_CONTROLLER_STATE_DIR` is not read. Text mode prints one line per hint containing the
+//! upper-case level and the title; exit 1 iff any hint has level error.
 //!
-//! - 200 for GET/PUT, 201 for POST /api/links, 204 for DELETE /api/links/{id}.
-//! - POST /api/emulation/start and /stop: 202 with the `/api/emulation` body.
-//!   Start with no links or a failing lcore assignment: 400. Start while
-//!   starting/running/stopping, stop while stopped/failed: 409.
-//! - Validation error: 400, conflict (duplicate link name, port already used as ingress (or as
-//!   egress) by another link; the message names that link): 409, unknown id / unknown direction: 404. Malformed or
-//!   incomplete JSON bodies: 400 or 422. Every error body is `{"message": str}`.
-//! - Settings: `poll_interval_ms == 0` => 400; a body with `mlx5_devargs` (any value) => 400
-//!   naming the field (spec v17).
-//! - `/api/stats` with no telemetry data: 200 `{"directions":[],"ports":[]}`;
-//!   histogram for a direction without data: 404.
-//! - Link ids are monotonically increasing and never reused after DELETE.
-//! - `pending_restart`: true after any link/settings edit while the state is
-//!   starting/running; false after the next start and while stopped.
-//! - A stopped controller with stored links reports the planned `directions` and
-//!   `main_lcore` in `/api/emulation` (empty list when nothing is planned
-//!   or the assignment fails).
+//! ## HTTP contract
 //!
-//! The shared fake sysfs/procfs trees are generated by [`FakeHost`] (code, not
-//! checked-in files, so every test can vary one knob).
+//! - `POST /api/emulation/start` body (`StartRequest`, `deny_unknown_fields` at every level):
+//!   `{"links": [{name, ingress, egress, config, worker?}], "settings": {main_lcore,
+//!   eal_extra_args, poll_interval_ms}}`. A `link` has no `id`. 202 with the `/api/emulation`
+//!   body; non-JSON content type 415 (checked first); malformed or unknown fields 400; empty
+//!   `links` 400 "nothing to start"; while starting/running/stopping 409; every validation
+//!   rule of the old links and settings routes applies to the body (names, ports, port reuse
+//!   409, management NIC 409, dict limit 400 naming 256, lcore plan 400, eal args, poll
+//!   interval 0, `initialization_rate_pps`). Nothing is spawned on an error.
+//! - `GET /api/emulation`: `{state, pid, started_at, directions, main_lcore, error, log_tail,
+//!   config}`; there is no `pending_restart`. While stopped: `config` null/absent,
+//!   `directions` `[]`, `main_lcore` null/absent. While starting/running/stopping/failed:
+//!   `config` = `{links: [{id, name, ingress, egress, config, worker?}], settings: {...}}`, the
+//!   start body as accepted (PCI addresses in lower case, ids unique, the order kept) and
+//!   `directions`/`main_lcore` = the planned lcores.
+//! - `POST /api/emulation/validate`: same body and same errors as start (but no state check,
+//!   no telemetry-build check, nothing spawned); 200 `{"main_lcore": n, "directions":
+//!   [{dir, link, rx, tx, lcore}]}`.
+//! - `GET /api/host/hints`: host-only hints (ids `isolation`, `governor`, `irqbalance`,
+//!   `hugepages` once each). `POST /api/host/hints` with a StartRequest body: the same plus the
+//!   link-dependent hints for that configuration (ids of `HINT_IDS`, `management_nic`,
+//!   `drain_timeout`); an empty `links` list is allowed and gives the host-only hints.
+//! - Removed, so 404 (path unknown) or 405 (path known, method not): `/api/links*`,
+//!   `/api/presets*`, `/api/settings`, `/api/export`, `/api/import`.
+//!
+//! ## Optional stages
+//!
+//! `ConfigDto.delayer`, `.limiter` and `.loss_model` are optional (absent or `null` = not
+//! added); `limiter.activate` does not exist (a present limiter is active; `activate` is an
+//! unknown field, 400). A missing stage maps to a no-op `dpds_core::Config` stage:
+//! delayer `Deterministic`, mean 0, std 0, no correlation, half-life 0,
+//! `initialization_rate_pps` 1; limiter `Spacer`, `activate: false`, `rate_bps` 0; loss model
+//! `Random(0)`. A present stage requires and validates all its fields.
+//!
+//! The shared fake sysfs/procfs trees are generated by [`FakeHost`] (code, not checked-in
+//! files, so every test can vary one knob).
 
 use std::fs;
 use std::net::TcpStream;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -174,7 +84,7 @@ use tempfile::TempDir;
 use dpds_controller::api::{self, Deps};
 use dpds_controller::dto::ConfigDto;
 use dpds_controller::host::HostRoots;
-use dpds_controller::model::{Link, Settings, StoredState};
+use dpds_controller::model::Link;
 use dpds_controller::stats::{Polled, Snapshot};
 use dpds_controller::supervisor::{LaunchPlan, State, Supervisor, SupervisorStatus};
 use dpds_controller::telemetry::TelemetrySource;
@@ -614,7 +524,8 @@ pub fn config_space(max_read_req: u32) -> Vec<u8> {
 // data builders
 // ---------------------------------------------------------------------------
 
-/// A valid ConfigDto JSON: Normal delay `mean_ns`/`std_ns`, limiter off, no loss.
+/// A valid ConfigDto JSON: Normal delay `mean_ns`/`std_ns`, no loss, and NO limiter stage
+/// (the limiter is optional; see [`cfg_full`] for all three stages).
 pub fn cfg_json(mean_ns: f64, std_ns: f64) -> Value {
     json!({
         "buffer_capacity": 100000,
@@ -627,9 +538,20 @@ pub fn cfg_json(mean_ns: f64, std_ns: f64) -> Value {
             "half_life_period_ns": 1000000.0,
             "initialization_rate_pps": 15000000.0
         },
-        "limiter": { "mode": "Spacer", "activate": false, "rate_bps": 1.0e9 },
         "loss_model": { "type": "Random", "p": 0.0 }
     })
+}
+
+/// [`cfg_json`] plus a limiter stage (`Spacer`, `rate_bps`): all three stages present.
+pub fn cfg_full(mean_ns: f64, std_ns: f64, rate_bps: f64) -> Value {
+    let mut c = cfg_json(mean_ns, std_ns);
+    c["limiter"] = json!({ "mode": "Spacer", "rate_bps": rate_bps });
+    c
+}
+
+/// A config with no stage at all: only the buffer.
+pub fn cfg_bare() -> Value {
+    json!({ "buffer_capacity": 100000, "reordering": false })
 }
 
 pub fn cfg_dto(mean_ns: f64, std_ns: f64) -> ConfigDto {
@@ -640,43 +562,80 @@ pub fn dto_from(v: Value) -> ConfigDto {
     serde_json::from_value(v).expect("config JSON must deserialize")
 }
 
-/// A stored link built through serde (so tests do not depend on the Rust field types):
-/// `ingress` -> `egress`, the default config (Normal 1 ms / 0.1 ms) and an optional worker lcore.
-pub fn link(id: u32, name: &str, ingress: &str, egress: &str, worker: Option<u32>) -> Link {
+/// A link of a start body: `ingress` -> `egress`, the default config (Normal 1 ms / 0.1 ms)
+/// and an optional worker lcore. A link in a start body has no `id`.
+pub fn link(name: &str, ingress: &str, egress: &str, worker: Option<u32>) -> Value {
     let mut v = json!({
-        "id": id, "name": name, "ingress": ingress, "egress": egress,
+        "name": name, "ingress": ingress, "egress": egress,
         "config": cfg_json(1.0e6, 1.0e5),
     });
     if let Some(w) = worker {
         v["worker"] = json!(w);
     }
-    serde_json::from_value(v).expect("a v2 link must deserialize into `Link`")
+    v
 }
 
 /// Like [`link`] with an explicit config JSON and no worker override.
-pub fn link_cfg(id: u32, name: &str, ingress: &str, egress: &str, config: Value) -> Link {
-    serde_json::from_value(json!({
-        "id": id, "name": name, "ingress": ingress, "egress": egress, "config": config,
-    }))
-    .expect("a v2 link must deserialize into `Link`")
+pub fn link_cfg(name: &str, ingress: &str, egress: &str, config: Value) -> Value {
+    json!({ "name": name, "ingress": ingress, "egress": egress, "config": config })
 }
 
-pub fn state_with(links: Vec<Link>) -> StoredState {
-    let next_id = links.iter().map(|l| l.id).max().unwrap_or(0) + 1;
-    StoredState {
-        links,
-        next_id,
-        ..Default::default()
+/// The typed `model::Link` (as the running configuration carries it) of a start-body link and
+/// an id, for the tests of the pure functions in `eal`.
+pub fn model_link(id: u32, body: &Value) -> Link {
+    let mut v = body.clone();
+    v["id"] = json!(id);
+    serde_json::from_value(v).expect("a link must deserialize into `Link`")
+}
+
+/// The default settings of a start body.
+pub fn settings_json() -> Value {
+    json!({"main_lcore": null, "eal_extra_args": [], "poll_interval_ms": 500})
+}
+
+/// What a test starts (or validates, or asks hints for): links and settings of a start body.
+#[derive(Clone)]
+pub struct Setup {
+    pub links: Vec<Value>,
+    pub settings: Value,
+}
+
+impl Default for Setup {
+    fn default() -> Setup {
+        setup(vec![])
     }
 }
 
-pub fn state_with_main(links: Vec<Link>, main_lcore: u32) -> StoredState {
-    let mut s = state_with(links);
-    s.settings = Settings {
-        main_lcore: Some(main_lcore),
-        ..Settings::default()
-    };
+impl Setup {
+    /// The JSON body of `POST /api/emulation/start`.
+    pub fn body(&self) -> Value {
+        json!({ "links": self.links, "settings": self.settings })
+    }
+}
+
+pub fn setup(links: Vec<Value>) -> Setup {
+    Setup {
+        links,
+        settings: settings_json(),
+    }
+}
+
+pub fn setup_main(links: Vec<Value>, main_lcore: u32) -> Setup {
+    let mut s = setup(links);
+    s.settings["main_lcore"] = json!(main_lcore);
     s
+}
+
+/// A start body with the given `eal_extra_args`.
+pub fn setup_eal(links: Vec<Value>, eal: Value) -> Setup {
+    let mut s = setup(links);
+    s.settings["eal_extra_args"] = eal;
+    s
+}
+
+/// One harmless vdev hairpin, for hint tests that need "some link" without caring which.
+pub fn filler() -> Setup {
+    setup(vec![link("filler", "net_null9", "net_null9", None)])
 }
 
 pub const NIC0: &str = "0000:17:00.0"; // mlx5, NUMA 0
@@ -755,8 +714,112 @@ pub fn rank(level: &str) -> u8 {
     }
 }
 
-pub fn hints_json(host: &FakeHost, state: &StoredState) -> Value {
-    serde_json::to_value(dpds_controller::hints::compute_hints(&host.roots(), state)).unwrap()
+/// The hints for `setup`: `POST /api/host/hints` with the start body, or `GET` when it has no
+/// links (the host-only hints). Runs its own router over the fake host, synchronously.
+pub fn hints_json(host: &FakeHost, setup: &Setup) -> Value {
+    let router = router_over(host.roots());
+    let (method, body) = if setup.links.is_empty() {
+        ("GET", None)
+    } else {
+        ("POST", Some(setup.body()))
+    };
+    let r = block_on(async move { call(&router, method, "/api/host/hints", body).await });
+    assert_eq!(r.status, 200, "hints: {}", r.text());
+    r.json()
+}
+
+/// One planned direction as `POST /api/emulation/validate` reports it.
+#[derive(Debug, Clone)]
+pub struct Dir {
+    pub dir: u32,
+    pub link: String,
+    pub rx: String,
+    pub tx: String,
+    pub lcore: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct Assignment {
+    pub main_lcore: u32,
+    pub directions: Vec<Dir>,
+}
+
+pub fn parse_plan(v: &Value) -> Assignment {
+    let n =
+        |x: &Value| u32::try_from(x.as_u64().unwrap_or_else(|| panic!("not a u32: {x}"))).unwrap();
+    let s = |x: &Value| {
+        x.as_str()
+            .unwrap_or_else(|| panic!("not a string: {x}"))
+            .to_string()
+    };
+    Assignment {
+        main_lcore: n(&v["main_lcore"]),
+        directions: v["directions"]
+            .as_array()
+            .unwrap_or_else(|| panic!("no directions in {v}"))
+            .iter()
+            .map(|d| Dir {
+                dir: n(&d["dir"]),
+                link: s(&d["link"]),
+                rx: s(&d["rx"]),
+                tx: s(&d["tx"]),
+                lcore: n(&d["lcore"]),
+            })
+            .collect(),
+    }
+}
+
+/// The lcore plan of `setup` on `host` through `POST /api/emulation/validate`: the plan, or the
+/// error message of the 400/409 it answers.
+pub fn plan_for(host: &FakeHost, setup: &Setup) -> Result<Assignment, String> {
+    let router = router_over(host.roots());
+    let body = setup.body();
+    let r =
+        block_on(async move { call(&router, "POST", "/api/emulation/validate", Some(body)).await });
+    if r.status == 200 {
+        Ok(parse_plan(&r.json()))
+    } else {
+        assert!(
+            r.status == 400 || r.status == 409,
+            "validate: {} {}",
+            r.status,
+            r.text()
+        );
+        Err(r.message())
+    }
+}
+
+/// A router over fake host roots with a fresh fake supervisor and telemetry.
+pub fn router_over(roots: HostRoots) -> axum::Router {
+    api::router(Deps {
+        roots,
+        supervisor: FakeSupervisor::new(),
+        telemetry: FakeTelemetry::new(),
+        dpds_bin: PathBuf::from("/usr/local/bin/dpds"),
+        runtime_dir: PathBuf::from("/run/dpds-controller-test"),
+        dpds_has_telemetry: true,
+        is_root: false,
+    })
+}
+
+/// Runs `f` to completion on a private runtime in its own thread, so it also works from inside
+/// a `#[tokio::test]`.
+pub fn block_on<F>(f: F) -> F::Output
+where
+    F: std::future::Future + Send,
+    F::Output: Send,
+{
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(f)
+        })
+        .join()
+        .unwrap()
+    })
 }
 
 /// The single hint with `id` (fails if missing or duplicated).
@@ -950,68 +1013,33 @@ pub struct TestApp {
     pub host: FakeHost,
     pub supervisor: Arc<FakeSupervisor>,
     pub telemetry: Arc<FakeTelemetry>,
-    pub state_dir: TempDir,
     pub runtime_dir: PathBuf,
     pub dpds_bin: PathBuf,
 }
 
 impl TestApp {
     pub fn new(host: FakeHost) -> TestApp {
-        let state_dir = tempfile::tempdir().unwrap();
         let supervisor = FakeSupervisor::new();
         let telemetry = FakeTelemetry::new();
         let runtime_dir = PathBuf::from("/run/dpds-controller-test");
         let dpds_bin = PathBuf::from("/usr/local/bin/dpds");
-        let router = Self::build(
-            &host,
-            state_dir.path(),
-            &supervisor,
-            &telemetry,
-            &runtime_dir,
-            &dpds_bin,
-        );
+        let router = api::router(Deps {
+            roots: host.roots(),
+            supervisor: supervisor.clone(),
+            telemetry: telemetry.clone(),
+            dpds_bin: dpds_bin.clone(),
+            runtime_dir: runtime_dir.clone(),
+            dpds_has_telemetry: true,
+            is_root: false,
+        });
         TestApp {
             router,
             host,
             supervisor,
             telemetry,
-            state_dir,
             runtime_dir,
             dpds_bin,
         }
-    }
-
-    fn build(
-        host: &FakeHost,
-        state_dir: &Path,
-        supervisor: &Arc<FakeSupervisor>,
-        telemetry: &Arc<FakeTelemetry>,
-        runtime_dir: &Path,
-        dpds_bin: &Path,
-    ) -> axum::Router {
-        api::router(Deps {
-            state_dir: state_dir.to_path_buf(),
-            roots: host.roots(),
-            supervisor: supervisor.clone(),
-            telemetry: telemetry.clone(),
-            dpds_bin: dpds_bin.to_path_buf(),
-            runtime_dir: runtime_dir.to_path_buf(),
-            dpds_has_telemetry: true,
-            is_root: false,
-        })
-        .expect("router must build on an empty state dir")
-    }
-
-    /// A new router over the same state dir (a "controller restart").
-    pub fn restart(&mut self) {
-        self.router = Self::build(
-            &self.host,
-            self.state_dir.path(),
-            &self.supervisor,
-            &self.telemetry,
-            &self.runtime_dir,
-            &self.dpds_bin,
-        );
     }
 
     pub async fn request(&self, method: &str, path: &str, body: Option<Value>) -> Reply {
@@ -1064,18 +1092,41 @@ impl TestApp {
     pub async fn post(&self, path: &str, body: Value) -> Reply {
         self.request("POST", path, Some(body)).await
     }
-    pub async fn put(&self, path: &str, body: Value) -> Reply {
-        self.request("PUT", path, Some(body)).await
-    }
-    pub async fn delete(&self, path: &str) -> Reply {
-        self.request("DELETE", path, None).await
+
+    /// `POST /api/emulation/start` with `setup` as the body.
+    pub async fn start(&self, setup: &Setup) -> Reply {
+        self.post("/api/emulation/start", setup.body()).await
     }
 
-    /// POST /api/links with `{name, ingress, egress, config}` (default config).
-    pub async fn create_link(&self, name: &str, ingress: &str, egress: &str) -> Reply {
-        let body = link_body(name, ingress, egress);
-        self.post("/api/links", body).await
+    /// `POST /api/emulation/start` with these links and the default settings.
+    pub async fn start_links(&self, links: Vec<Value>) -> Reply {
+        self.start(&setup(links)).await
     }
+
+    /// Starts `links` and asserts the 202; returns the body.
+    pub async fn start_ok(&self, links: Vec<Value>) -> Value {
+        let r = self.start_links(links).await;
+        assert_eq!(r.status, 202, "{}", r.text());
+        r.json()
+    }
+
+    /// `POST /api/emulation/validate`.
+    pub async fn validate(&self, setup: &Setup) -> Reply {
+        self.post("/api/emulation/validate", setup.body()).await
+    }
+}
+
+/// One request through `router`, with an optional JSON body.
+pub async fn call(router: &axum::Router, method: &str, path: &str, body: Option<Value>) -> Reply {
+    let req = axum::http::Request::builder().method(method).uri(path);
+    let req = match body {
+        Some(b) => req
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(b.to_string())),
+        None => req.body(axum::body::Body::empty()),
+    }
+    .unwrap();
+    send(router, req).await
 }
 
 /// Sends one request through `router` and collects the reply.
@@ -1104,10 +1155,6 @@ pub async fn router_get(router: &axum::Router, path: &str) -> Reply {
         .body(axum::body::Body::empty())
         .unwrap();
     send(router, req).await
-}
-
-pub fn link_body(name: &str, ingress: &str, egress: &str) -> Value {
-    json!({ "name": name, "ingress": ingress, "egress": egress, "config": cfg_json(1.0e6, 1.0e5) })
 }
 
 // ---------------------------------------------------------------------------
@@ -1293,21 +1340,17 @@ pub fn header_value(headers: &[String], name: &str) -> Option<String> {
 pub struct ControllerProcess {
     pub child: std::process::Child,
     pub addr: String,
-    _state: TempDir,
 }
 
 impl ControllerProcess {
-    /// Starts the binary with `args` and `envs` as extra environment, plus a temporary
-    /// `--state-dir`, and waits until `GET /api/online` answers. The placeholder
+    /// Starts the binary with `args` and `envs` as extra environment and waits until `GET /api/online` answers. The placeholder
     /// `{addr}` in `args` is replaced by the free loopback address the process must bind.
     pub fn start(args: &[&str], envs: &[(&str, &str)]) -> ControllerProcess {
-        let state = tempfile::tempdir().unwrap();
         let addr = free_addr();
         let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_dpds-controller"));
         for a in args {
             cmd.arg(a.replace("{addr}", &addr));
         }
-        cmd.arg("--state-dir").arg(state.path().join("state"));
         for (k, v) in envs {
             cmd.env(k, v);
         }
@@ -1316,11 +1359,7 @@ impl ControllerProcess {
             .stderr(std::process::Stdio::null())
             .spawn()
             .expect("cannot spawn dpds-controller");
-        let mut p = ControllerProcess {
-            child,
-            addr,
-            _state: state,
-        };
+        let mut p = ControllerProcess { child, addr };
         let t0 = std::time::Instant::now();
         loop {
             if let Ok((200, _)) = http(&p.addr, "GET", "/api/online", None) {

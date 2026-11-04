@@ -1,12 +1,17 @@
 import { screen, within, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { UserEvent } from '@testing-library/user-event';
-import type { ConfigDto, PresetInput } from '../api/types';
+import type { ConfigDto, Preset, PresetInput } from '../api/types';
 import { api, ApiError } from '../test/mockApi';
 import * as fx from '../test/fixtures';
-import { renderApp, TEST_RATE, typeInto, typeRate, unitOf } from '../test/helpers';
+import {
+  addStages, rawStore, renderApp, watchStoreWrites, seedLinks, seedPresets, seedStore, storedDoc, storedPresets, stageOf, TEST_RATE, typeInto,
+  typeRate, unitOf,
+} from '../test/helpers';
 
-// Contract: "Presets page" in the v8 block of src/test/helpers.tsx.
+// Contract: "Presets page" in the v8 block and the v22 block (local document, optional stages) of src/test/helpers.tsx.
+// v22: presets live in the local document; new presets are appended with id max+1; `openNew` opens the form with delayer,
+// limiter and dropper added (their fields are what most tests need), `openNew(false)` is the bare form.
 const DISTRIBUTIONS = [
   'DeterministicDistribution', 'LogNormalDistribution', 'NormalDistribution', 'GammaDistribution', 'UniformDistribution',
 ];
@@ -24,15 +29,16 @@ const save = () => screen.getByRole('button', { name: /^save$/i });
 function expectValidConfig(c: ConfigDto) {
   expect(Number.isInteger(c.buffer_capacity)).toBe(true);
   expect(typeof c.reordering).toBe('boolean');
-  expect(DISTRIBUTIONS).toContain(c.delayer.distribution);
-  for (const v of [c.delayer.mean_ns, c.delayer.std_ns, c.delayer.half_life_period_ns, c.limiter.rate_bps]) {
+  expect(DISTRIBUTIONS).toContain(c.delayer!.distribution);
+  for (const v of [c.delayer!.mean_ns, c.delayer!.std_ns, c.delayer!.half_life_period_ns, c.limiter!.rate_bps]) {
     expect(Number.isFinite(v)).toBe(true);
   }
-  expect(typeof c.delayer.initialization_rate_pps).toBe('number'); // v12: required, finite >= 1
-  expect(Number.isFinite(c.delayer.initialization_rate_pps)).toBe(true);
-  expect(c.delayer.initialization_rate_pps).toBeGreaterThanOrEqual(1);
-  expect(['Spacer', 'TokenBucketFilter']).toContain(c.limiter.mode);
-  expect(['Random', 'GilbertElliot']).toContain(c.loss_model.type);
+  expect(typeof c.delayer!.initialization_rate_pps).toBe('number'); // v12: required, finite >= 1
+  expect(Number.isFinite(c.delayer!.initialization_rate_pps)).toBe(true);
+  expect(c.delayer!.initialization_rate_pps).toBeGreaterThanOrEqual(1);
+  expect(['Spacer', 'TokenBucketFilter']).toContain(c.limiter!.mode);
+  expect(Object.keys(c.limiter!).sort()).toEqual(['mode', 'rate_bps']);
+  expect(['Random', 'GilbertElliot']).toContain(c.loss_model!.type);
   expect(typeof c.delay_stats).toBe('boolean');
 }
 
@@ -68,7 +74,7 @@ describe('Presets: sidebar entry', () => {
 
 describe('Presets: list', () => {
   it('lists name and description of every preset', async () => {
-    api.getPresets.mockResolvedValue(twoPresets());
+    seedPresets(twoPresets());
     renderApp('/presets');
     expect(await screen.findByText('wan-100ms')).toBeInTheDocument();
     expect(screen.getByText('Typical WAN')).toBeInTheDocument();
@@ -82,61 +88,74 @@ describe('Presets: list', () => {
   });
 
   it('has a "New preset" link to /presets/new and Edit links by id', async () => {
-    api.getPresets.mockResolvedValue(twoPresets());
+    seedPresets(twoPresets());
     renderApp('/presets');
     expect(await screen.findByRole('link', { name: 'New preset' })).toHaveAttribute('href', '/presets/new');
     expect(screen.getByRole('link', { name: 'Edit wan-100ms' })).toHaveAttribute('href', '/presets/1');
     expect(screen.getByRole('link', { name: 'Edit lossy' })).toHaveAttribute('href', '/presets/2');
   });
 
-  it('shows an alert if the presets cannot be loaded', async () => {
-    api.getPresets.mockRejectedValue(new ApiError(500, 'state unreadable'));
+  it('reads only the local document: nothing stored shows the empty state and creates no document', async () => {
     renderApp('/presets');
-    expect(await screen.findByRole('alert')).toHaveTextContent('state unreadable');
+    expect(await screen.findByText(/no presets/i)).toBeInTheDocument();
+    expect(rawStore()).toBeNull();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 });
 
 describe('Presets: delete', () => {
   it('asks for confirmation; Cancel does not delete', async () => {
     const user = userEvent.setup();
-    api.getPresets.mockResolvedValue(twoPresets());
+    seedPresets(twoPresets());
     renderApp('/presets');
     await user.click(await screen.findByRole('button', { name: 'Delete wan-100ms' }));
     const dialog = await screen.findByRole('dialog');
     expect(dialog).toHaveTextContent('wan-100ms');
-    expect(api.deletePreset).not.toHaveBeenCalled();
     await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-    expect(api.deletePreset).not.toHaveBeenCalled();
+    expect(storedPresets().map((p) => p.id)).toEqual([1, 2]);
   });
 
-  it('Confirm deletes by id and reloads the list', async () => {
+  it('Confirm deletes by id from the local document; the list updates; links and settings stay', async () => {
     const user = userEvent.setup();
-    api.getPresets.mockResolvedValueOnce(twoPresets()).mockResolvedValue([twoPresets()[1]]);
+    seedStore({ presets: twoPresets(), links: [fx.link()], settings: fx.settings({ main_lcore: 3 }) });
     renderApp('/presets');
     await user.click(await screen.findByRole('button', { name: 'Delete wan-100ms' }));
     await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Confirm delete' }));
-    expect(api.deletePreset).toHaveBeenCalledTimes(1);
-    expect(api.deletePreset).toHaveBeenCalledWith(1);
     await waitFor(() => expect(screen.queryByText('wan-100ms')).not.toBeInTheDocument());
     expect(screen.getByText('lossy')).toBeInTheDocument();
+    const doc = storedDoc();
+    expect(doc.presets.map((p) => p.id)).toEqual([2]);
+    expect(doc.links).toEqual([fx.link()]);
+    expect(doc.settings.main_lcore).toBe(3);
   });
 
-  it('shows the API error when deleting fails', async () => {
+  it('deleting a preset leaves the links that used its config as they are', async () => {
     const user = userEvent.setup();
-    api.getPresets.mockResolvedValue(twoPresets());
-    api.deletePreset.mockRejectedValue(new ApiError(404, 'preset 1 does not exist'));
+    seedStore({ presets: twoPresets(), links: [fx.link({ config: fx.config2() })] });
     renderApp('/presets');
     await user.click(await screen.findByRole('button', { name: 'Delete wan-100ms' }));
     await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Confirm delete' }));
-    expect(await screen.findByText(/preset 1 does not exist/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText('wan-100ms')).not.toBeInTheDocument());
+    expect(storedDoc().links[0].config).toEqual(fx.config2());
   });
 });
 
-async function openNew(): Promise<UserEvent> {
+let seeded = 0;
+let writeCount: () => number = () => 0;
+function watchWrites(): void {
+  writeCount = watchStoreWrites();
+}
+const expectNoWrite = () => expect(writeCount()).toBe(0);
+
+async function openNew(stages = true, others: Preset[] = []): Promise<UserEvent> {
+  if (others.length > 0) seedPresets(others);
+  seeded = others.length;
   const user = userEvent.setup();
   renderApp('/presets/new');
   await screen.findByRole('heading', { level: 1, name: 'New preset' });
+  if (stages) await addStages(user);
+  watchWrites();
   return user;
 }
 
@@ -148,12 +167,15 @@ async function fillName(user: UserEvent, name: string) {
 /** Name plus the initialization rate (a new form starts without one), ready to save. */
 async function fillValid(user: UserEvent, name: string) {
   await fillName(user, name);
-  await typeRate(user);
+  if (screen.queryByLabelText('Initialization rate')) await typeRate(user);
 }
 
+/** The preset the form created: one more than before, appended, with id max+1. */
 function lastCreate(): PresetInput {
-  expect(api.createPreset).toHaveBeenCalledTimes(1);
-  return api.createPreset.mock.calls[0][0];
+  const presets = storedPresets();
+  expect(presets).toHaveLength(seeded + 1);
+  expect(presets[seeded].id).toBe(Math.max(0, ...presets.slice(0, seeded).map((p) => p.id)) + 1);
+  return presets[seeded];
 }
 
 describe('Presets: create', () => {
@@ -163,7 +185,7 @@ describe('Presets: create', () => {
     expect(lbl('Description')).toHaveValue('');
     expect(screen.getAllByLabelText('Mean delay')).toHaveLength(1);
     expect(screen.getAllByLabelText('Delay distribution')).toHaveLength(1);
-    expect(screen.getByLabelText('Limiter active')).not.toBeChecked();
+    expect(screen.queryByLabelText('Limiter active')).not.toBeInTheDocument(); // v22: no switch
     expect(screen.queryByLabelText('Port A')).not.toBeInTheDocument(); // no link fields here
   });
 
@@ -187,12 +209,12 @@ describe('Presets: create', () => {
     await user.selectOptions(lbl('Delay distribution'), 'GammaDistribution');
     await typeInto(user, document.body, 'Mean delay', '2.5', '\u00b5s');
     await typeInto(user, document.body, 'Delay std', '300', 'ns');
-    await user.click(lbl('Limiter active'));
+    await user.selectOptions(lbl('Limiter mode'), 'TokenBucketFilter');
     await user.click(lbl('Reordering'));
     await user.click(save());
     const c = lastCreate().config;
     expect(c.delayer).toMatchObject({ distribution: 'GammaDistribution', mean_ns: 2500, std_ns: 300 });
-    expect(c.limiter.activate).toBe(true);
+    expect(c.limiter).toEqual({ mode: 'TokenBucketFilter', rate_bps: 1e10 });
     expect(c.reordering).toBe(true);
   });
 
@@ -207,7 +229,7 @@ describe('Presets: create', () => {
     const user = await openNew();
     await user.click(save());
     expect(await screen.findByRole('alert')).toHaveTextContent(/name/i);
-    expect(api.createPreset).not.toHaveBeenCalled();
+    expectNoWrite();
   });
 
   it('refuses a whitespace-only name', async () => {
@@ -215,7 +237,7 @@ describe('Presets: create', () => {
     await fillName(user, '   ');
     await user.click(save());
     expect(await screen.findByRole('alert')).toHaveTextContent(/name/i);
-    expect(api.createPreset).not.toHaveBeenCalled();
+    expectNoWrite();
   });
 
   it('refuses a seed above 2^53-1 like the link editor (alert naming the seed, no request)', async () => {
@@ -224,49 +246,88 @@ describe('Presets: create', () => {
     await user.type(lbl('Seed'), '9007199254740993');
     await user.click(save());
     expect(await screen.findByRole('alert')).toHaveTextContent(/seed/i);
-    expect(api.createPreset).not.toHaveBeenCalled();
+    expectNoWrite();
   });
 
-  it('shows the API 409 message, stays on the page and keeps the values', async () => {
-    api.createPreset.mockRejectedValue(new ApiError(409, 'preset name "dup" already exists'));
-    const user = await openNew();
-    await fillValid(user, 'dup');
+  it('a name another preset already has is refused: alert "already exists", nothing written, the form and its values stay', async () => {
+    const user = await openNew(true, twoPresets());
+    await fillValid(user, 'lossy');
     await user.type(lbl('Description'), 'keep me');
     await user.click(save());
-    expect(await screen.findByRole('alert')).toHaveTextContent('preset name "dup" already exists');
+    expect(await screen.findByRole('alert')).toHaveTextContent(/already exists/i);
+    expectNoWrite();
     expect(screen.getByRole('heading', { level: 1, name: 'New preset' })).toBeInTheDocument();
-    expect(lbl('Name')).toHaveValue('dup');
+    expect(lbl('Name')).toHaveValue('lossy');
     expect(lbl('Description')).toHaveValue('keep me');
+    await fillName(user, 'lossy-2');
+    await user.click(save());
+    expect(lastCreate().name).toBe('lossy-2');
   });
 
-  it('shows the API 400 message naming the field', async () => {
-    api.createPreset.mockRejectedValue(new ApiError(400, 'config.delayer.std_ns must be >= 0'));
+  it('the first preset of an empty store gets id 1 and creates the document; opening the form wrote nothing', async () => {
+    const user = await openNew();
+    expect(rawStore()).toBeNull();
+    await fillValid(user, 'first');
+    await user.click(save());
+    expect(storedDoc()).toMatchObject({ version: 1, links: [] });
+    expect(storedPresets().map((p) => [p.id, p.name])).toEqual([[1, 'first']]);
+  });
+
+  it('a new preset next to presets 1 and 5 gets id 6; the others, the links and the settings are unchanged', async () => {
+    const stored = [fx.preset({ id: 1, name: 'a' }), fx.preset({ id: 5, name: 'b' })];
+    seedStore({ presets: stored, links: [fx.link()], settings: fx.settings({ poll_interval_ms: 250 }) });
+    const user = await openNew(true);
+    seeded = 2;
+    await fillValid(user, 'c');
+    await user.click(save());
+    const doc = storedDoc();
+    expect(doc.presets.map((p) => p.id)).toEqual([1, 5, 6]);
+    expect(doc.presets.slice(0, 2)).toEqual(stored);
+    expect(doc.links).toEqual([fx.link()]);
+    expect(doc.settings.poll_interval_ms).toBe(250);
+  });
+
+  it('a refused value is reported without writing, and the corrected form saves', async () => {
     const user = await openNew();
     await fillValid(user, 'bad');
+    await user.clear(lbl('Delay std'));
     await user.click(save());
-    expect(await screen.findByRole('alert')).toHaveTextContent('config.delayer.std_ns must be >= 0');
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Delay std/);
+    expectNoWrite();
+    await typeInto(user, document.body, 'Delay std', '5', 'ns');
+    await user.click(save());
+    expect(lastCreate().config.delayer!.std_ns).toBe(5);
+  });
+
+  it('a bare form (no stage added) saves a preset with Buffer and Statistics only', async () => {
+    const user = await openNew(false);
+    await fillValid(user, 'bare');
+    await user.click(save());
+    const c = lastCreate().config;
+    for (const k of ['delayer', 'limiter', 'loss_model'] as const) expect(stageOf(c, k)).toBeNull();
+    expect(c.buffer_capacity).toBe(100000);
   });
 
   it('Cancel is a link back to /presets and sends nothing', async () => {
     await openNew();
     expect(screen.getByRole('link', { name: 'Cancel' })).toHaveAttribute('href', '/presets');
-    expect(api.createPreset).not.toHaveBeenCalled();
+    expectNoWrite();
   });
 });
 
 describe('Presets: edit', () => {
-  async function openEdit(id = 1): Promise<UserEvent> {
+  async function openEdit(id = 1, others: Preset[] = []): Promise<UserEvent> {
     const user = userEvent.setup();
-    api.getPreset.mockImplementation(async () => fx.preset({ id, name: 'wan-100ms', description: 'Typical WAN', config: fx.config2() }));
+    seedPresets([fx.preset({ id, name: 'wan-100ms', description: 'Typical WAN', config: fx.config2() }), ...others]);
     renderApp(`/presets/${id}`);
     await screen.findByRole('heading', { level: 1, name: 'Edit preset' });
     await waitFor(() => expect(lbl('Name')).toHaveValue('wan-100ms'));
+    watchWrites();
     return user;
   }
 
   it('loads the stored preset into the form (every config field)', async () => {
     await openEdit(1);
-    expect(api.getPreset).toHaveBeenCalledWith(1);
     expect(lbl('Description')).toHaveValue('Typical WAN');
     expect(lbl('Delay distribution')).toHaveValue('GammaDistribution');
     expect(lbl('Mean delay')).toHaveValue(2.5); // 2500 ns
@@ -278,7 +339,6 @@ describe('Presets: edit', () => {
     expect(unitOf(document.body, 'Half-life period')).toBe('ms');
     expect(lbl('Initialization rate')).toHaveValue(8);
     expect(unitOf(document.body, 'Initialization rate')).toBe('Mpps');
-    expect(lbl('Limiter active')).toBeChecked();
     expect(lbl('Limiter mode')).toHaveValue('TokenBucketFilter');
     expect(lbl('Rate')).toHaveValue(40);
     expect(unitOf(document.body, 'Rate')).toBe('Gbit/s');
@@ -290,38 +350,55 @@ describe('Presets: edit', () => {
     expect(lbl('Delay statistics')).not.toBeChecked();
   });
 
-  it('Save PUTs the edited preset by id and navigates to the list', async () => {
+  it('Save stores the edited preset under the same id and navigates to the list', async () => {
     const user = await openEdit(1);
     await user.clear(lbl('Name'));
     await user.type(lbl('Name'), 'renamed');
     await typeInto(user, document.body, 'Mean delay', '4242', 'ns');
     await user.click(save());
-    expect(api.updatePreset).toHaveBeenCalledTimes(1);
-    const [id, sent] = api.updatePreset.mock.calls[0];
-    expect(id).toBe(1);
+    expect(writeCount()).toBe(1);
+    expect(storedPresets()).toHaveLength(1);
+    const sent = storedPresets()[0];
+    expect(sent.id).toBe(1);
     expect(sent.name).toBe('renamed');
     expect(sent.description).toBe('Typical WAN');
-    expect(sent.config.delayer.mean_ns).toBe(4242);
-    expect(sent.config.delayer.distribution).toBe('GammaDistribution');
-    expect(sent.config.delayer.initialization_rate_pps).toBe(8000000); // v12: the stored value goes back
+    expect(sent.config.delayer!.mean_ns).toBe(4242);
+    expect(sent.config.delayer!.distribution).toBe('GammaDistribution');
+    expect(sent.config.delayer!.initialization_rate_pps).toBe(8000000); // v12: the stored value goes back
     expect(sent.config.buffer_capacity).toBe(5000);
     expect(sent.config.seed).toBe(42);
-    expect(api.createPreset).not.toHaveBeenCalled();
     expect(await screen.findByRole('heading', { level: 1, name: 'Presets' })).toBeInTheDocument();
   });
 
-  it('shows the API error of a failed update and stays', async () => {
-    api.updatePreset.mockRejectedValue(new ApiError(409, 'preset name "x" already exists'));
-    const user = await openEdit(1);
+  it('renaming to the name of ANOTHER preset is refused and stays on the page; keeping the own name is fine', async () => {
+    const user = await openEdit(1, [fx.preset({ id: 2, name: 'taken' })]);
+    await fillName(user, 'taken');
     await user.click(save());
-    expect(await screen.findByRole('alert')).toHaveTextContent('already exists');
+    expect(await screen.findByRole('alert')).toHaveTextContent(/already exists/i);
+    expectNoWrite();
     expect(screen.getByRole('heading', { level: 1, name: 'Edit preset' })).toBeInTheDocument();
+    await fillName(user, 'wan-100ms');
+    await user.click(save());
+    expect(writeCount()).toBe(1);
   });
 
-  it('shows an alert if the preset cannot be loaded (404)', async () => {
-    api.getPreset.mockRejectedValue(new ApiError(404, 'preset 9 does not exist'));
+  it('a stored preset without stages opens with the three "Add ..." buttons and saves back without stages', async () => {
+    seedPresets([fx.preset({ id: 1, name: 'bare', config: fx.configBare() })]);
+    const user = userEvent.setup();
+    renderApp('/presets/1');
+    await screen.findByRole('heading', { level: 1, name: 'Edit preset' });
+    await waitFor(() => expect(lbl('Name')).toHaveValue('bare'));
+    for (const s of ['delayer', 'limiter', 'dropper']) expect(screen.getByRole('button', { name: `Add ${s}` })).toBeInTheDocument();
+    await user.click(save());
+    const c = storedPresets()[0].config;
+    for (const k of ['delayer', 'limiter', 'loss_model'] as const) expect(stageOf(c, k)).toBeNull();
+  });
+
+  it('an id that is not in the local document shows "not found" and no editor', async () => {
+    seedPresets([fx.preset({ id: 1 })]);
     renderApp('/presets/9');
-    expect(await screen.findByRole('alert')).toHaveTextContent('preset 9 does not exist');
+    expect(await screen.findByRole('alert')).toHaveTextContent(/not found/i);
+    expect(screen.queryByLabelText('Name')).not.toBeInTheDocument();
   });
 });
 
@@ -343,7 +420,7 @@ describe('Presets: initialization rate (v12)', () => {
     await fillName(user, 'no-rate');
     await user.click(save());
     expect(await screen.findByRole('alert')).toHaveTextContent(/Initialization rate/);
-    expect(api.createPreset).not.toHaveBeenCalled();
+    expectNoWrite();
   });
 
   it('typing a rate into the empty form makes it saveable (shared helper path)', async () => {
@@ -351,7 +428,7 @@ describe('Presets: initialization rate (v12)', () => {
     await fillValid(user, 'with-rate');
     expect(lbl(RATE)).toHaveValue(Number(TEST_RATE));
     await user.click(save());
-    expect(lastCreate().config.delayer.initialization_rate_pps).toBe(Number(TEST_RATE));
+    expect(lastCreate().config.delayer!.initialization_rate_pps).toBe(Number(TEST_RATE));
   });
 
   it('sends the typed value as a number, also with correlation off', async () => {
@@ -360,7 +437,7 @@ describe('Presets: initialization rate (v12)', () => {
     expect(lbl('Activate correlation')).not.toBeChecked();
     await typeRate(user, '3000000');
     await user.click(save());
-    const sent = lastCreate().config.delayer.initialization_rate_pps;
+    const sent = lastCreate().config.delayer!.initialization_rate_pps;
     expect(sent).toBe(3000000);
     expect(typeof sent).toBe('number');
   });
@@ -372,7 +449,7 @@ describe('Presets: initialization rate (v12)', () => {
     else await typeRate(user, v);
     await user.click(save());
     expect(await screen.findByRole('alert')).toHaveTextContent(/Initialization rate/);
-    expect(api.createPreset).not.toHaveBeenCalled();
+    expectNoWrite();
   });
 
   it('accepts exactly 1', async () => {
@@ -380,17 +457,17 @@ describe('Presets: initialization rate (v12)', () => {
     await fillName(user, 'one');
     await typeRate(user, '1');
     await user.click(save());
-    expect(lastCreate().config.delayer.initialization_rate_pps).toBe(1);
+    expect(lastCreate().config.delayer!.initialization_rate_pps).toBe(1);
   });
 
-  it('edit: a changed value is sent by PUT', async () => {
+  it('edit: a changed value is stored', async () => {
     const user = userEvent.setup();
-    api.getPreset.mockImplementation(async () => fx.preset({ id: 1, name: 'wan-100ms', config: fx.config2() }));
+    seedPresets([fx.preset({ id: 1, name: 'wan-100ms', config: fx.config2() })]);
     renderApp('/presets/1');
     await screen.findByRole('heading', { level: 1, name: 'Edit preset' });
     await waitFor(() => expect(lbl('Name')).toHaveValue('wan-100ms'));
     await typeRate(user, '5000000');
     await user.click(save());
-    expect(api.updatePreset.mock.calls[0][1].config.delayer.initialization_rate_pps).toBe(5000000);
+    expect(storedPresets()[0].config.delayer!.initialization_rate_pps).toBe(5000000);
   });
 });

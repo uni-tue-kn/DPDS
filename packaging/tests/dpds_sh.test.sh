@@ -49,7 +49,7 @@
 # Environment overrides (so tests never touch the real system):
 #   DPDS_PREFIX       install prefix; binaries go to $DPDS_PREFIX/bin     (default /usr/local)
 #   DPDS_ETC_DIR      config dir; env file is $DPDS_ETC_DIR/controller.env (default /etc/dpds)
-#   DPDS_STATE_DIR    controller state dir                                (default /var/lib/dpds-controller)
+#   (spec 22: there is no DPDS_STATE_DIR any more; the controller stores nothing, see "spec 22" below)
 #   DPDS_SYSTEMD_DIR  where the unit is installed                         (default /etc/systemd/system)
 #   DPDS_BIND         bind address written into a NEW env file            (default 0.0.0.0:8100)
 #   CARGO_TARGET_DIR  standard cargo variable; built binaries are read from
@@ -125,8 +125,7 @@
 #      creates $DPDS_ETC_DIR/controller.env ONLY if absent (never overwritten) containing
 #        DPDS_CONTROLLER_BIND=<DPDS_BIND or 0.0.0.0:8100>
 #        DPDS_CONTROLLER_DPDS_BIN=$DPDS_PREFIX/bin/dpds
-#        DPDS_CONTROLLER_STATE_DIR=$DPDS_STATE_DIR
-#      (values may be double-quoted); creates $DPDS_STATE_DIR.
+#      (values may be double-quoted; no state directory is created and none is named: spec 22).
 #   5. `systemctl daemon-reload`.
 #   6. Does NOT enable or start anything (no `systemctl enable|start`).
 #   7. Re-running install is fine (idempotent). Failure of a build step: exit non-zero.
@@ -151,8 +150,9 @@
 # uninstall (needs --yes semantic only for install-like prompts; none here)
 #          `systemctl disable --now dpds-controller` (failure tolerated),
 #          removes $DPDS_PREFIX/bin/{dpds,dpds-controller} and the unit, `systemctl daemon-reload`.
-#          KEEPS $DPDS_STATE_DIR and $DPDS_ETC_DIR/controller.env untouched. Nothing installed
-#          => still exit 0.
+#          KEEPS $DPDS_ETC_DIR/controller.env untouched. Spec 22: removes a LEFTOVER `/var/lib/dpds-controller` (the state
+#          directory of older installs) when it exists, through the privileged helper (sudo), and says so in an info line that
+#          names the directory; with no leftover it says nothing about it. Nothing installed => still exit 0.
 #
 # Never tunes the host: no ethtool, setpci, sysctl, mlxconfig, cpupower, hugepage/proc/sys writes,
 # neither in the script nor in the unit file (the controller only reports hints).
@@ -177,13 +177,19 @@
 #     systemctl's own complaints ("does not exist", "not found", "could not be found"). The stub systemctl answers like real
 #     systemd for a missing unit file (enable/start/restart/status/cat/is-enabled/show/list-unit-files), so tests of
 #     start/restart/status call `seed_unit` (or fake_install) first. `stop` and `uninstall` are unchanged.
-#   - Host check of install and update: exit code 2 of `dpds-controller check` means the state file could not be loaded
-#     (message "<path> is not a valid state file: ..." or "cannot read <path>: ..." on the controller's stderr), unlike
-#     the 0/1 of ordinary hints. dpds.sh then reports an ERROR line ("[ERROR]" on stderr) saying the controller will not
-#     start, shows the controller's message, does not call it a hint ("not blockers" / "hints about performance" stay
-#     for ordinary exit 1), and stops with a non-zero exit before the prompt and before anything is installed (update:
-#     before the installed binaries are replaced or the service touched). With --yes it reports the error the same way
-#     and goes on. The stub controller takes STUB_CONTROLLER_RC and STUB_CONTROLLER_ERR (a message for stderr).
+#   - Host check of install and update: spec 22 removed the "unloadable state file" branch (exit code 2 of
+#     `dpds-controller check`, an [ERROR] that stopped the install before the prompt). Any non-zero exit of the check, 2
+#     included, is now handled the same generic way: a warning that names the exit code (hints, not blockers), then the
+#     prompt (--yes skips it). The stub controller takes STUB_CONTROLLER_RC and STUB_CONTROLLER_ERR (a message for stderr).
+#
+# spec 22 (stateless controller)
+#   - No DPDS_STATE_DIR (a value in the environment is ignored, whatever it holds, even whitespace or a relative path), no
+#     state-dir step in install (no directory created, no `install -d` of one), no DPDS_CONTROLLER_STATE_DIR in a new
+#     controller.env, no StateDirectory= or state path in the unit. The host check (`dpds-controller check`) is called with
+#     no state argument. `uninstall` removes a leftover /var/lib/dpds-controller (see above).
+#   - The harness runs a COPY of the script in which the literal `/var/lib/dpds-controller` is replaced by $LEGACY_STATE_DIR
+#     (a path in the sandbox), so no test can touch the real directory: the script must name the old state directory exactly
+#     as that literal (not assemble it from parts) for the uninstall tests to see it.
 #
 # Sandbox conventions used by this file (PATH contains only stubs + whitelisted base utilities):
 #   Every test runs a COPY of dpds.sh in a sandbox repository ($T/repo, with the unit file,
@@ -246,6 +252,14 @@ assert_file()    { [[ -f "$1" ]] || fail "missing file $1"; }
 assert_no_file() { [[ ! -e "$1" ]] || fail "unexpected $1"; }
 assert_exec()    { [[ -x "$1" ]] || fail "not executable: $1"; }
 assert_file_has() { grep -Eq -- "$2" "$1" 2>/dev/null || fail "$1 lacks /$2/"; }
+# Spec 22: no state directory was created or named by a privileged call, in the sandbox or at the script's old path.
+assert_no_state_dir_anywhere() {
+  assert_no_file "$LEGACY_STATE_DIR"
+  [[ -z "$(find "$T" -iname '*state*' -not -path "$T/stubs/*" 2>/dev/null)" ]] \
+    || fail "a state directory or file was created: $(find "$T" -iname '*state*' -not -path "$T/stubs/*" | tr '\n' ' ')"
+  ! grep -qiE 'state|var/lib|oldvar' "$STUB_LOG.sudo" 2>/dev/null \
+    || fail "a privileged call mentions a state directory: $(grep -iE 'state|var/lib|oldvar' "$STUB_LOG.sudo" | tr '\n' '|')"
+}
 # assert_before REGEX_A REGEX_B: first match of A is on an earlier line than the first match of B.
 assert_before() {
   local a b
@@ -310,7 +324,10 @@ setup_sandbox() {
         STUB_GIT_TAGS STUB_GIT_NOT_A_REPO DPDS_CHANNEL STUB_ONLINE_JSON STUB_NODE_VERSION STUB_NPM_FAIL_SUB STUB_NPM_NO_INDEX STUB_NPM_BUILD_NOOP STUB_DPDK_VERSION STUB_RUSTC_VERSION \
         DPDS_FRONTEND_DIST DPDS_FRONTEND_ASSET_URL
   mkdir -p "$T/tmp"
-  export DPDS_PREFIX="$T/prefix" DPDS_ETC_DIR="$T/etc" DPDS_STATE_DIR="$T/state" DPDS_SYSTEMD_DIR="$T/systemd"
+  unset DPDS_STATE_DIR DPDS_CONTROLLER_STATE_DIR
+  export DPDS_PREFIX="$T/prefix" DPDS_ETC_DIR="$T/etc" DPDS_SYSTEMD_DIR="$T/systemd"
+  # where the script's `/var/lib/dpds-controller` points in the sandbox (does not exist unless a test makes it)
+  LEGACY_STATE_DIR="$T/oldvar/dpds-controller-state"
   export CARGO_TARGET_DIR="$T/target"
   export HOME="$T/home"
   mkdir -p "$DPDS_PREFIX/bin" "$DPDS_SYSTEMD_DIR"
@@ -318,6 +335,9 @@ setup_sandbox() {
   # The sandbox repository: a copy of the script and of the few files it reads.
   mkdir -p "$T/repo/packaging" "$T/repo/frontend" "$T/repo/crates/dpds-core"
   cp "$SRC_ROOT/dpds.sh" "$T/repo/dpds.sh"
+  # the old state directory of the script is a sandbox path, never the real one
+  sed -i "s|/var/lib/dpds-controller|$LEGACY_STATE_DIR|g" "$T/repo/dpds.sh"
+  ! grep -q '/var/lib/dpds-controller' "$T/repo/dpds.sh" || fail "the sandbox copy still names the real state directory"
   cp "$SRC_ROOT/packaging/dpds-controller.service" "$T/repo/packaging/"
   cp "$SRC_ROOT/frontend/package.json" "$T/repo/frontend/"
   cp "$SRC_ROOT/Cargo.toml" "$T/repo/Cargo.toml"
@@ -552,10 +572,16 @@ make_local_dist() {
 fake_install() {
   write_controller_stub "$DPDS_PREFIX/bin/dpds-controller"
   printf '#!/bin/bash\nexit 0\n' >"$DPDS_PREFIX/bin/dpds"; chmod +x "$DPDS_PREFIX/bin/dpds"
-  mkdir -p "$DPDS_ETC_DIR" "$DPDS_STATE_DIR"
+  mkdir -p "$DPDS_ETC_DIR"
   printf 'DPDS_CONTROLLER_BIND=0.0.0.0:8100\n' >"$DPDS_ETC_DIR/controller.env"
-  echo '{"links":[]}' >"$DPDS_STATE_DIR/links.json"
   printf '[Service]\nExecStart=%s/bin/dpds-controller serve\n' "$DPDS_PREFIX" >"$DPDS_SYSTEMD_DIR/dpds-controller.service"
+}
+
+# The state directory an older install left behind (the script's `/var/lib/dpds-controller`, see the header).
+fake_legacy_state() {
+  mkdir -p "$LEGACY_STATE_DIR"
+  echo '{"links":[],"settings":{},"next_id":1}' >"$LEGACY_STATE_DIR/state.json"
+  echo keep >"$LEGACY_STATE_DIR/marker"
 }
 
 # Only the unit file of a finished install (what `systemctl` needs to know the service): start, restart and status refuse
@@ -902,7 +928,7 @@ test_install_warns_when_the_tree_is_not_on_the_channels_branch_and_still_install
   for case_ in "nightly|main|" "main|nightly|--nightly" "feature-x|main|--stable" "feature-x|nightly|--nightly"; do
     IFS='|' read -r cur target flag <<<"$case_"
     : >"$STUB_LOG"
-    rm -rf "$DPDS_PREFIX/bin/dpds-controller" "$DPDS_ETC_DIR" "$DPDS_STATE_DIR" "$(installed_unit)"
+    rm -rf "$DPDS_PREFIX/bin/dpds-controller" "$DPDS_ETC_DIR" "$(installed_unit)"
     STUB_GIT_BRANCH="$cur" run_dpds $flag --yes install
     CTX="on $cur, channel branch $target" assert_rc 0 "$ERR"
     CTX="on $cur, channel branch $target" assert_branch_warning "$cur" "$target"
@@ -1227,7 +1253,7 @@ test_install_host_check_failure_is_feedback_only_with_yes() {
   assert_file "$(installed_unit)"
 }
 
-test_install_installs_binaries_unit_env_state() {
+test_install_installs_binaries_unit_env() {
   run_dpds --yes install
   assert_rc 0 "$ERR"
   assert_exec "$DPDS_PREFIX/bin/dpds"
@@ -1236,7 +1262,7 @@ test_install_installs_binaries_unit_env_state() {
   assert_file_has "$DPDS_PREFIX/bin/dpds-controller" 'STUB-BINARY-dpds-controller'
   assert_file "$(installed_unit)"
   assert_file "$DPDS_ETC_DIR/controller.env"
-  [[ -d "$DPDS_STATE_DIR" ]] || fail "state dir not created"
+  assert_no_state_dir_anywhere
 }
 
 test_install_unit_paths_follow_prefix_and_etc() {
@@ -1260,7 +1286,9 @@ test_install_env_file_default_bind_and_paths() {
   local f="$DPDS_ETC_DIR/controller.env"
   assert_file_has "$f" '^DPDS_CONTROLLER_BIND="?0\.0\.0\.0:8100"?$'
   assert_file_has "$f" "^DPDS_CONTROLLER_DPDS_BIN=\"?$DPDS_PREFIX/bin/dpds\"?\$"
-  assert_file_has "$f" "^DPDS_CONTROLLER_STATE_DIR=\"?$DPDS_STATE_DIR\"?\$"
+  # spec 22: nothing about a state directory
+  ! grep -qi 'STATE' "$f" || fail "the env file mentions a state directory: $(cat "$f")"
+  [[ "$(grep -c '^[A-Z_]*=' "$f")" == 2 ]] || fail "exactly BIND and DPDS_BIN are written: $(cat "$f")"
 }
 
 test_install_env_file_bind_override() {
@@ -1312,7 +1340,7 @@ test_install_answer_n_aborts_without_installing() {
   assert_no_file "$DPDS_PREFIX/bin/dpds-controller"
   assert_no_file "$(installed_unit)"
   assert_no_file "$DPDS_ETC_DIR/controller.env"
-  assert_no_file "$DPDS_STATE_DIR"
+  assert_no_state_dir_anywhere
   assert_log_lacks '^systemctl'
 }
 
@@ -2272,18 +2300,71 @@ test_script_source_has_no_docker_nginx_or_frontend_container_settings() {
 }
 
 # ------------------------------------------------------------------ tests: uninstall
-test_uninstall_removes_binaries_and_unit_keeps_state_and_env() {
+test_uninstall_removes_binaries_and_unit_keeps_env() {
   fake_install
-  local env_before state_before
+  local env_before
   env_before="$(cat "$DPDS_ETC_DIR/controller.env")"
-  state_before="$(cat "$DPDS_STATE_DIR/links.json")"
   run_dpds --yes uninstall
   assert_rc 0 "$ERR"
   assert_no_file "$DPDS_PREFIX/bin/dpds"
   assert_no_file "$DPDS_PREFIX/bin/dpds-controller"
   assert_no_file "$(installed_unit)"
   assert_eq "$(cat "$DPDS_ETC_DIR/controller.env")" "$env_before" "env file kept"
-  assert_eq "$(cat "$DPDS_STATE_DIR/links.json")" "$state_before" "state kept"
+}
+
+# Spec 22: older installs left /var/lib/dpds-controller (state.json, the links file); the controller does not use it any more
+# and uninstall cleans it up: through the privileged helper, with an info line that names the directory.
+test_uninstall_removes_a_leftover_state_dir_and_says_so() {
+  fake_install
+  fake_legacy_state
+  run_dpds --yes uninstall
+  assert_rc 0 "$ERR"
+  assert_no_file "$LEGACY_STATE_DIR"
+  assert_all_has "$LEGACY_STATE_DIR"
+  grep -Eiq 'remov|delet' <<<"$OUT$ERR" || fail "no line says the leftover was removed: $OUT$ERR"
+  assert_file "$DPDS_ETC_DIR/controller.env"
+  grep -Fq "$LEGACY_STATE_DIR" "$STUB_LOG.sudo" || fail "the removal did not go through the privileged helper: $(cat "$STUB_LOG.sudo")"
+  grep -E '^sudo .*rm ' "$STUB_LOG.sudo" | grep -Fq "$LEGACY_STATE_DIR" || fail "no sudo rm of the leftover: $(cat "$STUB_LOG.sudo")"
+}
+
+test_uninstall_without_a_leftover_state_dir_says_nothing_about_one() {
+  fake_install
+  run_dpds --yes uninstall
+  assert_rc 0 "$ERR"
+  ! grep -Fq "$LEGACY_STATE_DIR" <<<"$OUT$ERR" || fail "mentions the state directory without one: $OUT$ERR"
+  ! grep -qi 'state' <<<"$OUT$ERR" || fail "talks about state without a leftover: $OUT$ERR"
+  ! grep -Fq "$LEGACY_STATE_DIR" "$STUB_LOG.sudo" || fail "touched a state directory that is not there"
+  assert_no_state_dir_anywhere
+}
+
+test_uninstall_removes_only_the_leftover_dir_not_its_parents_or_the_env() {
+  fake_install
+  fake_legacy_state
+  mkdir -p "$(dirname "$LEGACY_STATE_DIR")"
+  echo sibling >"$(dirname "$LEGACY_STATE_DIR")/other-service-file"
+  run_dpds --yes uninstall
+  assert_rc 0 "$ERR"
+  assert_no_file "$LEGACY_STATE_DIR"
+  assert_file "$(dirname "$LEGACY_STATE_DIR")/other-service-file"
+  assert_file "$DPDS_ETC_DIR/controller.env"
+}
+
+test_uninstall_removes_a_leftover_state_dir_even_when_the_service_was_not_installed() {
+  fake_legacy_state
+  run_dpds --yes uninstall
+  assert_rc 0 "$ERR"
+  assert_no_file "$LEGACY_STATE_DIR"
+}
+
+test_uninstall_ignores_a_state_dir_variable() {
+  # the variable is gone: a value (even a bad one) neither makes uninstall fail nor names a directory to remove
+  fake_install
+  mkdir -p "$T/mine"
+  echo precious >"$T/mine/data"
+  export DPDS_STATE_DIR="$T/mine"
+  run_dpds --yes uninstall
+  assert_rc 0 "$ERR"
+  assert_file "$T/mine/data"
 }
 
 test_uninstall_stops_service_and_reloads_systemd() {
@@ -2309,16 +2390,15 @@ test_uninstall_when_nothing_installed_succeeds() {
   assert_rc 0 "$ERR"
 }
 
-test_install_then_uninstall_roundtrip_keeps_state_and_env() {
+test_install_then_uninstall_roundtrip_keeps_env_and_leaves_no_state() {
   run_dpds --yes install
   assert_rc 0 "$ERR"
-  echo keep >"$DPDS_STATE_DIR/marker"
   run_dpds --yes uninstall
   assert_rc 0 "$ERR"
   assert_no_file "$DPDS_PREFIX/bin/dpds"
   assert_no_file "$(installed_unit)"
   assert_file "$DPDS_ETC_DIR/controller.env"
-  assert_file "$DPDS_STATE_DIR/marker"
+  assert_no_state_dir_anywhere
 }
 
 # ------------------------------------------------------------------ tests: no tuning
@@ -2446,7 +2526,7 @@ assert_refused_as_root() {
   assert_no_file "$DPDS_PREFIX/bin/dpds"
   assert_no_file "$DPDS_PREFIX/bin/dpds-controller"
   assert_no_file "$DPDS_ETC_DIR"
-  assert_no_file "$DPDS_STATE_DIR"
+  assert_no_state_dir_anywhere
 }
 
 test_a_run_under_sudo_is_refused_for_every_command() {
@@ -2592,70 +2672,64 @@ test_the_unit_is_looked_for_in_the_configured_systemd_dir() {
   assert_rc 0 "$ERR"
 }
 
-# Item 3: an unloadable state file is not a performance hint. The controller exits 2 for it (hints exit 0 or 1) and says
-# "<path>/state.json is not a valid state file: ..." on stderr; dpds.sh recognises it by that exit code and message.
-STATE_ERR='dpds-controller: /var/lib/dpds-controller/state.json is not a valid state file: unknown field `mlx5_devargs`, expected one of `main_lcore`, `eal_extra_args`, `poll_interval_ms` at line 1 column 99'
-STATE_ERR_2='Edit /var/lib/dpds-controller/state.json and remove the key `mlx5_devargs`, or move the file away to start empty (this loses the links and presets).'
+# ------------------------------------------------------------------ tests: spec 22 (stateless controller)
+# The controller has no state file any more, so the check cannot fail because of one: the spec19 branch for exit code 2
+# ("the controller will not start with this state", an [ERROR] that stopped install and update before the prompt) is gone.
+# Exit codes of `dpds-controller check` are handled generically: 0 = fine, anything else = hints worth a warning and one
+# question, never a blocker.
 
-# The state file error as an error that will stop the controller, shown with the controller's message.
-assert_state_file_reported_as_error() {
-  assert_err_has "[ERROR]"
-  assert_all_has "is not a valid state file"
-  assert_all_has 'unknown field `mlx5_devargs`'
-  grep -Eiq 'refus|not start|n.t start|cannot start|unable to start|fail(s)? to start|from starting|prevent' <<<"$OUT$ERR" \
-    || fail "does not say that the controller will not start: $OUT$ERR"
-  ! grep -qi 'not blockers' <<<"$OUT$ERR" || fail "still calls the state file error 'not blockers': $OUT$ERR"
-  ! grep -qi 'hints about performance' <<<"$OUT$ERR" || fail "still calls the state file error a performance hint: $OUT$ERR"
+# Any non-zero host check: a warning naming the exit code, the controller's output passed on, asked once, not blocking.
+assert_generic_host_check_warning() { # assert_generic_host_check_warning CODE
+  assert_all_has "exit code $1"
+  assert_all_has "CHECK-OUTPUT-MARKER"
+  ! grep -Eiq 'will not start|not start|cannot start|from starting|state file' <<<"$OUT$ERR" \
+    || fail "the host check result is reported as a start blocker or a state problem: $OUT$ERR"
+  ! grep -q '^\[ERROR\]\|\[ERROR\]' <<<"$ERR" || fail "a host check result is reported as an [ERROR]: $ERR"
 }
 
-test_install_stops_at_a_state_file_the_controller_cannot_load() {
-  export STUB_CONTROLLER_RC=2 STUB_CONTROLLER_ERR="$STATE_ERR"
-  feed $'y\n'   # a prompt would be answered yes: the script must not even ask
+test_install_treats_exit_code_2_of_the_check_like_any_other_hint_exit() {
+  export STUB_CONTROLLER_RC=2 STUB_CONTROLLER_ERR="dpds-controller: some message"
+  feed $'y\n'
   run_dpds install
-  assert_rc_nonzero
-  assert_state_file_reported_as_error
-  ! grep -Eiq 'continue with the installation|\[y/N\]' <<<"$OUT$ERR" || fail "offered to continue: $OUT"
-  assert_log_has '^cargo build'
-  assert_log_has '^dpds-controller check'
-  assert_no_file "$DPDS_PREFIX/bin/dpds"
-  assert_no_file "$DPDS_PREFIX/bin/dpds-controller"
-  assert_no_file "$(installed_unit)"
-  assert_no_file "$DPDS_ETC_DIR/controller.env"
-  assert_log_lacks '^systemctl'
-}
-
-test_install_with_yes_reports_the_state_file_error_and_goes_on() {
-  export STUB_CONTROLLER_RC=2 STUB_CONTROLLER_ERR="$STATE_ERR"
-  run_dpds --yes install
   assert_rc 0 "$ERR"
-  assert_state_file_reported_as_error
+  assert_generic_host_check_warning 2
+  assert_out_has "Continue with the installation"
   assert_exec "$DPDS_PREFIX/bin/dpds-controller"
   assert_file "$(installed_unit)"
   assert_log_has '^systemctl daemon-reload'
-  assert_log_lacks '^systemctl (enable|start|restart)'
 }
 
-test_the_controller_message_is_passed_on_in_full() {
-  export STUB_CONTROLLER_RC=2 STUB_CONTROLLER_ERR="$STATE_ERR
-$STATE_ERR_2"
-  run_dpds --yes install
-  assert_rc 0 "$ERR"
-  assert_all_has "state.json is not a valid state file: unknown field"
-  assert_all_has "remove the key"
-  assert_all_has "this loses the links and presets"
-}
-
-test_a_state_file_the_controller_cannot_even_read_stops_install_as_well() {
-  # exit 2 is the controller's code for "the state could not be loaded", whatever the reason
-  export STUB_CONTROLLER_RC=2 STUB_CONTROLLER_ERR="dpds-controller: cannot read /var/lib/dpds-controller/state.json: Permission denied (os error 13)"
-  feed $'y\n'
+test_install_asks_once_after_exit_code_2_and_aborts_on_no() {
+  export STUB_CONTROLLER_RC=2
+  feed $'n\n'
   run_dpds install
-  assert_rc_nonzero
-  assert_err_has "[ERROR]"
-  assert_all_has "cannot read"
-  ! grep -qi 'not blockers' <<<"$OUT$ERR" || fail "called a blocking failure 'not blockers': $OUT$ERR"
+  assert_rc 1
+  assert_out_has "Continue with the installation"
   assert_no_file "$DPDS_PREFIX/bin/dpds-controller"
   assert_no_file "$(installed_unit)"
+  assert_log_lacks '^systemctl'
+}
+
+test_install_with_yes_goes_on_after_exit_code_2_without_asking() {
+  export STUB_CONTROLLER_RC=2 STUB_CONTROLLER_ERR="dpds-controller: some message"
+  run_dpds --yes install
+  assert_rc 0 "$ERR"
+  assert_generic_host_check_warning 2
+  ! grep -Eiq 'continue with the installation|\[y/N\]' <<<"$OUT$ERR" || fail "asked although --yes was given: $OUT"
+  assert_exec "$DPDS_PREFIX/bin/dpds-controller"
+  assert_file "$(installed_unit)"
+}
+
+test_every_nonzero_exit_of_the_check_is_handled_the_same_way() {
+  local rc
+  for rc in 1 2 3 7; do
+    : >"$STUB_LOG"
+    rm -rf "$DPDS_PREFIX/bin/dpds-controller" "$DPDS_ETC_DIR" "$(installed_unit)"
+    STUB_CONTROLLER_RC=$rc run_dpds --yes install
+    CTX="check exit $rc" assert_rc 0 "$ERR"
+    CTX="check exit $rc" assert_generic_host_check_warning "$rc"
+    CTX="check exit $rc" assert_exec "$DPDS_PREFIX/bin/dpds-controller"
+  done
 }
 
 test_ordinary_host_hints_are_still_only_hints() {
@@ -2668,46 +2742,90 @@ test_ordinary_host_hints_are_still_only_hints() {
   assert_out_has "Continue with the installation"
   assert_exec "$DPDS_PREFIX/bin/dpds-controller"
   assert_file "$(installed_unit)"
-  ! grep -q 'is not a valid state file' <<<"$OUT$ERR" || fail "state file text without a state file problem"
 }
 
-test_ordinary_host_hints_do_not_get_the_state_file_error_line() {
-  export STUB_CONTROLLER_RC=1
-  run_dpds --yes install
-  assert_rc 0 "$ERR"
-  ! grep -Eiq 'will not start|from starting|cannot start' <<<"$OUT$ERR" || fail "an ordinary hint is reported as a start blocker: $OUT$ERR"
-}
-
-test_update_stops_at_a_state_file_the_controller_cannot_load_and_leaves_the_service_alone() {
+test_update_goes_on_after_exit_code_2_with_yes_and_restarts_an_active_service() {
   fake_install
-  export STUB_ACTIVE=1 STUB_CONTROLLER_RC=2 STUB_CONTROLLER_ERR="$STATE_ERR"
-  feed $'y\n'
-  run_dpds update
-  assert_rc_nonzero
-  assert_state_file_reported_as_error
-  ! grep -Eiq 'continue with the installation|\[y/N\]' <<<"$OUT$ERR" || fail "offered to continue: $OUT"
-  # the installed binaries are the old ones, and the running service was neither stopped nor restarted
-  ! grep -q 'STUB-BINARY' "$DPDS_PREFIX/bin/dpds-controller" || fail "the installed controller was replaced"
-  assert_log_lacks '^systemctl (enable|disable|start|stop|restart|daemon-reload)'
-}
-
-test_update_with_yes_reports_the_state_file_error_and_goes_on() {
-  fake_install
-  export STUB_ACTIVE=1 STUB_CONTROLLER_RC=2 STUB_CONTROLLER_ERR="$STATE_ERR"
+  export STUB_ACTIVE=1 STUB_CONTROLLER_RC=2 STUB_CONTROLLER_ERR="dpds-controller: some message"
   run_dpds --yes update
   assert_rc 0 "$ERR"
-  assert_state_file_reported_as_error
+  assert_generic_host_check_warning 2
   assert_file_has "$DPDS_PREFIX/bin/dpds-controller" 'STUB-BINARY-dpds-controller'
   assert_log_has '^systemctl enable --now dpds-controller$'
 }
 
-test_the_standalone_check_passes_the_state_file_failure_through_unchanged() {
-  # `check` stays the plain pass-through of the controller's output and exit code
+test_update_asks_after_exit_code_2_and_leaves_the_service_alone_on_no() {
+  fake_install
+  export STUB_ACTIVE=1 STUB_CONTROLLER_RC=2
+  feed $'n\n'
+  run_dpds update
+  assert_rc_nonzero
+  ! grep -q 'STUB-BINARY' "$DPDS_PREFIX/bin/dpds-controller" || fail "the installed controller was replaced"
+  assert_log_lacks '^systemctl (enable|disable|start|stop|restart|daemon-reload)'
+}
+
+test_the_standalone_check_passes_the_exit_code_through_unchanged() {
   write_controller_stub "$DPDS_PREFIX/bin/dpds-controller"
-  export STUB_CONTROLLER_RC=2 STUB_CONTROLLER_ERR="$STATE_ERR"
+  export STUB_CONTROLLER_RC=2 STUB_CONTROLLER_ERR="dpds-controller: some message"
   run_dpds check
   assert_rc 2
-  assert_all_has "is not a valid state file"
+  assert_all_has "some message"
+}
+
+test_the_host_check_is_called_with_no_state_argument() {
+  run_dpds --yes install
+  assert_rc 0 "$ERR"
+  local call; call="$(grep '^dpds-controller check' "$STUB_LOG" | head -1)"
+  [[ -n "$call" ]] || fail "the host check was not called"
+  ! grep -Eiq 'state|--state-dir|var/lib' <<<"$call" || fail "the check got a state argument: $call"
+  write_controller_stub "$DPDS_PREFIX/bin/dpds-controller"
+  : >"$STUB_LOG"
+  run_dpds check
+  call="$(grep '^dpds-controller check' "$STUB_LOG" | head -1)"
+  [[ -n "$call" ]] || fail "the standalone check did not call the controller"
+  ! grep -Eiq 'state|--state-dir|var/lib' <<<"$call" || fail "the standalone check got a state argument: $call"
+}
+
+test_the_script_has_no_state_dir_setting_or_state_step() {
+  local code; code="$(grep -v '^[[:space:]]*#' "$SRC_ROOT/dpds.sh")"
+  ! grep -Eq 'DPDS_STATE_DIR|DPDS_CONTROLLER_STATE_DIR|STATE_DIR' <<<"$code" || fail "dpds.sh still has a state dir setting: $(grep -En 'STATE_DIR' <<<"$code" | head -3)"
+  ! grep -Eiq 'state file|not a valid state|rc == 2|exit code 2' <<<"$code" || fail "dpds.sh still has the unloadable-state-file branch"
+  # the one place the old directory is named: the uninstall cleanup of a leftover
+  [[ "$(grep -c '/var/lib/dpds-controller' <<<"$code")" -ge 1 ]] || fail "uninstall must name /var/lib/dpds-controller (literally) to clean it up"
+}
+
+test_a_state_dir_variable_in_the_environment_changes_nothing() {
+  # not read, not validated (a bad value used to be refused), not created
+  local bad
+  for bad in "$T/ignored-state" "relative/state" "with space/state" ""; do
+    : >"$STUB_LOG"
+    rm -rf "$DPDS_PREFIX/bin/dpds-controller" "$DPDS_ETC_DIR" "$(installed_unit)"
+    DPDS_STATE_DIR="$bad" run_dpds --yes install
+    CTX="DPDS_STATE_DIR='$bad'" assert_rc 0 "$ERR"
+    CTX="DPDS_STATE_DIR='$bad'" assert_exec "$DPDS_PREFIX/bin/dpds-controller"
+    ! grep -qi 'STATE' "$DPDS_ETC_DIR/controller.env" || fail "the env file mentions state with DPDS_STATE_DIR='$bad'"
+  done
+  assert_no_file "$T/ignored-state"
+  assert_no_file "$T/relative"
+  assert_no_state_dir_anywhere
+}
+
+test_the_unit_file_has_no_state_directory() {
+  local u="$SRC_ROOT/packaging/dpds-controller.service"
+  ! grep -Eiq 'StateDirectory|RuntimeDirectory=.*state|/var/lib|STATE_DIR|state dir' "$u" || fail "the unit still names a state directory: $(grep -Ein 'StateDirectory|/var/lib|STATE_DIR|state dir' "$u")"
+  # the installed copy too
+  run_dpds --yes install
+  assert_rc 0 "$ERR"
+  ! grep -Eiq 'StateDirectory|/var/lib|STATE_DIR|state dir|legacy' "$(installed_unit)" || fail "the installed unit names a state directory"
+}
+
+test_install_leaves_an_existing_leftover_state_dir_alone() {
+  # only uninstall cleans it up; an install or update must not delete data it did not create
+  fake_legacy_state
+  run_dpds --yes install
+  assert_rc 0 "$ERR"
+  assert_file "$LEGACY_STATE_DIR/marker"
+  assert_file "$LEGACY_STATE_DIR/state.json"
 }
 
 # ------------------------------------------------------------------ runner

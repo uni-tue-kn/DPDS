@@ -90,7 +90,7 @@ pub fn links_file_json(links: &[Link], directions: &[DirectionPlan]) -> Result<V
         if let Some(d) = directions.iter().find(|d| d.link == l.name) {
             entry["lcore"] = json!(d.lcore);
         }
-        if !l.config.delay_stats {
+        if l.config.delay_stats == Some(false) {
             entry["delay_stats"] = json!(false);
         }
         if l.config.histogram.is_some() {

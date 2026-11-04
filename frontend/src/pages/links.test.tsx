@@ -2,8 +2,10 @@ import { screen, within, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { api, ApiError } from '../test/mockApi';
 import * as fx from '../test/fixtures';
-import { deferred, field, renderApp } from '../test/helpers';
+import { deferred, emptyDoc, field, rawStore, renderApp, seedLinks, seedStore, storedDoc, storedLinks } from '../test/helpers';
 
+// v22: the list comes from the local document (key dpds.config.v1); every test starts with one stored link, a-b (id 1), unless it
+// seeds its own. Deleting writes the document. Nothing is requested for links from the controller.
 // v16 (supersedes the v12 "PCI (netdev)" labels, see the v16 block of src/test/helpers.tsx): the Links list has the
 // columns Name | Interfaces | Delay | Reordering | Limiter | Loss | actions; an interface is shown by its netdev, the device name when it has none.
 const IFACES = 'enp101s0f0 → enp101s0f1';
@@ -12,6 +14,10 @@ const PLAIN_IFACES = '0000:65:00.0 → 0000:65:00.1';
 
 /** The `<tr>` of the link called `name` (the name cell's own text is exactly the name). */
 const rowOf = async (name: string) => (await screen.findByText(name)).closest('tr') as HTMLElement;
+
+beforeEach(() => {
+  seedLinks([fx.link()]);
+});
 
 describe('Links list', () => {
   it('has the columns Name, Interfaces, Delay, Reordering, Limiter and Loss plus one action column', async () => {
@@ -40,7 +46,7 @@ describe('Links list', () => {
   });
 
   it('lists one row per link: the name cell holds the name only, the interface cell "ingress → egress" by netdev', async () => {
-    api.getLinks.mockResolvedValue([fx.link(), fx.linkRev(), fx.loopLink()]);
+    seedLinks([fx.link(), fx.linkRev(), fx.loopLink()]);
     renderApp('/links');
     const row = await rowOf('a-b');
     expect(within(row).getAllByRole('cell')[0].textContent).toBe('a-b');
@@ -76,16 +82,26 @@ describe('Links list', () => {
   });
 
   it('shows an empty state without links', async () => {
-    api.getLinks.mockResolvedValue([]);
+    seedLinks([]);
     renderApp('/links');
     expect(await screen.findByText(/no links/i)).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /new link/i })).toBeInTheDocument();
   });
 
-  it('shows the API error if the list cannot be loaded', async () => {
-    api.getLinks.mockRejectedValue(new ApiError(500, 'state file is corrupt'));
+  it('with nothing stored the page shows the empty state and does not create a document', async () => {
+    localStorage.clear();
     renderApp('/links');
-    expect(await screen.findByRole('alert')).toHaveTextContent('state file is corrupt');
+    expect(await screen.findByText(/no links/i)).toBeInTheDocument();
+    expect(rawStore()).toBeNull();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('lists the links in the order they are stored', async () => {
+    seedLinks([fx.linkRev(), fx.link(), fx.loopLink()]);
+    renderApp('/links');
+    await screen.findByText('a-b');
+    const names = screen.getAllByRole('row').slice(1).map((r) => within(r).getAllByRole('cell')[0].textContent);
+    expect(names).toEqual(['b-a', 'a-b', 'loop']);
   });
 
   it('"New link" opens the empty editor', async () => {
@@ -100,11 +116,11 @@ describe('Links list', () => {
     renderApp('/links');
     await user.click(await screen.findByRole('link', { name: 'Edit a-b' }));
     expect(await screen.findByRole('heading', { level: 1, name: 'Edit link' })).toBeInTheDocument();
-    expect(api.getLink).toHaveBeenCalledWith(1);
+    expect(screen.getByLabelText('Name')).toHaveValue('a-b');
   });
 
   it('every row keeps its Edit link, Delete button and Inspect button, named per link', async () => {
-    api.getLinks.mockResolvedValue([fx.link(), fx.linkRev()]);
+    seedLinks([fx.link(), fx.linkRev()]);
     renderApp('/links');
     await screen.findByText('a-b');
     for (const n of ['a-b', 'b-a']) {
@@ -115,18 +131,12 @@ describe('Links list', () => {
     }
   });
 
-  it('shows the pending-restart notice only when the emulation says so', async () => {
-    api.getEmulation.mockResolvedValue(fx.emulation('running', { pending_restart: true }));
-    const view = renderApp('/links');
-    expect(await screen.findByTestId('pending-restart')).toHaveTextContent(/restart/i);
-    view.unmount();
-    api.getEmulation.mockClear();
-    api.getEmulation.mockResolvedValue(fx.emulation('running', { pending_restart: false }));
+  it('shows no pending-restart notice while nothing runs (the full comparison is in pendingRestart.test.tsx)', async () => {
     renderApp('/links');
     await screen.findByText('a-b');
     await waitFor(() => expect(api.getEmulation).toHaveBeenCalled());
-    await new Promise((r) => setTimeout(r, 50));
     expect(screen.queryByTestId('pending-restart')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('link-pending-restart')).not.toBeInTheDocument();
   });
 });
 
@@ -137,32 +147,45 @@ describe('Links delete', () => {
     await user.click(await screen.findByRole('button', { name: 'Delete a-b' }));
     const dialog = await screen.findByRole('dialog');
     expect(dialog).toHaveTextContent('a-b');
-    expect(api.deleteLink).not.toHaveBeenCalled();
+    expect(storedLinks().map((l) => l.id)).toEqual([1]);
     await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-    expect(api.deleteLink).not.toHaveBeenCalled();
+    expect(storedLinks().map((l) => l.id)).toEqual([1]);
+    expect(screen.getByText('a-b')).toBeInTheDocument();
   });
 
   it('Confirm deletes by id and reloads the list', async () => {
     const user = userEvent.setup();
-    api.getLinks.mockResolvedValueOnce([fx.link(), fx.loopLink()]).mockResolvedValue([fx.loopLink()]);
+    seedStore({ links: [fx.link(), fx.loopLink()], presets: [fx.preset({ id: 4 })], settings: fx.settings({ main_lcore: 2 }) });
     renderApp('/links');
     await user.click(await screen.findByRole('button', { name: 'Delete a-b' }));
     const dialog = await screen.findByRole('dialog');
     await user.click(within(dialog).getByRole('button', { name: 'Confirm delete' }));
-    expect(api.deleteLink).toHaveBeenCalledTimes(1);
-    expect(api.deleteLink).toHaveBeenCalledWith(1);
     await waitFor(() => expect(screen.queryByText('a-b')).not.toBeInTheDocument());
     expect(screen.getByText('loop')).toBeInTheDocument();
+    const doc = storedDoc();
+    expect(doc.links).toEqual([fx.loopLink()]);
+    expect(doc.presets.map((p) => p.id)).toEqual([4]);
+    expect(doc.settings.main_lcore).toBe(2);
   });
 
-  it('shows the API error when deleting fails', async () => {
+  it('deleting the last link leaves a valid document with no links and the empty state', async () => {
     const user = userEvent.setup();
-    api.deleteLink.mockRejectedValue(new ApiError(404, 'link 1 does not exist'));
     renderApp('/links');
     await user.click(await screen.findByRole('button', { name: 'Delete a-b' }));
     await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Confirm delete' }));
-    expect(await screen.findByText(/link 1 does not exist/)).toBeInTheDocument();
+    expect(await screen.findByText(/no links/i)).toBeInTheDocument();
+    expect(storedDoc()).toMatchObject({ version: 1, links: [] });
+  });
+
+  it('deleting the first of two links keeps the id of the other (ids are never renumbered)', async () => {
+    seedLinks([fx.link({ id: 1 }), fx.loopLink({ id: 2 })]);
+    const user = userEvent.setup();
+    renderApp('/links');
+    await user.click(await screen.findByRole('button', { name: 'Delete a-b' }));
+    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Confirm delete' }));
+    await waitFor(() => expect(screen.queryByText('a-b')).not.toBeInTheDocument());
+    expect(storedLinks().map((l) => l.id)).toEqual([2]);
   });
 });
 
@@ -170,7 +193,7 @@ describe('Links list: interfaces are shown by netdev, device name as fallback (v
   const cellText = async (name: string) => within(await rowOf(name)).getAllByRole('cell')[1].textContent;
 
   it('a hairpin on a real NIC shows the netdev twice', async () => {
-    api.getLinks.mockResolvedValue([fx.link({ id: 5, name: 'hair', ingress: '0000:65:00.1', egress: '0000:65:00.1' })]);
+    seedLinks([fx.link({ id: 5, name: 'hair', ingress: '0000:65:00.1', egress: '0000:65:00.1' })]);
     renderApp('/links');
     expect(await screen.findByText('enp101s0f1 → enp101s0f1')).toBeInTheDocument();
   });
@@ -191,7 +214,7 @@ describe('Links list: interfaces are shown by netdev, device name as fallback (v
   });
 
   it('a vdev next to a NIC: only the NIC is shown by netdev', async () => {
-    api.getLinks.mockResolvedValue([fx.link({ id: 6, name: 'mix', ingress: 'net_null0', egress: '0000:65:00.0' })]);
+    seedLinks([fx.link({ id: 6, name: 'mix', ingress: 'net_null0', egress: '0000:65:00.0' })]);
     renderApp('/links');
     expect(await screen.findByText('net_null0 → enp101s0f0')).toBeInTheDocument();
   });
@@ -213,12 +236,6 @@ describe('Links list: interfaces are shown by netdev, device name as fallback (v
     expect(screen.getByRole('button', { name: 'Inspect a-b' })).toBeInTheDocument();
   });
 
-  it('a failing getLinks still shows its own error (the interfaces fallback does not swallow it)', async () => {
-    api.getLinks.mockRejectedValue(new ApiError(500, 'state file is corrupt'));
-    renderApp('/links');
-    expect(await screen.findByRole('alert')).toHaveTextContent('state file is corrupt');
-  });
-
   it('a slow interface list does not delay the rows: they show plain names first, then the netdevs', async () => {
     const d = deferred<ReturnType<typeof fx.interfaces>>();
     api.getInterfaces.mockReturnValue(d.promise);
@@ -232,7 +249,7 @@ describe('Links list: interfaces are shown by netdev, device name as fallback (v
 
   it('asks for the interfaces once per page load, also after a delete reloads the list', async () => {
     const user = userEvent.setup();
-    api.getLinks.mockResolvedValueOnce([fx.link(), fx.loopLink()]).mockResolvedValue([fx.loopLink()]);
+    seedLinks([fx.link(), fx.loopLink()]);
     renderApp('/links');
     await screen.findByText(IFACES);
     expect(api.getInterfaces).toHaveBeenCalledTimes(1);
@@ -253,7 +270,7 @@ describe('Links list: interfaces are shown by netdev, device name as fallback (v
 //     <dt>/<dd> pairs. Values: numbers plain, "<number> <unit>" for unit fields (editor display rule), on/off as "on"/"off".
 describe('Links: inspect panel (v16)', () => {
   async function inspect(name: string, links = [fx.link(), fx.linkRev(), fx.loopLink()]) {
-    api.getLinks.mockResolvedValue(links);
+    seedLinks(links);
     const user = userEvent.setup();
     renderApp('/links');
     await screen.findByText(name);
@@ -273,7 +290,7 @@ describe('Links: inspect panel (v16)', () => {
     ['UniformDistribution', 'Uniform'],
   ] as const)('%s is shown as "%s" in the panel, the same word the list uses', async (distribution, short) => {
     const base = fx.config();
-    const link = fx.link({ config: { ...base, delayer: { ...base.delayer, distribution } } });
+    const link = fx.link({ config: { ...base, delayer: { ...base.delayer!, distribution } } });
     const { dialog } = await inspect('a-b', [link]);
     const shown = field(group(dialog, 'Delayer'), 'Delay distribution').textContent?.trim();
     expect(shown).toBe(short);
@@ -308,7 +325,7 @@ describe('Links: inspect panel (v16)', () => {
     expect(field(dialog, 'Egress')).toHaveTextContent('enp101s0f1');
     expect(field(dialog, 'Egress')).toHaveTextContent('0000:65:00.1');
     expect(field(dialog, 'Worker lcore').textContent?.trim()).toBe('7');
-    for (const g of ['Buffer', 'Delayer', 'Limiter', 'Dropper', 'Statistics']) {
+    for (const g of ['Buffer', 'Delayer', 'Dropper', 'Statistics']) { // fx.link() has no limiter
       expect(group(dialog, g)).not.toContainElement(field(dialog, 'Worker lcore'));
       expect(group(dialog, g)).not.toContainElement(field(dialog, 'Ingress'));
     }
@@ -333,8 +350,8 @@ describe('Links: inspect panel (v16)', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
-  it('has exactly the five subsections of the editor, in its order', async () => {
-    const { dialog } = await inspect('a-b');
+  it('has exactly the five subsections of the editor, in its order, when all three stages are added', async () => {
+    const { dialog } = await inspect('b-a');
     expect(within(dialog).getAllByRole('group')).toHaveLength(5);
     const names = ['Buffer', 'Delayer', 'Limiter', 'Dropper', 'Statistics'];
     for (let i = 0; i + 1 < names.length; i += 1) {
@@ -345,7 +362,38 @@ describe('Links: inspect panel (v16)', () => {
     expect(within(dialog).getAllByRole('button', { name: 'Close' })).toHaveLength(1);
   });
 
-  it('default-ish config: delayer in readable units, everything inactive shown as off', async () => {
+  it('v22: only added stages get a group (a-b has no limiter): the missing one reads "Limiter: not added", Buffer and Statistics always show', async () => {
+    const { dialog } = await inspect('a-b');
+    expect(within(dialog).getAllByRole('group').map((g) => g.getAttribute('aria-label'))).toEqual(['Buffer', 'Delayer', 'Dropper', 'Statistics']);
+    expect(within(dialog).queryByRole('group', { name: 'Limiter' })).not.toBeInTheDocument();
+    expect(within(dialog).getAllByText('Limiter: not added')).toHaveLength(1);
+    expect(within(dialog).queryByText('Delayer: not added')).not.toBeInTheDocument();
+    expect(within(dialog).queryByText('Dropper: not added')).not.toBeInTheDocument();
+  });
+
+  it('v22: a config with no stage at all shows only Buffer and Statistics plus the three "not added" lines, in the stage order', async () => {
+    const { dialog } = await inspect('a-b', [fx.link({ config: fx.configBare() })]);
+    expect(within(dialog).getAllByRole('group').map((g) => g.getAttribute('aria-label'))).toEqual(['Buffer', 'Statistics']);
+    const lines = ['Delayer: not added', 'Limiter: not added', 'Dropper: not added'].map((t) => within(dialog).getByText(t));
+    for (const l of lines) {
+      expect(l.textContent).toBe(l.textContent?.trim());
+      expect(l.closest('dt, dd, [role="group"]')).toBeNull(); // plain text outside any subsection
+    }
+    expect(lines[0].compareDocumentPosition(lines[1]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(lines[1].compareDocumentPosition(lines[2]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('v22: a stage that is absent (key missing) reads like a null one', async () => {
+    const config = { ...fx.config2() } as Partial<ReturnType<typeof fx.config2>>;
+    delete config.delayer;
+    delete config.loss_model;
+    const { dialog } = await inspect('a-b', [fx.link({ config: config as ReturnType<typeof fx.config2> })]);
+    expect(within(dialog).getByText('Delayer: not added')).toBeInTheDocument();
+    expect(within(dialog).getByText('Dropper: not added')).toBeInTheDocument();
+    expect(within(dialog).getByRole('group', { name: 'Limiter' })).toBeInTheDocument();
+  });
+
+  it('default-ish config: delayer in readable units, no limiter', async () => {
     const { dialog } = await inspect('a-b');
     const buffer = group(dialog, 'Buffer');
     expect(dts(buffer)).toEqual(['Buffer capacity', 'Reordering', 'Seed']);
@@ -361,10 +409,6 @@ describe('Links: inspect panel (v16)', () => {
     expect(field(delayer, 'Correlation').textContent?.trim()).toBe('off');
     expect(field(delayer, 'Initialization rate').textContent?.trim()).toBe('12.5 Mpps');
 
-    const limiter = group(dialog, 'Limiter');
-    expect(dts(limiter)).toEqual(['Limiter']);
-    expect(field(limiter, 'Limiter').textContent?.trim()).toBe('off');
-
     const dropper = group(dialog, 'Dropper');
     expect(dts(dropper)).toEqual(['Loss model', 'Random loss probability']);
     expect(field(dropper, 'Loss model').textContent?.trim()).toBe('Random');
@@ -376,7 +420,7 @@ describe('Links: inspect panel (v16)', () => {
     for (const l of ['Histogram bins', 'Histogram lo', 'Histogram hi']) expect(field(stats, l).textContent?.trim()).toBe('automatic');
   });
 
-  it('everything on: correlation with half-life, limiter with mode, rate and limit, Gilbert-Elliot, seed, reordering', async () => {
+  it('everything on: correlation with half-life, limiter with mode and rate, Gilbert-Elliot, seed, reordering', async () => {
     const { dialog } = await inspect('b-a');
     const buffer = group(dialog, 'Buffer');
     expect(field(buffer, 'Buffer capacity').textContent?.trim()).toBe('5000');
@@ -395,8 +439,7 @@ describe('Links: inspect panel (v16)', () => {
     expect(field(delayer, 'Initialization rate').textContent?.trim()).toBe('8 Mpps');
 
     const limiter = group(dialog, 'Limiter');
-    expect(dts(limiter)).toEqual(['Limiter', 'Limiter mode', 'Rate']); // spec20: no burst limit
-    expect(field(limiter, 'Limiter').textContent?.trim()).toBe('on');
+    expect(dts(limiter)).toEqual(['Limiter mode', 'Rate']); // spec20: no burst limit; v22: no on/off item, present = active
     expect(field(limiter, 'Limiter mode').textContent?.trim()).toBe('TokenBucketFilter');
     expect(field(limiter, 'Rate').textContent?.trim()).toBe('40 Gbit/s');
 
@@ -459,14 +502,12 @@ describe('Links: inspect panel (v16)', () => {
     expect(edit).toHaveAttribute('href', '/links/3');
     await user.click(edit);
     expect(await screen.findByRole('heading', { level: 1, name: 'Edit link' })).toBeInTheDocument();
-    expect(api.getLink).toHaveBeenCalledWith(3);
+    expect(screen.getByLabelText('Name')).toHaveValue('b-a');
   });
 
-  it('inspecting changes nothing: no save, no delete, no extra interface request', async () => {
-    await inspect('a-b');
-    expect(api.updateLink).not.toHaveBeenCalled();
-    expect(api.createLink).not.toHaveBeenCalled();
-    expect(api.deleteLink).not.toHaveBeenCalled();
+  it('inspecting changes nothing: the stored document is untouched, no extra interface request', async () => {
+    await inspect('a-b'); // seeds the three default links, then opens the panel
+    expect(rawStore()).toBe(JSON.stringify({ ...emptyDoc(), links: [fx.link(), fx.linkRev(), fx.loopLink()] }));
     expect(api.getInterfaces).toHaveBeenCalledTimes(1);
   });
 
@@ -478,7 +519,7 @@ describe('Links: inspect panel (v16)', () => {
     const confirm = await screen.findByRole('dialog');
     expect(confirm).toHaveTextContent('a-b');
     await user.click(within(confirm).getByRole('button', { name: 'Confirm delete' }));
-    expect(api.deleteLink).toHaveBeenCalledWith(1);
+    await waitFor(() => expect(storedLinks().map((l) => l.id)).not.toContain(1));
   });
 });
 
@@ -502,12 +543,14 @@ describe('Links list: Delay, Reordering, Limiter and Loss columns (v16)', () => 
   const withConfig = (over: Parameters<typeof fx.config>[0] = {}, d: object = {}, l: object = {}) => {
     const base = fx.config();
     return fx.link({
-      config: { ...base, ...over, delayer: { ...base.delayer, ...d }, limiter: { ...base.limiter, ...l } },
+      config: {
+        ...base, ...over, delayer: { ...base.delayer!, ...d }, limiter: { mode: 'Spacer' as const, rate_bps: 1e9, ...l },
+      },
     });
   };
 
   it('the three fixture configs read exactly (default-ish, everything on with Gilbert-Elliot, LogNormal with Spacer)', async () => {
-    api.getLinks.mockResolvedValue([fx.link(), fx.linkRev(), fx.link({ id: 4, name: 'c3', config: fx.config3() })]);
+    seedLinks([fx.link(), fx.linkRev(), fx.link({ id: 4, name: 'c3', config: fx.config3() })]);
     renderApp('/links');
     await screen.findByText('a-b');
     const cells = async (n: string) => [await cellOf(n, DELAY), await cellOf(n, REORDER), await cellOf(n, LIMITER), await cellOf(n, LOSS)];
@@ -535,7 +578,7 @@ describe('Links list: Delay, Reordering, Limiter and Loss columns (v16)', () => 
     ['GammaDistribution', 'Gamma 10 ms / 1 ms'],
     ['UniformDistribution', 'Uniform 10 ms / 1 ms'],
   ] as const)('%s reads "%s" (the deterministic one shows the mean only, even with a std stored)', async (distribution, text) => {
-    api.getLinks.mockResolvedValue([withConfig({}, { distribution, mean_ns: 10000000, std_ns: 1000000 })]);
+    seedLinks([withConfig({}, { distribution, mean_ns: 10000000, std_ns: 1000000 })]);
     renderApp('/links');
     expect(await cellOf('a-b', DELAY)).toBe(text);
   });
@@ -547,13 +590,13 @@ describe('Links list: Delay, Reordering, Limiter and Loss columns (v16)', () => 
     [1500000000, 1234567, `Normal 1.5 s / 1234.567 ${MU}`],
     [999, 1001, `Normal 999 ns / 1.001 ${MU}`],
   ])('mean %d ns and std %d ns read "%s" (each in its own unit)', async (mean_ns, std_ns, text) => {
-    api.getLinks.mockResolvedValue([withConfig({}, { mean_ns, std_ns })]);
+    seedLinks([withConfig({}, { mean_ns, std_ns })]);
     renderApp('/links');
     expect(await cellOf('a-b', DELAY)).toBe(text);
   });
 
   it.each([[true, '+'], [false, MINUS]])('reordering %s reads "%s"', async (reordering, text) => {
-    api.getLinks.mockResolvedValue([withConfig({ reordering })]);
+    seedLinks([withConfig({ reordering })]);
     renderApp('/links');
     expect(await cellOf('a-b', REORDER)).toBe(text);
   });
@@ -564,29 +607,51 @@ describe('Links list: Delay, Reordering, Limiter and Loss columns (v16)', () => 
   });
 
   it.each([
-    ['Spacer', true, 10000000000, 'spacing 10 Gbit/s'],
-    ['TokenBucketFilter', true, 10000000000, 'policing 10 Gbit/s'],
-    ['Spacer', true, 1500, 'spacing 1.5 kbit/s'],
-    ['TokenBucketFilter', true, 2500000, 'policing 2.5 Mbit/s'],
-    ['Spacer', true, 999, 'spacing 999 bit/s'],
-    ['Spacer', false, 10000000000, 'none'],
-    ['TokenBucketFilter', false, 40000000000, 'none'],
-  ] as const)('limiter %s active=%s rate %d reads "%s"', async (mode, activate, rate_bps, text) => {
-    api.getLinks.mockResolvedValue([withConfig({}, {}, { mode, activate, rate_bps })]);
+    ['Spacer', 10000000000, 'spacing 10 Gbit/s'],
+    ['TokenBucketFilter', 10000000000, 'policing 10 Gbit/s'],
+    ['Spacer', 1500, 'spacing 1.5 kbit/s'],
+    ['TokenBucketFilter', 2500000, 'policing 2.5 Mbit/s'],
+    ['Spacer', 999, 'spacing 999 bit/s'],
+  ] as const)('limiter %s rate %d reads "%s"', async (mode, rate_bps, text) => {
+    seedLinks([withConfig({}, {}, { mode, rate_bps })]);
     renderApp('/links');
     expect(await cellOf('a-b', LIMITER)).toBe(text);
   });
 
   it.each([
+    ['delayer', DELAY], ['limiter', LIMITER], ['loss_model', LOSS],
+  ] as const)('v22: a missing %s (null or absent) reads "none" in its column and leaves the others alone', async (stage, idx) => {
+    for (const how of ['null', 'absent'] as const) {
+      const config = { ...fx.config2() } as Record<string, unknown>;
+      if (how === 'null') config[stage] = null;
+      else delete config[stage];
+      seedLinks([fx.link({ config: config as unknown as ReturnType<typeof fx.config2> })]);
+      const view = renderApp('/links');
+      expect(await cellOf('a-b', idx)).toBe('none');
+      for (const other of [DELAY, REORDER, LIMITER, LOSS].filter((x) => x !== idx)) {
+        expect(await cellOf('a-b', other)).not.toBe('none');
+      }
+      view.unmount();
+    }
+  });
+
+  it('v22: a link with no stage reads "none" three times and still its reordering sign', async () => {
+    seedLinks([fx.link({ config: fx.configBare({ reordering: true }) })]);
+    renderApp('/links');
+    expect([await cellOf('a-b', DELAY), await cellOf('a-b', REORDER), await cellOf('a-b', LIMITER), await cellOf('a-b', LOSS)])
+      .toEqual(['none', '+', 'none', 'none']);
+  });
+
+  it.each([
     [0.07, 'Random p=0.07'], [0.29, 'Random p=0.29'], [0.57, 'Random p=0.57'], [0.001, 'Random p=0.001'], [0, 'Random p=0'], [1, 'Random p=1'],
   ])('Random loss %s reads "%s" (no float noise)', async (p, text) => {
-    api.getLinks.mockResolvedValue([withConfig({ loss_model: { type: 'Random', p } })]);
+    seedLinks([withConfig({ loss_model: { type: 'Random', p } })]);
     renderApp('/links');
     expect(await cellOf('a-b', LOSS)).toBe(text);
   });
 
   it('Gilbert-Elliott loss lists p, r, h, k in this order, whatever the stored key order', async () => {
-    api.getLinks.mockResolvedValue([
+    seedLinks([
       withConfig({ loss_model: { type: 'GilbertElliot', k: 0.5, h: 0.25, r: 0.125, p: 0.0625, state_is_good: false } }),
     ]);
     renderApp('/links');
@@ -594,7 +659,7 @@ describe('Links list: Delay, Reordering, Limiter and Loss columns (v16)', () => 
   });
 
   it('the cells carry no separators, brackets, parentheses, PCI addresses or worker text', async () => {
-    api.getLinks.mockResolvedValue([fx.linkRev({ worker: 3 })]);
+    seedLinks([fx.linkRev({ worker: 3 })]);
     renderApp('/links');
     for (const idx of [DELAY, REORDER, LIMITER, LOSS]) {
       const text = await cellOf('b-a', idx);
@@ -604,7 +669,7 @@ describe('Links list: Delay, Reordering, Limiter and Loss columns (v16)', () => 
   });
 
   it('each row has its own cells', async () => {
-    api.getLinks.mockResolvedValue([fx.link(), fx.linkRev(), fx.loopLink()]);
+    seedLinks([fx.link(), fx.linkRev(), fx.loopLink()]);
     renderApp('/links');
     const a = [await cellOf('a-b', DELAY), await cellOf('a-b', LOSS)];
     const b = [await cellOf('b-a', DELAY), await cellOf('b-a', LOSS)];
@@ -627,6 +692,6 @@ describe('Links list: Delay, Reordering, Limiter and Loss columns (v16)', () => 
     await screen.findByText('a-b');
     await user.click(screen.getByRole('button', { name: 'Inspect a-b' }));
     const dialog = await screen.findByRole('dialog', { name: 'a-b' });
-    expect(within(dialog).getAllByRole('group')).toHaveLength(5);
+    expect(within(dialog).getAllByRole('group').length).toBeGreaterThanOrEqual(4);
   });
 });

@@ -299,9 +299,9 @@ fn a_burst_larger_than_the_derived_depth_is_dropped_by_the_token_bucket() {
 
 #[test]
 fn the_limit_is_computed_without_overflow_for_large_capacities() {
-    // 400_000 * 12336 = 4.87e9 bit does not fit a u32 (and 1e6, the capacity of
-    // the shipped config.json, gives 1.2e10): a u32 computation panics in a debug
-    // build (as the tests are) and must not wrap.
+    // 400_000 * 12336 = 4.87e9 bit does not fit a u32 (and 1e6, a capacity real
+    // configs use, gives 1.2e10): a u32 computation panics in a debug build (as
+    // the tests are) and must not wrap.
     for mode in MODES {
         for capacity in [400_000usize, 1_000_000] {
             let mut b = Buffer::new(config(capacity, mode, 1e9, false));

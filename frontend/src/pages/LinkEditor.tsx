@@ -6,6 +6,7 @@ import * as api from '../api/client';
 import ErrorAlert from '../components/ErrorAlert';
 import { errorMessage } from '../common/format';
 import { useLoad } from '../common/useLoad';
+import { saveLink, useLocalConfig } from '../common/localConfig';
 import ConfigFieldset, { RequiredMarker, RequiredNote } from './ConfigFieldset';
 import SavePresetModal from './SavePresetModal';
 import { configToDto, configToForm, defaultConfigForm, parseWorker, portError } from './linkForm';
@@ -49,8 +50,8 @@ function PortField({ name, id, value, interfaces, users, onChange }: {
   );
 }
 
-function Editor({ id, link, interfaces, others, presets, onPresetSaved }: {
-  id?: number; link?: Link; interfaces: Interface[]; others: Link[]; presets: Preset[]; onPresetSaved: () => void;
+function Editor({ id, link, interfaces, others, presets }: {
+  id?: number; link?: Link; interfaces: Interface[]; others: Link[]; presets: Preset[];
 }) {
   const navigate = useNavigate();
   const [name, setName] = useState(link?.name ?? '');
@@ -59,7 +60,6 @@ function Editor({ id, link, interfaces, others, presets, onPresetSaved }: {
   const [config, setConfig] = useState<ConfigForm>(() => (link ? configToForm(link.config) : defaultConfigForm()));
   const [worker, setWorker] = useState(link?.worker == null ? '' : String(link.worker));
   const [error, setError] = useState<string>();
-  const [saving, setSaving] = useState(false);
   const [presetOpen, setPresetOpen] = useState(false);
   const [presetSaved, setPresetSaved] = useState<string>();
 
@@ -71,13 +71,13 @@ function Editor({ id, link, interfaces, others, presets, onPresetSaved }: {
     egressUsers.set(l.egress, l.name);
   }
 
-  const submit = async (ev: FormEvent) => {
+  const submit = (ev: FormEvent) => {
     ev.preventDefault();
-    if (saving) return;
     setError(undefined);
     let input;
     try {
       if (name.trim() === '') throw new Error('Name is required');
+      if (others.some((l) => l.name === name.trim())) throw new Error(`A link named "${name.trim()}" already exists`);
       const ports = [['Ingress', ingress], ['Egress', egress]];
       for (const [role, port] of ports) {
         if (port === '') throw new Error(`Select an ${role.toLowerCase()} port`);
@@ -91,14 +91,11 @@ function Editor({ id, link, interfaces, others, presets, onPresetSaved }: {
       setError(errorMessage(e));
       return;
     }
-    setSaving(true);
     try {
-      if (id === undefined) await api.createLink(input);
-      else await api.updateLink(id, input);
+      saveLink(input, id);
       navigate('/links');
     } catch (e) {
       setError(errorMessage(e));
-      setSaving(false);
     }
   };
 
@@ -140,7 +137,7 @@ function Editor({ id, link, interfaces, others, presets, onPresetSaved }: {
           title="Link configuration" value={config} onChange={setConfig} presets={presets}
           onSaveAsPreset={() => { setPresetSaved(undefined); setPresetOpen(true); }}
         />
-        <Button type="submit" variant="primary" className="me-2" disabled={saving}>Save</Button>
+        <Button type="submit" variant="primary" className="me-2">Save</Button>
         <RouterLink to="/links" className="btn btn-outline-secondary">Cancel</RouterLink>
       </Form>
       {/* Outside the <Form>: React submit events bubble through portals and would submit the link. */}
@@ -151,7 +148,6 @@ function Editor({ id, link, interfaces, others, presets, onPresetSaved }: {
           onSaved={(p) => {
             setPresetOpen(false);
             setPresetSaved(`Preset "${p.name}" saved.`);
-            onPresetSaved();
           }}
         />
       )}
@@ -163,22 +159,19 @@ export default function LinkEditor() {
   const { id } = useParams();
   const linkId = id === undefined ? undefined : Number(id);
   const interfaces = useLoad(api.getInterfaces);
-  // The editor works without presets: a failed load just leaves the "Apply preset" selects empty.
-  const presets = useLoad(api.getPresets);
-  // Only used to disable ports other links hold: the editor works without it, the controller answers 409 anyway.
-  const links = useLoad(api.getLinks);
-  const link = useLoad(() => (linkId === undefined ? Promise.resolve(undefined) : api.getLink(linkId)));
-  const ready = interfaces.data !== undefined && (links.data !== undefined || links.error !== undefined) && (linkId === undefined || link.data !== undefined);
+  const { doc, corrupt } = useLocalConfig();
+  const link = linkId === undefined ? undefined : doc.links.find((l) => l.id === linkId);
+  const missing = linkId !== undefined && link === undefined && !corrupt;
+  const ready = interfaces.data !== undefined && !missing && (linkId === undefined || link !== undefined);
 
   return (
     <>
       <h1 className="mb-3">{linkId === undefined ? 'New link' : 'Edit link'}</h1>
-      <ErrorAlert message={interfaces.error ?? link.error} />
+      <ErrorAlert message={interfaces.error ?? (missing ? `Link ${id} not found` : undefined)} />
       {ready && (
         <Editor
-          key={linkId ?? 'new'} id={linkId} link={link.data} interfaces={interfaces.data ?? []}
-          others={(links.data ?? []).filter((l) => l.id !== linkId)}
-          presets={presets.data ?? []} onPresetSaved={presets.reload}
+          key={linkId ?? 'new'} id={linkId} link={link} interfaces={interfaces.data ?? []}
+          others={doc.links.filter((l) => l.id !== linkId)} presets={doc.presets}
         />
       )}
     </>

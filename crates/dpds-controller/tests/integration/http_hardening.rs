@@ -4,10 +4,10 @@
 //!   `access-control-*` header, also not on a preflight. `--cors-origin <origin>`
 //!   (repeatable, env `DPDS_CORS_ORIGIN`) enables it for exactly those origins:
 //!   the header echoes the request's origin if it is listed, never `*`, nothing otherwise.
-//! - Every mutating endpoint that reads a body (POST /api/links, PUT /api/links/{id},
-//!   PUT /api/settings, POST /api/emulation/start|stop) requires `Content-Type:
-//!   application/json` (axum's `Json` semantics: `; charset=...` and `+json` are fine):
-//!   415 `{"message"}` otherwise, before anything else is looked at, state untouched.
+//! - Every POST (POST /api/emulation/start|validate|stop and POST /api/host/hints; spec 22 removed
+//!   the other mutating routes) requires `Content-Type: application/json` (axum's `Json`
+//!   semantics: `; charset=...` and `+json` are fine): 415 `{"message"}` otherwise, before
+//!   anything else is looked at, nothing started.
 //! - A body over the size limit is 413 with a `{"message"}` JSON body (the tests use
 //!   8 MiB).
 //! - OpenAPI documents the error responses where they occur.
@@ -47,11 +47,11 @@ async fn cors_is_off_by_default_for_requests_and_preflights() {
     let r = a
         .request_with(
             "OPTIONS",
-            "/api/links/1",
+            "/api/emulation/start",
             None,
             &[
                 ("origin", "http://example.com"),
-                ("access-control-request-method", "PUT"),
+                ("access-control-request-method", "POST"),
             ],
         )
         .await;
@@ -94,8 +94,8 @@ fn only_the_configured_origins_get_cors_headers_flag_form() {
     }
     // a preflight from a listed origin allows the mutating methods
     let req = format!(
-        "OPTIONS /api/links/1 HTTP/1.1\r\nHost: {}\r\nOrigin: http://ui.example:8080\r\n\
-         Access-Control-Request-Method: PUT\r\nAccess-Control-Request-Headers: content-type\r\n\
+        "OPTIONS /api/emulation/start HTTP/1.1\r\nHost: {}\r\nOrigin: http://ui.example:8080\r\n\
+         Access-Control-Request-Method: POST\r\nAccess-Control-Request-Headers: content-type\r\n\
          Connection: close\r\n\r\n",
         c.addr
     );
@@ -149,40 +149,21 @@ fn the_served_binary_has_no_cors_without_the_option() {
 
 // ---- 415 -------------------------------------------------------------------
 
-fn valid_settings() -> Value {
-    json!({"main_lcore": 1, "eal_extra_args": [],
-           "poll_interval_ms": 250})
-}
-
-/// `(method, path, valid JSON body)` of every mutating endpoint with a body; `link_id`
-/// is an existing link.
-fn mutating(link_id: u64) -> Vec<(&'static str, String, Value)> {
+/// `(method, path, valid JSON body)` of every endpoint that reads a body.
+fn mutating() -> Vec<(&'static str, String, Value)> {
+    let body = setup(vec![link("new", "net_null5", "net_null5", None)]).body();
     vec![
-        (
-            "POST",
-            "/api/links".into(),
-            link_body("new", "net_null5", "net_null5"),
-        ),
-        (
-            "PUT",
-            format!("/api/links/{link_id}"),
-            link_body("renamed", "net_null0", "net_null0"),
-        ),
-        ("PUT", "/api/settings".into(), valid_settings()),
-        ("POST", "/api/emulation/start".into(), json!({})),
+        ("POST", "/api/emulation/start".into(), body.clone()),
+        ("POST", "/api/emulation/validate".into(), body.clone()),
+        ("POST", "/api/host/hints".into(), body),
         ("POST", "/api/emulation/stop".into(), json!({})),
     ]
 }
 
 #[tokio::test]
-async fn a_non_json_content_type_is_a_415_with_a_message_on_every_mutating_endpoint() {
+async fn a_non_json_content_type_is_a_415_with_a_message_on_every_post_endpoint() {
     let a = app();
-    let id = a.create_link("l", "net_null0", "net_null0").await.json()["id"]
-        .as_u64()
-        .unwrap();
-    let before_links = a.get("/api/links").await.json();
-    let before_settings = a.get("/api/settings").await.json();
-    for (method, path, body) in mutating(id) {
+    for (method, path, body) in mutating() {
         for ct in [
             Some("text/plain"),
             Some("application/x-www-form-urlencoded"),
@@ -198,10 +179,9 @@ async fn a_non_json_content_type_is_a_415_with_a_message_on_every_mutating_endpo
         }
     }
     // nothing happened
-    assert_eq!(a.get("/api/links").await.json(), before_links);
-    assert_eq!(a.get("/api/settings").await.json(), before_settings);
     assert!(a.supervisor.plans().is_empty());
     assert_eq!(a.supervisor.stops(), 0);
+    assert_eq!(a.get("/api/emulation").await.json()["state"], "stopped");
 }
 
 #[tokio::test]
@@ -219,6 +199,21 @@ async fn the_content_type_is_checked_before_the_state_of_the_emulation() {
     assert_eq!(r.status, 415);
     let r = a.post("/api/emulation/stop", json!({})).await;
     assert_eq!(r.status, 409);
+    // a start while running with the wrong content type is a 415 too, not a 409
+    a.start_ok(vec![link("l", "net_null0", "net_null0", None)])
+        .await;
+    let r = a
+        .request_raw(
+            "POST",
+            "/api/emulation/start",
+            Some("text/plain"),
+            setup(vec![link("l", "net_null0", "net_null0", None)])
+                .body()
+                .to_string()
+                .into_bytes(),
+        )
+        .await;
+    assert_eq!(r.status, 415, "{}", r.text());
 }
 
 #[tokio::test]
@@ -230,26 +225,18 @@ async fn json_content_types_with_parameters_and_suffixes_are_accepted() {
         "application/merge-patch+json",
     ] {
         let a = app();
+        let body = setup(vec![link("x", "net_null0", "net_null0", None)])
+            .body()
+            .to_string()
+            .into_bytes();
         let r = a
-            .request_raw(
-                "PUT",
-                "/api/settings",
-                Some(ct),
-                valid_settings().to_string().into_bytes(),
-            )
+            .request_raw("POST", "/api/emulation/validate", Some(ct), body.clone())
             .await;
         assert_eq!(r.status, 200, "{ct}: {}", r.text());
         let r = a
-            .request_raw(
-                "POST",
-                "/api/links",
-                Some(ct),
-                link_body("x", "net_null0", "net_null0")
-                    .to_string()
-                    .into_bytes(),
-            )
+            .request_raw("POST", "/api/emulation/start", Some(ct), body)
             .await;
-        assert_eq!(r.status, 201, "{ct}: {}", r.text());
+        assert_eq!(r.status, 202, "{ct}: {}", r.text());
     }
 }
 
@@ -259,14 +246,14 @@ async fn json_content_types_with_parameters_and_suffixes_are_accepted() {
 async fn an_oversized_body_is_a_413_with_a_json_message() {
     let a = app();
     let big = format!(r#"{{"name":"{}"}}"#, "a".repeat(8 * 1024 * 1024));
-    for (method, path) in [
-        ("POST", "/api/links"),
-        ("PUT", "/api/settings"),
-        ("PUT", "/api/links/1"),
+    for path in [
+        "/api/emulation/start",
+        "/api/emulation/validate",
+        "/api/host/hints",
     ] {
         let r = a
             .request_raw(
-                method,
+                "POST",
                 path,
                 Some("application/json"),
                 big.clone().into_bytes(),
@@ -275,15 +262,17 @@ async fn an_oversized_body_is_a_413_with_a_json_message() {
         assert_eq!(
             r.status,
             413,
-            "{method} {path}: {}",
+            "POST {path}: {}",
             &r.text()[..r.text().len().min(200)]
         );
         r.message();
     }
     // the service still works afterwards
     assert_eq!(
-        a.create_link("fine", "net_null0", "net_null0").await.status,
-        201
+        a.start_links(vec![link("fine", "net_null0", "net_null0", None)])
+            .await
+            .status,
+        202
     );
 }
 
@@ -296,23 +285,16 @@ async fn openapi_documents_the_error_responses_where_they_occur() {
     // (path, method, status codes that must be documented)
     let expect: &[(&str, &str, &[&str])] = &[
         (
-            "/api/links",
-            "post",
-            &["201", "400", "409", "413", "415", "500"],
-        ),
-        ("/api/links/{id}", "get", &["200", "404"]),
-        (
-            "/api/links/{id}",
-            "put",
-            &["200", "400", "404", "409", "413", "415", "500"],
-        ),
-        ("/api/links/{id}", "delete", &["204", "404", "500"]),
-        ("/api/settings", "put", &["200", "400", "413", "415", "500"]),
-        (
             "/api/emulation/start",
             "post",
-            &["202", "400", "409", "415"],
+            &["202", "400", "409", "413", "415"],
         ),
+        (
+            "/api/emulation/validate",
+            "post",
+            &["200", "400", "409", "413", "415"],
+        ),
+        ("/api/host/hints", "post", &["200", "400", "413", "415"]),
         ("/api/emulation/stop", "post", &["202", "409", "415"]),
         ("/api/stats/{dir}/delay_histogram", "get", &["200", "404"]),
     ];
@@ -326,6 +308,6 @@ async fn openapi_documents_the_error_responses_where_they_occur() {
         }
     }
     // the error responses carry the ErrorBody schema
-    let r = &v["paths"]["/api/links"]["post"]["responses"]["415"];
+    let r = &v["paths"]["/api/emulation/start"]["post"]["responses"]["415"];
     assert!(r.to_string().contains("ErrorBody"), "{r}");
 }

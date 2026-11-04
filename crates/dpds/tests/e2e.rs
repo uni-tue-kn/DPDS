@@ -2363,12 +2363,25 @@ fn default_config_path_is_config_json_in_the_working_directory() {
 // README: the "Without hardware" examples run as written
 // ---------------------------------------------------------------------------
 
-/// The `./target/release/dpds ...` commands of the first fenced block under
-/// "### Without hardware" in README.md, backslash continuations joined,
-/// split on whitespace (the examples use no quoting).
-fn readme_without_hardware_commands() -> Vec<Vec<String>> {
+/// One step of the first fenced block under "### Without hardware" in README.md.
+#[derive(Debug)]
+enum ReadmeStep {
+    /// `cat > <path> <<'EOF' ... EOF` (or `cat <<'EOF' > <path>`): the README writes a file.
+    Write { path: String, body: String },
+    /// A command, backslash continuations joined, split on whitespace (the examples use no
+    /// quoting).
+    Run(Vec<String>),
+}
+
+/// The steps of the block. Spec 22: DPDS ships no default config, so the examples write theirs
+/// inline (a heredoc into a temporary file) and the dpds commands name that file.
+fn readme_without_hardware_steps() -> Vec<ReadmeStep> {
     let readme = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../README.md"))
         .expect("README.md");
+    parse_without_hardware_steps(&readme)
+}
+
+fn parse_without_hardware_steps(readme: &str) -> Vec<ReadmeStep> {
     let section = readme
         .split("### Without hardware")
         .nth(1)
@@ -2377,32 +2390,86 @@ fn readme_without_hardware_commands() -> Vec<Vec<String>> {
         .split("```")
         .nth(1)
         .expect("a fenced block in that section");
-    let mut commands = Vec::new();
+    let mut steps = Vec::new();
     let mut cur = String::new();
-    for line in block.lines().skip(1) {
-        // skip(1): the info string (```bash)
-        let line = line.trim();
+    // skip(1): the info string (```bash)
+    let mut lines = block.lines().skip(1);
+    while let Some(raw) = lines.next() {
+        let line = raw.trim();
         if cur.is_empty() && (line.is_empty() || line.starts_with('#')) {
             continue;
         }
         if let Some(head) = line.strip_suffix('\\') {
             cur.push_str(head);
             cur.push(' ');
-        } else {
-            cur.push_str(line);
-            commands.push(
-                std::mem::take(&mut cur)
-                    .split_whitespace()
-                    .map(String::from)
-                    .collect(),
-            );
+            continue;
+        }
+        cur.push_str(line);
+        let words: Vec<String> = std::mem::take(&mut cur)
+            .split_whitespace()
+            .map(String::from)
+            .collect();
+        match words.iter().position(|w| w.starts_with("<<")) {
+            Some(i) => {
+                let delim = words[i]
+                    .trim_start_matches("<<")
+                    .trim_start_matches('-')
+                    .trim_matches(|c| c == '\'' || c == '"')
+                    .to_string();
+                let path = words
+                    .iter()
+                    .position(|w| w == ">")
+                    .and_then(|j| words.get(j + 1))
+                    .unwrap_or_else(|| panic!("heredoc without `> <path>`: {words:?}"))
+                    .clone();
+                let mut body = String::new();
+                for l in lines.by_ref() {
+                    if l.trim() == delim {
+                        break;
+                    }
+                    body.push_str(l);
+                    body.push('\n');
+                }
+                steps.push(ReadmeStep::Write { path, body });
+            }
+            None => steps.push(ReadmeStep::Run(words)),
         }
     }
     assert!(
         cur.is_empty(),
         "dangling line continuation in the README block"
     );
-    commands
+    steps
+}
+
+#[test]
+fn the_readme_block_parser_reads_heredocs_commands_and_continuations() {
+    let md = "x\n### Without hardware (virtual devices)\n\n```bash\n# a comment\n\
+cat > /tmp/a.json <<'EOF'\n{\"buffer_capacity\": 4096}\nEOF\n\
+cat <<EOF > /tmp/b.json\n{}\nEOF\n\
+./target/release/dpds --in-memory \\\n    --vdev=net_null0 -- --config /tmp/a.json\n```\nmore\n";
+    let steps = parse_without_hardware_steps(md);
+    assert_eq!(steps.len(), 3, "{steps:?}");
+    match &steps[0] {
+        ReadmeStep::Write { path, body } => {
+            assert_eq!(path, "/tmp/a.json");
+            assert_eq!(body, "{\"buffer_capacity\": 4096}\n");
+        }
+        other => panic!("{other:?}"),
+    }
+    match &steps[1] {
+        ReadmeStep::Write { path, body } => {
+            assert_eq!((path.as_str(), body.as_str()), ("/tmp/b.json", "{}\n"));
+        }
+        other => panic!("{other:?}"),
+    }
+    match &steps[2] {
+        ReadmeStep::Run(w) => assert_eq!(
+            w.join(" "),
+            "./target/release/dpds --in-memory --vdev=net_null0 -- --config /tmp/a.json"
+        ),
+        other => panic!("{other:?}"),
+    }
 }
 
 /// The EAL `--file-prefix` of a command (`--file-prefix x` or
@@ -2434,7 +2501,44 @@ fn the_file_prefix_of_a_command_is_parsed_with_dpdks_default() {
 fn the_readme_without_hardware_examples_start_cleanly_and_stop_with_sigint() {
     require_cpus(2);
     let _g = serial();
-    let commands = readme_without_hardware_commands();
+    let steps = readme_without_hardware_steps();
+    // the config files the block writes, in a scratch working directory that holds nothing else
+    // but them and the input pcap the example names: no file of the repository is needed
+    let cwd = tempfile::tempdir().unwrap();
+    let mut written: Vec<(String, PathBuf)> = Vec::new();
+    let mut commands: Vec<Vec<String>> = Vec::new();
+    for step in &steps {
+        match step {
+            ReadmeStep::Write { path, body } => {
+                let name = Path::new(path)
+                    .file_name()
+                    .expect("the heredoc names a file")
+                    .to_owned();
+                let real = cwd.path().join(name);
+                fs::write(&real, body).unwrap();
+                written.push((path.clone(), real));
+            }
+            ReadmeStep::Run(words) => {
+                if words[0] == "./target/release/dpds" {
+                    commands.push(
+                        words
+                            .iter()
+                            .map(|w| {
+                                // the temporary file of the README is this test's copy
+                                written.iter().fold(w.clone(), |a, (orig, real)| {
+                                    a.replace(orig, &real.display().to_string())
+                                })
+                            })
+                            .collect(),
+                    );
+                }
+            }
+        }
+    }
+    assert!(
+        !written.is_empty(),
+        "the block must write its config inline (heredoc): {steps:?}"
+    );
     assert!(
         commands.len() >= 2,
         "expected the net_null and the net_pcap example, found {commands:?}"
@@ -2450,16 +2554,15 @@ fn the_readme_without_hardware_examples_start_cleanly_and_stop_with_sigint() {
             eal.iter().any(|a| a == "--in-memory"),
             "README example lacks --in-memory: {cmd:?}"
         );
-        // A scratch working directory that looks like a checkout root (the
-        // top-level files, e.g. config.json and any config.vdev.json, are
-        // symlinked) and holds the input pcap the example names.
-        let cwd = tempfile::tempdir().unwrap();
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        for entry in fs::read_dir(&root).unwrap().flatten() {
-            let path = entry.path();
-            if path.is_file() {
-                std::os::unix::fs::symlink(&path, cwd.path().join(entry.file_name())).unwrap();
-            }
+        // every --config names a file this block wrote
+        for w in cmd.windows(2).filter(|w| w[0] == "--config") {
+            assert!(
+                written
+                    .iter()
+                    .any(|(_, real)| real.display().to_string() == w[1]),
+                "--config {} is not written by the README block: {cmd:?}",
+                w[1]
+            );
         }
         for arg in &cmd {
             for part in arg.split(',') {

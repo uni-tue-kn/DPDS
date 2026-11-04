@@ -11,7 +11,7 @@ use dpds_controller::api::{self, Deps};
 use dpds_controller::frontend::Frontend;
 use dpds_controller::hints::{compute_hints, Level};
 use dpds_controller::host::HostRoots;
-use dpds_controller::store;
+use dpds_controller::model::RunConfig;
 use dpds_controller::supervisor::ProcessSupervisor;
 use dpds_controller::telemetry::{socket_path, Poller};
 
@@ -42,13 +42,6 @@ enum Command {
 
 #[derive(Args, Clone)]
 struct HostArgs {
-    /// Directory of the stored links and settings.
-    #[arg(
-        long,
-        env = "DPDS_CONTROLLER_STATE_DIR",
-        default_value = "/var/lib/dpds-controller"
-    )]
-    state_dir: PathBuf,
     #[arg(long, env = "DPDS_CONTROLLER_SYSFS_ROOT", default_value = "/sys")]
     sysfs_root: PathBuf,
     #[arg(long, env = "DPDS_CONTROLLER_PROCFS_ROOT", default_value = "/proc")]
@@ -121,8 +114,7 @@ fn main() -> ExitCode {
 }
 
 fn check(a: &CheckArgs) -> Result<ExitCode, String> {
-    let state = store::load(&a.host.state_dir).map_err(|e| e.to_string())?;
-    let hints = compute_hints(&a.host.roots(), &state);
+    let hints = compute_hints(&a.host.roots(), &RunConfig::default());
     if a.json {
         println!(
             "{}",
@@ -188,11 +180,7 @@ fn serve(a: ServeArgs) -> Result<ExitCode, String> {
         .map(|o| cors_origin(o))
         .collect::<Result<Vec<_>, _>>()?;
     let supervisor = Arc::new(ProcessSupervisor::new(START_TIMEOUT));
-    let telemetry = Poller::spawn(
-        a.host.state_dir.clone(),
-        a.runtime_dir.clone(),
-        supervisor.clone(),
-    );
+    let telemetry = Poller::spawn(a.runtime_dir.clone(), supervisor.clone());
     let dpds_has_telemetry = has_telemetry(&a.dpds_bin);
     if !dpds_has_telemetry {
         eprintln!(
@@ -203,7 +191,6 @@ fn serve(a: ServeArgs) -> Result<ExitCode, String> {
     let frontend = Frontend::embedded();
     let router = api::router_with(
         Deps {
-            state_dir: a.host.state_dir.clone(),
             roots: a.host.roots(),
             supervisor: supervisor.clone(),
             telemetry,
@@ -214,8 +201,7 @@ fn serve(a: ServeArgs) -> Result<ExitCode, String> {
             is_root: unsafe { libc::geteuid() } == 0,
         },
         frontend.clone(),
-    )
-    .map_err(|e| e.to_string())?;
+    );
     let router = api::with_host_guard(router, &a.allowed_host);
     let router = if origins.is_empty() {
         router

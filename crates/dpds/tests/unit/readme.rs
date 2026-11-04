@@ -140,42 +140,133 @@ fn the_hand_run_example_says_that_txq_mpw_en_is_for_mlx5_ports_only() {
     );
 }
 
+// ---- spec 22: the controller is stateless, DPDS ships no default config -------------------------
+//
+// The old update note about an invalid `state.json` (edit the key it names, or move the file away
+// and lose the links and presets) is gone with the state file: nothing is stored on disk, a
+// controller always starts, and the configuration lives in the browser's localStorage.
+
 #[test]
-fn the_update_notes_explain_an_invalid_state_file_and_how_to_fix_it() {
-    // A format change can make an old `state.json` unusable (the controller then refuses to start). The README says so in
-    // one paragraph of the controller section, with both remedies: edit the file to remove the key it names, or move it
-    // away and start empty (which loses the links and presets).
+fn the_readme_no_longer_documents_a_stored_state_or_the_stored_config_routes() {
     let text = readme();
-    let controller = text
-        .split("\n## ")
-        // the section whose heading line is the title; the table of contents links to it as `[..](#..)`
-        .find(|s| {
-            let heading = s.lines().next().unwrap_or("");
-            heading.contains("Controller and web frontend") && !heading.contains("](")
-        })
-        .expect("controller section");
-    let paragraph = controller
-        .split("\n\n")
-        .map(str::to_lowercase)
-        .find(|p| p.contains("state.json") && p.contains("invalid"))
-        .unwrap_or_else(|| {
-            panic!("no paragraph of the controller section mentions state.json becoming invalid")
-        });
+    for gone in [
+        "state.json",
+        "--state-dir",
+        "DPDS_CONTROLLER_STATE_DIR",
+        "DPDS_STATE_DIR",
+        "/api/links",
+        "/api/presets",
+        "/api/settings",
+        "/api/export",
+        "/api/import",
+        "pending_restart",
+        "Stored state",
+    ] {
+        assert!(
+            !text.contains(gone),
+            "the README still mentions `{gone}` (spec 22: no stored state, no stored-config routes)"
+        );
+    }
+    // the old state directory may be named only where `uninstall` is said to clean it up
+    for p in paragraphs(&text) {
+        if p.contains("/var/lib/dpds-controller") {
+            assert!(
+                p.to_lowercase().contains("uninstall"),
+                "`/var/lib/dpds-controller` is only mentioned as something uninstall removes: {p}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_controller_section_says_the_configuration_lives_in_the_browser() {
+    let text = readme();
+    let controller = controller_section(&text);
+    let says = paragraphs(&controller).into_iter().any(|p| {
+        let p = p.to_lowercase();
+        (p.contains("localstorage") || p.contains("local storage")) && p.contains("browser")
+    });
     assert!(
-        paragraph.contains("update"),
-        "the paragraph belongs to the update notes: {paragraph}"
+        says,
+        "a paragraph of the controller section must say that links, presets and settings are kept \
+         in the browser's localStorage (the controller stores nothing)"
+    );
+    // the start carries the whole configuration
+    let flat = controller.to_lowercase();
+    assert!(
+        flat.contains("/api/emulation/start"),
+        "the controller section documents the start route that carries the configuration"
+    );
+}
+
+#[test]
+fn the_readme_ships_and_references_no_default_config_files() {
+    let text = readme();
+    assert!(
+        !text.contains("config.vdev.json"),
+        "config.vdev.json was deleted; the examples write their config inline"
+    );
+    // the repository layout no longer lists a default config
+    for l in text.lines() {
+        assert!(
+            !l.trim_start().starts_with("config.json "),
+            "the repository layout still lists config.json: {l}"
+        );
+    }
+    assert!(
+        !text.contains("`config.json` in this repository"),
+        "there is no config.json in the repository any more"
+    );
+}
+
+#[test]
+fn the_without_hardware_examples_write_their_config_inline() {
+    let text = readme();
+    let section = text
+        .split("### Without hardware")
+        .nth(1)
+        .expect("a 'Without hardware' section");
+    let block = section.split("```").nth(1).expect("a fenced block");
+    // a heredoc writes the config to a temporary file that the dpds commands then name
+    assert!(
+        block.contains("<<") && block.lines().any(|l| l.trim() == "EOF"),
+        "the block must write its config with a heredoc: {block}"
+    );
+    let configs: Vec<String> = block
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .windows(2)
+        .filter(|w| w[0] == "--config")
+        .map(|w| w[1].to_string())
+        .collect();
+    assert!(configs.len() >= 2, "both examples pass --config: {block}");
+    for c in configs {
+        assert!(
+            c.starts_with("/tmp/") || c.starts_with("$"),
+            "the examples read a config they wrote to a temporary file, not a repository file: {c}"
+        );
+        assert!(
+            block.contains(&format!("> {c}")) || block.contains(&format!(">{c}")),
+            "{c} is written by the block itself"
+        );
+    }
+    // and the config it writes is a complete one: it parses as a dpds-core config
+    let body: String = block
+        .lines()
+        .skip_while(|l| !l.contains("<<"))
+        .skip(1)
+        .take_while(|l| l.trim() != "EOF")
+        .collect::<Vec<_>>()
+        .join("\n");
+    let v: serde_json::Value =
+        serde_json::from_str(&body).unwrap_or_else(|e| panic!("heredoc is not JSON ({e}): {body}"));
+    assert_eq!(
+        v["buffer_capacity"], 4096,
+        "small enough for `-m 256`: {body}"
     );
     assert!(
-        paragraph.contains("remove"),
-        "it says to remove the offending key: {paragraph}"
-    );
-    assert!(
-        paragraph.contains("move"),
-        "it says to move the file away: {paragraph}"
-    );
-    assert!(
-        paragraph.contains("links") && paragraph.contains("presets"),
-        "it says what moving the file away loses: {paragraph}"
+        v["delayer"]["initialization_rate_pps"].is_number(),
+        "initialization_rate_pps is required: {body}"
     );
 }
 

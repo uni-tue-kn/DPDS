@@ -20,8 +20,10 @@
 //!   in the underflow. `expected_model` is `"exact"` or, with `activate_correlation`,
 //!   `"normal_approximation"` (Normal(mean, std)). With an active limiter
 //!   `expected_note == "excludes limiter queueing delay"`, otherwise it is absent or null.
-//! - Direction `d` uses the config of the link with index `d`: link `a-to-b` (stored first) is
-//!   direction 0, link `b-to-a` (stored second) is direction 1, the two links the fake telemetry names.
+//! - Direction `d` uses the config of the link with index `d` of the body the emulation was
+//!   started with: link `a-to-b` (first) is direction 0, link `b-to-a` (second) is direction 1,
+//!   the two links the fake telemetry names. A missing delayer stage is a Deterministic delay of
+//!   0 ns (spec 22, optional stages), a missing limiter adds no note.
 //!
 //! Every expected number below was computed with Python's `math` (erf for Normal and
 //! LogNormal, the closed-form Erlang CDF for Gamma with integer shape, the linear CDF for
@@ -33,12 +35,20 @@ use serde_json::{json, Value};
 
 pub const TOTAL: u64 = 10_000;
 
+/// A controller whose emulation was started with the links `a-to-b` (direction 0, config `c0`)
+/// and `b-to-a` (direction 1, config `c1`): the expected counts follow the configuration the
+/// emulation was started with (spec 22: the controller has no other configuration).
 pub fn app_with(c0: Value, c1: Value) -> TestApp {
-    let mut a = TestApp::new(FakeHost::bare_metal());
-    let l0 = link_cfg(1, "a-to-b", NIC0, NIC1, c0);
-    let l1 = link_cfg(2, "b-to-a", NIC1, NIC0, c1);
-    dpds_controller::store::save(a.state_dir.path(), &state_with(vec![l0, l1])).unwrap();
-    a.restart();
+    let a = TestApp::new(FakeHost::bare_metal());
+    let body = setup(vec![
+        link_cfg("a-to-b", NIC0, NIC1, c0),
+        link_cfg("b-to-a", NIC1, NIC0, c1),
+    ])
+    .body();
+    let router = a.router.clone();
+    let r =
+        block_on(async move { call(&router, "POST", "/api/emulation/start", Some(body)).await });
+    assert_eq!(r.status, 202, "{}", r.text());
     a
 }
 
@@ -792,16 +802,17 @@ async fn the_model_is_per_direction() {
     assert_eq!(get_hist(&a, 1).await["expected_model"], "exact");
 }
 
-fn limited(mode: &str, activate: bool) -> Value {
+/// A limiter stage of `mode` (present = active).
+fn limited(mode: &str) -> Value {
     let mut c = cfg("NormalDistribution", 1000.0, 200.0);
-    c["limiter"] = json!({"mode": mode, "activate": activate, "rate_bps": 1.0e9});
+    c["limiter"] = json!({"mode": mode, "rate_bps": 1.0e9});
     c
 }
 
 #[tokio::test]
 async fn an_active_limiter_adds_the_note() {
     for mode in ["Spacer", "TokenBucketFilter"] {
-        let v = expected_for(limited(mode, true), hist_total(600.0, 100.0, 8, TOTAL)).await;
+        let v = expected_for(limited(mode), hist_total(600.0, 100.0, 8, TOTAL)).await;
         assert_eq!(
             v["expected_note"], "excludes limiter queueing delay",
             "{mode}: {v}"
@@ -813,14 +824,41 @@ async fn an_active_limiter_adds_the_note() {
 }
 
 #[tokio::test]
-async fn a_configured_but_inactive_limiter_adds_no_note() {
-    let v = expected_for(limited("Spacer", false), hist_total(600.0, 100.0, 8, TOTAL)).await;
+async fn a_config_without_a_limiter_adds_no_note() {
+    let v = expected_for(
+        cfg("NormalDistribution", 1000.0, 200.0),
+        hist_total(600.0, 100.0, 8, TOTAL),
+    )
+    .await;
+    assert!(absent(&v, "expected_note"), "{v}");
+    // an explicit null is the same as no stage
+    let mut c = cfg("NormalDistribution", 1000.0, 200.0);
+    c["limiter"] = json!(null);
+    let v = expected_for(c, hist_total(600.0, 100.0, 8, TOTAL)).await;
     assert!(absent(&v, "expected_note"), "{v}");
 }
 
 #[tokio::test]
+async fn a_config_without_a_delayer_expects_every_sample_at_zero_delay() {
+    // the missing delayer is Deterministic 0 ns: all expected mass sits in the bin of 0
+    for c in [cfg_bare(), {
+        let mut c = cfg_bare();
+        c["delayer"] = json!(null);
+        c
+    }] {
+        let v = expected_for(c, hist_total(0.0, 500.0, 8, TOTAL)).await;
+        let mut want = [0.0; 8];
+        want[0] = TOTAL as f64;
+        check_expected(&v, &want, 0.0, 0.0, "exact");
+    }
+    // above a range that starts at 500 ns it is all underflow
+    let v = expected_for(cfg_bare(), hist_total(500.0, 500.0, 8, TOTAL)).await;
+    check_expected(&v, &[0.0; 8], TOTAL as f64, 0.0, "exact");
+}
+
+#[tokio::test]
 async fn the_note_and_the_model_can_come_together() {
-    let mut c = limited("Spacer", true);
+    let mut c = limited("Spacer");
     c["delayer"]["activate_correlation"] = json!(true);
     let v = expected_for(c, hist_total(600.0, 100.0, 8, TOTAL)).await;
     assert_eq!(v["expected_note"], "excludes limiter queueing delay");
@@ -829,7 +867,7 @@ async fn the_note_and_the_model_can_come_together() {
 
 #[tokio::test]
 async fn the_note_is_per_direction() {
-    let a = app_with(limited("Spacer", true), limited("Spacer", false));
+    let a = app_with(limited("Spacer"), cfg("NormalDistribution", 1000.0, 200.0));
     a.telemetry.set(
         None,
         snap(

@@ -21,7 +21,6 @@
 #   DPDS_CHANNEL      release channel, latest or nightly                (default latest)
 #   DPDS_PREFIX       install prefix, binaries go to $DPDS_PREFIX/bin   (default /usr/local)
 #   DPDS_ETC_DIR      config dir, holds controller.env                   (default /etc/dpds)
-#   DPDS_STATE_DIR    controller state dir                               (default /var/lib/dpds-controller)
 #   DPDS_SYSTEMD_DIR  where the unit file is installed                   (default /etc/systemd/system)
 #   DPDS_BIND         bind address written into a NEW controller.env     (default 0.0.0.0:8100)
 #   CARGO_TARGET_DIR  cargo target dir the build output is read from     (default <repo>/target)
@@ -43,7 +42,6 @@ REPO_ROOT="$(cd -P -- "$(dirname -- "$SCRIPT_SOURCE")" && pwd)"
 
 PREFIX="${DPDS_PREFIX:-/usr/local}"
 ETC_DIR="${DPDS_ETC_DIR:-/etc/dpds}"
-STATE_DIR="${DPDS_STATE_DIR:-/var/lib/dpds-controller}"
 SYSTEMD_DIR="${DPDS_SYSTEMD_DIR:-/etc/systemd/system}"
 BIND="${DPDS_BIND:-0.0.0.0:8100}"
 # The controller is built with the frontend this script builds, never with one from the caller's
@@ -102,7 +100,7 @@ sed_escape() {
 
 validate_settings() {
   local name value
-  for name in PREFIX ETC_DIR STATE_DIR SYSTEMD_DIR; do
+  for name in PREFIX ETC_DIR SYSTEMD_DIR; do
     value="${!name}"
     if [[ "$value" != /* || "$value" =~ [[:space:]] ]]; then
       error "Path must be absolute and contain no whitespace: $name=$value"
@@ -356,7 +354,6 @@ install_env_file() {
     echo "# Written by dpds.sh install. Never overwritten; edit freely, then restart the service."
     echo "DPDS_CONTROLLER_BIND=$BIND"
     echo "DPDS_CONTROLLER_DPDS_BIN=$BIN_DIR/dpds"
-    echo "DPDS_CONTROLLER_STATE_DIR=$STATE_DIR"
   } | run_privileged tee "$ENV_FILE" >/dev/null
 }
 
@@ -369,18 +366,10 @@ install_flow() {
 
   local release_dir="$TARGET_DIR/release" rc=0
   run_host_check "$release_dir/dpds-controller" || rc=$?
-  if (( rc == 2 )); then
-    # Exit code 2: the controller could not load its state file (its message is shown above).
-    error "The controller will not start with this state (dpds-controller check exit code 2, see its message above)."
-    if (( ! ASSUME_YES )); then
-      error "Fix the state file as the message says, then run this again. Nothing was installed."
-      exit 1
-    fi
-    warn "Continuing anyway because of --yes."
-  elif (( rc != 0 )); then
+  if (( rc != 0 )); then
     warn "Host check reported problems (exit code $rc). They are hints about performance, not blockers."
   fi
-  if (( ! ASSUME_YES && rc != 2 )); then
+  if (( ! ASSUME_YES )); then
     confirm "Continue with the installation?"
   fi
 
@@ -391,7 +380,6 @@ install_flow() {
   info "Installing $UNIT_DEST"
   install_unit
   install_env_file
-  run_privileged install -d -m 0755 "$STATE_DIR"
   run_privileged systemctl daemon-reload
   info "Installed. Start it with: $0 start"
 }
@@ -550,7 +538,13 @@ cmd_uninstall() {
   info "Removing binaries and unit"
   run_privileged rm -f "$BIN_DIR/dpds" "$BIN_DIR/dpds-controller" "$UNIT_DEST"
   run_privileged systemctl daemon-reload || warn "systemctl daemon-reload failed."
-  info "Kept $STATE_DIR and $ENV_FILE; remove them by hand if you do not need them."
+  # An older version kept the controller's configuration here; nothing reads it any more.
+  local leftover=/var/lib/dpds-controller
+  if [[ -e "$leftover" ]]; then
+    info "Removing $leftover, left behind by an older version"
+    run_privileged rm -rf -- "$leftover"
+  fi
+  info "Kept $ENV_FILE; remove it by hand if you do not need it."
 }
 
 usage() {
@@ -571,7 +565,7 @@ usage() {
   echo "  stop         Disable and stop the controller service"
   echo "  restart      Stop, then start"
   echo "  status       Show service and API status"
-  echo "  uninstall    Stop and remove binaries and unit (state dir and controller.env are kept)"
+  echo "  uninstall    Stop and remove binaries and unit (controller.env is kept)"
 }
 
 main() {
