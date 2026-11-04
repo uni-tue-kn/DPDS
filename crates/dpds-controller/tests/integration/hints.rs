@@ -1,4 +1,5 @@
-//! Read-only host hints (B6) on fake trees. Spec 22: `GET /api/host/hints` gives the host-only
+//! Host hints (B6) on fake trees (spec 33: some suggest root commands, see `host_commands.rs`; none
+//! changes the host). Spec 22: `GET /api/host/hints` gives the host-only
 //! hints, `POST /api/host/hints` with a start body adds the link-dependent ones for that
 //! configuration; the tests use `hints_json(host, setup)` (GET without links, POST with).
 
@@ -41,13 +42,16 @@ fn fully_tuned_bare_metal_host_has_no_warning() {
         "hugepages",
         "numa",
         "governor",
-        "irqbalance",
+        "irq_affinity",
         "iommu",
         "mtu",
-        "pcie_maxreadreq",
+        "swappiness",
+        "zone_reclaim_mode",
+        "rcu_nocb_poll",
     ] {
         assert_level(&h, id, "ok", "ok");
     }
+    assert_level(&h, &nic_id("pcie_maxreadreq", NIC0), "ok", "ok");
     assert!(
         h.as_array()
             .unwrap()
@@ -230,19 +234,17 @@ fn governor_missing_in_a_vm_is_ok_or_info() {
     assert_level(&h, "governor", "ok", "info");
 }
 
-// ---- irqbalance ----------------------------------------------------------
+// ---- irq affinity (spec 32: replaces the irqbalance hint; see `host_commands.rs`) ----------
 
 #[test]
-fn irqbalance_running_is_flagged() {
+fn the_irqbalance_hint_is_gone_a_running_irqbalance_is_no_hint_of_its_own() {
     let host = FakeHost::bare_metal();
-    assert_level(&hints_json(&host, &setup(vec![])), "irqbalance", "ok", "ok");
     host.processes(&[(812, "irqbalance")]);
-    assert_level(
-        &hints_json(&host, &setup(vec![])),
-        "irqbalance",
-        "info",
-        "warn",
-    );
+    for st in [setup(vec![]), one_link_nic0()] {
+        let h = hints_json(&host, &st);
+        assert!(!ids(&h).contains(&"irqbalance".to_string()), "{h}");
+        let _ = hint(&h, "irq_affinity");
+    }
 }
 
 // ---- IOMMU ---------------------------------------------------------------
@@ -307,20 +309,21 @@ fn mtu_of_an_egress_only_and_of_an_ingress_only_nic_counts() {
 fn maxreadreq_decoded_from_the_config_space_of_used_nics() {
     let host = FakeHost::bare_metal();
     let st = one_link_nic0();
-    assert_level(&hints_json(&host, &st), "pcie_maxreadreq", "ok", "ok"); // 4096
+    let id = nic_id("pcie_maxreadreq", NIC0);
+    assert_level(&hints_json(&host, &st), &id, "ok", "ok"); // 4096
 
     host.write_bytes(
         &format!("sys/bus/pci/devices/{NIC0}/config"),
         &config_space(512),
     );
-    assert_level(&hints_json(&host, &st), "pcie_maxreadreq", "warn", "warn");
+    assert_level(&hints_json(&host, &st), &id, "warn", "warn");
 
     for bytes in [1024, 2048] {
         host.write_bytes(
             &format!("sys/bus/pci/devices/{NIC0}/config"),
             &config_space(bytes),
         );
-        assert_level(&hints_json(&host, &st), "pcie_maxreadreq", "info", "info");
+        assert_level(&hints_json(&host, &st), &id, "info", "info");
     }
 }
 
@@ -328,12 +331,13 @@ fn maxreadreq_decoded_from_the_config_space_of_used_nics() {
 fn maxreadreq_only_looks_at_used_nics() {
     // INTEL has 512 in the fixture but the link uses NIC0 (4096)
     let h = hints_json(&FakeHost::bare_metal(), &one_link_nic0());
-    assert_level(&h, "pcie_maxreadreq", "ok", "ok");
+    assert_level(&h, &nic_id("pcie_maxreadreq", NIC0), "ok", "ok");
+    assert!(!ids(&h).contains(&nic_id("pcie_maxreadreq", INTEL)), "{h}");
     let h = hints_json(
         &FakeHost::bare_metal(),
         &setup(vec![link("l", INTEL, INTEL, None)]),
     );
-    assert_level(&h, "pcie_maxreadreq", "warn", "warn");
+    assert_level(&h, &nic_id("pcie_maxreadreq", INTEL), "warn", "warn");
 }
 
 #[test]
@@ -344,7 +348,8 @@ fn maxreadreq_looks_at_both_the_ingress_and_the_egress_nic() {
         link("out", NIC0, INTEL, None),
     ] {
         let h = hints_json(&FakeHost::bare_metal(), &setup(vec![l]));
-        assert_level(&h, "pcie_maxreadreq", "warn", "warn");
+        assert_level(&h, &nic_id("pcie_maxreadreq", INTEL), "warn", "warn");
+        assert_level(&h, &nic_id("pcie_maxreadreq", NIC0), "ok", "ok");
     }
 }
 
@@ -379,7 +384,7 @@ fn unreadable_config_space_is_info_not_a_failure() {
     host.remove(&format!("sys/bus/pci/devices/{NIC0}/config"));
     assert_level(
         &hints_json(&host, &one_link_nic0()),
-        "pcie_maxreadreq",
+        &nic_id("pcie_maxreadreq", NIC0),
         "info",
         "info",
     );
@@ -390,7 +395,7 @@ fn unreadable_config_space_is_info_not_a_failure() {
     );
     assert_level(
         &hints_json(&host, &one_link_nic0()),
-        "pcie_maxreadreq",
+        &nic_id("pcie_maxreadreq", NIC0),
         "info",
         "info",
     );
@@ -402,7 +407,12 @@ fn vm_has_no_readable_pcie_state() {
         &FakeHost::vm(),
         &setup(vec![link("l", "0000:00:05.0", "0000:00:05.0", None)]),
     );
-    assert_level(&h, "pcie_maxreadreq", "info", "info");
+    assert_level(
+        &h,
+        &nic_id("pcie_maxreadreq", "0000:00:05.0"),
+        "info",
+        "info",
+    );
 }
 
 // ---- bare host -----------------------------------------------------------
@@ -418,7 +428,16 @@ fn host_without_isolation_and_hugepages_reports_errors() {
 
 // ---- spec 22: GET is host-only, POST takes the configuration -----------------------------
 
-const HOST_ONLY_IDS: [&str; 4] = ["isolation", "governor", "irqbalance", "hugepages"];
+const HOST_ONLY_IDS: [&str; 8] = [
+    "isolation",
+    "governor",
+    "irq_affinity",
+    "hugepages",
+    "swappiness",
+    "zone_reclaim_mode",
+    "rcu_nocb_poll",
+    "boot_hugepages",
+];
 
 fn ids(h: &Value) -> Vec<String> {
     h.as_array()
@@ -474,11 +493,15 @@ async fn post_hints_add_the_link_dependent_ones_for_the_body() {
     for id in ids(&host_only) {
         let _ = hint(&h, &id);
     }
-    assert_level(&h, "pcie_maxreadreq", "warn", "warn");
+    assert_level(&h, &nic_id("pcie_maxreadreq", INTEL), "warn", "warn");
     // the same host, another body, another answer: the body is the only input
     let body = setup(vec![link("l", NIC0, NIC0, None)]).body();
     let h2 = a.post("/api/host/hints", body).await.json();
-    assert_level(&h2, "pcie_maxreadreq", "ok", "ok");
+    assert_level(&h2, &nic_id("pcie_maxreadreq", NIC0), "ok", "ok");
+    assert!(
+        !ids(&h2).contains(&nic_id("pcie_maxreadreq", INTEL)),
+        "{h2}"
+    );
 }
 
 #[tokio::test]

@@ -19,7 +19,7 @@ pub fn port_name(name: &str) -> Result<String, String> {
 }
 
 /// `dddd:bb:dd.f` with hex digits and a function of 0 to 7.
-fn is_pci(s: &str) -> bool {
+pub fn is_pci(s: &str) -> bool {
     let b = s.as_bytes();
     b.len() == 12
         && b.iter().enumerate().all(|(i, c)| match i {

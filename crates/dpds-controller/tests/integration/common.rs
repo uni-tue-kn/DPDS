@@ -54,10 +54,14 @@
 //! - `POST /api/emulation/validate`: same body and same errors as start (but no state check,
 //!   no telemetry-build check, nothing spawned); 200 `{"main_lcore": n, "directions":
 //!   [{dir, link, rx, tx, lcore}]}`.
-//! - `GET /api/host/hints`: host-only hints (ids `isolation`, `governor`, `irqbalance`,
+//! - `GET /api/host/hints`: host-only hints (ids `isolation`, `governor`, `irq_affinity`,
 //!   `hugepages` once each). `POST /api/host/hints` with a StartRequest body: the same plus the
 //!   link-dependent hints for that configuration (ids of `HINT_IDS`, `uplink`,
-//!   `drain_timeout`); an empty `links` list is allowed and gives the host-only hints.
+//!   `drain_timeout`, and the per-NIC ids of [`nic_id`]); an empty `links` list is allowed and
+//!   gives the host-only hints.
+//!   Spec 33: a hint may have `commands: [string]` (omitted when empty), the exact root shell
+//!   commands an administrator would run; no hint has an `action`; there is no
+//!   `POST /api/host/actions/*` (404). See the header of `host_commands.rs`.
 //! - Removed, so 404 (path unknown) or 405 (path known, method not): `/api/links*`,
 //!   `/api/presets*`, `/api/settings`, `/api/export`, `/api/import`.
 //!
@@ -84,7 +88,7 @@ use tempfile::TempDir;
 
 use dpds_controller::api::{self, Deps};
 use dpds_controller::dto::ConfigDto;
-use dpds_controller::host::{HostRoots, IfAddrs};
+use dpds_controller::host::{CommandOutput, Exec, HostRoots, IfAddrs};
 use dpds_controller::model::Link;
 use dpds_controller::stats::{Polled, Snapshot};
 use dpds_controller::supervisor::{LaunchPlan, State, Supervisor, SupervisorStatus};
@@ -141,6 +145,9 @@ pub struct FakeHost {
     /// What `getifaddrs` returns on this host, in order (see [`FakeHost::addr`]). Tests never
     /// read the addresses of the machine they run on: `roots()` always carries `IfAddrs::Fixed`.
     ifaddrs: Mutex<Vec<(String, IpAddr)>>,
+    /// Spec 33: the fake command runner of this host's `roots()`. It runs no tool until a test
+    /// registers one, and it only accepts read-only queries (see [`FakeExec`]).
+    exec: Arc<FakeExec>,
 }
 
 impl FakeHost {
@@ -148,6 +155,7 @@ impl FakeHost {
         let h = FakeHost {
             tmp: tempfile::tempdir().unwrap(),
             ifaddrs: Mutex::new(Vec::new()),
+            exec: FakeExec::new(),
         };
         fs::create_dir_all(h.sysfs()).unwrap();
         fs::create_dir_all(h.procfs()).unwrap();
@@ -167,7 +175,13 @@ impl FakeHost {
             sysfs: self.sysfs(),
             procfs: self.procfs(),
             ifaddrs: IfAddrs::Fixed(self.ifaddrs.lock().unwrap().clone()),
+            exec: self.exec.clone(),
         }
+    }
+
+    /// The fake command runner every `roots()` of this host shares.
+    pub fn exec(&self) -> Arc<FakeExec> {
+        self.exec.clone()
     }
 
     /// `netdev` has the IP address `ip` (appended: `getifaddrs` order is the call order).
@@ -279,9 +293,33 @@ impl FakeHost {
             "proc/meminfo",
             &format!(
                 "MemTotal:       263939432 kB\nMemFree:        200000000 kB\n\
+                 MemAvailable:   250000000 kB\n\
                  HugePages_Total:    {gt}\nHugePages_Free:     {gf}\nHugePages_Rsvd:        0\n\
                  HugePages_Surp:        0\nHugepagesize:       2048 kB\n"
             ),
+        );
+    }
+
+    /// Sets (or adds) the `MemAvailable` line of the fake `/proc/meminfo` (kB), `None` removes it.
+    pub fn mem_available_kb(&self, kb: Option<u64>) {
+        let text = self.read("proc/meminfo");
+        let mut lines: Vec<String> = text
+            .lines()
+            .filter(|l| !l.starts_with("MemAvailable:"))
+            .map(str::to_string)
+            .collect();
+        if let Some(kb) = kb {
+            lines.push(format!("MemAvailable:   {kb} kB"));
+        }
+        self.write("proc/meminfo", &format!("{}\n", lines.join("\n")));
+    }
+
+    /// The PCI device `vf` is a virtual function of `pf` (sysfs `physfn` link).
+    pub fn make_vf(&self, vf: &str, pf: &str) {
+        self.mkdir(&format!("sys/bus/pci/devices/{pf}"));
+        self.symlink(
+            &format!("../{pf}"),
+            &format!("sys/bus/pci/devices/{vf}/physfn"),
         );
     }
 
@@ -301,6 +339,50 @@ impl FakeHost {
         for (pid, comm) in procs {
             self.write(&format!("proc/{pid}/comm"), &format!("{comm}\n"));
         }
+    }
+
+    /// `/proc/sys/vm/<name>` (`None` = the file is absent).
+    pub fn sysctl(&self, name: &str, value: Option<&str>) {
+        let rel = format!("proc/sys/vm/{name}");
+        match value {
+            Some(v) => self.write(&rel, &format!("{v}\n")),
+            None => self.remove(&rel),
+        }
+    }
+
+    /// The interrupts of a PCI device: `msi_irqs/<n>` below the device (as the kernel lists them)
+    /// and `/proc/irq/<n>/effective_affinity_list` with the given CPU list.
+    pub fn nic_irqs(&self, pci: &str, irqs: &[(u32, &str)]) {
+        for (n, cpus) in irqs {
+            self.write(&format!("sys/bus/pci/devices/{pci}/msi_irqs/{n}"), "msix\n");
+            self.irq_effective(*n, cpus);
+        }
+    }
+
+    /// `/proc/irq/<n>/effective_affinity_list`.
+    pub fn irq_effective(&self, irq: u32, cpus: &str) {
+        self.write(
+            &format!("proc/irq/{irq}/effective_affinity_list"),
+            &format!("{cpus}\n"),
+        );
+    }
+
+    /// `scaling_available_governors` of CPUs `0..ncpu`.
+    pub fn governors_available(&self, ncpu: u32, list: &str) {
+        for i in 0..ncpu {
+            self.write(
+                &format!("sys/devices/system/cpu/cpu{i}/cpufreq/scaling_available_governors"),
+                &format!("{list}\n"),
+            );
+        }
+    }
+
+    /// The content of a file below the tempdir, trimmed (`sys/...`, `proc/...`).
+    pub fn read(&self, rel: &str) -> String {
+        fs::read_to_string(self.tmp.path().join(rel))
+            .unwrap_or_else(|e| panic!("cannot read {rel}: {e}"))
+            .trim()
+            .to_string()
     }
 
     /// Complete `/proc/net/route`: `(iface, destination_hex, gateway_hex, mask_hex)`.
@@ -423,7 +505,10 @@ impl FakeHost {
     /// `0000:65:00.0` Mellanox mlx5_core `ens2f0` NUMA 1, MTU 9000;
     /// `0000:b3:00.0` Intel `ice` `enp179s0` NUMA 1, MaxReadReq 512 (so
     /// tests that do not use it never see it); plus an NVMe device that must
-    /// not be listed.
+    /// not be listed. Spec 32: `vm.swappiness` and `vm.zone_reclaim_mode` are 0, every CPU
+    /// offers `performance powersave`, and the NIC interrupts (NIC0: 100 on CPU 0 and 101 on
+    /// CPU 1, NIC1: 110 and 111 on CPUs 4 and 5, INTEL: 120 on CPU 0) are off the isolated
+    /// cores. No tool is installed in the fake command runner.
     pub fn bare_metal() -> FakeHost {
         let h = FakeHost::empty();
         h.cpus(8, Some("2-3,6-7"), &[(0, "0-3"), (1, "4-7")]);
@@ -474,6 +559,13 @@ impl FakeHost {
             max_read_req: None,
             ..Nic::mlx5("0000:01:00.0", "x", None)
         });
+        // spec 32: the runtime tunings are in place, the NIC interrupts sit on housekeeping cores
+        h.sysctl("swappiness", Some("0"));
+        h.sysctl("zone_reclaim_mode", Some("0"));
+        h.governors_available(8, "performance powersave");
+        h.nic_irqs(NIC0, &[(100, "0"), (101, "1")]);
+        h.nic_irqs(NIC1, &[(110, "4"), (111, "5")]);
+        h.nic_irqs(INTEL, &[(120, "0")]);
         h
     }
 
@@ -709,17 +801,102 @@ pub fn assert_close(actual: f64, expected: f64) {
 // hints helpers
 // ---------------------------------------------------------------------------
 
-pub const HINT_IDS: [&str; 9] = [
+/// The hints every answer has once, with or without links, on every fake host (spec 32: the
+/// `irqbalance` id is gone, `irq_affinity` replaces it; there are four more host checks). The
+/// per-NIC hints exist only for the NICs of the posted links, see [`nic_id`].
+pub const HINT_IDS: [&str; 12] = [
     "isolation",
     "isolated_cores",
     "hugepages",
     "numa",
     "governor",
-    "irqbalance",
+    "irq_affinity",
     "iommu",
     "mtu",
-    "pcie_maxreadreq",
+    "swappiness",
+    "zone_reclaim_mode",
+    "rcu_nocb_poll",
+    "boot_hugepages",
 ];
+
+/// The id of a per-NIC hint: `<kind>:<pci>` with the PCI address in lower case,
+/// for the kinds `flow_control`, `pcie_maxreadreq`, `port_buffer` and `firmware`.
+pub fn nic_id(kind: &str, pci: &str) -> String {
+    format!("{kind}:{pci}")
+}
+
+/// The `commands` of hint `hint_id`: empty when the member is absent. The member is omitted, never
+/// null or `[]`, when a hint has no command; every command is a non-empty one-line string.
+pub fn commands_of(hints: &Value, hint_id: &str) -> Vec<String> {
+    let h = hint(hints, hint_id);
+    let Some(c) = h.get("commands") else {
+        return vec![];
+    };
+    let list = c
+        .as_array()
+        .unwrap_or_else(|| panic!("`commands` of `{hint_id}` is not an array: {h}"));
+    assert!(
+        !list.is_empty(),
+        "`commands` of `{hint_id}` must be omitted when empty: {h}"
+    );
+    list.iter()
+        .map(|x| {
+            let t = x
+                .as_str()
+                .unwrap_or_else(|| panic!("a command of `{hint_id}` is not a string: {h}"));
+            assert!(
+                !t.trim().is_empty() && !t.contains('\n') && t == t.trim(),
+                "a command must be one trimmed line: {t:?}"
+            );
+            t.to_string()
+        })
+        .collect()
+}
+
+/// The hint suggests exactly these commands, in this order.
+pub fn assert_commands(hints: &Value, hint_id: &str, expected: &[&str]) {
+    assert_eq!(
+        commands_of(hints, hint_id),
+        expected,
+        "commands of hint `{hint_id}`: {}",
+        hint(hints, hint_id)
+    );
+}
+
+/// The hint suggests no command and has no `commands` member.
+pub fn assert_no_commands(hints: &Value, hint_id: &str) {
+    assert!(
+        hint(hints, hint_id).get("commands").is_none(),
+        "hint `{hint_id}` must suggest no command: {}",
+        hint(hints, hint_id)
+    );
+}
+
+/// Spec 33: DPDS applies nothing, so no hint has an `action` member (not even null).
+pub fn assert_no_action_members(hints: &Value) {
+    for h in hints.as_array().expect("hints must be a JSON array") {
+        assert!(h.get("action").is_none(), "a hint has an action: {h}");
+    }
+}
+
+/// Every id of an answer, in order.
+pub fn hint_ids(hints: &Value) -> Vec<String> {
+    hints
+        .as_array()
+        .expect("hints must be a JSON array")
+        .iter()
+        .map(|x| x["id"].as_str().expect("hint id").to_string())
+        .collect()
+}
+
+/// A hint with `id` is present, matching the lower-cased `text` somewhere in its detail.
+pub fn detail_has(hints: &Value, hint_id: &str, text: &str) -> bool {
+    hint(hints, hint_id)["detail"]
+        .as_str()
+        .unwrap_or_default()
+        .to_lowercase()
+        .contains(&text.to_lowercase())
+}
 
 /// Spec v17: there is no MPRQ hint, and no hint proposes or discusses mlx5 devargs.
 pub fn assert_no_devargs_hint(hints: &Value) {
@@ -752,6 +929,7 @@ pub fn hints_json(host: &FakeHost, setup: &Setup) -> Value {
         ("POST", Some(setup.body()))
     };
     let r = block_on(async move { call(&router, method, "/api/host/hints", body).await });
+    host.exec().assert_read_only();
     assert_eq!(r.status, 200, "hints: {}", r.text());
     r.json()
 }
@@ -883,6 +1061,362 @@ pub fn assert_level(hints: &Value, id: &str, min: &str, max: &str) {
         hint(hints, id)["level"],
         hint(hints, id)
     );
+}
+
+// ---------------------------------------------------------------------------
+// spec 33: the fake command runner (read-only queries only)
+// ---------------------------------------------------------------------------
+
+/// What a scripted command answers.
+pub enum Out {
+    /// Exit code 0 with this stdout.
+    Ok(String),
+    /// A non-zero exit code with this stderr.
+    Fail(i32, String),
+    /// Exit code 0; the JSON is written to the file named after the `-j` argument, like
+    /// `mstconfig -j <file>` does.
+    JsonFile(Value),
+    /// The tool did not answer within its timeout: `run` returns `Err(ErrorKind::TimedOut)`.
+    Timeout,
+}
+
+type Handler = Box<dyn Fn(&[String]) -> Out + Send + Sync>;
+
+/// The only tool calls hint computation may make (spec 33, item 5): `ethtool --json -a <netdev>`
+/// (and the text form `ethtool -a <netdev>` of an old ethtool), `dcb -j buffer show dev <netdev>`
+/// and `mstconfig|mlxconfig -d <bdf> -e -j <file> q`. Anything else (`ethtool -A`, `dcb ... set`,
+/// `... set NAME=v`, `setpci`, `sysctl`, a shell) changes or may change the host.
+pub fn is_read_only_query(argv: &[String]) -> bool {
+    let a: Vec<&str> = argv.iter().map(String::as_str).collect();
+    match a.as_slice() {
+        ["ethtool", "--json", "-a", dev] | ["ethtool", "-a", dev] => !dev.starts_with('-'),
+        ["dcb", "-j", "buffer", "show", "dev", dev] => !dev.starts_with('-'),
+        ["mstconfig" | "mlxconfig", "-d", _bdf, "-e", "-j", _file, "q"] => true,
+        _ => false,
+    }
+}
+
+struct FakeExecInner {
+    rules: Vec<(Vec<String>, Handler)>,
+    calls: Vec<Vec<String>>,
+    timeouts: Vec<Duration>,
+    violations: Vec<Vec<String>>,
+}
+
+/// The test double of `host::Exec`.
+///
+/// `run(argv, timeout)`: every call is recorded with its timeout. A call that is not a read-only
+/// query ([`is_read_only_query`]) is refused (exit 126) and recorded as a violation, which fails
+/// the test through [`FakeExec::assert_read_only`] (also when the last handle is dropped).
+/// A tool is installed iff some rule names it as `argv[0]`; any other `argv[0]` fails with
+/// `ErrorKind::NotFound` (the tool is missing). Among the rules of an installed tool the latest
+/// registered one whose argv prefix matches answers; a call no rule matches exits 2 with
+/// "fake: unexpected arguments" on stderr (so a wrong argv fails loudly).
+///
+/// There is no write method: the controller changes nothing, so the seam cannot express it.
+pub struct FakeExec {
+    inner: Mutex<FakeExecInner>,
+}
+
+impl std::fmt::Debug for FakeExec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("FakeExec")
+    }
+}
+
+impl Drop for FakeExec {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+        let v = self.inner.get_mut().map(|i| i.violations.clone());
+        assert!(
+            v.is_ok_and(|v| v.is_empty()),
+            "hint computation ran a command that is not a read-only query"
+        );
+    }
+}
+
+impl FakeExec {
+    pub fn new() -> Arc<FakeExec> {
+        Arc::new(FakeExec {
+            inner: Mutex::new(FakeExecInner {
+                rules: vec![],
+                calls: vec![],
+                timeouts: vec![],
+                violations: vec![],
+            }),
+        })
+    }
+
+    /// Calls starting with `prefix` answer `out` (the tool is installed from now on).
+    pub fn on(&self, prefix: &[&str], out: Out) {
+        let out = Arc::new(Mutex::new(Some(out)));
+        self.on_fn(prefix, move |_| match &*out.lock().unwrap() {
+            Some(Out::Ok(s)) => Out::Ok(s.clone()),
+            Some(Out::Fail(c, e)) => Out::Fail(*c, e.clone()),
+            Some(Out::JsonFile(v)) => Out::JsonFile(v.clone()),
+            Some(Out::Timeout) => Out::Timeout,
+            None => unreachable!(),
+        });
+    }
+
+    /// Calls starting with `prefix` are answered by `f(argv)`.
+    pub fn on_fn(&self, prefix: &[&str], f: impl Fn(&[String]) -> Out + Send + Sync + 'static) {
+        self.inner
+            .lock()
+            .unwrap()
+            .rules
+            .push((prefix.iter().map(|s| s.to_string()).collect(), Box::new(f)));
+    }
+
+    /// Every command run so far, as argv.
+    pub fn calls(&self) -> Vec<Vec<String>> {
+        self.inner.lock().unwrap().calls.clone()
+    }
+
+    /// The calls whose argv contains the word `word`.
+    pub fn calls_with(&self, word: &str) -> Vec<Vec<String>> {
+        self.calls()
+            .into_iter()
+            .filter(|c| c.iter().any(|a| a == word))
+            .collect()
+    }
+
+    /// The timeout every call passed, in call order.
+    pub fn timeouts(&self) -> Vec<Duration> {
+        self.inner.lock().unwrap().timeouts.clone()
+    }
+
+    /// Spec 33, "DPDS never changes the host": every command so far was a read-only query and
+    /// none was refused.
+    pub fn assert_read_only(&self) {
+        let i = self.inner.lock().unwrap();
+        assert!(
+            i.violations.is_empty(),
+            "commands that are not read-only queries: {:?}",
+            i.violations
+        );
+        for c in &i.calls {
+            assert!(is_read_only_query(c), "not a read-only query: {c:?}");
+        }
+    }
+}
+
+impl Exec for FakeExec {
+    fn run(&self, argv: &[String], timeout: Duration) -> std::io::Result<CommandOutput> {
+        let mut i = self.inner.lock().unwrap();
+        i.calls.push(argv.to_vec());
+        i.timeouts.push(timeout);
+        if !is_read_only_query(argv) {
+            i.violations.push(argv.to_vec());
+            return Ok(CommandOutput {
+                code: 126,
+                stdout: String::new(),
+                stderr: format!("fake: refused, not a read-only query: {argv:?}"),
+            });
+        }
+        let tool = argv.first().map(String::as_str).unwrap_or_default();
+        if !i
+            .rules
+            .iter()
+            .any(|(p, _)| p.first().map(String::as_str) == Some(tool))
+        {
+            return Err(std::io::Error::from(std::io::ErrorKind::NotFound));
+        }
+        let out = i
+            .rules
+            .iter()
+            .rev()
+            .find(|(p, _)| argv.starts_with(p))
+            .map(|(_, f)| f(argv));
+        Ok(match out {
+            None => CommandOutput {
+                code: 2,
+                stdout: String::new(),
+                stderr: format!("fake: unexpected arguments: {argv:?}"),
+            },
+            Some(Out::Ok(stdout)) => CommandOutput {
+                code: 0,
+                stdout,
+                stderr: String::new(),
+            },
+            Some(Out::Fail(code, stderr)) => CommandOutput {
+                code,
+                stdout: String::new(),
+                stderr,
+            },
+            Some(Out::Timeout) => {
+                return Err(std::io::Error::from(std::io::ErrorKind::TimedOut));
+            }
+            Some(Out::JsonFile(v)) => {
+                let at = argv
+                    .iter()
+                    .position(|a| a == "-j")
+                    .expect("a JSON file answer needs a `-j <file>` argument");
+                fs::write(&argv[at + 1], v.to_string()).expect("the JSON output file");
+                CommandOutput {
+                    code: 0,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                }
+            }
+        })
+    }
+}
+
+/// The state of a fake NIC's pause parameters, shared with the closure `fake_ethtool` registers
+/// (a test changes it to mimic what an administrator did by hand).
+#[derive(Clone, Copy, Debug)]
+pub struct EthtoolState {
+    pub autoneg: bool,
+    pub rx: bool,
+    pub tx: bool,
+}
+
+/// Installs `ethtool` for `netdev`: `ethtool --json -a <netdev>` prints the state as the real tool
+/// does (`[{"ifname", "autonegotiate", "rx", "tx"}]`). There is no rule for `-A`: it would be a
+/// write, and the fake refuses it.
+pub fn fake_ethtool(exec: &FakeExec, netdev: &str, st: EthtoolState) -> Arc<Mutex<EthtoolState>> {
+    let state = Arc::new(Mutex::new(st));
+    let (s1, name) = (state.clone(), netdev.to_string());
+    exec.on_fn(&["ethtool", "--json", "-a", netdev], move |_| {
+        let s = *s1.lock().unwrap();
+        Out::Ok(
+            json!([{"ifname": name, "autonegotiate": s.autoneg, "rx": s.rx, "tx": s.tx}])
+                .to_string(),
+        )
+    });
+    state
+}
+
+/// The state of a fake port buffer, shared with the closure `fake_dcb` registers.
+#[derive(Clone, Copy, Debug)]
+pub struct DcbState {
+    pub prio: [u8; 8],
+    pub sizes: [u64; 8],
+    pub total: u64,
+}
+
+/// Installs `dcb` for `netdev`: `dcb -j buffer show dev <netdev>` prints `{"prio_buffer": [8],
+/// "buffer_size": [8], "total_size": n}` (what iproute2's `dcb_buffer.c` emits in JSON mode).
+pub fn fake_dcb(exec: &FakeExec, netdev: &str, st: DcbState) -> Arc<Mutex<DcbState>> {
+    let state = Arc::new(Mutex::new(st));
+    let s1 = state.clone();
+    exec.on_fn(&["dcb", "-j", "buffer", "show", "dev", netdev], move |_| {
+        let s = *s1.lock().unwrap();
+        Out::Ok(
+            json!({"prio_buffer": s.prio, "buffer_size": s.sizes, "total_size": s.total})
+                .to_string(),
+        )
+    });
+    state
+}
+
+/// Untuned port buffer of a ConnectX: every priority in buffer 0, the memory split over two buffers.
+pub fn dcb_untuned() -> DcbState {
+    DcbState {
+        prio: [0; 8],
+        sizes: [157_696, 104_320, 0, 0, 0, 0, 0, 0],
+        total: 262_016,
+    }
+}
+
+/// The state of a fake NIC's firmware settings, shared with the closure `fake_mst` registers.
+#[derive(Clone, Copy, Debug)]
+pub struct MstState {
+    pub adv_next: u32,
+    pub max_next: u32,
+    pub cqe_next: u32,
+    /// The values the running firmware uses (they change only with a firmware reset).
+    pub adv_cur: u32,
+    pub max_cur: u32,
+    pub cqe_cur: u32,
+    /// `MAX_ACC_OUT_READ` is not listed while `ADVANCED_PCI_SETTINGS` is off (next boot).
+    pub hide_max_while_advanced_off: bool,
+}
+
+impl MstState {
+    pub fn untuned() -> MstState {
+        MstState {
+            adv_next: 0,
+            max_next: 0,
+            cqe_next: 0,
+            adv_cur: 0,
+            max_cur: 0,
+            cqe_cur: 0,
+            hide_max_while_advanced_off: false,
+        }
+    }
+    pub fn tuned() -> MstState {
+        MstState {
+            adv_next: 1,
+            max_next: 256,
+            cqe_next: 1,
+            adv_cur: 1,
+            max_cur: 256,
+            cqe_cur: 1,
+            hide_max_while_advanced_off: false,
+        }
+    }
+}
+
+/// `mstconfig -j` writes enum values as `Name(n)` and plain numbers as numbers (`mlxcfg_ui.cpp`,
+/// `writeParamToJson`): the same shapes here.
+fn mst_value(name: &str, v: u32) -> Value {
+    match name {
+        "ADVANCED_PCI_SETTINGS" => json!(if v == 1 { "True(1)" } else { "False(0)" }),
+        "CQE_COMPRESSION" => json!(match v {
+            0 => "BALANCED(0)".to_string(),
+            1 => "AGGRESSIVE(1)".to_string(),
+            n => format!("UNKNOWN({n})"),
+        }),
+        _ => json!(v),
+    }
+}
+
+fn mst_json(bdf: &str, s: &MstState) -> Value {
+    let entry = |name: &str, next: u32, cur: u32| {
+        json!({
+            "read_only": false,
+            "next_value": mst_value(name, next),
+            "modified": next != cur,
+            "default_value": mst_value(name, 0),
+            "current_value": mst_value(name, cur),
+        })
+    };
+    let mut tlv = serde_json::Map::new();
+    tlv.insert(
+        "ADVANCED_PCI_SETTINGS".into(),
+        entry("ADVANCED_PCI_SETTINGS", s.adv_next, s.adv_cur),
+    );
+    if !(s.hide_max_while_advanced_off && s.adv_next == 0) {
+        tlv.insert(
+            "MAX_ACC_OUT_READ".into(),
+            entry("MAX_ACC_OUT_READ", s.max_next, s.max_cur),
+        );
+    }
+    tlv.insert(
+        "CQE_COMPRESSION".into(),
+        entry("CQE_COMPRESSION", s.cqe_next, s.cqe_cur),
+    );
+    json!({"Device #1": {
+        "device_type": "ConnectX-6 Dx", "name": "MCX623106AN", "description": "fake",
+        "device": bdf, "tlv_configuration": tlv
+    }})
+}
+
+/// Installs `tool` (`mstconfig` or `mlxconfig`) for the device `bdf` (function 0 of the card):
+/// `<tool> -d <bdf> -e -j <file> q` writes the query as `mstconfig` does (`"Device #1"` ->
+/// `tlv_configuration` -> `<PARAM>` -> `next_value`/`current_value`/...). There is no rule for
+/// `set`: it would be a write, and the fake refuses it.
+pub fn fake_mst(exec: &FakeExec, tool: &str, bdf: &str, st: MstState) -> Arc<Mutex<MstState>> {
+    let state = Arc::new(Mutex::new(st));
+    let (s1, dev) = (state.clone(), bdf.to_string());
+    exec.on_fn(&[tool, "-d", bdf, "-e", "-j"], move |_| {
+        Out::JsonFile(mst_json(&dev, &s1.lock().unwrap()))
+    });
+    state
 }
 
 // ---------------------------------------------------------------------------
@@ -1101,7 +1635,9 @@ impl TestApp {
             None => req.body(axum::body::Body::empty()),
         }
         .unwrap();
-        send(&self.router, req).await
+        let r = send(&self.router, req).await;
+        self.host.exec().assert_read_only();
+        r
     }
 
     /// A request with an arbitrary content type (None = no header) and raw body bytes.

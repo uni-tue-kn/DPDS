@@ -104,6 +104,8 @@ export interface Hint {
   title: string;
   detail: string;
   suggestion: string;
+  /** Shell commands an administrator runs as root to enable this tuning. DPDS never runs them. */
+  commands?: string[];
 }
 
 export interface Settings {

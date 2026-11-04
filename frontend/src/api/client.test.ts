@@ -118,6 +118,7 @@ describe('api client (real module)', () => {
       'deletePreset',
       'exportSetup',
       'importSetup',
+      'applyHostAction', // spec 33: DPDS never changes the host, hints only suggest commands
     ]) {
       expect(client, gone).not.toHaveProperty(gone);
     }

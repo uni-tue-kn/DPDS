@@ -797,19 +797,57 @@ without internet access, means no notice.
   an error for a configured link on one. Blind spots: an interface without any address whose only
   routes are in a non-main policy-routing table, and a DHCP uplink that is down and has lost its
   lease, look free.
+- **DPDS never changes the host.** Neither `dpds.sh` (which never tunes anything), the controller
+  nor the frontend writes a kernel parameter, a sysfs or procfs file, a hugepage count, a NIC
+  setting or a firmware value, and the API has no route that does. A hint that can be fixed shows
+  the commands instead (see **Hint commands**); an administrator with a shell runs them as root.
 - **Host check**: `dpds.sh check` and `install` run `dpds-controller check`, which prints one
-  `OK`/`INFO`/`WARN`/`ERROR` line per hint: isolated cores (`isolcpus`, `nohz_full`,
-  `rcu_nocbs`), hugepages, NIC driver, NUMA locality, CPU governor, irqbalance, IOMMU, MTU, PCIe
-  MaxReadReq. `GET /api/host/hints` serves the hints that depend on the host only and the frontend shows
-  them. `POST /api/host/hints` takes a start body and adds the link-dependent ones (NUMA locality,
-  hugepages for the links, host uplink, drain timeout, MTU and MaxReadReq of the used NICs); the
-  frontend calls it with its current configuration. `dpds-controller check` prints the host-only
-  hints. Warnings do not block the installation.
-- **Tuning is never applied.** Neither `dpds.sh`, the controller nor the frontend changes kernel
-  parameters, hugepages, NIC settings or governors; they only report hints and suggestions.
+  `OK`/`INFO`/`WARN`/`ERROR` line per hint. Under every hint that has commands it prints an
+  indented `# run as root:` line and then one indented line per command, exactly as in the hint's
+  `commands`; `dpds-controller check --json` carries the `commands` member. Host-wide hints: core
+  isolation (`isolcpus`, `nohz_full`, `rcu_nocbs`), isolated cores, hugepages, NUMA locality, CPU
+  governor, NIC interrupts (`irq_affinity`), IOMMU, MTU, `vm.swappiness` and
+  `vm.zone_reclaim_mode`. For each PCI NIC of the configured links there are further hints:
+  Ethernet flow control (`flow_control:<pci>`, needs `ethtool`), PCIe MaxReadReq
+  (`pcie_maxreadreq:<pci>`) and, for Mellanox NICs on `mlx5_core`, the port buffer
+  (`port_buffer:<pci>`, needs `dcb` from the `iproute2` package) and the firmware settings
+  (`firmware:<pci>`, needs `mstconfig` from the `mstflint` package; `mlxconfig` of the NVIDIA MFT
+  works too). `GET /api/host/hints` serves the hints that depend on the host only and the frontend
+  shows them on its Host hints page. `POST /api/host/hints` takes a start body, validated like the
+  start body (400 naming the field), and adds the link-dependent hints (NUMA locality, hugepages
+  for the links, NIC interrupts, host uplink, drain timeout, MTU and the per-NIC hints of the used
+  NICs); the frontend calls it with its current configuration. Warnings do not block the
+  installation.
+- **Hint commands**: a hint that can be fixed has an optional `commands` array (omitted when
+  empty): the exact shell commands an administrator runs as root to enable the tuning on this
+  host, computed by the controller from what it read (netdev names, PCI addresses, interrupt
+  numbers, core lists, page counts), with the real `/proc` and `/sys` paths. DPDS runs none of
+  them. They are `sysctl -w vm.swappiness=0` and `sysctl -w vm.zone_reclaim_mode=0`; one `echo
+  <cores> > /proc/irq/<n>/smp_affinity_list` per NIC interrupt on an isolated core, moving it to
+  the housekeeping cores; `ethtool -A <netdev> rx off tx off` (plus `autoneg off` while
+  autonegotiation is on); `setpci -s <pci> CAP_EXP+8.w=5000:7000` for MaxReadReq 4096 B;
+  `dcb buffer set dev <netdev> buffer-size all:0 <i>:<total>` for the port buffer, only when all
+  priorities share one buffer and flow control is already off; `echo performance >
+  /sys/devices/system/cpu/cpu<n>/cpufreq/scaling_governor` per core; `echo <n> >
+  .../hugepages-<size>kB/nr_hugepages` (per NUMA node of the NICs when known), where the pages
+  added never exceed half of `MemAvailable` (the detail says when that cap applies); and
+  `mstconfig -d <function 0> -y set ADVANCED_PCI_SETTINGS=1`, then `... set
+  MAX_ACC_OUT_READ=256 CQE_COMPRESSION=1` (`mlxconfig` when only that is installed). The firmware
+  values are written to the NVRAM of the whole card, persist and take effect after a firmware
+  reset that DPDS never runs (on a VM, from the hypervisor host); MaxReadReq read inside a VM is
+  the hypervisor's copy of the register, so verify it on the hypervisor host. A missing tool is an
+  `INFO` hint that names its package and has the command `apt install <package>`. No command is
+  suggested for a NIC the host uses or that DPDS cannot use (the detail says why), for MaxReadReq
+  of a virtual function, or for a netdev whose name starts with `-`. The controller only runs
+  read-only queries (`ethtool --json -a`, `dcb -j buffer show`, `mstconfig -j ... q`), each with a
+  30 s timeout, and none while an emulation is starting, running or stopping: those hints say "not
+  checked while an emulation is running".
+- **Kernel command line** (`rcu_nocb_poll` and boot-time 1 GiB hugepages, `default_hugepagesz=1G
+  hugepagesz=1G hugepages=<n>`) is checked next to the core isolation parameters. These are
+  hint-only: the detail names the parameters to add, and there are no commands.
 - **Security**: the controller runs as root and listens on all interfaces without
-  authentication. Anyone who can reach the port can start `dpds` with their own (allowlisted)
-  configuration. Set `DPDS_BIND` before `install` (for example `DPDS_BIND=127.0.0.1:8100`) or edit
+  authentication. Anyone who can reach the port can start and stop `dpds` with their own
+  (validated) configuration and read the host hints, but cannot change the host. Set `DPDS_BIND` before `install` (for example `DPDS_BIND=127.0.0.1:8100`) or edit
   `DPDS_CONTROLLER_BIND` in `/etc/dpds/controller.env` and restart to restrict it. The frontend
   has no listener of its own: the controller's port serves both the frontend and the full API
   (start/stop included), so the controller's bind restricts everything. Further controller

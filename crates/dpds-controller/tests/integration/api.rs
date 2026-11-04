@@ -62,7 +62,7 @@ async fn host_hints_are_the_shared_hint_array() {
     let r = a.get("/api/host/hints").await;
     assert_eq!(r.status, 200);
     let v = r.json();
-    for id in ["isolation", "governor", "irqbalance", "hugepages"] {
+    for id in ["isolation", "governor", "irq_affinity", "hugepages"] {
         let _ = hint(&v, id);
     }
     let direct = hints_json(&a.host, &Default::default());

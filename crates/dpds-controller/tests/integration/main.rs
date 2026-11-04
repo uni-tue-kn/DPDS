@@ -35,6 +35,7 @@ mod histogram_bad_pages;
 mod histogram_extras;
 mod histogram_paging;
 mod histogram_window;
+mod host_commands;
 mod host_fixes;
 mod host_guard;
 mod http_hardening;

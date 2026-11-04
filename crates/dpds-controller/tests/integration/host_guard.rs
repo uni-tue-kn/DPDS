@@ -56,6 +56,8 @@ fn all_routes() -> Vec<(&'static str, &'static str, Option<Value>)> {
         ("GET", "/api/openapi.json", None),
         ("GET", "/api/docs/", None),
         ("POST", "/api/host/hints", Some(body.clone())),
+        // spec 33: no such route any more, and a foreign Host still gets the guard's answer, not a 404
+        ("POST", "/api/host/actions/swappiness", Some(body.clone())),
         ("POST", "/api/emulation/validate", Some(body.clone())),
         ("POST", "/api/emulation/start", Some(body)),
         ("POST", "/api/emulation/stop", Some(json!({}))),

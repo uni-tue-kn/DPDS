@@ -1,10 +1,13 @@
-//! Read-only host hints (B6), shared by `serve` and `check`. Nothing here
-//! changes the host: every hint only reports and suggests.
+//! Host hints (B6), shared by `serve` and `check`. Computing them changes nothing: a hint that
+//! can be fixed lists the exact shell commands an administrator would run as root
+//! (`Hint::commands`, display strings only, never executed), computed from what the controller
+//! read. The only tools it runs are read-only queries (see `nic_hints`). The kernel command line
+//! checks name the parameters to add and have no commands.
 //!
 //! Thresholds come from the DPDS README ("Performance Tuning"): isolated
 //! cores with `nohz_full` and `rcu_nocbs`, hugepages for the mbuf pools,
 //! workers on the NIC's NUMA node, `performance` governor, interrupts off the
-//! worker cores, MaxReadReq 4096 (1024 and 2048 are acceptable).
+//! isolated cores, MaxReadReq 4096 (1024 and 2048 are acceptable).
 
 use std::fs;
 use std::time::Duration;
@@ -14,9 +17,10 @@ use utoipa::ToSchema;
 
 use crate::discovery::{discover, find, Interface};
 use crate::eal::drain_timeout;
-use crate::host::{fmt_cpus, read_trim, HostRoots};
+use crate::host::{fmt_cpus, parse_cpulist, read_trim, HostRoots};
 use crate::lcores::{assign_lcores, Assignment, LcoreError};
 use crate::model::RunConfig;
+use crate::nic_hints::nic_hints;
 
 /// Mbuf size in hugepage memory (README: about 1.9 KB per mbuf).
 const BYTES_PER_MBUF: u64 = 1920;
@@ -56,20 +60,34 @@ pub struct Hint {
     pub title: String,
     pub detail: String,
     pub suggestion: String,
+    /// The shell commands an administrator runs as root to enable this tuning on this host, one
+    /// per element. DPDS never runs them. Absent when the hint suggests none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub commands: Vec<String>,
 }
 
-fn hint(id: &str, level: Level, title: &str, detail: String, suggestion: &str) -> Hint {
+impl Hint {
+    pub fn with_commands(mut self, commands: Vec<String>) -> Hint {
+        self.commands = commands;
+        self
+    }
+}
+
+pub(crate) fn hint(id: &str, level: Level, title: &str, detail: String, suggestion: &str) -> Hint {
     Hint {
         id: id.into(),
         level,
         title: title.into(),
         detail,
         suggestion: suggestion.into(),
+        commands: Vec::new(),
     }
 }
 
-struct Ctx<'a> {
-    roots: &'a HostRoots,
+pub(crate) struct Ctx<'a> {
+    pub roots: &'a HostRoots,
+    /// Whether tools may run: not while an emulation is starting, running or stopping.
+    pub run_tools: bool,
     config: &'a RunConfig,
     interfaces: Vec<Interface>,
     assignment: Result<Assignment, LcoreError>,
@@ -77,7 +95,7 @@ struct Ctx<'a> {
 
 impl Ctx<'_> {
     /// Discovered NICs used by the links.
-    fn used_nics(&self) -> Vec<&Interface> {
+    pub(crate) fn used_nics(&self) -> Vec<&Interface> {
         let mut used: Vec<&Interface> = Vec::new();
         for port in self
             .config
@@ -96,9 +114,10 @@ impl Ctx<'_> {
 }
 
 /// All hints, in a fixed order, one per check.
-pub fn compute_hints(roots: &HostRoots, config: &RunConfig) -> Vec<Hint> {
+pub fn compute_hints(roots: &HostRoots, config: &RunConfig, run_tools: bool) -> Vec<Hint> {
     let ctx = Ctx {
         roots,
+        run_tools,
         config,
         interfaces: discover(roots),
         assignment: assign_lcores(roots, config),
@@ -110,11 +129,15 @@ pub fn compute_hints(roots: &HostRoots, config: &RunConfig) -> Vec<Hint> {
         hugepages(&ctx),
         numa(&ctx),
         governor(&ctx),
-        irqbalance(&ctx),
+        irq_affinity(&ctx),
         iommu(&ctx),
         mtu(&ctx),
-        maxreadreq(&ctx),
+        swappiness(&ctx),
+        zone_reclaim_mode(&ctx),
+        rcu_nocb_poll(&ctx),
+        boot_hugepages(&ctx),
     ]);
+    hints.extend(nic_hints(&ctx));
     hints.extend(drain(&ctx));
     hints
 }
@@ -320,11 +343,7 @@ fn hugepages(ctx: &Ctx) -> Hint {
         .links
         .iter()
         .map(|l| &l.config)
-        .map(|c| {
-            (c.buffer_capacity as u64)
-                .saturating_add(POOL_EXTRA)
-                .saturating_mul(BYTES_PER_MBUF)
-        })
+        .map(link_need)
         .fold(0u64, u64::saturating_add);
     let (total, free) = hugepage_bytes(ctx.roots);
     let no_huge = ctx
@@ -342,16 +361,27 @@ fn hugepages(ctx: &Ctx) -> Hint {
             "Use hugepages for real traffic.",
         );
     }
-    let fix = "Reserve hugepages at boot (hugepagesz=2M hugepages=<n> or 1G pages) or via sysctl vm.nr_hugepages.";
+    let fix = "Reserve hugepages at boot, which is the reliable way (default_hugepagesz=1G hugepagesz=1G hugepages=<n>, or hugepagesz=2M hugepages=<n>), or at run time via sysctl vm.nr_hugepages.";
+    // Commands need the links (the need depends on them) and free < need
+    let with_commands = |mut h: Hint| -> Hint {
+        if (free as f64) >= need as f64 || need == 0 {
+            return h;
+        }
+        if let Some((commands, note)) = hugepage_commands(ctx) {
+            h.detail.push_str(&note);
+            h = h.with_commands(commands);
+        }
+        h
+    };
     if total == 0 {
         let level = if need > 0 { Level::Error } else { Level::Warn };
-        return hint(
+        return with_commands(hint(
             "hugepages",
             level,
             title,
             "no hugepages are configured; dpds cannot create its mbuf pools".into(),
             fix,
-        );
+        ));
     }
     let detail = format!(
         "{} free of {}, the links need about {}",
@@ -360,24 +390,135 @@ fn hugepages(ctx: &Ctx) -> Hint {
         mib(need)
     );
     if (free as f64) < need as f64 * 1.1 {
-        hint(
+        with_commands(hint(
             "hugepages",
             Level::Error,
             title,
             format!("{detail}; starting would fail with a pool creation error"),
             fix,
-        )
+        ))
     } else if (free as f64) < need as f64 * 1.5 {
-        hint(
+        with_commands(hint(
             "hugepages",
             Level::Warn,
             title,
             format!("{detail}; little headroom"),
             fix,
-        )
+        ))
     } else {
         hint("hugepages", Level::Ok, title, detail, "")
     }
+}
+
+/// Memory the mbuf pools of one link need.
+fn link_need(c: &crate::dto::ConfigDto) -> u64 {
+    (c.buffer_capacity as u64)
+        .saturating_add(POOL_EXTRA)
+        .saturating_mul(BYTES_PER_MBUF)
+}
+
+/// `MemAvailable` of `/proc/meminfo` in bytes.
+fn mem_available(roots: &HostRoots) -> Option<u64> {
+    read_trim(&roots.proc("meminfo"))?
+        .lines()
+        .find_map(|l| l.strip_prefix("MemAvailable:"))?
+        .split_whitespace()
+        .next()?
+        .parse::<u64>()
+        .ok()?
+        .checked_mul(1024)
+}
+
+/// The commands that raise `nr_hugepages` of the default hugepage size until the links' pools fit
+/// with 50 % headroom (the level of the "little headroom" warning), and a note for the detail.
+/// Per NUMA node of the links' ingress NICs when every one is known, else for the whole host.
+/// Together they never add more than half of `MemAvailable`; the note names `MemAvailable` when
+/// that keeps the commands from the full target. `None` when the counts cannot be read.
+fn hugepage_commands(ctx: &Ctx) -> Option<(Vec<String>, String)> {
+    let roots = ctx.roots;
+    let kb: u64 = read_trim(&roots.proc("meminfo"))?
+        .lines()
+        .find_map(|l| l.strip_prefix("Hugepagesize:"))?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()?;
+    let page = kb.checked_mul(1024).filter(|p| *p > 0)?;
+    let size = format!("hugepages-{kb}kB");
+    let wanted = |need: u64| need.saturating_mul(3) / 2;
+    let count = |dir: &std::path::Path, file: &str| {
+        read_trim(&dir.join(file)).and_then(|s| s.parse::<u64>().ok())
+    };
+    // (node, need) per link, by the NUMA node of the ingress NIC
+    let per_link: Vec<(Option<u32>, u64)> = ctx
+        .config
+        .links
+        .iter()
+        .map(|l| (roots.pci_numa_node(&l.ingress), link_need(&l.config)))
+        .collect();
+    let node_dir = |n: u32| roots.sys(&format!("devices/system/node/node{n}/hugepages/{size}"));
+    let mut nodes: Vec<(Option<u32>, u64)> = Vec::new();
+    let all_known = per_link
+        .iter()
+        .all(|(n, _)| n.is_some_and(|n| node_dir(n).is_dir()));
+    for (node, need) in per_link {
+        let key = if all_known { node } else { None };
+        match nodes.iter_mut().find(|(n, _)| *n == key) {
+            Some((_, sum)) => *sum = sum.saturating_add(need),
+            None => nodes.push((key, need)),
+        }
+    }
+    let Some(available) = mem_available(roots) else {
+        return Some((
+            Vec::new(),
+            "; no command is suggested because MemAvailable in /proc/meminfo is not readable"
+                .into(),
+        ));
+    };
+    let mut budget = available / 2 / page;
+    let mut capped = false;
+    let mut commands = Vec::new();
+    for (node, need) in nodes {
+        // the display path of the file an administrator writes
+        let dir = match node {
+            Some(n) => format!("/sys/devices/system/node/node{n}/hugepages/{size}"),
+            None => format!("/sys/kernel/mm/hugepages/{size}"),
+        };
+        let files = match node {
+            Some(n) => node_dir(n),
+            None => roots.sys(&format!("kernel/mm/hugepages/{size}")),
+        };
+        let (nr, free) = (
+            count(&files, "nr_hugepages")?,
+            count(&files, "free_hugepages")?,
+        );
+        let missing = wanted(need)
+            .saturating_sub(free.saturating_mul(page))
+            .div_ceil(page);
+        if missing == 0 {
+            continue;
+        }
+        let add = missing.min(budget);
+        capped |= add < missing;
+        budget -= add;
+        if add > 0 {
+            commands.push(format!(
+                "echo {} > {dir}/nr_hugepages",
+                nr.saturating_add(add)
+            ));
+        }
+    }
+    let note = if capped {
+        format!(
+            "; MemAvailable is {}, and at most half of it ({} pages of {} MiB) is suggested, so the commands stay below the full target",
+            mib(available),
+            available / 2 / page,
+            page / (1024 * 1024)
+        )
+    } else {
+        String::new()
+    };
+    Some((commands, note))
 }
 
 // ---- NUMA ------------------------------------------------------------------
@@ -447,38 +588,53 @@ fn numa(ctx: &Ctx) -> Hint {
     }
 }
 
-// ---- CPU governor, irqbalance ------------------------------------------------
+// ---- CPU governor, NIC interrupts ----------------------------------------------
 
 fn governor(ctx: &Ctx) -> Hint {
     let title = "CPU governor";
-    let cpus: Vec<u32> = match &ctx.assignment {
+    let workers: Vec<u32> = match &ctx.assignment {
         Ok(a) if !a.directions.is_empty() => a.directions.iter().map(|d| d.lcore).collect(),
-        _ => {
-            let iso = ctx.roots.isolated_cpus();
-            if iso.is_empty() {
-                ctx.roots.online_cpus()
-            } else {
-                iso
-            }
-        }
+        _ => Vec::new(),
+    };
+    let isolated = ctx.roots.isolated_cpus();
+    let cpus: Vec<u32> = if !workers.is_empty() {
+        workers.clone()
+    } else if isolated.is_empty() {
+        ctx.roots.online_cpus()
+    } else {
+        isolated.clone()
+    };
+    let cpufreq = |c: u32, file: &str| {
+        ctx.roots
+            .sys(&format!("devices/system/cpu/cpu{c}/cpufreq/{file}"))
     };
     let not_performance: Vec<String> = cpus
         .iter()
         .filter_map(|c| {
-            let g = read_trim(&ctx.roots.sys(&format!(
-                "devices/system/cpu/cpu{c}/cpufreq/scaling_governor"
-            )))?;
+            let g = read_trim(&cpufreq(*c, "scaling_governor"))?;
             (g != "performance").then(|| format!("cpu{c}: {g}"))
         })
         .collect();
-    let known = cpus.iter().any(|c| {
-        ctx.roots
-            .sys(&format!(
-                "devices/system/cpu/cpu{c}/cpufreq/scaling_governor"
-            ))
-            .exists()
-    });
+    let known = cpus
+        .iter()
+        .any(|c| cpufreq(*c, "scaling_governor").exists());
     if !not_performance.is_empty() {
+        // the worker cores and the isolated cores that can switch to performance
+        let mut targets: Vec<u32> = workers.iter().chain(&isolated).copied().collect();
+        targets.sort_unstable();
+        targets.dedup();
+        let commands: Vec<String> = targets
+            .into_iter()
+            .filter(|c| {
+                read_trim(&cpufreq(*c, "scaling_available_governors"))
+                    .is_some_and(|l| l.split_whitespace().any(|g| g == "performance"))
+            })
+            .map(|c| {
+                format!(
+                    "echo performance > /sys/devices/system/cpu/cpu{c}/cpufreq/scaling_governor"
+                )
+            })
+            .collect();
         hint(
             "governor",
             Level::Warn,
@@ -486,6 +642,7 @@ fn governor(ctx: &Ctx) -> Hint {
             not_performance.join(", "),
             "Set the governor of the worker cores to performance.",
         )
+        .with_commands(commands)
     } else if known {
         hint(
             "governor",
@@ -505,9 +662,20 @@ fn governor(ctx: &Ctx) -> Hint {
     }
 }
 
-fn irqbalance(ctx: &Ctx) -> Hint {
-    let title = "irqbalance";
-    let running = fs::read_dir(&ctx.roots.procfs).is_ok_and(|d| {
+/// The PCI interrupts of a device: the numbers in `msi_irqs/`.
+fn msi_irqs(roots: &HostRoots, pci: &str) -> Vec<u32> {
+    let mut irqs: Vec<u32> = fs::read_dir(roots.pci_dir(pci).join("msi_irqs"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.file_name().to_string_lossy().parse().ok())
+        .collect();
+    irqs.sort_unstable();
+    irqs
+}
+
+fn irqbalance_running(roots: &HostRoots) -> bool {
+    fs::read_dir(&roots.procfs).is_ok_and(|d| {
         d.flatten().any(|e| {
             e.file_name()
                 .to_string_lossy()
@@ -515,21 +683,208 @@ fn irqbalance(ctx: &Ctx) -> Hint {
                 .all(|b| b.is_ascii_digit())
                 && read_trim(&e.path().join("comm")).as_deref() == Some("irqbalance")
         })
-    });
-    if running {
-        hint("irqbalance", Level::Warn, title, "the irqbalance daemon is running and may move interrupts onto the worker cores".into(), "Stop irqbalance or ban the worker cores (IRQBALANCE_BANNED_CPULIST) and keep NIC interrupts off them.")
-    } else {
-        hint(
-            "irqbalance",
+    })
+}
+
+/// NIC interrupts of the used NICs that run on isolated cores.
+fn irq_affinity(ctx: &Ctx) -> Hint {
+    let (id, title) = ("irq_affinity", "NIC interrupts");
+    let nics = ctx.used_nics();
+    if nics.is_empty() {
+        return hint(id, Level::Ok, title, "no PCI NIC is used".into(), "");
+    }
+    let mut isolated = ctx.roots.isolated_cpus();
+    isolated.extend(ctx.roots.nohz_full_cpus());
+    isolated.sort_unstable();
+    isolated.dedup();
+    if isolated.is_empty() {
+        return hint(
+            id,
             Level::Ok,
             title,
-            "irqbalance is not running".into(),
+            "no cores are isolated, so no interrupt runs on one (see the core isolation hint)"
+                .into(),
             "",
+        );
+    }
+    let mut on_isolated: Vec<(u32, String, Vec<u32>)> = Vec::new();
+    for nic in nics {
+        let label = nic.netdev.as_deref().unwrap_or(&nic.pci);
+        for irq in msi_irqs(ctx.roots, &nic.pci) {
+            let dir = ctx.roots.proc(&format!("irq/{irq}"));
+            let cpus = read_trim(&dir.join("effective_affinity_list"))
+                .or_else(|| read_trim(&dir.join("smp_affinity_list")))
+                .map(|s| parse_cpulist(&s))
+                .unwrap_or_default();
+            if cpus.iter().any(|c| isolated.contains(c)) {
+                on_isolated.push((irq, label.to_string(), cpus));
+            }
+        }
+    }
+    let balance = if irqbalance_running(ctx.roots) {
+        "; the irqbalance daemon is running and may move interrupts back onto the isolated cores unless it bans them (IRQBALANCE_BANNED_CPULIST)"
+    } else {
+        ""
+    };
+    if on_isolated.is_empty() {
+        return hint(
+            id,
+            Level::Ok,
+            title,
+            format!("NIC interrupts are off the isolated cores{balance}"),
+            "",
+        );
+    }
+    let list = on_isolated
+        .iter()
+        .map(|(irq, nic, cpus)| format!("IRQ {irq} of {nic} on core(s) {}", fmt_cpus(cpus)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let online = ctx.roots.online_cpus();
+    let housekeeping: Vec<u32> = online
+        .into_iter()
+        .filter(|c| !isolated.contains(c))
+        .collect();
+    let h = hint(
+        id,
+        Level::Warn,
+        title,
+        format!(
+            "{list}; the isolated cores are {}{balance}. The commands move them to the housekeeping cores {} (the online cores minus the isolated ones); the kernel refuses to move managed interrupts",
+            fmt_cpus(&isolated),
+            fmt_cpus(&housekeeping)
+        ),
+        "Move the NIC interrupts to the housekeeping cores (smp_affinity_list) and keep irqbalance off the isolated cores.",
+    );
+    if housekeeping.is_empty() {
+        return h;
+    }
+    let target = fmt_cpus(&housekeeping);
+    on_isolated.sort_by_key(|(irq, _, _)| *irq);
+    h.with_commands(
+        on_isolated
+            .iter()
+            .map(|(irq, _, _)| format!("echo {target} > /proc/irq/{irq}/smp_affinity_list"))
+            .collect(),
+    )
+}
+
+// ---- VM tunables ---------------------------------------------------------------
+
+/// A `vm.*` sysctl that should be 0: `None` when the file is absent or unreadable.
+fn vm_zero(ctx: &Ctx, id: &str, title: &str, name: &str, why: &str, missing: Level) -> Hint {
+    let path = ctx.roots.proc(&format!("sys/vm/{name}"));
+    let Some(value) = read_trim(&path) else {
+        return hint(
+            id,
+            missing,
+            title,
+            format!("vm.{name} is not readable on this host"),
+            "",
+        );
+    };
+    match value.parse::<u64>() {
+        Ok(0) => hint(id, Level::Ok, title, format!("vm.{name} is 0"), ""),
+        Ok(v) => hint(
+            id,
+            Level::Info,
+            title,
+            format!("vm.{name} is {v}, the target is 0; {why}"),
+            &format!("Set vm.{name} to 0 (sysctl -w vm.{name}=0)."),
+        )
+        .with_commands(vec![format!("sysctl -w vm.{name}=0")]),
+        Err(_) => hint(
+            id,
+            missing,
+            title,
+            format!("vm.{name} holds {value:?}, not a number"),
+            "",
+        ),
+    }
+}
+
+fn swappiness(ctx: &Ctx) -> Hint {
+    vm_zero(
+        ctx,
+        "swappiness",
+        "vm.swappiness",
+        "swappiness",
+        "swapping out a worker's memory causes latency spikes",
+        Level::Ok,
+    )
+}
+
+fn zone_reclaim_mode(ctx: &Ctx) -> Hint {
+    // a host without NUMA has no such file, which is fine
+    vm_zero(
+        ctx,
+        "zone_reclaim_mode",
+        "vm.zone_reclaim_mode",
+        "zone_reclaim_mode",
+        "reclaiming local memory instead of using another node stalls allocations",
+        Level::Ok,
+    )
+}
+
+// ---- kernel command line (hint-only) -------------------------------------------
+
+fn rcu_nocb_poll(ctx: &Ctx) -> Hint {
+    let title = "RCU callback polling";
+    if ctx
+        .roots
+        .cmdline()
+        .split_whitespace()
+        .any(|w| w == "rcu_nocb_poll")
+    {
+        hint(
+            "rcu_nocb_poll",
+            Level::Ok,
+            title,
+            "rcu_nocb_poll is set".into(),
+            "",
+        )
+    } else {
+        hint(
+            "rcu_nocb_poll",
+            Level::Info,
+            title,
+            "rcu_nocb_poll is not on the kernel command line".into(),
+            "Add rcu_nocb_poll to the kernel command line so the RCU offload threads poll instead of waking the isolated cores.",
         )
     }
 }
 
-// ---- IOMMU, MTU, PCIe --------------------------------------------------------
+fn boot_hugepages(ctx: &Ctx) -> Hint {
+    let title = "Boot-time 1 GiB hugepages";
+    let cmdline = ctx.roots.cmdline();
+    let has = |w: &str| {
+        cmdline
+            .split_whitespace()
+            .any(|x| x.eq_ignore_ascii_case(w))
+    };
+    let count = cmdline
+        .split_whitespace()
+        .any(|x| x.strip_prefix("hugepages=").is_some_and(|n| !n.is_empty()));
+    if has("default_hugepagesz=1G") && has("hugepagesz=1G") && count {
+        hint(
+            "boot_hugepages",
+            Level::Ok,
+            title,
+            "1 GiB hugepages are reserved on the kernel command line".into(),
+            "",
+        )
+    } else {
+        hint(
+            "boot_hugepages",
+            Level::Info,
+            title,
+            "no complete boot-time 1 GiB hugepage reservation (default_hugepagesz=1G, hugepagesz=1G and hugepages=<n>) is on the kernel command line".into(),
+            "Reserve hugepages at boot with default_hugepagesz=1G hugepagesz=1G hugepages=<n>; it is the only reliable way to get contiguous 1 GiB pages.",
+        )
+    }
+}
+
+// ---- IOMMU, MTU --------------------------------------------------------
 
 fn iommu(ctx: &Ctx) -> Hint {
     let title = "IOMMU";
@@ -606,77 +961,4 @@ fn mtu(ctx: &Ctx) -> Hint {
             "Set the interface MTU to at least 1500.",
         )
     }
-}
-
-/// MaxReadReq in bytes from the PCIe capability in the PCI config space.
-fn max_read_req(config: &[u8]) -> Option<u32> {
-    let mut ptr = usize::from(*config.get(0x34)? & 0xfc);
-    for _ in 0..48 {
-        if ptr == 0 {
-            return None;
-        }
-        let (id, next) = (*config.get(ptr)?, *config.get(ptr + 1)?);
-        if id == 0x10 {
-            let ctl = u16::from_le_bytes([*config.get(ptr + 8)?, *config.get(ptr + 9)?]);
-            return match (ctl >> 12) & 7 {
-                code @ 0..=5 => Some(128 << code),
-                _ => None,
-            };
-        }
-        ptr = usize::from(next & 0xfc);
-    }
-    None
-}
-
-fn maxreadreq(ctx: &Ctx) -> Hint {
-    let title = "PCIe MaxReadReq";
-    let nics = ctx.used_nics();
-    if nics.is_empty() {
-        return hint(
-            "pcie_maxreadreq",
-            Level::Ok,
-            title,
-            "no PCI NIC is used".into(),
-            "",
-        );
-    }
-    let (mut level, mut details) = (Level::Ok, Vec::new());
-    let mut unreadable = Vec::new();
-    for n in nics {
-        match fs::read(ctx.roots.pci_dir(&n.pci).join("config"))
-            .ok()
-            .as_deref()
-            .and_then(max_read_req)
-        {
-            None => unreadable.push(n.pci.clone()),
-            Some(b) => {
-                let l = match b {
-                    0..=1023 => Level::Warn,
-                    1024..=4095 => Level::Info,
-                    _ => Level::Ok,
-                };
-                level = level.max(l);
-                details.push(format!("{}: {b} B", n.pci));
-            }
-        }
-    }
-    if !unreadable.is_empty() {
-        level = level.max(Level::Info);
-        details.push(format!(
-            "{}: not readable (needs root and a PCIe device)",
-            unreadable.join(", ")
-        ));
-    }
-    let suggestion = if level == Level::Ok {
-        ""
-    } else {
-        "Raise the PCIe maximum read request size to 4096 B (the README shows how); 1024 B and above is acceptable."
-    };
-    hint(
-        "pcie_maxreadreq",
-        level,
-        title,
-        details.join("; "),
-        suggestion,
-    )
 }

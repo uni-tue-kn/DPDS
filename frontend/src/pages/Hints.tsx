@@ -1,4 +1,5 @@
-import { Badge } from 'react-bootstrap';
+import { useId } from 'react';
+import { Badge, Button, OverlayTrigger, Tooltip } from 'react-bootstrap';
 import * as api from '../api/client';
 import ErrorAlert from '../components/ErrorAlert';
 import { useLoad } from '../common/useLoad';
@@ -12,6 +13,47 @@ const GROUPS: { level: HintLevel; title: string; bg: string }[] = [
   { level: 'ok', title: 'OK', bg: 'success' },
 ];
 
+/**
+ * The commands of a hint: a terminal icon whose tooltip (hover or focus) lists them, and a button that copies them.
+ * DPDS never runs them; an administrator does, as root.
+ */
+function Commands({ hint, commands }: { hint: Hint; commands: string[] }) {
+  const id = useId();
+  // Read at click time: plain http has no clipboard, and a refused write must not become an unhandled rejection.
+  const copy = () => {
+    navigator.clipboard?.writeText(commands.join('\n')).catch(() => {});
+  };
+  return (
+    <div className="mt-1">
+      <OverlayTrigger
+        placement="top"
+        trigger={['hover', 'focus']}
+        overlay={
+          <Tooltip id={id}>
+            <pre className="text-start mb-1">
+              <code>{commands.join('\n')}</code>
+            </pre>
+            Run as root on the DPDS host.
+          </Tooltip>
+        }
+      >
+        <Button
+          type="button"
+          size="sm"
+          variant="outline-secondary"
+          className="me-2"
+          aria-label={`Commands for ${hint.title}`}
+        >
+          <i className="bi bi-terminal" aria-hidden="true" />
+        </Button>
+      </OverlayTrigger>
+      <Button type="button" size="sm" variant="outline-primary" onClick={copy}>
+        Copy commands
+      </Button>
+    </div>
+  );
+}
+
 export default function Hints() {
   const { doc, corrupt } = useLocalConfig();
   // Host-only hints, plus the ones that depend on the links of this browser's configuration (nothing is started).
@@ -19,6 +61,7 @@ export default function Hints() {
   const forLinks = useLoad(() =>
     corrupt || doc.links.length === 0 ? Promise.resolve([]) : api.getHostHintsFor(startRequestOf(doc)),
   );
+
   const settled = (host.data ?? host.error) !== undefined && (forLinks.data ?? forLinks.error) !== undefined;
   // By hint id; the answer for the links wins.
   const data: Hint[] | undefined = settled
@@ -51,6 +94,7 @@ export default function Hints() {
                       <i className="bi bi-arrow-right-short" aria-hidden="true" />
                       {h.suggestion}
                     </div>
+                    {h.commands && h.commands.length > 0 && <Commands hint={h} commands={h.commands} />}
                   </li>
                 ))}
               </ul>

@@ -1,10 +1,16 @@
-//! Access to the host files the controller reads (sysfs and procfs), rooted at
-//! configurable directories so tests can point at fake trees.
+//! Access to the host: the files the controller reads (sysfs and procfs), rooted at
+//! configurable directories so tests can point at fake trees, and the one way it runs a host
+//! tool ([`Exec`]). The controller never changes the host.
 
 use std::ffi::CStr;
 use std::fs;
+use std::io::{self, Read};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 /// Where the IP addresses of the host's interfaces come from.
 #[derive(Debug, Clone)]
@@ -83,11 +89,78 @@ fn system_addresses() -> Vec<(String, IpAddr)> {
     out
 }
 
+/// What a finished command printed.
+#[derive(Debug, Clone)]
+pub struct CommandOutput {
+    pub code: i32,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+/// How the controller runs a host tool. Reads of sysfs and procfs stay plain `fs`; the controller
+/// only ever asks tools for their state and never changes the host. Tests replace it.
+pub trait Exec: Send + Sync + std::fmt::Debug {
+    /// Runs `argv[0]` with the other elements as arguments (no shell), waits at most `timeout`,
+    /// kills and reaps the process when that runs out and returns `Err(ErrorKind::TimedOut)`.
+    /// `Err` with `ErrorKind::NotFound` means the tool is not installed.
+    fn run(&self, argv: &[String], timeout: Duration) -> io::Result<CommandOutput>;
+}
+
+/// The real thing: `std::process::Command`.
+#[derive(Debug, Clone, Copy)]
+pub struct SystemExec;
+
+/// Reads a pipe to its end on its own thread, so a large answer never blocks the tool.
+fn drain<R: Read + Send + 'static>(mut pipe: R) -> JoinHandle<String> {
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = pipe.read_to_end(&mut bytes);
+        String::from_utf8_lossy(&bytes).into_owned()
+    })
+}
+
+impl Exec for SystemExec {
+    fn run(&self, argv: &[String], timeout: Duration) -> io::Result<CommandOutput> {
+        let (tool, args) = argv
+            .split_first()
+            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+        let mut child = Command::new(tool)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let stdout = child.stdout.take().map(drain);
+        let stderr = child.stderr.take().map(drain);
+        let deadline = Instant::now() + timeout;
+        let status = loop {
+            if let Some(status) = child.try_wait()? {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                // the reader threads end by themselves when the pipes close
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(io::Error::from(io::ErrorKind::TimedOut));
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let text =
+            |h: Option<JoinHandle<String>>| h.and_then(|h| h.join().ok()).unwrap_or_default();
+        Ok(CommandOutput {
+            code: status.code().unwrap_or(-1),
+            stdout: text(stdout),
+            stderr: text(stderr),
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct HostRoots {
     pub sysfs: PathBuf,
     pub procfs: PathBuf,
     pub ifaddrs: IfAddrs,
+    pub exec: Arc<dyn Exec>,
 }
 
 impl HostRoots {
@@ -96,6 +169,7 @@ impl HostRoots {
             sysfs: PathBuf::from("/sys"),
             procfs: PathBuf::from("/proc"),
             ifaddrs: IfAddrs::System,
+            exec: Arc::new(SystemExec),
         }
     }
 
@@ -146,6 +220,39 @@ impl HostRoots {
                 .map(|v| parse_cpulist(&v))
                 .unwrap_or_default(),
         }
+    }
+
+    /// CPUs the kernel runs without the scheduler tick (`nohz_full=`); empty when unset.
+    pub fn nohz_full_cpus(&self) -> Vec<u32> {
+        read_trim(&self.sys("devices/system/cpu/nohz_full"))
+            .map(|s| parse_cpulist(&s))
+            .unwrap_or_default()
+    }
+
+    /// Whether the host runs under a hypervisor, by `/sys/hypervisor` or the DMI vendor.
+    pub fn in_vm(&self) -> bool {
+        const VM_NAMES: [&str; 10] = [
+            "qemu",
+            "kvm",
+            "vmware",
+            "xen",
+            "virtualbox",
+            "innotek",
+            "bochs",
+            "openstack",
+            "amazon ec2",
+            "google compute",
+        ];
+        if self.sys("hypervisor/type").exists() {
+            return true;
+        }
+        ["sys_vendor", "product_name"].iter().any(|f| {
+            read_trim(&self.sys(&format!("class/dmi/id/{f}")))
+                .map(|v| v.to_ascii_lowercase())
+                .is_some_and(|v| {
+                    VM_NAMES.iter().any(|n| v.contains(n)) || v.contains("virtual machine")
+                })
+        })
     }
 
     /// NUMA node of a CPU from `node<N>/cpulist`; `None` without NUMA information.

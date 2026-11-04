@@ -161,8 +161,11 @@
 #          directory of older installs) when it exists, through the privileged helper (sudo), and says so in an info line that
 #          names the directory; with no leftover it says nothing about it. Nothing installed => still exit 0.
 #
-# Never tunes the host: no ethtool, setpci, sysctl, mlxconfig, cpupower, hugepage/proc/sys writes,
-# neither in the script nor in the unit file (the controller only reports hints).
+# Never tunes the host: no ethtool, dcb, setpci, sysctl, mlxconfig, mstconfig, cpupower, hugepage/proc/sys writes,
+# neither in the script nor in the unit file. Spec 33: the controller does not tune either; its `check` prints the root
+# commands an administrator would run, indented under each hint after a `# run as root:` line, and dpds.sh shows the
+# controller's lines exactly as they are (the stub controller below answers STUB_CONTROLLER_HINT_TEXT, which may span
+# several lines). dpds.sh never runs those commands and never calls the controller's routes.
 #
 # packaging/dpds-controller.service
 #   runs as root (no User= or User=root), `EnvironmentFile=-/etc/dpds/controller.env`,
@@ -232,7 +235,7 @@ BASE_UTILS="bash sh env timeout cat sed grep awk date mkdir cp install rm rmdir 
   head tail sort uniq cut chmod chown ln mv id uname wc sleep touch find xargs stat realpath mktemp ls
   true false cmp expr hostname whoami diff printf test tty"
 # Any call to one of these is a tuning attempt (tripwires).
-TUNING_TOOLS="ethtool setpci sysctl mlxconfig mlxfwreset cpupower tuned-adm grubby update-grub modprobe insmod"
+TUNING_TOOLS="ethtool dcb setpci sysctl mlxconfig mstconfig mlxfwreset mstfwreset cpupower tuned-adm grubby update-grub modprobe insmod"
 # The tools every stub run provides.
 STUB_TOOLS="sudo systemctl docker cargo git curl pkg-config clang ld.lld rustc node npm"
 
@@ -308,6 +311,7 @@ echo "dpds-controller $*" >> "${STUB_LOG:?}"
 echo "$0" >> "${STUB_LOG}.ctlpaths"
 if [ "${1:-}" = check ]; then
   echo "CHECK-OUTPUT-MARKER"
+  [ -n "${STUB_CONTROLLER_HINT_TEXT:-}" ] && echo "$STUB_CONTROLLER_HINT_TEXT"
   [ -n "${STUB_CONTROLLER_ERR:-}" ] && echo "$STUB_CONTROLLER_ERR" >&2
   exit "${STUB_CONTROLLER_RC:-0}"
 fi
@@ -326,7 +330,7 @@ setup_sandbox() {
   export STUB_LOG="$T/calls.log"
   : >"$STUB_LOG"; : >"$STUB_LOG.dirs"; : >"$STUB_LOG.sudo"; : >"$STUB_LOG.dist"; : >"$STUB_LOG.docker"
   unset STUB_ACTIVE STUB_NO_LIBDPDK STUB_RUSTC_LLVM STUB_CLANG_VERSION STUB_LLD_VERSION \
-        STUB_CONTROLLER_RC STUB_CONTROLLER_ERR STUB_CARGO_FAIL STUB_SYSTEMCTL_RC STUB_SYSTEMCTL_FAIL_SUB \
+        STUB_CONTROLLER_RC STUB_CONTROLLER_ERR STUB_CONTROLLER_HINT_TEXT STUB_CARGO_FAIL STUB_SYSTEMCTL_RC STUB_SYSTEMCTL_FAIL_SUB \
         STUB_GIT_FAIL_SUB STUB_CURL_RC DPDS_BIND STUB_GIT_DIRTY STUB_GIT_DIRTY_FRONTEND STUB_GIT_BRANCH \
         STUB_GIT_TAGS STUB_GIT_HEAD_COMMIT STUB_GIT_NOT_A_REPO DPDS_CHANNEL STUB_ONLINE_JSON STUB_NODE_VERSION STUB_NPM_FAIL_SUB STUB_NPM_NO_INDEX STUB_NPM_BUILD_NOOP STUB_DPDK_VERSION STUB_RUSTC_VERSION \
         DPDS_FRONTEND_DIST DPDS_FRONTEND_ASSET_URL
@@ -565,7 +569,7 @@ for p in "${pkgs[@]}"; do
 #!/bin/bash
 echo "dpds-controller $*" >> "${STUB_LOG:?}"
 echo "$0" >> "${STUB_LOG}.ctlpaths"
-if [ "${1:-}" = check ]; then echo "CHECK-OUTPUT-MARKER"; [ -n "${STUB_CONTROLLER_ERR:-}" ] && echo "$STUB_CONTROLLER_ERR" >&2; exit "${STUB_CONTROLLER_RC:-0}"; fi
+if [ "${1:-}" = check ]; then echo "CHECK-OUTPUT-MARKER"; [ -n "${STUB_CONTROLLER_HINT_TEXT:-}" ] && echo "$STUB_CONTROLLER_HINT_TEXT"; [ -n "${STUB_CONTROLLER_ERR:-}" ] && echo "$STUB_CONTROLLER_ERR" >&2; exit "${STUB_CONTROLLER_RC:-0}"; fi
 exit 0
 CTL
       echo "# STUB-BINARY-dpds-controller" >>"$out/dpds-controller"
@@ -2780,9 +2784,52 @@ test_no_tuning_tool_is_ever_called() {
   ! grep -Eq '/proc/|/sys/|nr_hugepages|hugepages' "$STUB_LOG.sudo" || fail "privileged command touches /proc, /sys or hugepages: $(grep -E '/proc/|/sys/|hugepages' "$STUB_LOG.sudo" | head -3 | tr '\n' '|')"
 }
 
+# Spec 33: the controller's check output, with the commands it suggests under a hint, is shown as it is (indentation and
+# order kept), once, and nothing is run.
+CONTROLLER_HINT_BLOCK='INFO  vm.swappiness: vm.swappiness is 60, the target is 0 -> Set it to 0.
+    # run as root:
+    sysctl -w vm.swappiness=0
+WARN  CPU governor: cores 2-3 use powersave -> Use performance.
+    # run as root:
+    echo performance > /sys/devices/system/cpu/cpu2/cpufreq/scaling_governor
+    echo performance > /sys/devices/system/cpu/cpu3/cpufreq/scaling_governor'
+
+assert_hint_block_shown_unchanged() {
+  local line
+  while IFS= read -r line; do
+    assert_eq "$(grep -cxF -- "$line" <<<"$OUT")" "$(grep -cxF -- "$line" <<<"$CONTROLLER_HINT_BLOCK")" "line shown as often as the controller printed it: $line"
+  done <<<"$CONTROLLER_HINT_BLOCK"
+  assert_eq "$(grep -F -x -A2 -- "INFO  vm.swappiness: vm.swappiness is 60, the target is 0 -> Set it to 0." <<<"$OUT")" "$(head -n 3 <<<"$CONTROLLER_HINT_BLOCK")" "the commands stay right under their hint, indented"
+  assert_eq "$(grep -F -x -A3 -- "WARN  CPU governor: cores 2-3 use powersave -> Use performance." <<<"$OUT")" "$(tail -n 4 <<<"$CONTROLLER_HINT_BLOCK")" "the second block stays whole"
+}
+
+test_check_prints_the_controllers_command_blocks_unchanged_and_runs_nothing() {
+  local c
+  write_controller_stub "$DPDS_PREFIX/bin/dpds-controller"
+  export STUB_CONTROLLER_HINT_TEXT="$CONTROLLER_HINT_BLOCK"
+  run_dpds check
+  assert_rc 0 "$ERR"
+  assert_hint_block_shown_unchanged
+  assert_log_has '^dpds-controller check'
+  assert_log_lacks 'host/actions'
+  assert_log_lacks '^curl '
+  for c in $TUNING_TOOLS; do assert_log_lacks "^$c( |\$)"; done
+}
+
+test_install_shows_the_command_blocks_unchanged_and_runs_nothing() {
+  local c
+  export STUB_CONTROLLER_HINT_TEXT="$CONTROLLER_HINT_BLOCK"
+  run_dpds --yes install
+  assert_rc 0 "$ERR"
+  assert_hint_block_shown_unchanged
+  assert_log_lacks 'host/actions'
+  for c in $TUNING_TOOLS; do assert_log_lacks "^$c( |\$)"; done
+}
+
 test_script_source_contains_no_tuning_commands() {
   local pat
-  for pat in 'ethtool' 'setpci' 'sysctl' 'mlxconfig' 'mlxfwreset' 'cpupower' 'nr_hugepages' 'hugepages-' 'isolcpus' 'tuned-adm' '/proc/sys' 'update-grub' 'grubby'; do
+  for pat in 'ethtool' 'setpci' 'sysctl' 'mlxconfig' 'mlxfwreset' 'cpupower' 'nr_hugepages' 'hugepages-' 'isolcpus' 'tuned-adm' '/proc/sys' 'update-grub' 'grubby' \
+             'mstconfig' 'mstfwreset' 'dcb buffer' 'smp_affinity' 'scaling_governor' 'swappiness' 'zone_reclaim' 'host/actions'; do
     # comments may talk about them (e.g. "never runs ethtool"); executable lines may not
     ! grep -v '^[[:space:]]*#' "$SCRIPT" | grep -Eq -- "$pat" || fail "dpds.sh has a non-comment line mentioning '$pat'"
   done

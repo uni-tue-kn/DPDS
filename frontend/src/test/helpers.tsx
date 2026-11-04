@@ -76,7 +76,7 @@
 //   in a role=alert while the host-only hints stay; a failing GET shows its message.
 // ### Removed REST surface
 //   `src/api/client.ts` exports exactly: ApiError, getOnline, getInterfaces, getHostHints, getHostHintsFor, getEmulation,
-//   startEmulation, stopEmulation, getStats, getDelayHistogram. No function for /links, /presets, /settings, /export,
+//   startEmulation, stopEmulation, getStats, getDelayHistogram (+ getStatsHistory, spec 29; no applyHostAction since spec 33: DPDS never changes the host). No function for /links, /presets, /settings, /export,
 //   /import. The mocked module (`mockApi.ts`) has the same surface, so a page that still calls a removed function fails.
 // ### Optional stages (delayer, limiter, dropper added on demand)
 //   - `ConfigDto.delayer`, `.limiter`, `.loss_model` are `X | null | undefined` (null/absent = stage not added).

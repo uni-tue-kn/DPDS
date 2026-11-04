@@ -653,3 +653,178 @@ fn the_readme_documents_get_api_stats_history() {
         assert!(item.contains(field), "the answer's {field}: {item}");
     }
 }
+
+// ---- spec 33: DPDS never changes the host; hints show the commands for an administrator --------
+//
+// Spec 32's Apply (route, button, `action`) is gone. The controller section says that neither
+// `dpds.sh`, the controller nor the frontend changes the host, that a hint can carry `commands`
+// which an administrator runs as root, what `dpds-controller check` prints under a hint, and the
+// Security item keeps saying what reaching the port allows: starting and stopping `dpds`.
+
+fn items_with_all(needles: &[&str]) -> Vec<String> {
+    let mut items = controller_items_with(needles[0]);
+    items.retain(|i| needles.iter().all(|n| i.contains(n)));
+    items
+}
+
+#[test]
+fn the_readme_has_no_apply_route_button_or_action_left() {
+    let text = readme();
+    for gone in [
+        "/api/host/actions",
+        "Host action route",
+        "Host actions**",
+        "Apply in the frontend",
+        "Apply button",
+        "carries an `action`",
+        "allow-listed",
+        "never restores an old value",
+        "Tuning is never applied",
+        "they only report hints and suggestions",
+    ] {
+        assert!(!text.contains(gone), "README still says {gone:?}");
+    }
+}
+
+#[test]
+fn the_readme_says_dpds_never_changes_the_host() {
+    let items = controller_items_with("never changes the host");
+    assert!(
+        !items.is_empty(),
+        "no item of the controller section says that DPDS never changes the host"
+    );
+    let item = items.join(" ").to_lowercase();
+    for who in ["`dpds.sh`", "controller", "frontend"] {
+        assert!(
+            item.contains(who),
+            "the item names {who} among those that never change the host: {item}"
+        );
+    }
+    assert!(
+        item.contains("administrator") && item.contains("as root"),
+        "an administrator runs the commands as root: {item}"
+    );
+}
+
+#[test]
+fn the_readme_documents_the_commands_of_a_hint() {
+    let items = controller_items_with("`commands`");
+    assert!(
+        !items.is_empty(),
+        "no item documents the `commands` of a hint"
+    );
+    let item = items.join(" ").to_lowercase();
+    assert!(
+        item.contains("exact") && item.contains("as root") && item.contains("administrator"),
+        "the exact commands an administrator runs as root: {item}"
+    );
+    assert!(
+        item.contains("apt install"),
+        "a missing tool gets an `apt install` command: {item}"
+    );
+    assert!(
+        item.contains("memavailable") && item.contains("half"),
+        "hugepage counts are capped at half of MemAvailable: {item}"
+    );
+    assert!(
+        item.contains("read-only") && item.contains("30"),
+        "the tools are only queried, read-only, with a 30 s timeout: {item}"
+    );
+    assert!(
+        item.contains("not checked while an emulation is running"),
+        "no tool runs while an emulation runs: {item}"
+    );
+}
+
+#[test]
+fn the_readme_says_what_check_prints_under_a_hint() {
+    let items = items_with_all(&["`dpds-controller check`", "`# run as root:`"]);
+    assert!(
+        !items.is_empty(),
+        "no item says that `dpds-controller check` prints `# run as root:` and the commands"
+    );
+    let item = items.join(" ").to_lowercase();
+    assert!(
+        item.contains("indented"),
+        "the commands are indented: {item}"
+    );
+    assert!(item.contains("commands"), "{item}");
+}
+
+#[test]
+fn the_security_item_says_what_reaching_the_port_allows_and_that_the_host_stays_unchanged() {
+    let items = controller_items_with("**Security**");
+    assert!(!items.is_empty(), "no Security item");
+    let item = items.join(" ").to_lowercase();
+    assert!(
+        item.contains("start") && item.contains("stop") && item.contains("`dpds`"),
+        "reaching the port allows starting and stopping `dpds`: {item}"
+    );
+    assert!(
+        [
+            "cannot change the host",
+            "not change the host",
+            "no host change",
+            "never changes the host"
+        ]
+        .iter()
+        .any(|p| item.contains(p)),
+        "and nothing on the host: {item}"
+    );
+}
+
+#[test]
+fn the_readme_lists_the_checks_the_tools_and_the_hint_only_command_line_checks() {
+    let section = controller_section(&readme()).to_lowercase();
+    for name in [
+        "vm.swappiness",
+        "zone_reclaim_mode",
+        "irq_affinity",
+        "flow control",
+        "maxreadreq",
+        "port buffer",
+        "governor",
+        "hugepages",
+        "max_acc_out_read",
+        "cqe_compression",
+    ] {
+        assert!(
+            section.contains(name),
+            "the controller section never names {name}"
+        );
+    }
+    for tool in ["ethtool", "`dcb`", "iproute2", "mstconfig", "mstflint"] {
+        assert!(
+            section.contains(tool),
+            "the controller section never names {tool}"
+        );
+    }
+    let items = controller_items_with("`rcu_nocb_poll`")
+        .join(" ")
+        .to_lowercase();
+    assert!(
+        items.contains("kernel command line")
+            && (items.contains("hint-only") || items.contains("hint only")),
+        "the kernel command line checks are hint-only: {items}"
+    );
+    assert!(
+        !section.contains("irqbalance` hint"),
+        "the irqbalance hint is replaced by irq_affinity"
+    );
+}
+
+#[test]
+fn the_readme_says_dpds_sh_tunes_nothing() {
+    let tunes_nothing = controller_items_with("`dpds.sh`")
+        .into_iter()
+        .map(|i| i.to_lowercase())
+        .any(|i| i.contains("never tunes") || i.contains("does not tune"));
+    assert!(
+        tunes_nothing,
+        "no item says that `dpds.sh` never tunes the host"
+    );
+    assert!(
+        controller_section(&readme()).contains("Host hints"),
+        "the Host hints page is named"
+    );
+}

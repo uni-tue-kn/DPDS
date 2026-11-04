@@ -10,7 +10,7 @@ use clap::{Args, Parser, Subcommand};
 use dpds_controller::api::{self, Deps};
 use dpds_controller::frontend::Frontend;
 use dpds_controller::hints::{compute_hints, Level};
-use dpds_controller::host::{HostRoots, IfAddrs};
+use dpds_controller::host::{HostRoots, IfAddrs, SystemExec};
 use dpds_controller::model::RunConfig;
 use dpds_controller::supervisor::ProcessSupervisor;
 use dpds_controller::telemetry::{socket_path, Poller};
@@ -36,7 +36,7 @@ struct Cli {
 enum Command {
     /// Run the REST API and supervise `dpds` (default).
     Serve(ServeArgs),
-    /// Print the read-only host hints; exit 1 if any is an error.
+    /// Print the host hints (changes nothing); exit 1 if any is an error.
     Check(CheckArgs),
 }
 
@@ -75,6 +75,7 @@ impl HostArgs {
             sysfs: self.sysfs_root.clone(),
             procfs: self.procfs_root.clone(),
             ifaddrs,
+            exec: Arc::new(SystemExec),
         })
     }
 }
@@ -136,7 +137,7 @@ fn main() -> ExitCode {
 }
 
 fn check(a: &CheckArgs) -> Result<ExitCode, String> {
-    let hints = compute_hints(&a.host.roots()?, &RunConfig::default());
+    let hints = compute_hints(&a.host.roots()?, &RunConfig::default(), true);
     if a.json {
         println!(
             "{}",
@@ -149,6 +150,12 @@ fn check(a: &CheckArgs) -> Result<ExitCode, String> {
                 line.push_str(&format!(" -> {}", h.suggestion));
             }
             println!("{line}");
+            if !h.commands.is_empty() {
+                println!("  # run as root:");
+                for c in &h.commands {
+                    println!("  {c}");
+                }
+            }
         }
     }
     let failed = hints.iter().any(|h| h.level == Level::Error);

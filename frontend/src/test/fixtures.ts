@@ -220,13 +220,29 @@ export function hints(): Hint[] {
       suggestion: 'Nothing to do.',
     },
     {
-      id: 'irqbalance',
+      id: 'irq_affinity',
       level: 'ok',
-      title: 'irqbalance not running',
-      detail: 'No irqbalance process.',
+      title: 'NIC IRQs are off the isolated cores',
+      detail: 'No NIC interrupt is placed on an isolated core.',
       suggestion: 'None.',
     },
   ];
+}
+
+/**
+ * Spec 33: a hint that suggests shell commands for an administrator (`commands` set). DPDS never runs them; the page
+ * shows them in a tooltip and can copy them. The commands are what the controller computes from the host it read.
+ */
+export function commandsHint(over: Partial<Hint> = {}): Hint {
+  return {
+    id: 'swappiness',
+    level: 'info',
+    title: 'vm.swappiness is 60',
+    detail: 'Current value 60, target 0.',
+    suggestion: 'Set vm.swappiness to 0.',
+    commands: ['sysctl -w vm.swappiness=0'],
+    ...over,
+  };
 }
 
 export function settings(over: Partial<Settings> = {}): Settings {

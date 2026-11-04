@@ -344,6 +344,12 @@ fn validate_config(config: &RunConfig) -> Result<(), ApiError> {
     if config.links.is_empty() {
         return Err(ApiError::bad("nothing to start: the body has no links"));
     }
+    validate_body(config)
+}
+
+/// The checks of a start body that do not need a link: the settings, every link and the
+/// telemetry limit.
+fn validate_body(config: &RunConfig) -> Result<(), ApiError> {
     validate_settings(&config.settings)?;
     for (i, l) in config.links.iter().enumerate() {
         validate_link(l, &config.links[..i])?;
@@ -474,12 +480,18 @@ async fn interfaces(State(app): Shared) -> Result<Json<Vec<Interface>>, ApiError
 )]
 async fn host_hints(State(app): Shared) -> Result<Json<Vec<Hint>>, ApiError> {
     Ok(Json(
-        blocking(move || compute_hints(&app.deps.roots, &RunConfig::default())).await?,
+        blocking(move || {
+            let tools = tools_may_run(&app);
+            compute_hints(&app.deps.roots, &RunConfig::default(), tools)
+        })
+        .await?,
     ))
 }
 
-/// The host hints plus the ones that depend on the links of a configuration. The
-/// configuration is only read: nothing is validated, started or kept.
+/// The host hints plus the ones that depend on the links of a configuration. The body is
+/// validated like the start body (400 naming the field; links may be empty, which gives the host
+/// hints), but nothing is planned, started or kept, so a port the host uses is a hint, not a 409.
+/// Hints suggest root commands for an administrator; DPDS runs none of them.
 #[utoipa::path(
     post, path = "/api/host/hints", request_body = StartRequest,
     responses(
@@ -492,9 +504,22 @@ async fn host_hints_for(
     ApiJson(req): ApiJson<StartRequest>,
 ) -> Result<Json<Vec<Hint>>, ApiError> {
     let config = req.into_run_config();
+    validate_body(&config)?;
     Ok(Json(
-        blocking(move || compute_hints(&app.deps.roots, &config)).await?,
+        blocking(move || {
+            let tools = tools_may_run(&app);
+            compute_hints(&app.deps.roots, &config, tools)
+        })
+        .await?,
     ))
+}
+
+/// Host tools only run while no emulation is starting, running or stopping.
+fn tools_may_run(app: &App) -> bool {
+    matches!(
+        app.deps.supervisor.status().state,
+        RunState::Stopped | RunState::Failed
+    )
 }
 
 #[utoipa::path(
