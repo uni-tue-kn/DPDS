@@ -150,9 +150,22 @@ impl HistorySample {
     }
 }
 
+/// A link of the run a history belongs to, to title its charts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct HistoryLink {
+    pub name: String,
+    pub ingress: String,
+    pub egress: String,
+}
+
 /// Answer of `GET /api/stats/history`.
 #[derive(Debug, Clone, Default, Serialize, ToSchema)]
 pub struct HistoryView {
+    /// Identity of the run: one more with every new run the controller sees; null before any run.
+    pub run_id: Option<u64>,
+    /// The links of that run, in the order of the start body (the keys of `samples`); empty
+    /// before any run.
+    pub links: Vec<HistoryLink>,
     /// Unix seconds, as `/api/emulation` reports it; null while nothing has run.
     pub started_at: Option<u64>,
     /// Per link index (in the order of the start body), the samples with `t_ms` above the

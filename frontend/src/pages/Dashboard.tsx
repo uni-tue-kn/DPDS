@@ -1,22 +1,19 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Alert, Badge, Button, Card, Spinner } from 'react-bootstrap';
 import * as api from '../api/client';
-import ErrorAlert from '../components/ErrorAlert';
+import type { DirectionStats, EmulationState, EmulationView, StatsView } from '../api/types';
 import { errorMessage, formatElapsed, formatPct, formatRatePill, linkLabel } from '../common/format';
-import { startPolling } from '../common/polling';
-import { usePortLabeler } from '../common/portLabel';
 import { readConfig, startRequestOf, useLocalConfig } from '../common/localConfig';
 import { pendingRestart } from '../common/pendingRestart';
-import LoadRunning from './LoadRunning';
+import { startPolling } from '../common/polling';
+import { usePortLabeler } from '../common/portLabel';
+import { NO_SAMPLES, useRunHistory } from '../common/runHistory';
+import ErrorAlert from '../components/ErrorAlert';
 import DirectionCard from './DirectionCard';
+import LoadRunning from './LoadRunning';
 import PortsTable from './PortsTable';
-import type { DirectionStats, EmulationState, EmulationView, HistorySample, StatsView } from '../api/types';
 
 const POLL_MS = 1000;
-
-/** The series per link index, and the same empty list for every link without samples (stable for the charts' memos). */
-type History = Record<string, HistorySample[]>;
-const NO_SAMPLES: HistorySample[] = [];
 
 const STATE_BG: Record<EmulationState, string> = {
   stopped: 'secondary',
@@ -34,27 +31,6 @@ function keyedLines(lines: string[]): { key: string; line: string }[] {
     seen.set(line, n + 1);
     return { key: `${n}:${line}`, line };
   });
-}
-
-/** `old` plus the new samples of `add`; `old` itself when there is nothing new, so unchanged links keep their lists. */
-function merge(old: History, add: History): History {
-  let out = old;
-  for (const [link, list] of Object.entries(add)) {
-    if (list.length === 0 && link in old) continue;
-    if (out === old) out = { ...old };
-    out[link] = [...(old[link] ?? NO_SAMPLES), ...list];
-  }
-  return out;
-}
-
-/** The newest `t_ms` over all links, undefined without samples. */
-function newestOf(h: History): number | undefined {
-  let newest: number | undefined;
-  for (const list of Object.values(h)) {
-    const t = list.at(-1)?.t_ms;
-    if (t !== undefined && (newest === undefined || t > newest)) newest = t;
-  }
-  return newest;
 }
 
 /** The start request for the configuration as it is stored now, so an edit made in another tab is included. */
@@ -85,7 +61,7 @@ function totalsOf(directions: StatsView['directions']) {
 export default function Dashboard() {
   const [emulation, setEmulation] = useState<EmulationView>();
   const [stats, setStats] = useState<StatsView>();
-  const [history, setHistory] = useState<History>({});
+  const { history, links, error: historyError } = useRunHistory();
   const [pollError, setPollError] = useState<string>();
   const [statsError, setStatsError] = useState<string>();
   /** The stats error the user closed; the warning returns only for a different message. */
@@ -96,8 +72,6 @@ export default function Dashboard() {
   const { doc, corrupt } = useLocalConfig();
   /** A restart has sent its stop and waits for a poll that reports the end, then starts. */
   const [waiting, setWaiting] = useState(false);
-  /** The last live stats of every link, to name its card after a stop. */
-  const lastStats = useRef<Record<number, DirectionStats>>({});
 
   const start = useCallback(async () => {
     try {
@@ -137,32 +111,7 @@ export default function Dashboard() {
         if (!alive) return;
         setStatsError(undefined);
         setDismissed(undefined);
-        for (const d of s.directions) lastStats.current[d.dir] = d;
         setStats(s);
-      },
-      POLL_MS,
-      true,
-    );
-    // The series of the run: everything once, then only what is newer than the newest sample held. Another run
-    // (`started_at` changed) starts at 0 again, so its first answer must be a full one.
-    let run: number | null | undefined; // undefined: nothing received yet
-    let data: History = {};
-    const stopHistoryPoll = startPolling(
-      async () => {
-        const since = newestOf(data);
-        let h = await api.getStatsHistory(since);
-        if (!alive) return;
-        const newRun = h.started_at !== run;
-        if (newRun && since !== undefined) {
-          h = await api.getStatsHistory();
-          if (!alive) return;
-        }
-        run = h.started_at;
-        const next = newRun ? h.samples : merge(data, h.samples);
-        if (next !== data) {
-          data = next;
-          setHistory(next);
-        }
       },
       POLL_MS,
       true,
@@ -171,7 +120,6 @@ export default function Dashboard() {
       alive = false;
       stopEmulationPoll();
       stopStatsPoll();
-      stopHistoryPoll();
     };
   }, []);
 
@@ -212,8 +160,9 @@ export default function Dashboard() {
   const plan = (dir: number) => emulation?.directions.find((p) => p.dir === dir);
   // The controller reports stale: true with no age_ms for a stopped emulation; that is not "old data".
   const showStale = state === 'running' && stats?.stale === true && stats.age_ms != null;
-  // After a stop the controller keeps the run's series until the next start: its final charts stay on the page.
-  const finished = state === 'stopped' && Object.values(history).some((list) => list.length > 0);
+  // After the run ends (or while it ends) the controller keeps its series until the next start: the final charts stay.
+  const ended = state === 'stopping' || state === 'stopped' || state === 'failed' ? state : undefined;
+  const finished = ended !== undefined && Object.values(history).some((list) => list.length > 0);
   const shown: { dir: number; stats?: DirectionStats }[] = finished
     ? Object.keys(history)
         .map(Number)
@@ -221,11 +170,15 @@ export default function Dashboard() {
         .sort((a, b) => a - b)
         .map((dir) => ({ dir }))
     : (live ?? []).map((d) => ({ dir: d.dir, stats: d }));
+  // A finished run is titled by the links of its own history, a live one by its stats or the plan.
   const titleOf = (dir: number, s?: DirectionStats) => {
-    const named = s ?? lastStats.current[dir];
+    if (finished) {
+      const l = links[dir];
+      return l ? linkLabel(l.name, l.ingress, l.egress, label) : `Link ${dir}`;
+    }
     const p = plan(dir);
-    if (!named && !p) return `Link ${dir}`;
-    return linkLabel(named?.link ?? p?.link, named?.rx ?? p?.rx, named?.tx ?? p?.tx, label);
+    if (!s && !p) return `Link ${dir}`;
+    return linkLabel(s?.link ?? p?.link, s?.rx ?? p?.rx, s?.tx ?? p?.tx, label);
   };
 
   return (
@@ -242,6 +195,11 @@ export default function Dashboard() {
           data-testid="stats-warning"
         >
           Statistics are not updating: {statsError}
+        </Alert>
+      )}
+      {historyError && (
+        <Alert variant="warning" role="status" data-testid="history-warning">
+          The history of the charts is not updating: {historyError}
         </Alert>
       )}
       <Card className="mb-3">
@@ -342,7 +300,8 @@ export default function Dashboard() {
           title={titleOf(dir, s)}
           stats={s}
           plan={plan(dir)}
-          history={history[String(dir)] ?? NO_SAMPLES}
+          history={state === 'starting' ? NO_SAMPLES : (history[String(dir)] ?? NO_SAMPLES)}
+          ended={finished ? ended : undefined}
         />
       ))}
       {stats && stats.ports.length > 0 && <PortsTable ports={stats.ports} label={label} />}

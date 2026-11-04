@@ -413,9 +413,23 @@ export function historySample(t_ms: number, over: Partial<HistorySample> = {}): 
   };
 }
 
-/** `GET /api/stats/history`: the run's start (unix seconds, as `emulation('running')` has it) and the samples per link index. */
+/**
+ * Spec 29b: the `links` of `GET /api/stats/history`, in link-index order: the same links, names and ports as `dirStats(0)`,
+ * `dirStats(1)` (the PCI addresses of `interfaces()`, which the dashboard shows as netdev names).
+ */
+export function historyLinks(): HistoryView['links'] {
+  return [
+    { name: 'a-b', ingress: '0000:65:00.0', egress: '0000:65:00.1' },
+    { name: 'b-a', ingress: '0000:65:00.1', egress: '0000:65:00.0' },
+  ];
+}
+
+/**
+ * `GET /api/stats/history`: the run's id (spec 29b: `run_id`, the identity of a run; the first run of a controller is 1), its
+ * start (unix seconds, as `emulation('running')` has it), its links and the samples per link index.
+ */
 export function history(samples: Record<string, HistorySample[]>, over: Partial<HistoryView> = {}): HistoryView {
-  return { started_at: 1762000000, samples, ...over };
+  return { run_id: 1, started_at: 1762000000, links: historyLinks(), samples, ...over };
 }
 
 /** `count` samples one second apart, at t_ms = from * 1000, (from + 1) * 1000, ... (`from` in seconds), all with the same values. */

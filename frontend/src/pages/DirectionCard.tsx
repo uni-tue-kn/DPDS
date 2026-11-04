@@ -1,10 +1,15 @@
-import { Fragment, useEffect, useMemo, useState } from 'react';
 import type { ChartData, ChartOptions } from 'chart.js';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { Badge, Card, Col, Form, Row } from 'react-bootstrap';
 import { Bar, Line } from 'react-chartjs-2';
-import { chartInk, chartOptions, RX_COLOR, RX_FILL, TX_COLOR, TX_FILL } from '../components/charts';
-import { useTheme } from '../common/theme';
-import { startPolling } from '../common/polling';
+import * as api from '../api/client';
+import type {
+  DirectionPlan,
+  DirectionStats,
+  HistogramView,
+  HistorySample,
+  Percentiles as PercentilesDto,
+} from '../api/types';
 import {
   errorMessage,
   formatBps,
@@ -14,14 +19,9 @@ import {
   formatPct,
   formatPps,
 } from '../common/format';
-import * as api from '../api/client';
-import type {
-  DirectionPlan,
-  DirectionStats,
-  HistogramView,
-  HistorySample,
-  Percentiles as PercentilesDto,
-} from '../api/types';
+import { startPolling } from '../common/polling';
+import { useTheme } from '../common/theme';
+import { chartInk, chartOptions, RX_COLOR, RX_FILL, TX_COLOR, TX_FILL } from '../components/charts';
 
 const POLL_MS = 1000;
 const COLORS = ['#e74c3c', '#2c3e50', '#27ae60'];
@@ -255,9 +255,12 @@ function Histogram({
   );
 }
 
+type EndedState = 'stopping' | 'stopped' | 'failed';
+const ENDED_TEXT: Record<EndedState, string> = { stopping: 'Stopping', stopped: 'Stopped', failed: 'Failed' };
+
 /**
- * One link's card. `stats` are the live numbers; without them the run has stopped and the card shows only the
- * final charts of `history`, marked as stopped.
+ * One link's card. `stats` are the live numbers; without them the run has ended and the card shows only the
+ * final charts of `history`, marked with the state (`ended`).
  */
 export default function DirectionCard({
   dir,
@@ -265,12 +268,14 @@ export default function DirectionCard({
   stats,
   plan,
   history,
+  ended,
 }: {
   dir: number;
   title: string;
   stats?: DirectionStats;
   plan?: DirectionPlan;
   history: HistorySample[];
+  ended?: EndedState;
 }) {
   const theme = useTheme();
   const [chosen, setChosen] = useState<View>('rate');
@@ -334,9 +339,9 @@ export default function DirectionCard({
     <Card className="mb-3" data-testid={`direction-card-${dir}`}>
       <Card.Header className="d-flex justify-content-between align-items-center">
         <span>{title}</span>
-        {stats === undefined ? (
-          <Badge pill bg="secondary">
-            Stopped
+        {ended ? (
+          <Badge pill bg={ended === 'failed' ? 'danger' : 'secondary'}>
+            {ENDED_TEXT[ended]}
           </Badge>
         ) : (
           plan && (

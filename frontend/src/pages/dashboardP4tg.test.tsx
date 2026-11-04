@@ -285,11 +285,11 @@ describe('Dashboard (spec 28): status pills', () => {
   // used at all. Was: "elapsed time from started_at (unix seconds)", where the pill was `Date.now()` minus `started_at`
   // and counted up by itself once a second; its four tests are rewritten below. `started_at` is for display only.
   describe('elapsed time from the polled elapsed_ms (spec 29, no browser clock)', () => {
-    const polled = (elapsed_ms?: number | null, over: Partial<ReturnType<typeof fx.stats>> = {}) =>
+    const polled = (elapsed_ms?: number, over: Partial<ReturnType<typeof fx.stats>> = {}) =>
       fx.stats([fx.dirStats(0), fx.dirStats(1)], { ...(elapsed_ms === undefined ? {} : { elapsed_ms }), ...over });
     const pill = () => screen.getByTestId('pill-elapsed');
 
-    async function open(elapsed_ms?: number | null) {
+    async function open(elapsed_ms?: number) {
       vi.useFakeTimers();
       api.getStats.mockResolvedValue(polled(elapsed_ms));
       renderApp('/');
@@ -351,7 +351,8 @@ describe('Dashboard (spec 28): status pills', () => {
       expect(pill()).toHaveTextContent(text);
     });
 
-    it.each([undefined, null])(
+    // The API omits the key when there is no run (`elapsed_ms?: number`, never null).
+    it.each([undefined])(
       'is not shown while the stats carry no elapsed_ms (%s), also for a running emulation',
       async (v) => {
         await open(v);

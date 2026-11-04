@@ -35,7 +35,8 @@ use crate::lcores::{assign_lcores, DirectionPlan};
 use crate::model::{Link, RunConfig, Settings, StartLink, StartRequest, MAX_NAME_CHARS};
 use crate::stats::{
     compute_stats, delay_histogram, delay_stats_on, uptime_ms, Clamped, Counters, DirectionStats,
-    ExpectedModel, HistogramView, HistorySample, HistoryView, Percentiles, PortStats, StatsView,
+    ExpectedModel, HistogramView, HistoryLink, HistorySample, HistoryView, Percentiles, PortStats,
+    StatsView,
 };
 use crate::supervisor::{LaunchPlan, State as RunState, Supervisor};
 use crate::telemetry::TelemetrySource;
@@ -534,6 +535,17 @@ async fn start(
     app.deps
         .telemetry
         .set_poll_interval(config.settings.poll_interval_ms);
+    app.deps.telemetry.set_run_links(
+        config
+            .links
+            .iter()
+            .map(|l| HistoryLink {
+                name: l.name.clone(),
+                ingress: l.ingress.clone(),
+                egress: l.egress.clone(),
+            })
+            .collect(),
+    );
     *lock(&app.run) = Some(Run {
         config,
         main_lcore: plan.main_lcore,
@@ -763,6 +775,7 @@ async fn histogram(
         StatsView,
         HistoryView,
         HistorySample,
+        HistoryLink,
         DirectionStats,
         Counters,
         PortStats,

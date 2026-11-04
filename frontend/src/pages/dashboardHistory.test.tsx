@@ -13,13 +13,14 @@ import { must } from '../test/must';
 //     src/test/mockApi.ts (`serveHistory`) and the header of crates/dpds-controller/tests/integration/chart_history.rs.
 //   - one full fetch (no argument) on mount, then once per poll an incremental one with since_ms = the newest t_ms received so
 //     far (over all links); while nothing has been received yet, the fetches stay full (CHOICE).
-//   - a changed `started_at` is a new run (CHOICE of the tester): the data held is dropped and the history is fetched in full
-//     again, because the new run's t_ms start at 0 again and an incremental answer would be empty.
+//   - a changed `run_id` is a new run (spec 29b item 4; the first round used `started_at`): the data held is dropped and the
+//     history is fetched in full again, because the new run's t_ms start at 0 again and an incremental answer would be empty.
+//     `started_at` is display data and no longer decides anything (see dashboardSpec29b.test.tsx).
 //   - the card of link d (its `dir`) charts samples[String(d)]: rate = rx_gbps / tx_gbps as they are, drops = loss_pct and
 //     limiter + buffer_full + nic_tx + nic_rx; x labels = formatElapsed(t_ms / 1000), e.g. t_ms 192000 -> "0h 3m 12s".
 //   - no cap: the 120-sample client buffer is gone, a run of any length is shown whole.
-// Not pinned: whether the dashboard shows the final charts of a stopped run (cards exist only while the stats have
-// directions, as before).
+// (Spec 29, round 2 and spec 29b: after a stop, and while stopping or after a failure, the cards of the run stay, see the
+// last sections of this file and dashboardSpec29b.test.tsx.)
 
 interface Dataset {
   label?: string;
@@ -362,7 +363,7 @@ describe('Dashboard (spec 29): leaving the dashboard and coming back, and reload
 });
 
 describe('Dashboard (spec 29): a new run replaces the old data', () => {
-  it('a changed started_at discards the data held and loads the new run in full', async () => {
+  it('a changed run_id discards the data held and loads the new run in full', async () => {
     const s = server({
       '0': fx.historySamples(0, 6, { rx_gbps: 1.5 }),
       '1': fx.historySamples(0, 6, { rx_gbps: 2.5 }),
@@ -370,6 +371,7 @@ describe('Dashboard (spec 29): a new run replaces the old data', () => {
     await open();
     expect(rxOf(0)).toHaveLength(6);
     // the next run: its clock starts at 0 again, so an incremental request (since_ms = 5000) finds nothing newer
+    s.runId = 2;
     s.startedAt = S1 + 900;
     s.samples = { '0': fx.historySamples(0, 2, { rx_gbps: 4.5 }), '1': fx.historySamples(0, 2, { rx_gbps: 5.5 }) };
     const calls = api.getStatsHistory.mock.calls.length;
@@ -385,6 +387,7 @@ describe('Dashboard (spec 29): a new run replaces the old data', () => {
   it('after the reload the polls are incremental again, from the new run', async () => {
     const s = server({ '0': fx.historySamples(0, 6), '1': fx.historySamples(0, 6) });
     await open();
+    s.runId = 2;
     s.startedAt = S1 + 900;
     s.samples = { '0': fx.historySamples(0, 2), '1': fx.historySamples(0, 2) };
     await tick(3000);
@@ -402,16 +405,18 @@ describe('Dashboard (spec 29): a new run replaces the old data', () => {
   it('samples of the old run are never mixed with the new run, even when the new run is already longer', async () => {
     const s = server({ '0': fx.historySamples(0, 3, { rx_gbps: 1.5 }), '1': [] });
     await open();
+    s.runId = 2;
     s.startedAt = S1 + 900;
     s.samples = { '0': fx.historySamples(0, 8, { rx_gbps: 4.5 }), '1': [] };
     await tick(3000);
     expect(rxOf(0)).toEqual(Array(8).fill(4.5));
   });
 
-  it('the first run after an idle controller (started_at null, then a time) is loaded without waiting for a restart', async () => {
+  it('the first run after an idle controller (run_id null, then 1) is loaded without waiting for a restart', async () => {
     const s = server({}, null);
     await open();
     expect(rxOf(0)).toEqual([]);
+    s.runId = 1;
     s.startedAt = S1;
     s.samples = { '0': fx.historySamples(0, 3), '1': fx.historySamples(0, 3) };
     await tick(2000);
@@ -456,10 +461,12 @@ describe('Dashboard (spec 29): a failing history request', () => {
 // User decision (2026-11-04): after a stop the dashboard keeps showing the stopped run's link cards with their final rate and
 // drops charts (from the history, which the controller keeps until the next start), marked as stopped, until the next start.
 // Contract the tests pin (the tester's choices, not user-confirmed):
-//   - the marker is the visible text "Stopped" inside each card (the card of a running link has none);
-//   - cards are there while the polled state is `stopped` and the history of the run is not empty: one card per link index in
-//     the history (testid `direction-card-<index>`), in the same session after a stop and after a reload/remount alike. Their
-//     titles and the live stat list are NOT pinned (a card may show the last values it knew, or none);
+//   - the marker is the visible text "Stopped" inside each card (the card of a running link has none); spec 29b item 5 makes
+//     it the state: "Stopping", "Stopped" or "Failed" (dashboardSpec29b.test.tsx);
+//   - cards are there while the polled state is `stopped` (spec 29b: also `stopping` and `failed`) and the history of the run
+//     is not empty: one card per link index in the history (testid `direction-card-<index>`), in the same session after a stop
+//     and after a reload/remount alike. The live stat list is NOT pinned; the titles are (spec 29b item 5, they come from the
+//     history's `links`);
 //   - the charts are the history's, Rate and Drops, both selectable; there is no "Delay histogram" choice on a stopped card
 //     (the controller's histogram needs live telemetry), nothing is fetched for it, and a card that showed the histogram falls
 //     back to Rate;
@@ -548,13 +555,19 @@ describe('Dashboard (spec 29, round 2): the final charts of a stopped run stay u
     expect(api.getDelayHistogram.mock.calls.length).toBe(n);
   });
 
-  it('while the run is stopping the cards are still the live ones, not marked', async () => {
+  // Spec 29b item 5. Was: 'while the run is stopping the cards are still the live ones, not marked', with the stats of the
+  // running emulation still mocked. The real controller answers /api/stats of a stopping emulation with no directions at
+  // once (the poller only reads a running dpds), and the old page then showed no card at all until `stopped`.
+  it('while the run is stopping (the stats already empty) the cards stay, marked "Stopping"', async () => {
     await runThenStop();
     api.getEmulation.mockResolvedValue(fx.emulation('stopping'));
+    api.getStats.mockResolvedValue(stoppedStats());
     await tick(2500);
-    expect(marker(0)).not.toBeInTheDocument();
-    expect(marker(1)).not.toBeInTheDocument();
-    expect(screen.getByTestId('direction-card-0')).toBeInTheDocument();
+    for (const d of [0, 1]) {
+      expect(within(card(d)).getByText('Stopping'), `card ${d}`).toBeInTheDocument();
+      expect(marker(d), `card ${d}`).not.toBeInTheDocument();
+    }
+    expect(rxOf(0)).toEqual(Array(5).fill(1.5));
   });
 
   it('a new start clears them: once the state is "starting" no card is left', async () => {
@@ -562,6 +575,7 @@ describe('Dashboard (spec 29, round 2): the final charts of a stopped run stay u
     await stop();
     expect(screen.getByTestId('direction-card-0')).toBeInTheDocument();
     // the controller started again: its series is empty so far (a new started_at), the first polls carry no directions yet
+    s.runId = 2;
     s.startedAt = S1 + 900;
     s.samples = {};
     api.getEmulation.mockResolvedValue(fx.emulation('starting'));
@@ -597,6 +611,7 @@ describe('Dashboard (spec 29, round 2): the final charts of a stopped run stay u
   it('the next run is charted from its own samples only, as live cards', async () => {
     const { s, stop } = await runThenStop();
     await stop();
+    s.runId = 2;
     s.startedAt = S1 + 900;
     s.samples = { '0': fx.historySamples(0, 2, { rx_gbps: 4.5 }), '1': fx.historySamples(0, 2, { rx_gbps: 5.5 }) };
     api.getEmulation.mockResolvedValue(fx.emulation('running', { started_at: S1 + 900 }));

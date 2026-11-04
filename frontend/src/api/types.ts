@@ -203,7 +203,7 @@ export interface StatsView {
   /** the data is old (poll failures); after 5 failures `directions` is empty. */
   stale: boolean;
   /** Milliseconds since the run started, on the controller's monotonic clock (frozen after a stop); null/absent: nothing ran. */
-  elapsed_ms?: number | null;
+  elapsed_ms?: number;
 }
 
 /** One second of one link's run, as `GET /api/stats/history` reports it (`t_ms` is relative to the run's start). */
@@ -221,9 +221,21 @@ export interface HistorySample {
   nic_rx_pct: number;
 }
 
-/** The current run's series per link index (as a string key); `started_at` (unix seconds) is null while nothing ran. */
+/** A link of the run, as the controller ran it. */
+export interface HistoryLink {
+  name: string;
+  ingress: string;
+  egress: string;
+}
+
+/**
+ * The current run's series per link index (as a string key). `run_id` identifies the run (null while nothing ran),
+ * `started_at` (unix seconds, display only) is null then too, and `links` are the run's links in link-index order.
+ */
 export interface HistoryView {
+  run_id: number | null;
   started_at: number | null;
+  links: HistoryLink[];
   samples: Record<string, HistorySample[]>;
 }
 

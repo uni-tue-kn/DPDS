@@ -736,6 +736,25 @@ without internet access, means no notice.
   active. A present stage needs all its fields, including `delayer.initialization_rate_pps`, which
   has no default (400 naming the field when missing, not finite or below 1). Set it to the
   expected packet rate of the link.
+- **Stats** (`GET /api/stats`): the rates and drop shares of the last poll per link and per port,
+  with `age_ms` and `stale`. `elapsed_ms` is the time since the run started in whole milliseconds,
+  read from the controller's monotonic clock, so a client never compares its own clock with the
+  controller's. It keeps counting while the run goes on, is frozen at the stop and is absent before
+  any run; a new run restarts it near 0.
+- **Chart history** (`GET /api/stats/history`, optionally with `?since_ms=<t>`): the answer is `{started_at, run_id,
+  links, samples}`. `samples` has, per link index (the order of the start body), the series of the
+  run, oldest first. Each sample is `{t_ms, rx_gbps, tx_gbps, rx_mpps, tx_mpps, loss_pct,
+  limiter_pct, buffer_full_pct, nic_tx_pct, nic_rx_pct}`: the rates and drop shares of `GET
+  /api/stats` for the poll window ending at `t_ms`, whole milliseconds since the run started on
+  the same monotonic clock as `elapsed_ms`. The controller takes one sample per link per second
+  (all links at the same `t_ms`) and keeps at most 86400 per link (24 hours), dropping the oldest.
+  `since_ms` returns only the samples with `t_ms` above it; it takes digits only (a whole number
+  of milliseconds), and a bad value or any other query parameter is a 400. `run_id` is one more
+  with every new run the controller sees and null before any run; `links` is
+  `[{name, ingress, egress}]` of that run in link order, `[]` before any run, so a client can title
+  the charts of a finished run. A client that sees a new `run_id` starts over. The history is
+  kept after the stop (the final charts stay readable), cleared at the next start and lost when
+  the controller restarts, as it lives in memory only.
 - **Frontend**: `http://<host>:<controller port>/`, served by the controller itself. Pages for the
   dashboard (start/stop, per-link rates, drop shares per cause, delay statistics and histogram),
   links, interfaces, host hints and settings.

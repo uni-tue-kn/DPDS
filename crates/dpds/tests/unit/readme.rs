@@ -553,3 +553,103 @@ fn the_telemetry_doc_no_longer_gives_500_as_the_bins_limit() {
         .expect("the command table row");
     assert!(row.contains("<page>"), "{row}");
 }
+
+// ---- spec 29b item 3: the controller section documents the stats and history routes ------------
+
+/// The top-level list items of the controller section that mention `needle`, each with its line
+/// breaks and indentation joined to single spaces.
+fn controller_items_with(needle: &str) -> Vec<String> {
+    let section = controller_section(&readme());
+    let mut items: Vec<String> = Vec::new();
+    for line in section.lines() {
+        if line.starts_with("- ") || items.is_empty() {
+            items.push(String::new());
+        }
+        let last = items.last_mut().unwrap();
+        last.push_str(line);
+        last.push(' ');
+    }
+    items
+        .into_iter()
+        .map(|i| i.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|i| i.contains(needle))
+        .collect()
+}
+
+/// The list items that document `route` (spelled `GET <path>` in backticks), joined; at least one.
+fn route_item(route: &str) -> String {
+    let items = controller_items_with(route);
+    assert!(
+        !items.is_empty(),
+        "no item of the controller section documents {route}"
+    );
+    items.join(" ")
+}
+
+#[test]
+fn the_readme_documents_get_api_stats_with_elapsed_ms() {
+    let item = route_item("`GET /api/stats`");
+    assert!(
+        item.contains("`elapsed_ms`"),
+        "`GET /api/stats` documents `elapsed_ms`: {item}"
+    );
+    // what elapsed_ms is: time since the run started, frozen at the stop, absent before any run
+    let lower = item.to_lowercase();
+    assert!(
+        lower.contains("since the run started")
+            || lower.contains("since the run's start")
+            || lower.contains("since the start of the run"),
+        "elapsed_ms counts from the start of the run: {item}"
+    );
+    assert!(
+        lower.contains("monotonic"),
+        "from a monotonic clock: {item}"
+    );
+    assert!(
+        lower.contains("frozen") || lower.contains("stops counting"),
+        "elapsed_ms stops at the stop: {item}"
+    );
+}
+
+#[test]
+fn the_readme_documents_get_api_stats_history() {
+    let item = route_item("`GET /api/stats/history`");
+    let lower = item.to_lowercase();
+    // the query: since_ms, digits only, anything else is a 400
+    assert!(item.contains("`since_ms`"), "{item}");
+    assert!(
+        lower.contains("digits only"),
+        "`since_ms` takes digits only: {item}"
+    );
+    assert!(item.contains("400"), "a bad `since_ms` is a 400: {item}");
+    // what the series holds
+    assert!(
+        lower.contains("one sample per link per second"),
+        "one sample per link per second: {item}"
+    );
+    assert!(
+        item.contains("86400"),
+        "the cap of 86400 samples per link: {item}"
+    );
+    assert!(
+        lower.contains("monotonic"),
+        "times come from the controller's monotonic clock: {item}"
+    );
+    // its life: kept after the stop, cleared at the next start, lost with the controller
+    assert!(
+        lower.contains("after the stop") || lower.contains("after a stop"),
+        "kept after the stop: {item}"
+    );
+    assert!(
+        lower.contains("next start"),
+        "cleared at the next start: {item}"
+    );
+    assert!(
+        lower.contains("lost") && lower.contains("controller restart"),
+        "lost when the controller restarts: {item}"
+    );
+    // the identity fields of the answer (spec 29b item 1)
+    for field in ["`run_id`", "`links`", "`t_ms`"] {
+        assert!(item.contains(field), "the answer's {field}: {item}");
+    }
+}

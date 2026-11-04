@@ -60,29 +60,40 @@ export function resetApi(): void {
   api.stopEmulation.mockResolvedValue(fx.emulation('stopping'));
   api.getStats.mockResolvedValue(fx.stats([]));
   api.getDelayHistogram.mockImplementation(async (dir, windowS) => fx.histogram(dir, { window_s: windowS ?? 0 }));
-  api.getStatsHistory.mockResolvedValue(fx.history({}, { started_at: null })); // nothing ran
+  api.getStatsHistory.mockResolvedValue(fx.history({}, { started_at: null, run_id: null, links: [] })); // nothing ran
 }
 
 /**
  * Spec 29: the controller's series as a test controls it. `getStatsHistory(sinceMs)` answers like `GET /api/stats/history`:
- * `started_at` and, per link index, the samples with `t_ms > sinceMs` (all without `sinceMs`); a known link keeps its key with
- * `[]` when nothing is newer. Change `server` between polls to simulate the run going on, a new run, and so on.
+ * `run_id`, `started_at`, `links` and, per link index, the samples with `t_ms > sinceMs` (all without `sinceMs`); a known link
+ * keeps its key with `[]` when nothing is newer. Change `server` between polls to simulate the run going on, a new run, and so on.
+ *
+ * Spec 29b: a run is identified by `runId` (`run_id`), not by `startedAt`: a test that simulates a new run sets a new `runId`
+ * (and, as the controller does, a new `startedAt` and `samples`). Without `runId` the run is 1 (null while `startedAt` is
+ * null: nothing ran); without `links` they are `fx.historyLinks()` (empty while nothing ran).
  */
 export interface HistoryServer {
   startedAt: number | null;
   samples: Record<string, HistorySample[]>;
+  runId?: number | null;
+  links?: HistoryView['links'];
 }
 
 export function serveHistory(server: HistoryServer): void {
-  api.getStatsHistory.mockImplementation(async (sinceMs) => ({
-    started_at: server.startedAt,
-    samples: Object.fromEntries(
-      Object.entries(server.samples).map(([link, list]) => [
-        link,
-        list.filter((s) => sinceMs === undefined || s.t_ms > sinceMs).map((s) => ({ ...s })),
-      ]),
-    ),
-  }));
+  api.getStatsHistory.mockImplementation(async (sinceMs) => {
+    const ran = server.startedAt !== null;
+    return {
+      run_id: server.runId === undefined ? (ran ? 1 : null) : server.runId,
+      started_at: server.startedAt,
+      links: server.links ?? (ran ? fx.historyLinks() : []),
+      samples: Object.fromEntries(
+        Object.entries(server.samples).map(([link, list]) => [
+          link,
+          list.filter((s) => sinceMs === undefined || s.t_ms > sinceMs).map((s) => ({ ...s })),
+        ]),
+      ),
+    };
+  });
 }
 
 /**
