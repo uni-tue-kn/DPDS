@@ -3,9 +3,11 @@
 
   <h2>DPDS: A DPDK-Based Packet Delayer and Spacer</h2>
 
+  [![CI](https://github.com/uni-tue-kn/DPDS/actions/workflows/ci.yml/badge.svg?branch=nightly)](https://github.com/uni-tue-kn/DPDS/actions/workflows/ci.yml)
   ![License](https://img.shields.io/badge/licence-Apache%202.0-blue)
-  ![Language](https://img.shields.io/badge/lang-rust-darkred)
-  ![Built with DPDK](https://img.shields.io/badge/built%20with-DPDK-orange)
+  ![Backend](https://img.shields.io/badge/backend-Rust-b7410e?logo=rust)
+  ![Frontend](https://img.shields.io/badge/frontend-React-149eca?logo=react)
+  ![DPDK](https://img.shields.io/badge/dataplane-DPDK%2026.07-1e5aa8)
   ![Version](https://img.shields.io/badge/v-1.0.0-yellow)
 </div>
 

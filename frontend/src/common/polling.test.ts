@@ -59,7 +59,12 @@ describe('startPolling', () => {
 
   it('the stop function ends polling, also while a run is in flight', async () => {
     let finish: () => void = () => undefined;
-    const task = vi.fn(() => new Promise<void>((r) => { finish = r; }));
+    const task = vi.fn(
+      () =>
+        new Promise<void>((r) => {
+          finish = r;
+        }),
+    );
     const stop = startPolling(task, 100, true);
     await vi.advanceTimersByTimeAsync(0);
     expect(task).toHaveBeenCalledTimes(1);

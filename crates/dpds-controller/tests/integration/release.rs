@@ -171,6 +171,86 @@ fn the_readme_version_badge_shows_the_version_of_version_md() {
     );
 }
 
+// ---- README badges (spec 23) ---------------------------------------------------------------------
+
+const BADGE_BACKEND: &str =
+    "![Backend](https://img.shields.io/badge/backend-Rust-b7410e?logo=rust)";
+const BADGE_FRONTEND: &str =
+    "![Frontend](https://img.shields.io/badge/frontend-React-149eca?logo=react)";
+const BADGE_CI: &str = "[![CI](https://github.com/uni-tue-kn/DPDS/actions/workflows/ci.yml/badge.svg?branch=nightly)](https://github.com/uni-tue-kn/DPDS/actions/workflows/ci.yml)";
+const BADGE_DPDK: &str = "![DPDK](https://img.shields.io/badge/dataplane-DPDK%2026.07-1e5aa8)";
+
+/// The badge block at the top of the README: everything before the first `---` line.
+fn readme_badge_block() -> String {
+    let readme = read("README.md");
+    let end = readme
+        .lines()
+        .position(|l| l.trim() == "---")
+        .expect("a `---` line after the badges");
+    readme.lines().take(end).collect::<Vec<_>>().join("\n")
+}
+
+#[test]
+fn the_readme_has_the_backend_and_frontend_badges_with_the_exact_urls() {
+    let top = readme_badge_block();
+    assert!(top.contains(BADGE_BACKEND), "backend badge missing");
+    assert!(top.contains(BADGE_FRONTEND), "frontend badge missing");
+}
+
+#[test]
+fn the_readme_has_the_ci_badge_for_nightly_linking_to_the_workflow() {
+    let top = readme_badge_block();
+    assert!(top.contains(BADGE_CI), "CI badge missing or not exact");
+    assert_eq!(
+        top.matches("actions/workflows/ci.yml").count(),
+        2,
+        "the CI badge is the image and the link to the workflow, once"
+    );
+}
+
+#[test]
+fn the_readme_dpdk_badge_is_the_text_badge_without_a_logo() {
+    let top = readme_badge_block();
+    assert!(top.contains(BADGE_DPDK), "DPDK badge missing or not exact");
+    assert!(
+        !top.contains("built%20with-DPDK"),
+        "the old DPDK badge is still there"
+    );
+    assert_eq!(
+        top.lines()
+            .filter(|l| l.contains("shields.io") && l.contains("DPDK"))
+            .count(),
+        1,
+        "exactly one DPDK badge in the header"
+    );
+}
+
+#[test]
+fn the_readme_has_no_lang_rust_badge_any_more() {
+    let readme = read("README.md");
+    assert!(
+        !readme.contains("lang-rust") && !readme.contains("badge/lang-"),
+        "the old Language badge is still in the README"
+    );
+    assert!(!readme.contains("![Language]"));
+}
+
+#[test]
+fn the_readme_keeps_the_license_and_version_badges() {
+    let top = readme_badge_block();
+    assert!(
+        top.contains("![License](https://img.shields.io/badge/licence-Apache%202.0-blue)"),
+        "license badge changed or gone"
+    );
+    assert!(
+        top.contains(&format!(
+            "![Version](https://img.shields.io/badge/v-{}-yellow)",
+            version_md()
+        )),
+        "version badge changed or gone"
+    );
+}
+
 #[tokio::test]
 async fn the_controller_reports_the_release_version_on_online_and_version() {
     let a = TestApp::new(FakeHost::bare_metal());
@@ -353,7 +433,7 @@ fn words(s: &str) -> BTreeSet<String> {
 fn a_release_job_exists_next_to_the_check_jobs() {
     let (w, job, others) = release_job();
     let names: BTreeSet<String> = others.iter().map(|j| j.name.clone()).collect();
-    for check in ["fmt", "rust", "frontend", "packaging"] {
+    for check in CHECK_JOBS {
         assert!(
             names.contains(check),
             "{}: the workflow with the release job lacks the check job {check} ({names:?})",
@@ -363,6 +443,38 @@ fn a_release_job_exists_next_to_the_check_jobs() {
     assert!(
         !names.contains(&job.name),
         "the release job's name is taken twice"
+    );
+}
+
+/// Spec 23: `rust` became `backend` (with the fmt step), `packaging` became `installer`.
+const CHECK_JOBS: [&str; 3] = ["backend", "frontend", "installer"];
+
+#[test]
+fn the_check_jobs_are_exactly_backend_frontend_and_installer() {
+    let (w, job, others) = release_job();
+    let names: BTreeSet<String> = others.iter().map(|j| j.name.clone()).collect();
+    let want: BTreeSet<String> = CHECK_JOBS.iter().map(|s| s.to_string()).collect();
+    assert_eq!(
+        names, want,
+        "{}: jobs next to `{}` (no fmt, rust or packaging job any more)",
+        w.file, job.name
+    );
+}
+
+#[test]
+fn the_installer_job_runs_the_dpds_sh_tests() {
+    let (_, _, others) = release_job();
+    let installer = others
+        .iter()
+        .find(|j| j.name == "installer")
+        .expect("an `installer` job");
+    assert!(
+        installer
+            .text()
+            .lines()
+            .filter(|l| !l.trim_start().starts_with('#'))
+            .any(|l| l.contains("packaging/tests/dpds_sh.test.sh")),
+        "the installer job must run packaging/tests/dpds_sh.test.sh"
     );
 }
 
@@ -381,6 +493,21 @@ fn the_release_job_needs_every_check_job() {
             o.name
         );
     }
+}
+
+#[test]
+fn the_release_job_needs_exactly_backend_frontend_and_installer() {
+    let (w, job, _) = release_job();
+    let needs = job
+        .key("needs")
+        .unwrap_or_else(|| panic!("{}: the release job has no `needs`", w.file));
+    let want: BTreeSet<String> = CHECK_JOBS.iter().map(|s| s.to_string()).collect();
+    assert_eq!(
+        words(&needs),
+        want,
+        "{}: release job needs: {needs}",
+        w.file
+    );
 }
 
 #[test]

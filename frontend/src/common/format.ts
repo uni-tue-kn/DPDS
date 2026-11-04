@@ -53,7 +53,10 @@ export function formatCount(v?: number | null): string {
 
 /** "name: ingress → egress": the one label the dashboard and the links list share. */
 export function linkLabel(
-  name?: string | null, ingress?: string | null, egress?: string | null, label: PortLabeler = (p) => p ?? undefined,
+  name?: string | null,
+  ingress?: string | null,
+  egress?: string | null,
+  label: PortLabeler = (p) => p ?? undefined,
 ): string {
   return `${name || '?'}: ${label(ingress) || '?'} → ${label(egress) || '?'}`;
 }

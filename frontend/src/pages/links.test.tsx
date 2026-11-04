@@ -2,7 +2,18 @@ import { screen, within, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { api, ApiError } from '../test/mockApi';
 import * as fx from '../test/fixtures';
-import { deferred, emptyDoc, field, rawStore, renderApp, seedLinks, seedStore, storedDoc, storedLinks } from '../test/helpers';
+import {
+  deferred,
+  emptyDoc,
+  field,
+  rawStore,
+  renderApp,
+  seedLinks,
+  seedStore,
+  storedDoc,
+  storedLinks,
+} from '../test/helpers';
+import { must } from '../test/must';
 
 // v22: the list comes from the local document (key dpds.config.v1); every test starts with one stored link, a-b (id 1), unless it
 // seeds its own. Deleting writes the document. Nothing is requested for links from the controller.
@@ -41,7 +52,14 @@ describe('Links list', () => {
     const hidden = within(last).getByText('Actions');
     expect(hidden.classList.contains('visually-hidden')).toBe(true);
     // the other six headers are untouched
-    expect(headers.slice(0, 6).map((h) => h.textContent?.trim())).toEqual(['Name', 'Interfaces', 'Delay', 'Reordering', 'Limiter', 'Loss']);
+    expect(headers.slice(0, 6).map((h) => h.textContent?.trim())).toEqual([
+      'Name',
+      'Interfaces',
+      'Delay',
+      'Reordering',
+      'Limiter',
+      'Loss',
+    ]);
     expect(screen.getAllByRole('columnheader', { name: 'Actions' })).toHaveLength(1);
   });
 
@@ -100,7 +118,10 @@ describe('Links list', () => {
     seedLinks([fx.linkRev(), fx.link(), fx.loopLink()]);
     renderApp('/links');
     await screen.findByText('a-b');
-    const names = screen.getAllByRole('row').slice(1).map((r) => within(r).getAllByRole('cell')[0].textContent);
+    const names = screen
+      .getAllByRole('row')
+      .slice(1)
+      .map((r) => within(r).getAllByRole('cell')[0].textContent);
     expect(names).toEqual(['b-a', 'a-b', 'loop']);
   });
 
@@ -156,7 +177,11 @@ describe('Links delete', () => {
 
   it('Confirm deletes by id and reloads the list', async () => {
     const user = userEvent.setup();
-    seedStore({ links: [fx.link(), fx.loopLink()], presets: [fx.preset({ id: 4 })], settings: fx.settings({ main_lcore: 2 }) });
+    seedStore({
+      links: [fx.link(), fx.loopLink()],
+      presets: [fx.preset({ id: 4 })],
+      settings: fx.settings({ main_lcore: 2 }),
+    });
     renderApp('/links');
     await user.click(await screen.findByRole('button', { name: 'Delete a-b' }));
     const dialog = await screen.findByRole('dialog');
@@ -290,7 +315,7 @@ describe('Links: inspect panel (v16)', () => {
     ['UniformDistribution', 'Uniform'],
   ] as const)('%s is shown as "%s" in the panel, the same word the list uses', async (distribution, short) => {
     const base = fx.config();
-    const link = fx.link({ config: { ...base, delayer: { ...base.delayer!, distribution } } });
+    const link = fx.link({ config: { ...base, delayer: { ...must(base.delayer), distribution } } });
     const { dialog } = await inspect('a-b', [link]);
     const shown = field(group(dialog, 'Delayer'), 'Delay distribution').textContent?.trim();
     expect(shown).toBe(short);
@@ -325,7 +350,8 @@ describe('Links: inspect panel (v16)', () => {
     expect(field(dialog, 'Egress')).toHaveTextContent('enp101s0f1');
     expect(field(dialog, 'Egress')).toHaveTextContent('0000:65:00.1');
     expect(field(dialog, 'Worker lcore').textContent?.trim()).toBe('7');
-    for (const g of ['Buffer', 'Delayer', 'Dropper', 'Statistics']) { // fx.link() has no limiter
+    for (const g of ['Buffer', 'Delayer', 'Dropper', 'Statistics']) {
+      // fx.link() has no limiter
       expect(group(dialog, g)).not.toContainElement(field(dialog, 'Worker lcore'));
       expect(group(dialog, g)).not.toContainElement(field(dialog, 'Ingress'));
     }
@@ -364,7 +390,11 @@ describe('Links: inspect panel (v16)', () => {
 
   it('v22: only added stages get a group (a-b has no limiter): the missing one reads "Limiter: not added", Buffer and Statistics always show', async () => {
     const { dialog } = await inspect('a-b');
-    expect(within(dialog).getAllByRole('group').map((g) => g.getAttribute('aria-label'))).toEqual(['Buffer', 'Delayer', 'Dropper', 'Statistics']);
+    expect(
+      within(dialog)
+        .getAllByRole('group')
+        .map((g) => g.getAttribute('aria-label')),
+    ).toEqual(['Buffer', 'Delayer', 'Dropper', 'Statistics']);
     expect(within(dialog).queryByRole('group', { name: 'Limiter' })).not.toBeInTheDocument();
     expect(within(dialog).getAllByText('Limiter: not added')).toHaveLength(1);
     expect(within(dialog).queryByText('Delayer: not added')).not.toBeInTheDocument();
@@ -373,8 +403,14 @@ describe('Links: inspect panel (v16)', () => {
 
   it('v22: a config with no stage at all shows only Buffer and Statistics plus the three "not added" lines, in the stage order', async () => {
     const { dialog } = await inspect('a-b', [fx.link({ config: fx.configBare() })]);
-    expect(within(dialog).getAllByRole('group').map((g) => g.getAttribute('aria-label'))).toEqual(['Buffer', 'Statistics']);
-    const lines = ['Delayer: not added', 'Limiter: not added', 'Dropper: not added'].map((t) => within(dialog).getByText(t));
+    expect(
+      within(dialog)
+        .getAllByRole('group')
+        .map((g) => g.getAttribute('aria-label')),
+    ).toEqual(['Buffer', 'Statistics']);
+    const lines = ['Delayer: not added', 'Limiter: not added', 'Dropper: not added'].map((t) =>
+      within(dialog).getByText(t),
+    );
     for (const l of lines) {
       expect(l.textContent).toBe(l.textContent?.trim());
       expect(l.closest('dt, dd, [role="group"]')).toBeNull(); // plain text outside any subsection
@@ -402,7 +438,13 @@ describe('Links: inspect panel (v16)', () => {
     expect(field(buffer, 'Seed').textContent?.trim()).toBe('random');
 
     const delayer = group(dialog, 'Delayer');
-    expect(dts(delayer)).toEqual(['Delay distribution', 'Mean delay', 'Delay std', 'Correlation', 'Initialization rate']);
+    expect(dts(delayer)).toEqual([
+      'Delay distribution',
+      'Mean delay',
+      'Delay std',
+      'Correlation',
+      'Initialization rate',
+    ]);
     expect(field(delayer, 'Delay distribution').textContent?.trim()).toBe('Normal'); // spec19: the short name, like the list
     expect(field(delayer, 'Mean delay').textContent?.trim()).toBe('1 \u00b5s'); // 1000 ns
     expect(field(delayer, 'Delay std').textContent?.trim()).toBe('10 ns');
@@ -417,7 +459,8 @@ describe('Links: inspect panel (v16)', () => {
     const stats = group(dialog, 'Statistics');
     expect(dts(stats)).toEqual(['Delay statistics', 'Histogram bins', 'Histogram lo', 'Histogram hi']);
     expect(field(stats, 'Delay statistics').textContent?.trim()).toBe('on');
-    for (const l of ['Histogram bins', 'Histogram lo', 'Histogram hi']) expect(field(stats, l).textContent?.trim()).toBe('automatic');
+    for (const l of ['Histogram bins', 'Histogram lo', 'Histogram hi'])
+      expect(field(stats, l).textContent?.trim()).toBe('automatic');
   });
 
   it('everything on: correlation with half-life, limiter with mode and rate, Gilbert-Elliot, seed, reordering', async () => {
@@ -429,7 +472,12 @@ describe('Links: inspect panel (v16)', () => {
 
     const delayer = group(dialog, 'Delayer');
     expect(dts(delayer)).toEqual([
-      'Delay distribution', 'Mean delay', 'Delay std', 'Correlation', 'Half-life period', 'Initialization rate',
+      'Delay distribution',
+      'Mean delay',
+      'Delay std',
+      'Correlation',
+      'Half-life period',
+      'Initialization rate',
     ]);
     expect(field(delayer, 'Delay distribution').textContent?.trim()).toBe('Gamma');
     expect(field(delayer, 'Mean delay').textContent?.trim()).toBe('2.5 \u00b5s');
@@ -445,7 +493,12 @@ describe('Links: inspect panel (v16)', () => {
 
     const dropper = group(dialog, 'Dropper');
     expect(dts(dropper)).toEqual([
-      'Loss model', 'Gilbert-Elliot p', 'Gilbert-Elliot r', 'Gilbert-Elliot k', 'Gilbert-Elliot h', 'Gilbert-Elliot starts in good state',
+      'Loss model',
+      'Gilbert-Elliot p',
+      'Gilbert-Elliot r',
+      'Gilbert-Elliot k',
+      'Gilbert-Elliot h',
+      'Gilbert-Elliot starts in good state',
     ]);
     expect(field(dropper, 'Loss model').textContent?.trim()).toBe('GilbertElliot');
     expect(field(dropper, 'Gilbert-Elliot p').textContent?.trim()).toBe('0.01');
@@ -478,7 +531,11 @@ describe('Links: inspect panel (v16)', () => {
   });
 
   it.each([
-    [0.07, '0.07'], [0.29, '0.29'], [0.57, '0.57'], [0.001, '0.001'], [1, '1'],
+    [0.07, '0.07'],
+    [0.29, '0.29'],
+    [0.57, '0.57'],
+    [0.001, '0.001'],
+    [1, '1'],
   ])('loss probability %s reads "%s" (no float noise)', async (p, text) => {
     const link = fx.link({ config: fx.config({ loss_model: { type: 'Random', p } }) });
     const { dialog } = await inspect('a-b', [link]);
@@ -539,12 +596,16 @@ describe('Links list: Delay, Reordering, Limiter and Loss columns (v16)', () => 
   const REORDER = 3;
   const LIMITER = 4;
   const LOSS = 5;
-  const cellOf = async (name: string, idx: number) => within(await rowOf(name)).getAllByRole('cell')[idx].textContent ?? '';
+  const cellOf = async (name: string, idx: number) =>
+    within(await rowOf(name)).getAllByRole('cell')[idx].textContent ?? '';
   const withConfig = (over: Parameters<typeof fx.config>[0] = {}, d: object = {}, l: object = {}) => {
     const base = fx.config();
     return fx.link({
       config: {
-        ...base, ...over, delayer: { ...base.delayer!, ...d }, limiter: { mode: 'Spacer' as const, rate_bps: 1e9, ...l },
+        ...base,
+        ...over,
+        delayer: { ...must(base.delayer), ...d },
+        limiter: { mode: 'Spacer' as const, rate_bps: 1e9, ...l },
       },
     });
   };
@@ -553,10 +614,18 @@ describe('Links list: Delay, Reordering, Limiter and Loss columns (v16)', () => 
     seedLinks([fx.link(), fx.linkRev(), fx.link({ id: 4, name: 'c3', config: fx.config3() })]);
     renderApp('/links');
     await screen.findByText('a-b');
-    const cells = async (n: string) => [await cellOf(n, DELAY), await cellOf(n, REORDER), await cellOf(n, LIMITER), await cellOf(n, LOSS)];
+    const cells = async (n: string) => [
+      await cellOf(n, DELAY),
+      await cellOf(n, REORDER),
+      await cellOf(n, LIMITER),
+      await cellOf(n, LOSS),
+    ];
     expect(await cells('a-b')).toEqual([`Normal 1 ${MU} / 10 ns`, MINUS, 'none', 'Random p=0']);
     expect(await cells('b-a')).toEqual([
-      `Gamma 2.5 ${MU} / 300 ns`, '+', 'policing 40 Gbit/s', 'Gilbert-Elliott p=0.01, r=0.2, h=0.3, k=0.9',
+      `Gamma 2.5 ${MU} / 300 ns`,
+      '+',
+      'policing 40 Gbit/s',
+      'Gilbert-Elliott p=0.01, r=0.2, h=0.3, k=0.9',
     ]);
     expect(await cells('c3')).toEqual([`LogNormal 7.777 ${MU} / 777 ns`, '+', 'spacing 5 Gbit/s', 'Random p=0.25']);
   });
@@ -577,11 +646,14 @@ describe('Links list: Delay, Reordering, Limiter and Loss columns (v16)', () => 
     ['LogNormalDistribution', 'LogNormal 10 ms / 1 ms'],
     ['GammaDistribution', 'Gamma 10 ms / 1 ms'],
     ['UniformDistribution', 'Uniform 10 ms / 1 ms'],
-  ] as const)('%s reads "%s" (the deterministic one shows the mean only, even with a std stored)', async (distribution, text) => {
-    seedLinks([withConfig({}, { distribution, mean_ns: 10000000, std_ns: 1000000 })]);
-    renderApp('/links');
-    expect(await cellOf('a-b', DELAY)).toBe(text);
-  });
+  ] as const)(
+    '%s reads "%s" (the deterministic one shows the mean only, even with a std stored)',
+    async (distribution, text) => {
+      seedLinks([withConfig({}, { distribution, mean_ns: 10000000, std_ns: 1000000 })]);
+      renderApp('/links');
+      expect(await cellOf('a-b', DELAY)).toBe(text);
+    },
+  );
 
   it.each([
     [1000, 10, `Normal 1 ${MU} / 10 ns`],
@@ -595,7 +667,10 @@ describe('Links list: Delay, Reordering, Limiter and Loss columns (v16)', () => 
     expect(await cellOf('a-b', DELAY)).toBe(text);
   });
 
-  it.each([[true, '+'], [false, MINUS]])('reordering %s reads "%s"', async (reordering, text) => {
+  it.each([
+    [true, '+'],
+    [false, MINUS],
+  ])('reordering %s reads "%s"', async (reordering, text) => {
     seedLinks([withConfig({ reordering })]);
     renderApp('/links');
     expect(await cellOf('a-b', REORDER)).toBe(text);
@@ -619,31 +694,45 @@ describe('Links list: Delay, Reordering, Limiter and Loss columns (v16)', () => 
   });
 
   it.each([
-    ['delayer', DELAY], ['limiter', LIMITER], ['loss_model', LOSS],
-  ] as const)('v22: a missing %s (null or absent) reads "none" in its column and leaves the others alone', async (stage, idx) => {
-    for (const how of ['null', 'absent'] as const) {
-      const config = { ...fx.config2() } as Record<string, unknown>;
-      if (how === 'null') config[stage] = null;
-      else delete config[stage];
-      seedLinks([fx.link({ config: config as unknown as ReturnType<typeof fx.config2> })]);
-      const view = renderApp('/links');
-      expect(await cellOf('a-b', idx)).toBe('none');
-      for (const other of [DELAY, REORDER, LIMITER, LOSS].filter((x) => x !== idx)) {
-        expect(await cellOf('a-b', other)).not.toBe('none');
+    ['delayer', DELAY],
+    ['limiter', LIMITER],
+    ['loss_model', LOSS],
+  ] as const)(
+    'v22: a missing %s (null or absent) reads "none" in its column and leaves the others alone',
+    async (stage, idx) => {
+      for (const how of ['null', 'absent'] as const) {
+        const config = { ...fx.config2() } as Record<string, unknown>;
+        if (how === 'null') config[stage] = null;
+        else delete config[stage];
+        seedLinks([fx.link({ config: config as unknown as ReturnType<typeof fx.config2> })]);
+        const view = renderApp('/links');
+        expect(await cellOf('a-b', idx)).toBe('none');
+        for (const other of [DELAY, REORDER, LIMITER, LOSS].filter((x) => x !== idx)) {
+          expect(await cellOf('a-b', other)).not.toBe('none');
+        }
+        view.unmount();
       }
-      view.unmount();
-    }
-  });
+    },
+  );
 
   it('v22: a link with no stage reads "none" three times and still its reordering sign', async () => {
     seedLinks([fx.link({ config: fx.configBare({ reordering: true }) })]);
     renderApp('/links');
-    expect([await cellOf('a-b', DELAY), await cellOf('a-b', REORDER), await cellOf('a-b', LIMITER), await cellOf('a-b', LOSS)])
-      .toEqual(['none', '+', 'none', 'none']);
+    expect([
+      await cellOf('a-b', DELAY),
+      await cellOf('a-b', REORDER),
+      await cellOf('a-b', LIMITER),
+      await cellOf('a-b', LOSS),
+    ]).toEqual(['none', '+', 'none', 'none']);
   });
 
   it.each([
-    [0.07, 'Random p=0.07'], [0.29, 'Random p=0.29'], [0.57, 'Random p=0.57'], [0.001, 'Random p=0.001'], [0, 'Random p=0'], [1, 'Random p=1'],
+    [0.07, 'Random p=0.07'],
+    [0.29, 'Random p=0.29'],
+    [0.57, 'Random p=0.57'],
+    [0.001, 'Random p=0.001'],
+    [0, 'Random p=0'],
+    [1, 'Random p=1'],
   ])('Random loss %s reads "%s" (no float noise)', async (p, text) => {
     seedLinks([withConfig({ loss_model: { type: 'Random', p } })]);
     renderApp('/links');

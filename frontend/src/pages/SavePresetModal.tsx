@@ -7,7 +7,11 @@ import { errorMessage } from '../common/format';
 import type { ConfigDto, Preset } from '../api/types';
 
 /** Name prompt for "Save as preset". `getConfig` validates the form and throws a readable Error when it is invalid. */
-export default function SavePresetModal({ getConfig, onSaved, onClose }: {
+export default function SavePresetModal({
+  getConfig,
+  onSaved,
+  onClose,
+}: {
   getConfig: () => ConfigDto;
   onSaved: (p: Preset) => void;
   onClose: () => void;
@@ -24,11 +28,13 @@ export default function SavePresetModal({ getConfig, onSaved, onClose }: {
       return;
     }
     try {
-      onSaved(savePreset({
-        name: name.trim(),
-        description: description.trim() === '' ? null : description.trim(),
-        config: getConfig(),
-      }));
+      onSaved(
+        savePreset({
+          name: name.trim(),
+          description: description.trim() === '' ? null : description.trim(),
+          config: getConfig(),
+        }),
+      );
     } catch (e) {
       setError(errorMessage(e));
     }
@@ -37,7 +43,9 @@ export default function SavePresetModal({ getConfig, onSaved, onClose }: {
   return (
     <Modal show onHide={onClose} animation={false} centered>
       <Form onSubmit={submit} noValidate>
-        <Modal.Header closeButton><Modal.Title>Save as preset</Modal.Title></Modal.Header>
+        <Modal.Header closeButton>
+          <Modal.Title>Save as preset</Modal.Title>
+        </Modal.Header>
         <Modal.Body>
           <ErrorAlert message={error} />
           <Form.Group className="mb-3" controlId="save-preset-name">
@@ -50,8 +58,12 @@ export default function SavePresetModal({ getConfig, onSaved, onClose }: {
           </Form.Group>
         </Modal.Body>
         <Modal.Footer>
-          <Button variant="secondary" onClick={onClose}>Cancel</Button>
-          <Button type="submit" variant="primary">Save preset</Button>
+          <Button variant="secondary" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button type="submit" variant="primary">
+            Save preset
+          </Button>
         </Modal.Footer>
       </Form>
     </Modal>

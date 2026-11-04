@@ -5,7 +5,11 @@ import { PPS_UNITS, RATE_UNITS, TIME_UNITS, emptyUnit, fromBase, toBase } from '
 import type { Unit, UnitValue } from '../common/units';
 
 export const DISTRIBUTIONS: Distribution[] = [
-  'DeterministicDistribution', 'LogNormalDistribution', 'NormalDistribution', 'GammaDistribution', 'UniformDistribution',
+  'DeterministicDistribution',
+  'LogNormalDistribution',
+  'NormalDistribution',
+  'GammaDistribution',
+  'UniformDistribution',
 ];
 export const LIMITER_MODES: LimiterMode[] = ['Spacer', 'TokenBucketFilter'];
 
@@ -50,18 +54,37 @@ export const halfLifeRequired = (f: ConfigForm) => f.activate_correlation;
 
 export function defaultConfigForm(): ConfigForm {
   return {
-    delayer_added: false, limiter_added: false, dropper_added: false,
-    distribution: 'NormalDistribution', mean_ns: fromBase(1e6, TIME_UNITS, MS), std_ns: fromBase(1e5, TIME_UNITS, MS),
-    activate_correlation: false, half_life_period_ns: fromBase(0, TIME_UNITS, MS), initialization_rate_pps: emptyUnit(MPPS),
-    limiter_mode: 'Spacer', rate_bps: fromBase(1e10, RATE_UNITS, GBIT),
-    loss_type: 'Random', random_p: '0', ge_p: '0.01', ge_r: '0.2', ge_k: '1', ge_h: '0', ge_good: true,
-    buffer_capacity: '100000', reordering: false, seed: '', hist_bins: '', hist_lo: emptyUnit(MS), hist_hi: emptyUnit(MS),
+    delayer_added: false,
+    limiter_added: false,
+    dropper_added: false,
+    distribution: 'NormalDistribution',
+    mean_ns: fromBase(1e6, TIME_UNITS, MS),
+    std_ns: fromBase(1e5, TIME_UNITS, MS),
+    activate_correlation: false,
+    half_life_period_ns: fromBase(0, TIME_UNITS, MS),
+    initialization_rate_pps: emptyUnit(MPPS),
+    limiter_mode: 'Spacer',
+    rate_bps: fromBase(1e10, RATE_UNITS, GBIT),
+    loss_type: 'Random',
+    random_p: '0',
+    ge_p: '0.01',
+    ge_r: '0.2',
+    ge_k: '1',
+    ge_h: '0',
+    ge_good: true,
+    buffer_capacity: '100000',
+    reordering: false,
+    seed: '',
+    hist_bins: '',
+    hist_lo: emptyUnit(MS),
+    hist_hi: emptyUnit(MS),
     delay_stats: true,
   };
 }
 
 const str = (v: number | null | undefined) => (v == null ? '' : String(v));
-const optUnit = (v: number | null | undefined, units: Unit[], dflt: number) => (v == null ? emptyUnit(dflt) : fromBase(v, units, dflt));
+const optUnit = (v: number | null | undefined, units: Unit[], dflt: number) =>
+  v == null ? emptyUnit(dflt) : fromBase(v, units, dflt);
 
 export function configToForm(c: ConfigDto): ConfigForm {
   const f: ConfigForm = {
@@ -193,13 +216,13 @@ function lossToDto(f: ConfigForm): LossModelDto {
   return f.loss_type === 'Random'
     ? { type: 'Random', p: prob(f.random_p, 'Random loss probability') }
     : {
-      type: 'GilbertElliot',
-      p: prob(f.ge_p, 'Gilbert-Elliot p'),
-      r: prob(f.ge_r, 'Gilbert-Elliot r'),
-      k: prob(f.ge_k, 'Gilbert-Elliot k'),
-      h: prob(f.ge_h, 'Gilbert-Elliot h'),
-      state_is_good: f.ge_good,
-    };
+        type: 'GilbertElliot',
+        p: prob(f.ge_p, 'Gilbert-Elliot p'),
+        r: prob(f.ge_r, 'Gilbert-Elliot r'),
+        k: prob(f.ge_k, 'Gilbert-Elliot k'),
+        h: prob(f.ge_h, 'Gilbert-Elliot h'),
+        state_is_good: f.ge_good,
+      };
 }
 
 /** Throws an Error naming the offending field. Stages that are not added are sent as null and not validated. */

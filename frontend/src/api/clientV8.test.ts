@@ -21,8 +21,6 @@ function lastCall(): { url: string; init: RequestInit } {
   return { url: String(url), init: (init ?? {}) as RequestInit };
 }
 
-const contentType = (init: RequestInit) => new Headers(init.headers).get('content-type');
-
 beforeAll(async () => {
   client = await vi.importActual<Client>('./client');
 });

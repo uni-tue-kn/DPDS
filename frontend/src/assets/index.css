@@ -205,14 +205,28 @@ body {
   background: var(--color-card-background);
 }
 
-[data-level="error"].hint-item { border-left-color: var(--color-primary); }
-[data-level="warn"].hint-item { border-left-color: var(--color-yellow); }
-[data-level="info"].hint-item { border-left-color: #3498db; }
-[data-level="ok"].hint-item { border-left-color: var(--color-okay); }
+[data-level="error"].hint-item {
+  border-left-color: var(--color-primary);
+}
+[data-level="warn"].hint-item {
+  border-left-color: var(--color-yellow);
+}
+[data-level="info"].hint-item {
+  border-left-color: #3498db;
+}
+[data-level="ok"].hint-item {
+  border-left-color: var(--color-okay);
+}
 
-[data-level="error"] > h2 { color: var(--color-primary); }
-[data-level="warn"] > h2 { color: var(--color-yellow); }
-[data-level="ok"] > h2 { color: var(--color-okay); }
+[data-level="error"] > h2 {
+  color: var(--color-primary);
+}
+[data-level="warn"] > h2 {
+  color: var(--color-yellow);
+}
+[data-level="ok"] > h2 {
+  color: var(--color-okay);
+}
 
 fieldset.direction {
   border: 1px solid var(--color-border);

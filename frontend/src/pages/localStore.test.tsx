@@ -34,12 +34,15 @@ describe('local document: corrupt or unknown storage', () => {
     expect(within(alert).getByRole('button', { name: /^reset/i })).toBeInTheDocument();
   });
 
-  it.each(['/', '/links', '/settings', '/presets', '/hints', '/links/new'])('the alert shows on %s too', async (path) => {
-    seedRaw('{not json');
-    renderApp(path);
-    expect(await alertOf()).toHaveTextContent(/local configuration/i);
-    expect(resetButton()).toBeInTheDocument();
-  });
+  it.each(['/', '/links', '/settings', '/presets', '/hints', '/links/new'])(
+    'the alert shows on %s too',
+    async (path) => {
+      seedRaw('{not json');
+      renderApp(path);
+      expect(await alertOf()).toHaveTextContent(/local configuration/i);
+      expect(resetButton()).toBeInTheDocument();
+    },
+  );
 
   it('shows the alert without any user action and leaves the stored string untouched', async () => {
     seedRaw('{"version":1,"links":"oops"');
@@ -137,7 +140,16 @@ describe('local document: what is valid', () => {
   });
 
   it('opening any page with nothing stored never creates the document', async () => {
-    for (const path of ['/', '/links', '/presets', '/settings', '/hints', '/interfaces', '/links/new', '/presets/new']) {
+    for (const path of [
+      '/',
+      '/links',
+      '/presets',
+      '/settings',
+      '/hints',
+      '/interfaces',
+      '/links/new',
+      '/presets/new',
+    ]) {
       const view = renderApp(path);
       await waitFor(() => expect(document.querySelector('h1')).not.toBeNull());
       expect(rawStore(), path).toBeNull();
@@ -156,16 +168,37 @@ describe('local document: what is valid', () => {
 describe('no REST calls for the removed routes', () => {
   it('walking through every page requests nothing but online, interfaces, hints, emulation, stats and histograms', async () => {
     seedStore({ links: [fx.link()], presets: [fx.preset({ id: 1 })] });
-    for (const path of ['/', '/links', '/links/1', '/links/new', '/presets', '/presets/1', '/presets/new', '/settings', '/hints', '/interfaces']) {
+    for (const path of [
+      '/',
+      '/links',
+      '/links/1',
+      '/links/new',
+      '/presets',
+      '/presets/1',
+      '/presets/new',
+      '/settings',
+      '/hints',
+      '/interfaces',
+    ]) {
       const view = renderApp(path);
       await waitFor(() => expect(document.querySelector('h1')).not.toBeNull());
       view.unmount();
     }
     expect(Object.keys(api).sort()).toEqual([
-      'getDelayHistogram', 'getEmulation', 'getHostHints', 'getHostHintsFor', 'getInterfaces', 'getOnline', 'getStats', 'startEmulation',
+      'getDelayHistogram',
+      'getEmulation',
+      'getHostHints',
+      'getHostHintsFor',
+      'getInterfaces',
+      'getOnline',
+      'getStats',
+      'startEmulation',
       'stopEmulation',
     ]);
     // the pages did not use fetch directly either (setup stubs it as unreachable)
-    expect(vi.mocked(fetch)).not.toHaveBeenCalledWith(expect.stringMatching(/\/api\/(links|presets|settings|export|import)/), expect.anything());
+    expect(vi.mocked(fetch)).not.toHaveBeenCalledWith(
+      expect.stringMatching(/\/api\/(links|presets|settings|export|import)/),
+      expect.anything(),
+    );
   });
 });

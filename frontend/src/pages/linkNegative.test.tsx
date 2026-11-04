@@ -3,6 +3,7 @@ import type { UserEvent } from '@testing-library/user-event';
 import { PAGES, cfg } from '../test/configPages';
 import type { ConfigPage } from '../test/configPages';
 import { numberField, typeInto, unitOf } from '../test/helpers';
+import { must } from '../test/must';
 
 // spec19 item 6. The form refuses negative values for times, rates, capacity and the initialization rate, and loss
 // probabilities outside [0, 1], in the unit the user typed. The message names the field (like the other validation
@@ -49,23 +50,26 @@ describe.each(PAGES)('$name: negative values are refused in the unit the user ty
     if (prep === 'correlation') await user.click(screen.getByLabelText('Activate correlation'));
   }
 
-  it.each(NEGATIVES)('%s = %s %s is refused: alert naming the field and the reason, no request', async (label, text, unit, prep, base) => {
-    const user = await page.openFull();
-    await ready(user, prep);
-    await typeInto(user, body(), label, text, unit);
-    await page.save(user);
-    const alert = await screen.findByRole('alert');
-    // the label as a whole word (case-sensitive, so "Rate" is not satisfied by "Initialization rate")
-    expect(alert.textContent).toMatch(new RegExp(`\\b${label}\\b`));
-    // the initialization rate already says "must be at least 1 pps", which is the reason in its own words
-    expect(alert.textContent).toMatch(label === 'Initialization rate' ? /at least 1 pps/ : NEGATIVE_REASON);
-    if (Math.abs(base) >= 100) expect(alert.textContent).not.toContain(baseDigits(base));
-    expect(alert.textContent).not.toMatch(/\((ns|us|µs|ms|s|bit\/s|bit|pps)\)/);
-    expect(page.requests()).toBe(0);
-    // the typed value and unit stay for the correction
-    expect(numberField(body(), label)).toHaveValue(Number(text));
-    if (unit !== undefined) expect(unitOf(body(), label)).toBe(unit);
-  });
+  it.each(NEGATIVES)(
+    '%s = %s %s is refused: alert naming the field and the reason, no request',
+    async (label, text, unit, prep, base) => {
+      const user = await page.openFull();
+      await ready(user, prep);
+      await typeInto(user, body(), label, text, unit);
+      await page.save(user);
+      const alert = await screen.findByRole('alert');
+      // the label as a whole word (case-sensitive, so "Rate" is not satisfied by "Initialization rate")
+      expect(alert.textContent).toMatch(new RegExp(`\\b${label}\\b`));
+      // the initialization rate already says "must be at least 1 pps", which is the reason in its own words
+      expect(alert.textContent).toMatch(label === 'Initialization rate' ? /at least 1 pps/ : NEGATIVE_REASON);
+      if (Math.abs(base) >= 100) expect(alert.textContent).not.toContain(baseDigits(base));
+      expect(alert.textContent).not.toMatch(/\((ns|us|µs|ms|s|bit\/s|bit|pps)\)/);
+      expect(page.requests()).toBe(0);
+      // the typed value and unit stay for the correction
+      expect(numberField(body(), label)).toHaveValue(Number(text));
+      if (unit !== undefined) expect(unitOf(body(), label)).toBe(unit);
+    },
+  );
 
   it('a negative buffer capacity is refused on a form with no stage added (alert naming the field, no write)', async () => {
     const user = await page.openNew();
@@ -85,7 +89,7 @@ describe.each(PAGES)('$name: negative values are refused in the unit the user ty
     expect(page.requests()).toBe(0);
     await typeInto(user, body(), 'Mean delay', '5');
     await page.save(user);
-    expect(page.created().delayer!.mean_ns).toBe(5000000);
+    expect(must(page.created().delayer).mean_ns).toBe(5000000);
   });
 
   it.each([
@@ -116,7 +120,7 @@ describe.each(PAGES)('$name: negative values are refused in the unit the user ty
     await ready(user, undefined);
     await typeInto(user, body(), label, '0', 'ms');
     await page.save(user);
-    expect(page.created().delayer![key]).toBe(0);
+    expect(must(page.created().delayer)[key]).toBe(0);
   });
 
   it('Buffer capacity = 0 is accepted and sent as 0 (also with no stage added)', async () => {
@@ -139,10 +143,10 @@ describe.each(PAGES)('$name: negative values are refused in the unit the user ty
     await typeRateOk(user);
     await page.save(user);
     const c = page.created();
-    expect(c.delayer!.mean_ns).toBe(5000000);
-    expect(c.delayer!.std_ns).toBe(500);
-    expect(c.delayer!.half_life_period_ns).toBe(2000000);
-    expect(c.limiter!.rate_bps).toBe(1000000000);
+    expect(must(c.delayer).mean_ns).toBe(5000000);
+    expect(must(c.delayer).std_ns).toBe(500);
+    expect(must(c.delayer).half_life_period_ns).toBe(2000000);
+    expect(must(c.limiter).rate_bps).toBe(1000000000);
     expect(c.histogram?.lo_ns).toBe(1000000);
     expect(c.histogram?.hi_ns).toBe(9000000);
   });
@@ -162,16 +166,19 @@ describe.each(PAGES)('$name: loss probabilities must lie within [0, 1]', (page: 
     if (model === 'GilbertElliot') await user.selectOptions(screen.getByLabelText('Loss model'), 'GilbertElliot');
   }
 
-  it.each(['-0.1', '-1', '1.5', '2', '1.0001'])('Random loss probability %s is refused: alert naming the field and the range, no request', async (text) => {
-    const user = await page.openFull();
-    await ready(user, 'Random');
-    await typeInto(user, body(), 'Random loss probability', text);
-    await page.save(user);
-    const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toMatch(/Random loss probability/);
-    expect(alert.textContent).toMatch(RANGE_REASON);
-    expect(page.requests()).toBe(0);
-  });
+  it.each(['-0.1', '-1', '1.5', '2', '1.0001'])(
+    'Random loss probability %s is refused: alert naming the field and the range, no request',
+    async (text) => {
+      const user = await page.openFull();
+      await ready(user, 'Random');
+      await typeInto(user, body(), 'Random loss probability', text);
+      await page.save(user);
+      const alert = await screen.findByRole('alert');
+      expect(alert.textContent).toMatch(/Random loss probability/);
+      expect(alert.textContent).toMatch(RANGE_REASON);
+      expect(page.requests()).toBe(0);
+    },
+  );
 
   it.each(GE_FIELDS.flatMap((f) => ['-0.1', '1.5'].map((v) => [f, v] as const)))(
     '%s = %s is refused: alert naming the field and the range, no request',
@@ -187,24 +194,30 @@ describe.each(PAGES)('$name: loss probabilities must lie within [0, 1]', (page: 
     },
   );
 
-  it.each(['0', '1', '0.5', '0.000001', '0.999999'])('Random loss probability %s is accepted and sent as typed', async (text) => {
-    const user = await page.openFull();
-    await ready(user, 'Random');
-    await typeInto(user, body(), 'Random loss probability', text);
-    await page.save(user);
-    expect(page.created().loss_model).toEqual({ type: 'Random', p: Number(text) });
-  });
+  it.each(['0', '1', '0.5', '0.000001', '0.999999'])(
+    'Random loss probability %s is accepted and sent as typed',
+    async (text) => {
+      const user = await page.openFull();
+      await ready(user, 'Random');
+      await typeInto(user, body(), 'Random loss probability', text);
+      await page.save(user);
+      expect(page.created().loss_model).toEqual({ type: 'Random', p: Number(text) });
+    },
+  );
 
-  it.each(GE_FIELDS.flatMap((f) => ['0', '1'].map((v) => [f, v] as const)))('%s = %s (the boundary) is accepted', async (label, text) => {
-    const user = await page.openFull();
-    await ready(user, 'GilbertElliot');
-    await typeInto(user, body(), label, text);
-    await page.save(user);
-    const loss = page.created().loss_model!;
-    expect(loss.type).toBe('GilbertElliot');
-    const key = label.slice(-1) as 'p' | 'r' | 'k' | 'h';
-    expect((loss as unknown as Record<string, number>)[key]).toBe(Number(text));
-  });
+  it.each(GE_FIELDS.flatMap((f) => ['0', '1'].map((v) => [f, v] as const)))(
+    '%s = %s (the boundary) is accepted',
+    async (label, text) => {
+      const user = await page.openFull();
+      await ready(user, 'GilbertElliot');
+      await typeInto(user, body(), label, text);
+      await page.save(user);
+      const loss = must(page.created().loss_model);
+      expect(loss.type).toBe('GilbertElliot');
+      const key = label.slice(-1) as 'p' | 'r' | 'k' | 'h';
+      expect((loss as unknown as Record<string, number>)[key]).toBe(Number(text));
+    },
+  );
 
   it('a stored probability outside [0, 1] is refused on Save as well', async () => {
     const base = cfg();
@@ -221,7 +234,7 @@ describe.each(PAGES)('$name: loss probabilities must lie within [0, 1]', (page: 
     await typeInto(user, body(), 'Random loss probability', '5');
     await user.selectOptions(screen.getByLabelText('Loss model'), 'GilbertElliot');
     await page.save(user);
-    expect(page.created().loss_model!.type).toBe('GilbertElliot');
+    expect(must(page.created().loss_model).type).toBe('GilbertElliot');
   });
 
   it('a refused probability can be corrected and saved: 1.5, then 0.5', async () => {

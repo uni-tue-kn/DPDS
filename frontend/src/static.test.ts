@@ -9,20 +9,19 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, uti
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { must } from './test/must';
 
 const frontendDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const repoDir = resolve(frontendDir, '..');
 const read = (...p: string[]) => readFileSync(resolve(frontendDir, ...p), 'utf8');
 
 describe('no Docker or nginx deployment of the frontend (spec v13)', () => {
-  it.each([
-    'docker-compose.yml',
-    'frontend/Dockerfile',
-    'frontend/nginx.conf',
-    'frontend/.dockerignore',
-  ])('%s is gone', (file) => {
-    expect(existsSync(resolve(repoDir, file)), file).toBe(false);
-  });
+  it.each(['docker-compose.yml', 'frontend/Dockerfile', 'frontend/nginx.conf', 'frontend/.dockerignore'])(
+    '%s is gone',
+    (file) => {
+      expect(existsSync(resolve(repoDir, file)), file).toBe(false);
+    },
+  );
 
   const stale = /docker-compose|docker compose|Dockerfile|nginx|DPDS_FRONTEND_(BIND|PORT)/i;
 
@@ -64,7 +63,7 @@ describe('.github/workflows/ci.yml: no frontend release asset any more (spec v15
   /** The text of the job `name` (2-space indented key under `jobs:`), up to the next job. */
   function job(name: string): string {
     const lines = ci.split('\n');
-    const start = lines.findIndex((l) => l === `  ${name}:`);
+    const start = lines.indexOf(`  ${name}:`);
     if (start < 0) return '';
     let end = lines.findIndex((l, i) => i > start && /^ {2}[\w-]+:\s*$/.test(l));
     if (end < 0) end = lines.length;
@@ -73,15 +72,19 @@ describe('.github/workflows/ci.yml: no frontend release asset any more (spec v15
   /** The job ids: the 2-space indented keys under `jobs:`. */
   const jobIds = (() => {
     const lines = ci.split('\n');
-    const start = lines.findIndex((l) => l === 'jobs:');
+    const start = lines.indexOf('jobs:');
     return lines
       .slice(start + 1)
       .map((l) => /^ {2}([\w-]+):\s*$/.exec(l)?.[1])
       .filter((id): id is string => id !== undefined);
   })();
 
-  it('has the jobs fmt, rust, frontend and packaging and no frontend-asset-* job', () => {
-    expect(jobIds).toEqual(expect.arrayContaining(['fmt', 'rust', 'frontend', 'packaging']));
+  it('has exactly the jobs backend, frontend, installer and release (spec v23), and no frontend-asset-* job', () => {
+    expect([...jobIds].sort()).toEqual(['backend', 'frontend', 'installer', 'release']);
+    for (const old of ['fmt', 'rust', 'packaging']) {
+      expect(jobIds, `the job ${old} was merged or renamed`).not.toContain(old);
+      expect(job(old), old).toBe('');
+    }
     expect(jobIds.filter((id) => /^frontend-asset/.test(id))).toEqual([]);
     expect(job('frontend-asset-build')).toBe('');
     expect(job('frontend-asset-publish')).toBe('');
@@ -117,20 +120,83 @@ describe('.github/workflows/ci.yml: no frontend release asset any more (spec v15
     expect(ci).not.toMatch(/frontend-asset|release asset|frontend asset|dpds\.sh install downloads/i);
   });
 
-  it('the frontend job runs npm ci, then the typecheck, the tests and npm run build, in frontend/', () => {
-    const frontend = job('frontend');
+  /** The job's text without comment lines, so a step named in a comment doesn't count. */
+  const code = (name: string) =>
+    job(name)
+      .split('\n')
+      .filter((l) => !l.trim().startsWith('#'))
+      .join('\n');
+
+  /** Asserts that every pattern occurs in `text` and that their first occurrences are in this order. */
+  function expectInOrder(text: string, steps: [string, RegExp][]) {
+    const at = steps.map(([label, re]) => ({ label, i: text.search(re) }));
+    for (const { label, i } of at) expect(i, `step missing: ${label}`).toBeGreaterThanOrEqual(0);
+    for (let k = 1; k < at.length; k++) {
+      expect(at[k - 1].i, `${at[k - 1].label} must come before ${at[k].label}`).toBeLessThan(at[k].i);
+    }
+  }
+
+  it('the frontend job runs npm ci, npm run format:check, npm run lint, then build, tsc and vitest, in frontend/ (spec v23)', () => {
+    const frontend = code('frontend');
     expect(frontend).not.toBe('');
     expect(frontend).toMatch(/working-directory:\s*frontend/);
-    expect(frontend).toMatch(/npm run build/);
-    const at = (re: RegExp) => frontend.search(re);
-    expect(at(/npm ci/)).toBeGreaterThanOrEqual(0);
-    expect(at(/npm ci/)).toBeLessThan(at(/npm run build/));
-    expect(frontend).toMatch(/tsc --noEmit/);
-    expect(frontend).toMatch(/vitest run/);
+    expectInOrder(frontend, [
+      ['npm ci', /\bnpm ci\b/],
+      ['format check', /\bnpm run format:check\b/],
+      ['lint', /\bnpm run lint\b/],
+      ['build', /\bnpm run build\b/],
+      ['tsc', /\btsc --noEmit\b/],
+      ['vitest', /\bvitest run\b/],
+    ]);
+    // the checks are plain `npm run` steps: neither writes (`format` would hide an unformatted tree)
+    expect(frontend).not.toMatch(/\bnpm run format\s*$/m);
+    expect(frontend).not.toMatch(/prettier --write/);
   });
 
-  it('the packaging job still runs the dpds.sh tests', () => {
-    expect(job('packaging')).toMatch(/bash packaging\/tests\/dpds_sh\.test\.sh/);
+  it('the backend job runs fmt first, then both clippy runs, the tests, the telemetry build and the controller e2e (spec v23)', () => {
+    const backend = code('backend');
+    expect(backend).not.toBe('');
+    expectInOrder(backend, [
+      ['cargo fmt', /cargo fmt --all -- --check/],
+      ['clippy', /cargo clippy --workspace --all-targets -- -D warnings/],
+      ['clippy, all features', /cargo clippy --workspace --all-targets --all-features -- -D warnings/],
+      ['workspace tests', /cargo test --workspace --release/],
+      ['dpds telemetry tests', /cargo test -p dpds --release --features telemetry/],
+      ['telemetry build', /cargo build --release -p dpds --features telemetry/],
+      ['controller e2e', /cargo test --release -p dpds-controller --test integration -- --ignored/],
+    ]);
+    // cargo fmt is the only fmt step: once, and not as a separate job any more
+    expect(backend.match(/cargo fmt/g)).toHaveLength(1);
+  });
+
+  it('the backend job installs rustfmt and clippy with its toolchain (it runs both now)', () => {
+    const toolchain = /dtolnay\/rust-toolchain[\s\S]*?components:\s*([^\n]*)/.exec(code('backend'));
+    expect(toolchain, 'a rust-toolchain step with components').not.toBeNull();
+    expect(toolchain?.[1]).toMatch(/\brustfmt\b/);
+    expect(toolchain?.[1]).toMatch(/\bclippy\b/);
+  });
+
+  it('the backend job keeps the DPDK build and cache, the plain-build env and the pinned toolchain (spec v23: nothing else changes)', () => {
+    const backend = code('backend');
+    expect(backend).toMatch(/\.github\/scripts\/install-dpdk\.sh/);
+    expect(backend).toMatch(/actions\/cache\/restore@/);
+    expect(backend).toMatch(/actions\/cache\/save@/);
+    expect(backend).toMatch(/RUSTFLAGS:\s*""/);
+    expect(backend).toMatch(/RUSTDOCFLAGS:\s*""/);
+    expect(backend).toMatch(/CC:\s*gcc/);
+    expect(backend).toMatch(/toolchain:\s*1\.99\.1/);
+    expect(backend).toMatch(/timeout-minutes:\s*60/);
+  });
+
+  it('the installer job runs the dpds.sh tests', () => {
+    expect(code('installer')).toMatch(/packaging\/tests\/dpds_sh\.test\.sh/);
+  });
+
+  it('the release job needs exactly backend, frontend and installer', () => {
+    const needs = /^ {4}needs:\s*\[([^\]]*)\]/m.exec(job('release'));
+    expect(needs, 'needs: [..] in the release job').not.toBeNull();
+    const ids = (needs?.[1] ?? '').split(',').map((x) => x.trim());
+    expect([...ids].sort()).toEqual(['backend', 'frontend', 'installer']);
   });
 
   it('the DPDK comment names the new minimum, not 25.11 (user, 2026-11-03)', () => {
@@ -145,14 +211,19 @@ describe('.github/workflows/ci.yml: no frontend release asset any more (spec v15
 describe('README.md and frontend/README.md: dpds.sh builds the frontend with Node on the host (spec v15)', () => {
   const readme = readFileSync(resolve(repoDir, 'README.md'), 'utf8');
   const paragraphs = readme.split(/\n\s*\n/).map((p) => p.replace(/\s+/g, ' '));
-  const enginesMin = (JSON.parse(read('package.json')) as { engines: { node: string } }).engines.node.replace(/^>=\s*/, '');
+  const enginesMin = (JSON.parse(read('package.json')) as { engines: { node: string } }).engines.node.replace(
+    /^>=\s*/,
+    '',
+  );
 
   it('the engines.node minimum is written as >=X.Y (the README and dpds.sh quote it)', () => {
     expect(enginesMin).toMatch(/^\d+\.\d+/);
   });
 
   it('a paragraph on dpds.sh names Node with the minimum version and npm', () => {
-    const para = paragraphs.find((p) => /dpds\.sh/.test(p) && /\bNode\b/.test(p) && /\bnpm\b/.test(p) && p.includes(enginesMin));
+    const para = paragraphs.find(
+      (p) => /dpds\.sh/.test(p) && /\bNode\b/.test(p) && /\bnpm\b/.test(p) && p.includes(enginesMin),
+    );
     expect(para, `no paragraph about dpds.sh, Node ${enginesMin} and npm`).toBeDefined();
   });
 
@@ -164,8 +235,11 @@ describe('README.md and frontend/README.md: dpds.sh builds the frontend with Nod
     const para = paragraphs.find(
       (p) => /dpds\.sh/.test(p) && /npm ci/.test(p) && /npm run build/.test(p) && !/download|skip/i.test(p),
     );
-    expect(para, 'no paragraph about dpds.sh running npm ci and npm run build (and not about skipping a download)').toBeDefined();
-    expect(para!.indexOf('npm ci')).toBeLessThan(para!.indexOf('npm run build'));
+    expect(
+      para,
+      'no paragraph about dpds.sh running npm ci and npm run build (and not about skipping a download)',
+    ).toBeDefined();
+    expect(must(para).indexOf('npm ci')).toBeLessThan(must(para).indexOf('npm run build'));
   });
 
   it('has no release-asset, download or trust-model text', () => {
@@ -190,7 +264,9 @@ describe('README.md and frontend/README.md: dpds.sh builds the frontend with Nod
   });
 
   it('frontend/README.md says that dpds.sh install builds the frontend', () => {
-    const paras = read('README.md').split(/\n\s*\n/).map((p) => p.replace(/\s+/g, ' '));
+    const paras = read('README.md')
+      .split(/\n\s*\n/)
+      .map((p) => p.replace(/\s+/g, ' '));
     const para = paras.find((p) => /dpds\.sh install/.test(p) && /\bbuilds?\b/i.test(p) && /\b(Node|npm)\b/.test(p));
     expect(para, 'no paragraph about dpds.sh install building the frontend with Node or npm').toBeDefined();
   });
@@ -229,7 +305,9 @@ describe('frontend build script (v13b item 2)', () => {
   it('the README says a plain cargo build embeds whatever frontend/dist holds, which may be stale', () => {
     const readme = readFileSync(resolve(repoDir, 'README.md'), 'utf8');
     const paragraphs = readme.split(/\n\s*\n/).map((p) => p.replace(/\s+/g, ' '));
-    const para = paragraphs.find((p) => /cargo build/.test(p) && /frontend\/dist/.test(p) && /stale|outdated|whatever/i.test(p));
+    const para = paragraphs.find(
+      (p) => /cargo build/.test(p) && /frontend\/dist/.test(p) && /stale|outdated|whatever/i.test(p),
+    );
     expect(para, 'no paragraph about cargo build, frontend/dist and stale content').toBeDefined();
     expect(para).toMatch(/dpds\.sh[^.]*\b(explicit|always)\b|\b(explicit|always)\b[^.]*dpds\.sh/i);
   });
@@ -243,5 +321,134 @@ describe('leftovers (F6)', () => {
 
   it('types.ts no longer carries the stale "controller does not serve yet" v6 note', () => {
     expect(read('src/api/types.ts')).not.toMatch(/does not serve yet|at the time of writing/i);
+  });
+});
+
+// Frontend formatting and linting (spec v23, changed 2026-11-04): Biome for both, because typescript-eslint
+// doesn't support TypeScript 7. Static checks of the files only; the tool itself runs in CI
+// (`npm run format:check`, `npm run lint`). Flags and config keys checked against @biomejs/biome 2.6.4:
+// `biome lint --error-on-warnings`, `biome format [--write]`, `javascript.formatter.quoteStyle`/`semicolons`,
+// `formatter.lineWidth`, `files.includes` with `!` entries.
+describe('frontend lint and format tooling: Biome (spec v23)', () => {
+  const pkg = JSON.parse(read('package.json')) as {
+    scripts: Record<string, string>;
+    dependencies: Record<string, string>;
+    devDependencies: Record<string, string>;
+  };
+  const lock = JSON.parse(read('package-lock.json')) as { packages: Record<string, unknown> };
+  const biomeConfig = () => read('biome.json');
+
+  it('@biomejs/biome is a devDependency pinned to an exact version and is installed by npm ci (package-lock.json)', () => {
+    expect(pkg.devDependencies['@biomejs/biome']).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(pkg.dependencies['@biomejs/biome']).toBeUndefined();
+    expect(lock.packages['node_modules/@biomejs/biome'], 'package-lock.json: @biomejs/biome').toBeDefined();
+  });
+
+  it('has no ESLint, Prettier or typescript-eslint left: no dependency, no config file, no ignore file', () => {
+    const all = { ...pkg.dependencies, ...pkg.devDependencies };
+    const stale = Object.keys(all).filter((n) => /eslint|prettier/i.test(n));
+    expect(stale).toEqual([]);
+    const lockStale = Object.keys(lock.packages).filter((n) => /node_modules\/(.*eslint|prettier)/i.test(n));
+    expect(lockStale, 'package-lock.json entries').toEqual([]);
+    for (const f of [
+      'eslint.config.js',
+      'eslint.config.mjs',
+      'eslint.config.ts',
+      '.eslintrc',
+      '.eslintrc.json',
+      '.eslintrc.js',
+      '.eslintrc.cjs',
+      '.eslintignore',
+      '.prettierrc',
+      '.prettierrc.json',
+      '.prettierignore',
+      'prettier.config.js',
+    ]) {
+      expect(existsSync(resolve(frontendDir, f)), f).toBe(false);
+    }
+  });
+
+  it('keeps the existing scripts', () => {
+    expect(pkg.scripts.build).toMatch(/^tsc --noEmit && vite build/);
+    expect(pkg.scripts.test).toBe('vitest run');
+    expect(pkg.scripts.typecheck).toBe('tsc --noEmit');
+  });
+
+  it('the scripts mention neither eslint nor prettier', () => {
+    expect(JSON.stringify(pkg.scripts)).not.toMatch(/eslint|prettier/i);
+  });
+
+  it('lint runs biome lint over the project and treats warnings as errors', () => {
+    expect(pkg.scripts.lint).toMatch(/^biome lint\b/);
+    expect(pkg.scripts.lint).toMatch(/--error-on-warnings\b/);
+    expect(pkg.scripts.lint).toMatch(/\s\.$/);
+    expect(pkg.scripts.lint).not.toMatch(/--write|--fix|--unsafe|--max-diagnostics/);
+  });
+
+  it('format runs biome format with --write over the project', () => {
+    expect(pkg.scripts.format).toMatch(/^biome format\b/);
+    expect(pkg.scripts.format).toMatch(/--write\b/);
+    expect(pkg.scripts.format).toMatch(/\s\.$/);
+  });
+
+  it('format:check runs biome format without writing, so an unformatted file fails it', () => {
+    expect(pkg.scripts['format:check']).toMatch(/^biome format\b/);
+    expect(pkg.scripts['format:check']).not.toMatch(/--write|--fix/);
+    expect(pkg.scripts['format:check']).toMatch(/\s\.$/);
+  });
+
+  describe('biome.json', () => {
+    it('exists in frontend/ and uses the schema of the pinned version', () => {
+      expect(existsSync(resolve(frontendDir, 'biome.json'))).toBe(true);
+      const version = pkg.devDependencies['@biomejs/biome'];
+      expect(biomeConfig()).toContain(`https://biomejs.dev/schemas/${version}/schema.json`);
+    });
+
+    it('formats with the style of the existing code: single quotes, semicolons, 2 spaces, an explicit width of 100 to 160', () => {
+      const text = biomeConfig();
+      expect(text).toMatch(/"quoteStyle"\s*:\s*"single"/);
+      // "always" is Biome's default, so the key may be left out; "asNeeded" would drop the existing semicolons
+      expect(text).not.toMatch(/"semicolons"\s*:\s*"asNeeded"/);
+      expect(text).toMatch(/"indentStyle"\s*:\s*"space"/);
+      expect(text).toMatch(/"indentWidth"\s*:\s*2\b/);
+      const width = /"lineWidth"\s*:\s*(\d+)/.exec(text);
+      expect(width, 'lineWidth is set explicitly').not.toBeNull();
+      expect(Number(width?.[1])).toBeGreaterThanOrEqual(100);
+      expect(Number(width?.[1])).toBeLessThanOrEqual(160);
+    });
+
+    it('keeps the formatter and the linter on, with no rule switched off or relaxed to hide findings', () => {
+      const text = biomeConfig();
+      expect(text).not.toMatch(/"enabled"\s*:\s*false/);
+      expect(text).not.toMatch(/:\s*"off"/);
+    });
+
+    it('does not lint or format dist (a `!` entry in files.includes, or the .gitignore through vcs)', () => {
+      const text = biomeConfig();
+      const excluded = /"!+[^"]*dist[^"]*"/.test(text);
+      const viaGitignore =
+        /"useIgnoreFile"\s*:\s*true/.test(text) &&
+        /"enabled"\s*:\s*true/.test(text) &&
+        read('.gitignore')
+          .split('\n')
+          .some((l) => l.trim().replace(/^\//, '').replace(/\/$/, '') === 'dist');
+      expect(excluded || viaGitignore).toBe(true);
+    });
+  });
+
+  it('node_modules and dist stay in .gitignore', () => {
+    const lines = read('.gitignore')
+      .split('\n')
+      .map((l) => l.trim().replace(/^\//, '').replace(/\/$/, ''));
+    expect(lines).toContain('dist');
+    expect(lines).toContain('node_modules');
+  });
+
+  it('the source has no suppression comments (no biome-ignore, no eslint-disable)', () => {
+    const hits = execSync('grep -rlE "biome-ignore|eslint-disable" src || true', { cwd: frontendDir })
+      .toString()
+      .split('\n')
+      .filter((f) => f && f !== 'src/static.test.ts');
+    expect(hits).toEqual([]);
   });
 });

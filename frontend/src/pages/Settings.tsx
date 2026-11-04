@@ -4,21 +4,30 @@ import { Button, Card, Form, InputGroup, Modal } from 'react-bootstrap';
 import ErrorAlert from '../components/ErrorAlert';
 import { errorMessage } from '../common/format';
 import {
-  emptyConfig, isLocalConfig, parseStored, readRaw, updateConfig, useLocalConfig, writeConfig,
+  emptyConfig,
+  isLocalConfig,
+  parseStored,
+  readRaw,
+  updateConfig,
+  useLocalConfig,
+  writeConfig,
 } from '../common/localConfig';
 import type { LocalConfig, Settings as SettingsDto } from '../api/types';
 
 interface FormState {
   main_lcore: string;
-  /** One list row per argument. */
-  eal_extra_args: string[];
+  /** One list row per argument; the id keeps a row's input when rows before it are removed. */
+  eal_extra_args: { id: number; value: string }[];
   poll_interval_ms: string;
 }
+
+let nextRowId = 0;
+const newRow = (value: string) => ({ id: nextRowId++, value });
 
 function toForm(s: SettingsDto): FormState {
   return {
     main_lcore: s.main_lcore == null ? '' : String(s.main_lcore),
-    eal_extra_args: s.eal_extra_args,
+    eal_extra_args: s.eal_extra_args.map(newRow),
     poll_interval_ms: String(s.poll_interval_ms),
   };
 }
@@ -34,7 +43,7 @@ function toDto(f: FormState): SettingsDto {
   }
   return {
     main_lcore: main === '' ? null : Number(main),
-    eal_extra_args: f.eal_extra_args.map((a) => a.trim()).filter(Boolean),
+    eal_extra_args: f.eal_extra_args.map((a) => a.value.trim()).filter(Boolean),
     poll_interval_ms: poll,
   };
 }
@@ -52,7 +61,8 @@ function readText(file: File): Promise<string> {
 function downloadSetup() {
   const raw = readRaw();
   const stored = parseStored(raw);
-  const text = raw !== null && stored.corrupt ? raw : JSON.stringify(raw === null ? emptyConfig() : stored.doc, null, 2);
+  const text =
+    raw !== null && stored.corrupt ? raw : JSON.stringify(raw === null ? emptyConfig() : stored.doc, null, 2);
   const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
   const a = document.createElement('a');
   a.href = url;
@@ -120,7 +130,9 @@ export default function Settings() {
     writeConfig(pendingImport);
     setForm(toForm(pendingImport.settings));
     setSaved(false);
-    setImported(`Setup imported: ${pendingImport.links.length} links and ${pendingImport.presets.length} presets. Settings were replaced as well.`);
+    setImported(
+      `Setup imported: ${pendingImport.links.length} links and ${pendingImport.presets.length} presets. Settings were replaced as well.`,
+    );
     setPendingImport(undefined);
   };
 
@@ -128,54 +140,88 @@ export default function Settings() {
     <>
       <h1 className="mb-3">Settings</h1>
       <ErrorAlert message={error} />
-      {imported && <div role="status" className="alert alert-success">{imported}</div>}
-      {saved && <div role="status" className="alert alert-success">Settings saved. They apply at the next start.</div>}
+      {imported && (
+        <div role="status" className="alert alert-success">
+          {imported}
+        </div>
+      )}
+      {saved && (
+        <div role="status" className="alert alert-success">
+          Settings saved. They apply at the next start.
+        </div>
+      )}
       <Card style={{ maxWidth: '40rem' }}>
         <Card.Body>
           <Form onSubmit={submit} noValidate>
             <Form.Group className="mb-3" controlId="main-lcore">
               <Form.Label>Main lcore</Form.Label>
-              <Form.Control type="number" value={form.main_lcore} onChange={(e) => edit({ main_lcore: e.target.value })} />
+              <Form.Control
+                type="number"
+                value={form.main_lcore}
+                onChange={(e) => edit({ main_lcore: e.target.value })}
+              />
               <Form.Text>Empty: the lowest non-isolated online core.</Form.Text>
             </Form.Group>
             <fieldset className="mb-3">
               <legend className="fs-6">EAL extra arguments</legend>
               {form.eal_extra_args.map((arg, i) => (
-                // Rows have no identity beyond their position; they are controlled inputs, so index keys are safe.
-                <InputGroup key={i} className="mb-2">
+                <InputGroup key={arg.id} className="mb-2">
                   <Form.Control
                     type="text"
                     aria-label={`EAL argument ${i + 1}`}
-                    value={arg}
-                    onChange={(e) => edit({ eal_extra_args: form.eal_extra_args.map((a, k) => (k === i ? e.target.value : a)) })}
+                    value={arg.value}
+                    onChange={(e) =>
+                      edit({
+                        eal_extra_args: form.eal_extra_args.map((a) =>
+                          a.id === arg.id ? { ...a, value: e.target.value } : a,
+                        ),
+                      })
+                    }
                   />
                   <Button
                     variant="outline-secondary"
                     aria-label={`Remove EAL argument ${i + 1}`}
-                    onClick={() => edit({ eal_extra_args: form.eal_extra_args.filter((_, k) => k !== i) })}
+                    onClick={() => edit({ eal_extra_args: form.eal_extra_args.filter((a) => a.id !== arg.id) })}
                   >
                     <i className="bi bi-trash" aria-hidden="true" />
                   </Button>
                 </InputGroup>
               ))}
-              <Button variant="outline-secondary" size="sm" onClick={() => edit({ eal_extra_args: [...form.eal_extra_args, ''] })}>
+              <Button
+                variant="outline-secondary"
+                size="sm"
+                onClick={() => edit({ eal_extra_args: [...form.eal_extra_args, newRow('')] })}
+              >
                 Add EAL argument
               </Button>
-              <Form.Text className="d-block">One argument per row, e.g. <code>--no-huge</code>, <code>-m</code>, <code>256</code>.</Form.Text>
+              <Form.Text className="d-block">
+                One argument per row, e.g. <code>--no-huge</code>, <code>-m</code>, <code>256</code>.
+              </Form.Text>
             </fieldset>
             <Form.Group className="mb-3" controlId="poll-interval">
               <Form.Label>Poll interval (ms)</Form.Label>
-              <Form.Control type="number" value={form.poll_interval_ms} onChange={(e) => edit({ poll_interval_ms: e.target.value })} />
+              <Form.Control
+                type="number"
+                value={form.poll_interval_ms}
+                onChange={(e) => edit({ poll_interval_ms: e.target.value })}
+              />
             </Form.Group>
-            <Button type="submit" variant="primary">Save</Button>
+            <Button type="submit" variant="primary">
+              Save
+            </Button>
           </Form>
         </Card.Body>
       </Card>
       <Card className="mt-3" style={{ maxWidth: '40rem' }}>
         <Card.Body>
           <h2 className="h5">Backup</h2>
-          <p className="mb-2">Export settings, links and presets as a JSON file, or restore them from one. They are kept in this browser only.</p>
-          <Button variant="outline-secondary" className="mb-3" onClick={exportSetup}>Export setup</Button>
+          <p className="mb-2">
+            Export settings, links and presets as a JSON file, or restore them from one. They are kept in this browser
+            only.
+          </p>
+          <Button variant="outline-secondary" className="mb-3" onClick={exportSetup}>
+            Export setup
+          </Button>
           <Form.Group controlId="import-file">
             <Form.Label>Import setup file</Form.Label>
             <Form.Control type="file" accept=".json,application/json" onChange={chooseFile} />
@@ -183,13 +229,20 @@ export default function Settings() {
         </Card.Body>
       </Card>
       <Modal show={pendingImport !== undefined} onHide={() => setPendingImport(undefined)} animation={false} centered>
-        <Modal.Header closeButton><Modal.Title>Import setup</Modal.Title></Modal.Header>
+        <Modal.Header closeButton>
+          <Modal.Title>Import setup</Modal.Title>
+        </Modal.Header>
         <Modal.Body>
-          Importing will replace all existing links, settings and presets with the contents of the file. This cannot be undone.
+          Importing will replace all existing links, settings and presets with the contents of the file. This cannot be
+          undone.
         </Modal.Body>
         <Modal.Footer>
-          <Button variant="secondary" onClick={() => setPendingImport(undefined)}>Cancel</Button>
-          <Button variant="danger" onClick={confirmImport}>Confirm import</Button>
+          <Button variant="secondary" onClick={() => setPendingImport(undefined)}>
+            Cancel
+          </Button>
+          <Button variant="danger" onClick={confirmImport}>
+            Confirm import
+          </Button>
         </Modal.Footer>
       </Modal>
     </>

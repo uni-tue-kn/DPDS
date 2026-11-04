@@ -16,7 +16,9 @@ export default function Hints() {
   const { doc, corrupt } = useLocalConfig();
   // Host-only hints, plus the ones that depend on the links of this browser's configuration (nothing is started).
   const host = useLoad(api.getHostHints);
-  const forLinks = useLoad(() => (corrupt || doc.links.length === 0 ? Promise.resolve([]) : api.getHostHintsFor(startRequestOf(doc))));
+  const forLinks = useLoad(() =>
+    corrupt || doc.links.length === 0 ? Promise.resolve([]) : api.getHostHintsFor(startRequestOf(doc)),
+  );
   const settled = (host.data ?? host.error) !== undefined && (forLinks.data ?? forLinks.error) !== undefined;
   // By hint id; the answer for the links wins.
   const data: Hint[] | undefined = settled
@@ -29,26 +31,32 @@ export default function Hints() {
       <ErrorAlert message={host.error} />
       <ErrorAlert message={forLinks.error} />
       {data && data.length === 0 && !failed && <p>No hints.</p>}
-      {data && GROUPS.map((g) => {
-        const items = data.filter((h) => h.level === g.level);
-        if (items.length === 0) return null;
-        const id = `hints-${g.level}`;
-        return (
-          <section key={g.level} className="hint-group" data-level={g.level} aria-labelledby={id}>
-            <h2 id={id} className="h4">{`${g.title} (${items.length})`}</h2>
-            <ul className="hint-list">
-              {items.map((h) => (
-                <li key={h.id} className="hint-item" data-level={g.level}>
-                  <Badge pill bg={g.bg} className="me-2">{g.level}</Badge>
-                  <strong>{h.title}</strong>
-                  <div>{h.detail}</div>
-                  <div className="text-body-secondary"><i className="bi bi-arrow-right-short" aria-hidden="true" />{h.suggestion}</div>
-                </li>
-              ))}
-            </ul>
-          </section>
-        );
-      })}
+      {data &&
+        GROUPS.map((g) => {
+          const items = data.filter((h) => h.level === g.level);
+          if (items.length === 0) return null;
+          const id = `hints-${g.level}`;
+          return (
+            <section key={g.level} className="hint-group" data-level={g.level} aria-labelledby={id}>
+              <h2 id={id} className="h4">{`${g.title} (${items.length})`}</h2>
+              <ul className="hint-list">
+                {items.map((h) => (
+                  <li key={h.id} className="hint-item" data-level={g.level}>
+                    <Badge pill bg={g.bg} className="me-2">
+                      {g.level}
+                    </Badge>
+                    <strong>{h.title}</strong>
+                    <div>{h.detail}</div>
+                    <div className="text-body-secondary">
+                      <i className="bi bi-arrow-right-short" aria-hidden="true" />
+                      {h.suggestion}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          );
+        })}
     </>
   );
 }

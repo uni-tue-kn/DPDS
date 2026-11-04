@@ -31,14 +31,16 @@ beforeEach(() => {
   clicks = [];
   revoked = [];
   Object.defineProperty(URL, 'createObjectURL', {
-    configurable: true, writable: true,
+    configurable: true,
+    writable: true,
     value: vi.fn((b: Blob) => {
       created.push(b);
       return BLOB_URL;
     }),
   });
   Object.defineProperty(URL, 'revokeObjectURL', {
-    configurable: true, writable: true,
+    configurable: true,
+    writable: true,
     value: vi.fn((u: string) => {
       revoked.push(u);
     }),
@@ -65,7 +67,11 @@ const exportBtn = () => screen.getByRole('button', { name: 'Export setup' });
 const fileInput = () => screen.getByLabelText('Import setup file') as HTMLInputElement;
 const jsonFile = (content: unknown, name = 'setup.json') =>
   new File([typeof content === 'string' ? content : JSON.stringify(content)], name, { type: 'application/json' });
-const alertTexts = () => screen.getAllByRole('alert').map((a) => a.textContent ?? '').join(' | ');
+const alertTexts = () =>
+  screen
+    .getAllByRole('alert')
+    .map((a) => a.textContent ?? '')
+    .join(' | ');
 
 /** A document that differs from everything the app could produce by default. */
 function doc(over: Partial<StoredDoc> = {}): StoredDoc {
@@ -225,7 +231,10 @@ describe('Settings: import setup', () => {
     ['links that are not a list', { ...doc(), links: 'a-b' }],
     ['presets that are not a list', { ...doc(), presets: {} }],
     ['no settings', (({ settings: _s, ...rest }) => rest)(doc())],
-    ['the old controller export format', { format: 'dpds-controller-export', version: 2, settings: fx.settings(), links: [], presets: [] }],
+    [
+      'the old controller export format',
+      { format: 'dpds-controller-export', version: 2, settings: fx.settings(), links: [], presets: [] },
+    ],
   ])('%s is refused: alert naming the setup file, no dialog, nothing written', async (_name, content) => {
     const before = seedStore({ links: [fx.loopLink({ id: 9 })] });
     const user = await open();
@@ -256,12 +265,15 @@ describe('Settings: import setup', () => {
 });
 
 describe('Settings: import is possible whatever the emulation does (nothing is stored on the controller)', () => {
-  it.each(['stopped', 'starting', 'running', 'stopping', 'failed'] as EmulationState[])('%s: input enabled, no stop hint', async (state) => {
-    api.getEmulation.mockResolvedValue(fx.emulation(state));
-    await open();
-    expect(fileInput()).toBeEnabled();
-    expect(screen.queryByTestId('import-hint')).not.toBeInTheDocument();
-  });
+  it.each(['stopped', 'starting', 'running', 'stopping', 'failed'] as EmulationState[])(
+    '%s: input enabled, no stop hint',
+    async (state) => {
+      api.getEmulation.mockResolvedValue(fx.emulation(state));
+      await open();
+      expect(fileInput()).toBeEnabled();
+      expect(screen.queryByTestId('import-hint')).not.toBeInTheDocument();
+    },
+  );
 
   it('a running emulation does not block the import; the page does not even ask for the state', async () => {
     api.getEmulation.mockResolvedValue(fx.emulation('running'));

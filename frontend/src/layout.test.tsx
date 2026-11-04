@@ -19,7 +19,9 @@ describe('sidebar navigation', () => {
   it('has a main navigation with the five pages in order', () => {
     renderApp('/');
     const nav = screen.getByRole('navigation', { name: 'Main navigation' });
-    const names = within(nav).getAllByRole('link').map((a) => a.getAttribute('aria-label') ?? a.textContent?.trim());
+    const names = within(nav)
+      .getAllByRole('link')
+      .map((a) => a.getAttribute('aria-label') ?? a.textContent?.trim());
     expect(names.slice(0, 5)).toEqual(NAV);
   });
 
@@ -144,7 +146,9 @@ describe('sidebar API documentation link (v16)', () => {
     expect(nav).not.toContainElement(docs());
     expect(nav.compareDocumentPosition(docs()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     // the page links keep their five entries in order (the docs link is not one of them)
-    const names = within(nav).getAllByRole('link').map((a) => a.getAttribute('aria-label') ?? a.textContent?.trim());
+    const names = within(nav)
+      .getAllByRole('link')
+      .map((a) => a.getAttribute('aria-label') ?? a.textContent?.trim());
     expect(names.slice(0, 5)).toEqual(NAV);
     expect(names).not.toContain('API documentation');
   });
@@ -181,7 +185,9 @@ describe('sidebar server status (F3)', () => {
 
   it('shows "Offline" while /api/online fails and recovers by itself (re-poll every <= 5 s)', async () => {
     vi.useFakeTimers();
-    api.getOnline.mockRejectedValueOnce(new Error('Failed to fetch')).mockResolvedValue(fx.online({ version: '0.9.9' }));
+    api.getOnline
+      .mockRejectedValueOnce(new Error('Failed to fetch'))
+      .mockResolvedValue(fx.online({ version: '0.9.9' }));
     renderApp('/hints');
     await tick(0);
     expect(screen.getByText('Offline')).toBeInTheDocument();

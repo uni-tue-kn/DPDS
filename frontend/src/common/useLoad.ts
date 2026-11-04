@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { errorMessage } from './format';
 
 export interface Loaded<T> {
@@ -11,20 +11,26 @@ export interface Loaded<T> {
 /** Fetches once on mount (and on `reload()`); ignores responses that arrive after unmount. */
 export function useLoad<T>(load: () => Promise<T>): Loaded<T> {
   const [state, setState] = useState<{ data?: T; error?: string }>({});
-  const [round, setRound] = useState(0);
-  const reload = useCallback(() => setRound((n) => n + 1), []);
+  // Callers pass an inline closure; the latest one is used without restarting the fetch every render.
+  const loadRef = useRef(load);
+  loadRef.current = load;
+  // Only the newest request may set the state; unmounting invalidates the one in flight.
+  const latest = useRef(0);
+
+  const reload = useCallback(() => {
+    const mine = ++latest.current;
+    loadRef.current().then(
+      (data) => mine === latest.current && setState({ data }),
+      (e: unknown) => mine === latest.current && setState({ error: errorMessage(e) }),
+    );
+  }, []);
 
   useEffect(() => {
-    let alive = true;
-    load().then(
-      (data) => alive && setState({ data }),
-      (e: unknown) => alive && setState({ error: errorMessage(e) }),
-    );
+    reload();
     return () => {
-      alive = false;
+      latest.current++;
     };
-    // Only `round` re-triggers: callers pass an inline closure that must not restart the fetch every render.
-  }, [round]);
+  }, [reload]);
 
   return { ...state, reload };
 }

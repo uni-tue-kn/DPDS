@@ -2,14 +2,13 @@ import { useState } from 'react';
 import type { FormEvent } from 'react';
 import { Button, Card, Form } from 'react-bootstrap';
 import { Link as RouterLink, useNavigate, useParams } from 'react-router';
-import * as api from '../api/client';
 import ErrorAlert from '../components/ErrorAlert';
 import { errorMessage } from '../common/format';
 import { savePreset, useLocalConfig } from '../common/localConfig';
 import ConfigFieldset, { RequiredMarker, RequiredNote } from './ConfigFieldset';
 import { configToDto, configToForm, defaultConfigForm } from './linkForm';
 import type { ConfigForm } from './linkForm';
-import type { Preset } from '../api/types';
+import type { Preset, PresetInput } from '../api/types';
 
 function Editor({ id, preset }: { id?: number; preset?: Preset }) {
   const navigate = useNavigate();
@@ -21,7 +20,7 @@ function Editor({ id, preset }: { id?: number; preset?: Preset }) {
   const submit = (ev: FormEvent) => {
     ev.preventDefault();
     setError(undefined);
-    let input;
+    let input: PresetInput;
     try {
       if (name.trim() === '') throw new Error('Name is required');
       input = {
@@ -51,7 +50,12 @@ function Editor({ id, preset }: { id?: number; preset?: Preset }) {
             <Form.Label>Name</Form.Label>
             <RequiredMarker />
             <Form.Control
-              type="text" maxLength={64} value={name} onChange={(e) => setName(e.target.value)} required aria-required="true"
+              type="text"
+              maxLength={64}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              required
+              aria-required="true"
             />
           </Form.Group>
           <Form.Group controlId="preset-description">
@@ -61,8 +65,12 @@ function Editor({ id, preset }: { id?: number; preset?: Preset }) {
         </Card.Body>
       </Card>
       <ConfigFieldset title="Preset configuration" value={config} onChange={setConfig} />
-      <Button type="submit" variant="primary" className="me-2">Save</Button>
-      <RouterLink to="/presets" className="btn btn-outline-secondary">Cancel</RouterLink>
+      <Button type="submit" variant="primary" className="me-2">
+        Save
+      </Button>
+      <RouterLink to="/presets" className="btn btn-outline-secondary">
+        Cancel
+      </RouterLink>
     </Form>
   );
 }

@@ -17,7 +17,8 @@ const BITS_PER_PACKET = 1542 * 8; // 12336
 
 /** The text of the info line: "Limit: derived from buffer capacity × 1542 B = <value> <unit>". */
 const INFO = /Limit: derived from buffer capacity × 1542 B/;
-const infoWith = (value: string) => new RegExp(`Limit: derived from buffer capacity × 1542 B = ${value.replace('.', '\\.')}$`);
+const infoWith = (value: string) =>
+  new RegExp(`Limit: derived from buffer capacity × 1542 B = ${value.replace('.', '\\.')}$`);
 
 function infoElement(): HTMLElement {
   return within(section('Limiter')).getByText(INFO);
@@ -66,7 +67,7 @@ describe.each(PAGES)('$name: the derived limit is shown read-only', (page: Confi
   });
 
   it.each([
-        [{ ...fx.config(), limiter: { mode: 'Spacer' as const, rate_bps: 1e9 } }, '12.336 Mbit'], // capacity 1000, with a limiter
+    [{ ...fx.config(), limiter: { mode: 'Spacer' as const, rate_bps: 1e9 } }, '12.336 Mbit'], // capacity 1000, with a limiter
     [fx.config2(), '61.68 Mbit'], // capacity 5000, TBF
     [fx.config3(), '3959.856 kbit'], // capacity 321: 3 959 856 bit has 6 decimals in Mbit
   ])('a stored config shows capacity x 12336 bit in readable units (%#)', async (config, text) => {
@@ -146,8 +147,9 @@ function sourceFiles(dir: string): string[] {
 
 describe('app sources', () => {
   it('no non-test source mentions limit_bit or the Burst limit label', () => {
-    const offenders = sourceFiles(join(process.cwd(), 'src'))
-      .filter((f) => /limit_bit|burst limit/i.test(readFileSync(f, 'utf8')));
+    const offenders = sourceFiles(join(process.cwd(), 'src')).filter((f) =>
+      /limit_bit|burst limit/i.test(readFileSync(f, 'utf8')),
+    );
     expect(offenders).toEqual([]);
   });
 });

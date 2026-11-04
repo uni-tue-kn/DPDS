@@ -7,6 +7,7 @@ import type { HistogramView } from '../api/types';
 import * as fx from '../test/fixtures';
 import { api } from '../test/mockApi';
 import { field, renderApp, tick } from '../test/helpers';
+import { must } from '../test/must';
 
 // Contract: "Dashboard histogram" in the v8 block of src/test/helpers.tsx. The Bar stub exposes the chart data as
 // `data-chart` and the chart options as `data-options` (setup.ts).
@@ -142,7 +143,7 @@ describe('Dashboard histogram: percentiles', () => {
     }
   });
 
-  it('shows each direction\'s own percentiles', async () => {
+  it("shows each direction's own percentiles", async () => {
     api.getDelayHistogram.mockImplementation(async (dir) =>
       fx.histogram(dir, { percentiles: { p50: dir === 0 ? 1050000 : 2500000, p90: 1, p99: 2, p999: 3 } }),
     );
@@ -154,7 +155,9 @@ describe('Dashboard histogram: percentiles', () => {
 
   it('marks a percentile that fell into the overflow with data-clamped=overflow and a ≥', async () => {
     api.getDelayHistogram.mockImplementation(async (dir) =>
-      fx.histogram(dir, { percentiles: { ...fx.histogram(dir).percentiles!, p999: 1400000, p999_clamped: 'overflow' } }),
+      fx.histogram(dir, {
+        percentiles: { ...must(fx.histogram(dir).percentiles), p999: 1400000, p999_clamped: 'overflow' },
+      }),
     );
     await ready();
     const dd = field(percentiles(0), 'p99.9');
@@ -166,7 +169,9 @@ describe('Dashboard histogram: percentiles', () => {
 
   it('marks a percentile that fell into the underflow with data-clamped=underflow and a ≤', async () => {
     api.getDelayHistogram.mockImplementation(async (dir) =>
-      fx.histogram(dir, { percentiles: { ...fx.histogram(dir).percentiles!, p50: 900000, p50_clamped: 'underflow' } }),
+      fx.histogram(dir, {
+        percentiles: { ...must(fx.histogram(dir).percentiles), p50: 900000, p50_clamped: 'underflow' },
+      }),
     );
     await ready();
     const dd = field(percentiles(0), 'p50');
@@ -178,7 +183,10 @@ describe('Dashboard histogram: percentiles', () => {
   it('prints n/a for percentiles without samples (null)', async () => {
     api.getDelayHistogram.mockImplementation(async (dir) =>
       fx.histogram(dir, {
-        bins: [0, 0, 0, 0, 0], underflow: 0, overflow: 0, count: 0,
+        bins: [0, 0, 0, 0, 0],
+        underflow: 0,
+        overflow: 0,
+        count: 0,
         percentiles: { p50: null, p90: null, p99: null, p999: null },
       }),
     );
@@ -189,7 +197,17 @@ describe('Dashboard histogram: percentiles', () => {
   it('a controller without the extras still renders the bars (no percentiles, no overlay, no crash)', async () => {
     api.getDelayHistogram.mockImplementation(async (dir) => {
       const h: Partial<HistogramView> = fx.histogram(dir);
-      for (const k of ['percentiles', 'count', 'expected', 'expected_underflow', 'expected_overflow', 'expected_model', 'window_s', 'span_ms'] as const) delete h[k];
+      for (const k of [
+        'percentiles',
+        'count',
+        'expected',
+        'expected_underflow',
+        'expected_overflow',
+        'expected_model',
+        'window_s',
+        'span_ms',
+      ] as const)
+        delete h[k];
       return h as HistogramView;
     });
     await ready();
@@ -258,7 +276,9 @@ describe('Dashboard histogram: expected-distribution overlay', () => {
   });
 
   it('names the normal approximation for correlated delays', async () => {
-    api.getDelayHistogram.mockImplementation(async (dir) => fx.histogram(dir, { expected_model: 'normal_approximation' }));
+    api.getDelayHistogram.mockImplementation(async (dir) =>
+      fx.histogram(dir, { expected_model: 'normal_approximation' }),
+    );
     await ready();
     const label = chartData(0).datasets[1].label ?? '';
     expect(label).toMatch(/normal approximation/i);

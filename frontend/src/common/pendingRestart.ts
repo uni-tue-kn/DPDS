@@ -19,9 +19,14 @@ function canon(v: unknown): string {
   return JSON.stringify(strip(v));
 }
 
-const linkKey = (l: LinkInput) => canon({
-  name: l.name, ingress: l.ingress, egress: l.egress, config: l.config, worker: l.worker,
-});
+const linkKey = (l: LinkInput) =>
+  canon({
+    name: l.name,
+    ingress: l.ingress,
+    egress: l.egress,
+    config: l.config,
+    worker: l.worker,
+  });
 
 export interface Pending {
   /** Anything differs: a link changed, was added or removed, or the settings changed. */
@@ -38,7 +43,8 @@ const NONE: Pending = { any: false, links: new Set() };
  */
 export function pendingRestart(local: LocalConfig, emulation: EmulationView | undefined): Pending {
   const running = emulation?.config;
-  if (!running || local.links.length === 0 || (emulation?.state !== 'starting' && emulation?.state !== 'running')) return NONE;
+  if (!running || local.links.length === 0 || (emulation?.state !== 'starting' && emulation?.state !== 'running'))
+    return NONE;
   const byName = new Map(running.links.map((l) => [l.name, linkKey(l)]));
   const links = new Set(local.links.filter((l) => byName.get(l.name) !== linkKey(l)).map((l) => l.name));
   const removed = running.links.some((r) => !local.links.some((l) => l.name === r.name));

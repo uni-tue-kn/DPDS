@@ -459,7 +459,7 @@ export function field(scope: HTMLElement, label: string): HTMLElement {
   const dts = Array.from(scope.querySelectorAll('dt')).filter((d) => d.textContent?.trim() === label);
   if (dts.length !== 1) throw new Error(`expected exactly one <dt>${label}</dt>, found ${dts.length}`);
   const dd = dts[0].nextElementSibling;
-  if (!dd || dd.tagName !== 'DD') throw new Error(`<dt>${label}</dt> is not followed by a <dd>`);
+  if (dd?.tagName !== 'DD') throw new Error(`<dt>${label}</dt> is not followed by a <dd>`);
   return dd as HTMLElement;
 }
 
@@ -473,10 +473,21 @@ export const RATE_UNITS = ['bit/s', 'kbit/s', 'Mbit/s', 'Gbit/s'];
 export const PPS_UNITS = ['pps', 'kpps', 'Mpps'];
 export const SIZE_UNITS = ['bit', 'kbit', 'Mbit', 'Gbit'];
 export const MULTIPLIER: Record<string, number> = {
-  ns: 1, '\u00b5s': 1e3, ms: 1e6, s: 1e9,
-  'bit/s': 1, 'kbit/s': 1e3, 'Mbit/s': 1e6, 'Gbit/s': 1e9,
-  pps: 1, kpps: 1e3, Mpps: 1e6,
-  bit: 1, kbit: 1e3, Mbit: 1e6, Gbit: 1e9,
+  ns: 1,
+  '\u00b5s': 1e3,
+  ms: 1e6,
+  s: 1e9,
+  'bit/s': 1,
+  'kbit/s': 1e3,
+  'Mbit/s': 1e6,
+  'Gbit/s': 1e9,
+  pps: 1,
+  kpps: 1e3,
+  Mpps: 1e6,
+  bit: 1,
+  kbit: 1e3,
+  Mbit: 1e6,
+  Gbit: 1e9,
 };
 /** The five subsections of the config form, in their order. */
 export const SECTIONS = ['Buffer', 'Delayer', 'Limiter', 'Dropper', 'Statistics'];
@@ -508,7 +519,13 @@ export async function pickUnit(user: UserEvent, scope: HTMLElement, label: strin
 }
 
 /** Optionally switches the unit first (the field is cleared afterwards, so nothing is converted), then replaces the text. */
-export async function typeInto(user: UserEvent, scope: HTMLElement, label: string, text: string, unit?: string): Promise<void> {
+export async function typeInto(
+  user: UserEvent,
+  scope: HTMLElement,
+  label: string,
+  text: string,
+  unit?: string,
+): Promise<void> {
   if (unit !== undefined) await pickUnit(user, scope, label, unit);
   const el = numberField(scope, label);
   await user.clear(el);
@@ -612,7 +629,9 @@ export function dropNulls<T>(v: T): T {
   if (Array.isArray(v)) return v.map((x) => dropNulls(x)) as T;
   if (v !== null && typeof v === 'object') {
     return Object.fromEntries(
-      Object.entries(v as Record<string, unknown>).filter(([, x]) => x !== null && x !== undefined).map(([k, x]) => [k, dropNulls(x)]),
+      Object.entries(v as Record<string, unknown>)
+        .filter(([, x]) => x !== null && x !== undefined)
+        .map(([k, x]) => [k, dropNulls(x)]),
     ) as T;
   }
   return v;
@@ -621,8 +640,10 @@ export function dropNulls<T>(v: T): T {
 export const sameConfig = (a: ConfigDto, b: ConfigDto) => expect(dropNulls(a)).toEqual(dropNulls(b));
 
 /** The stage of a config as null when it is absent. */
-export const stageOf = <K extends 'delayer' | 'limiter' | 'loss_model'>(c: ConfigDto, k: K): NonNullable<ConfigDto[K]> | null =>
-  (c[k] ?? null) as NonNullable<ConfigDto[K]> | null;
+export const stageOf = <K extends 'delayer' | 'limiter' | 'loss_model'>(
+  c: ConfigDto,
+  k: K,
+): NonNullable<ConfigDto[K]> | null => (c[k] ?? null) as NonNullable<ConfigDto[K]> | null;
 
 const START_LINK_KEYS = ['name', 'ingress', 'egress', 'config', 'worker'];
 const START_SETTINGS_KEYS = ['main_lcore', 'eal_extra_args', 'poll_interval_ms'];
@@ -630,7 +651,13 @@ const START_SETTINGS_KEYS = ['main_lcore', 'eal_extra_args', 'poll_interval_ms']
 /** The start body the document must produce: links without ids, settings, nothing else. */
 export function startBodyOf(doc: StoredDoc): { links: unknown[]; settings: unknown } {
   return {
-    links: doc.links.map((l) => ({ name: l.name, ingress: l.ingress, egress: l.egress, config: l.config, worker: l.worker })),
+    links: doc.links.map((l) => ({
+      name: l.name,
+      ingress: l.ingress,
+      egress: l.egress,
+      config: l.config,
+      worker: l.worker,
+    })),
     settings: doc.settings,
   };
 }

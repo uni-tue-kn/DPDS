@@ -7,10 +7,10 @@ import type { Link } from '../api/types';
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <section role="group" aria-label={title} className="mb-3">
+    <fieldset aria-label={title} className="mb-3">
       <h3 className="h6 text-uppercase">{title}</h3>
       <dl className="inspect-fields mb-0">{children}</dl>
-    </section>
+    </fieldset>
   );
 }
 
@@ -32,7 +32,15 @@ function port(p: string, label: PortLabeler): string {
 }
 
 /** Side panel with the full configuration of one link, grouped like the editor's subsections. */
-export default function LinkInspect({ link, label, onClose }: { link: Link | null; label: PortLabeler; onClose: () => void }) {
+export default function LinkInspect({
+  link,
+  label,
+  onClose,
+}: {
+  link: Link | null;
+  label: PortLabeler;
+  onClose: () => void;
+}) {
   const c = link?.config;
   const titleId = 'link-inspect-title';
   return (
@@ -40,10 +48,16 @@ export default function LinkInspect({ link, label, onClose }: { link: Link | nul
       {link && c && (
         <>
           <Offcanvas.Header closeButton>
-            <Offcanvas.Title as="h2" id={titleId}>{link.name}</Offcanvas.Title>
+            <Offcanvas.Title as="h2" id={titleId}>
+              {link.name}
+            </Offcanvas.Title>
           </Offcanvas.Header>
           <Offcanvas.Body>
-            <RouterLink to={`/links/${link.id}`} className="btn btn-sm btn-outline-secondary mb-3" aria-label={`Edit ${link.name}`}>
+            <RouterLink
+              to={`/links/${link.id}`}
+              className="btn btn-sm btn-outline-secondary mb-3"
+              aria-label={`Edit ${link.name}`}
+            >
               <i className="bi bi-pencil" aria-hidden="true" /> Edit
             </RouterLink>
             <dl className="inspect-fields">
@@ -62,16 +76,22 @@ export default function LinkInspect({ link, label, onClose }: { link: Link | nul
                 <Item name="Mean delay">{time(c.delayer.mean_ns)}</Item>
                 <Item name="Delay std">{time(c.delayer.std_ns)}</Item>
                 <Item name="Correlation">{onOff(c.delayer.activate_correlation)}</Item>
-                {c.delayer.activate_correlation && <Item name="Half-life period">{time(c.delayer.half_life_period_ns)}</Item>}
+                {c.delayer.activate_correlation && (
+                  <Item name="Half-life period">{time(c.delayer.half_life_period_ns)}</Item>
+                )}
                 <Item name="Initialization rate">{pps(c.delayer.initialization_rate_pps)}</Item>
               </Section>
-            ) : <p className="mb-3">Delayer: not added</p>}
+            ) : (
+              <p className="mb-3">Delayer: not added</p>
+            )}
             {c.limiter ? (
               <Section title="Limiter">
                 <Item name="Limiter mode">{c.limiter.mode}</Item>
                 <Item name="Rate">{rate(c.limiter.rate_bps)}</Item>
               </Section>
-            ) : <p className="mb-3">Limiter: not added</p>}
+            ) : (
+              <p className="mb-3">Limiter: not added</p>
+            )}
             {c.loss_model ? (
               <Section title="Dropper">
                 <Item name="Loss model">{c.loss_model.type}</Item>
@@ -83,11 +103,15 @@ export default function LinkInspect({ link, label, onClose }: { link: Link | nul
                     <Item name="Gilbert-Elliot r">{c.loss_model.r}</Item>
                     <Item name="Gilbert-Elliot k">{c.loss_model.k}</Item>
                     <Item name="Gilbert-Elliot h">{c.loss_model.h}</Item>
-                    <Item name="Gilbert-Elliot starts in good state">{c.loss_model.state_is_good === false ? 'no' : 'yes'}</Item>
+                    <Item name="Gilbert-Elliot starts in good state">
+                      {c.loss_model.state_is_good === false ? 'no' : 'yes'}
+                    </Item>
                   </>
                 )}
               </Section>
-            ) : <p className="mb-3">Dropper: not added</p>}
+            ) : (
+              <p className="mb-3">Dropper: not added</p>
+            )}
             <Section title="Statistics">
               <Item name="Delay statistics">{onOff(c.delay_stats ?? true)}</Item>
               {(c.delay_stats ?? true) && (

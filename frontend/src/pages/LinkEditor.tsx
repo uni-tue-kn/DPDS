@@ -11,7 +11,7 @@ import ConfigFieldset, { RequiredMarker, RequiredNote } from './ConfigFieldset';
 import SavePresetModal from './SavePresetModal';
 import { configToDto, configToForm, defaultConfigForm, parseWorker, portError } from './linkForm';
 import type { ConfigForm } from './linkForm';
-import type { Interface, Link, Preset } from '../api/types';
+import type { Interface, Link, LinkInput, Preset } from '../api/types';
 
 /** Port -> name of the link that uses it, per role. */
 type Users = Map<string, string>;
@@ -25,8 +25,20 @@ function optionLabel(i: Interface, usedBy?: string, role?: string): string {
 }
 
 /** A picker over the discovered interfaces, shown by netdev (device name without one). */
-function PortField({ name, id, value, interfaces, users, onChange }: {
-  name: string; id: string; value: string; interfaces: Interface[]; users: Users; onChange: (v: string) => void;
+function PortField({
+  name,
+  id,
+  value,
+  interfaces,
+  users,
+  onChange,
+}: {
+  name: string;
+  id: string;
+  value: string;
+  interfaces: Interface[];
+  users: Users;
+  onChange: (v: string) => void;
 }) {
   const role = name.toLowerCase();
   // A stored port that is not a discovered interface (e.g. a vdev) stays selectable as its own option.
@@ -50,8 +62,18 @@ function PortField({ name, id, value, interfaces, users, onChange }: {
   );
 }
 
-function Editor({ id, link, interfaces, others, presets }: {
-  id?: number; link?: Link; interfaces: Interface[]; others: Link[]; presets: Preset[];
+function Editor({
+  id,
+  link,
+  interfaces,
+  others,
+  presets,
+}: {
+  id?: number;
+  link?: Link;
+  interfaces: Interface[];
+  others: Link[];
+  presets: Preset[];
 }) {
   const navigate = useNavigate();
   const [name, setName] = useState(link?.name ?? '');
@@ -74,18 +96,25 @@ function Editor({ id, link, interfaces, others, presets }: {
   const submit = (ev: FormEvent) => {
     ev.preventDefault();
     setError(undefined);
-    let input;
+    let input: LinkInput;
     try {
       if (name.trim() === '') throw new Error('Name is required');
       if (others.some((l) => l.name === name.trim())) throw new Error(`A link named "${name.trim()}" already exists`);
-      const ports = [['Ingress', ingress], ['Egress', egress]];
+      const ports = [
+        ['Ingress', ingress],
+        ['Egress', egress],
+      ];
       for (const [role, port] of ports) {
         if (port === '') throw new Error(`Select an ${role.toLowerCase()} port`);
         const bad = portError(port);
         if (bad) throw new Error(`${role}: ${bad}`);
       }
       input = {
-        name: name.trim(), ingress: ports[0][1], egress: ports[1][1], config: configToDto(config), worker: parseWorker(worker),
+        name: name.trim(),
+        ingress: ports[0][1],
+        egress: ports[1][1],
+        config: configToDto(config),
+        worker: parseWorker(worker),
       };
     } catch (e) {
       setError(errorMessage(e));
@@ -104,7 +133,11 @@ function Editor({ id, link, interfaces, others, presets }: {
       <Form onSubmit={submit} noValidate>
         <ErrorAlert message={error} />
         <RequiredNote />
-        {presetSaved && <div role="status" className="alert alert-success">{presetSaved}</div>}
+        {presetSaved && (
+          <div role="status" className="alert alert-success">
+            {presetSaved}
+          </div>
+        )}
         <Card className="mb-3">
           <Card.Body>
             <Row>
@@ -112,33 +145,61 @@ function Editor({ id, link, interfaces, others, presets }: {
                 <Form.Label>Name</Form.Label>
                 <RequiredMarker />
                 <Form.Control
-                  type="text" value={name} onChange={(e) => setName(e.target.value)} required aria-required="true"
+                  type="text"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  required
+                  aria-required="true"
                 />
               </Form.Group>
               <Form.Group as={Col} md={6} className="mb-3" controlId="link-worker">
                 <Form.Label>Worker lcore</Form.Label>
-                <Form.Control type="number" min={0} step={1} value={worker} onChange={(e) => setWorker(e.target.value)} />
+                <Form.Control
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={worker}
+                  onChange={(e) => setWorker(e.target.value)}
+                />
                 <Form.Text>Empty: automatic.</Form.Text>
               </Form.Group>
             </Row>
             <Row>
               <PortField
-                name="Ingress" id="link-ingress" value={ingress} interfaces={interfaces}
-                users={ingressUsers} onChange={setIngress}
+                name="Ingress"
+                id="link-ingress"
+                value={ingress}
+                interfaces={interfaces}
+                users={ingressUsers}
+                onChange={setIngress}
               />
               <PortField
-                name="Egress" id="link-egress" value={egress} interfaces={interfaces}
-                users={egressUsers} onChange={setEgress}
+                name="Egress"
+                id="link-egress"
+                value={egress}
+                interfaces={interfaces}
+                users={egressUsers}
+                onChange={setEgress}
               />
             </Row>
           </Card.Body>
         </Card>
         <ConfigFieldset
-          title="Link configuration" value={config} onChange={setConfig} presets={presets}
-          onSaveAsPreset={() => { setPresetSaved(undefined); setPresetOpen(true); }}
+          title="Link configuration"
+          value={config}
+          onChange={setConfig}
+          presets={presets}
+          onSaveAsPreset={() => {
+            setPresetSaved(undefined);
+            setPresetOpen(true);
+          }}
         />
-        <Button type="submit" variant="primary" className="me-2">Save</Button>
-        <RouterLink to="/links" className="btn btn-outline-secondary">Cancel</RouterLink>
+        <Button type="submit" variant="primary" className="me-2">
+          Save
+        </Button>
+        <RouterLink to="/links" className="btn btn-outline-secondary">
+          Cancel
+        </RouterLink>
       </Form>
       {/* Outside the <Form>: React submit events bubble through portals and would submit the link. */}
       {presetOpen && (
@@ -170,8 +231,12 @@ export default function LinkEditor() {
       <ErrorAlert message={interfaces.error ?? (missing ? `Link ${id} not found` : undefined)} />
       {ready && (
         <Editor
-          key={linkId ?? 'new'} id={linkId} link={link} interfaces={interfaces.data ?? []}
-          others={doc.links.filter((l) => l.id !== linkId)} presets={doc.presets}
+          key={linkId ?? 'new'}
+          id={linkId}
+          link={link}
+          interfaces={interfaces.data ?? []}
+          others={doc.links.filter((l) => l.id !== linkId)}
+          presets={doc.presets}
         />
       )}
     </>

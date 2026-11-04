@@ -29,7 +29,9 @@ const addArg = () => screen.getByRole('button', { name: 'Add EAL argument' });
 
 describe('Settings page', () => {
   it('loads the stored settings into the form', async () => {
-    seedSettings(fx.settings({ main_lcore: 1, eal_extra_args: ['--no-huge', '-m', '256', '--no-pci'], poll_interval_ms: 250 }));
+    seedSettings(
+      fx.settings({ main_lcore: 1, eal_extra_args: ['--no-huge', '-m', '256', '--no-pci'], poll_interval_ms: 250 }),
+    );
     renderApp('/settings');
     await waitFor(() => expect(screen.getByLabelText('Main lcore')).toHaveValue(1));
     await waitFor(() => expect(ealRows()).toHaveLength(4));
@@ -80,7 +82,11 @@ describe('Settings page', () => {
     await user.clear(screen.getByLabelText('Poll interval (ms)'));
     await user.type(screen.getByLabelText('Poll interval (ms)'), '100');
     await user.click(save());
-    expect(storedDoc().settings).toEqual({ main_lcore: 2, eal_extra_args: ['--no-huge', '-m', '256'], poll_interval_ms: 100 });
+    expect(storedDoc().settings).toEqual({
+      main_lcore: 2,
+      eal_extra_args: ['--no-huge', '-m', '256'],
+      poll_interval_ms: 100,
+    });
     expect(storedDoc().settings).not.toHaveProperty('mlx5_devargs');
     expect(await screen.findByRole('status')).toHaveTextContent(/saved/i);
   });
@@ -99,16 +105,19 @@ describe('Settings page', () => {
     expect(sent.eal_extra_args).toEqual([]);
   });
 
-  it.each(['0', '-5', '1.5'])('a poll interval of %s is refused: alert naming it, no success message, nothing written, the typed value stays', async (v) => {
-    const user = await open();
-    await user.clear(screen.getByLabelText('Poll interval (ms)'));
-    await user.type(screen.getByLabelText('Poll interval (ms)'), v);
-    await user.click(save());
-    expect(await screen.findByRole('alert')).toHaveTextContent(/poll interval/i);
-    expect(screen.queryByRole('status')).not.toBeInTheDocument();
-    expect(screen.getByLabelText('Poll interval (ms)')).toHaveValue(Number(v));
-    expect(rawStore()).toBeNull();
-  });
+  it.each(['0', '-5', '1.5'])(
+    'a poll interval of %s is refused: alert naming it, no success message, nothing written, the typed value stays',
+    async (v) => {
+      const user = await open();
+      await user.clear(screen.getByLabelText('Poll interval (ms)'));
+      await user.type(screen.getByLabelText('Poll interval (ms)'), v);
+      await user.click(save());
+      expect(await screen.findByRole('alert')).toHaveTextContent(/poll interval/i);
+      expect(screen.queryByRole('status')).not.toBeInTheDocument();
+      expect(screen.getByLabelText('Poll interval (ms)')).toHaveValue(Number(v));
+      expect(rawStore()).toBeNull();
+    },
+  );
 
   it('a main lcore that is not an integer is refused: alert naming it, nothing written', async () => {
     const user = await open();
@@ -149,7 +158,11 @@ describe('Settings page', () => {
   });
 
   it('saving keeps the stored links (ids included) and presets', async () => {
-    seedStore({ links: [fx.link(), fx.linkRev()], presets: [fx.preset({ id: 4 })], settings: fx.settings({ poll_interval_ms: 500 }) });
+    seedStore({
+      links: [fx.link(), fx.linkRev()],
+      presets: [fx.preset({ id: 4 })],
+      settings: fx.settings({ poll_interval_ms: 500 }),
+    });
     const user = userEvent.setup();
     renderApp('/settings');
     await waitFor(() => expect(screen.getByLabelText('Poll interval (ms)')).toHaveValue(500));

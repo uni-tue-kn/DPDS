@@ -3,11 +3,25 @@ import type { ConfigDto } from '../api/types';
 import { PAGES, cfg } from '../test/configPages';
 import type { ConfigPage } from '../test/configPages';
 import {
-  SECTIONS, STAGES, STAGE_TITLE, addButton, addStages, numberField, queryAddButton, queryRemoveButton, queryStage, removeButton,
-  sameConfig, section, stageOf, typeInto, unitSelect,
+  SECTIONS,
+  STAGES,
+  STAGE_TITLE,
+  addButton,
+  addStages,
+  numberField,
+  queryAddButton,
+  queryRemoveButton,
+  queryStage,
+  removeButton,
+  sameConfig,
+  section,
+  stageOf,
+  typeInto,
+  unitSelect,
 } from '../test/helpers';
 import type { Stage } from '../test/helpers';
 import * as fx from '../test/fixtures';
+import { must } from '../test/must';
 
 // Contract: "Subsections" and "Enable / disable" in the v16 block and "Optional stages" in the v22 block of
 // src/test/helpers.tsx. Each test runs against the link editor and the preset editor (they share ConfigFieldset).
@@ -20,13 +34,26 @@ const ctl = (label: string) => screen.getByLabelText(label) as HTMLInputElement;
 const CONTENT: Record<string, string[]> = {
   Buffer: ['Buffer capacity', 'Reordering', 'Seed'],
   Delayer: [
-    'Delay distribution', 'Mean delay', 'Mean delay unit', 'Delay std', 'Delay std unit', 'Activate correlation',
-    'Half-life period', 'Half-life period unit', 'Initialization rate', 'Initialization rate unit',
+    'Delay distribution',
+    'Mean delay',
+    'Mean delay unit',
+    'Delay std',
+    'Delay std unit',
+    'Activate correlation',
+    'Half-life period',
+    'Half-life period unit',
+    'Initialization rate',
+    'Initialization rate unit',
   ],
   Limiter: ['Limiter mode', 'Rate', 'Rate unit'],
   Dropper: ['Loss model', 'Random loss probability'],
   Statistics: [
-    'Delay statistics', 'Histogram bins', 'Histogram lo', 'Histogram lo unit', 'Histogram hi', 'Histogram hi unit',
+    'Delay statistics',
+    'Histogram bins',
+    'Histogram lo',
+    'Histogram lo unit',
+    'Histogram hi',
+    'Histogram hi unit',
   ],
 };
 
@@ -38,7 +65,9 @@ describe.each(PAGES)('$name: subsections', (page: ConfigPage) => {
     for (const f of nested) {
       expect(f.tagName).toBe('FIELDSET');
       expect(f.firstElementChild?.tagName).toBe('LEGEND');
-      expect(within(outer(page)).getAllByRole('group', { name: f.querySelector('legend')?.textContent ?? '' })).toContain(f);
+      expect(
+        within(outer(page)).getAllByRole('group', { name: f.querySelector('legend')?.textContent ?? '' }),
+      ).toContain(f);
     }
     // the five are direct subsections, not nested into each other
     for (const f of nested) expect(f.parentElement?.closest('fieldset')).toBe(outer(page));
@@ -68,7 +97,13 @@ describe.each(PAGES)('$name: subsections', (page: ConfigPage) => {
     const user = await page.openFull();
     await user.selectOptions(ctl('Loss model'), 'GilbertElliot');
     const d = section('Dropper');
-    for (const l of ['Gilbert-Elliot p', 'Gilbert-Elliot r', 'Gilbert-Elliot k', 'Gilbert-Elliot h', 'Gilbert-Elliot starts in good state']) {
+    for (const l of [
+      'Gilbert-Elliot p',
+      'Gilbert-Elliot r',
+      'Gilbert-Elliot k',
+      'Gilbert-Elliot h',
+      'Gilbert-Elliot starts in good state',
+    ]) {
       expect(within(d).getByLabelText(l)).toBeInTheDocument();
     }
     expect(within(d).queryByLabelText('Random loss probability')).not.toBeInTheDocument();
@@ -89,7 +124,9 @@ describe.each(PAGES)('$name: subsections', (page: ConfigPage) => {
     const loose = Array.from(outer(page).querySelectorAll<HTMLElement>('input, select, textarea, button')).filter(
       (c) => !subs.some((s) => s.contains(c)),
     );
-    const names = loose.map((c) => (c.tagName === 'BUTTON' ? c.textContent : (c as HTMLInputElement).labels?.[0]?.textContent)?.trim());
+    const names = loose.map((c) =>
+      (c.tagName === 'BUTTON' ? c.textContent : (c as HTMLInputElement).labels?.[0]?.textContent)?.trim(),
+    );
     expect(names.sort()).toEqual(page.name === 'link editor' ? ['Apply preset', 'Save as preset'] : []);
   });
 
@@ -99,9 +136,16 @@ describe.each(PAGES)('$name: subsections', (page: ConfigPage) => {
     const loose = Array.from(outer(page).querySelectorAll<HTMLElement>('input, select, textarea, button')).filter(
       (c) => !subs.some((x) => x.contains(c)),
     );
-    const names = loose.map((c) => (c.tagName === 'BUTTON' ? c.textContent : (c as HTMLInputElement).labels?.[0]?.textContent)?.trim());
+    const names = loose.map((c) =>
+      (c.tagName === 'BUTTON' ? c.textContent : (c as HTMLInputElement).labels?.[0]?.textContent)?.trim(),
+    );
     expect(names.sort()).toEqual(
-      ['Add delayer', 'Add dropper', 'Add limiter', ...(page.name === 'link editor' ? ['Apply preset', 'Save as preset'] : [])].sort(),
+      [
+        'Add delayer',
+        'Add dropper',
+        'Add limiter',
+        ...(page.name === 'link editor' ? ['Apply preset', 'Save as preset'] : []),
+      ].sort(),
     );
   });
 
@@ -111,13 +155,17 @@ describe.each(PAGES)('$name: subsections', (page: ConfigPage) => {
     const nested = Array.from(outer(page).querySelectorAll('fieldset'));
     expect(nested.map((f) => f.querySelector(':scope > legend')?.textContent?.trim())).toEqual(SECTIONS);
     for (const l of CONTENT.Delayer) expect(within(section('Delayer')).getByLabelText(l)).toBeInTheDocument();
-    for (const l of ['Gilbert-Elliot p', 'Gilbert-Elliot h']) expect(within(section('Dropper')).getByLabelText(l)).toBeInTheDocument();
+    for (const l of ['Gilbert-Elliot p', 'Gilbert-Elliot h'])
+      expect(within(section('Dropper')).getByLabelText(l)).toBeInTheDocument();
   });
 });
 
 describe.each(PAGES)('$name: v22 optional stages', (page: ConfigPage) => {
   const outerEl = () => screen.getByRole('group', { name: page.outerName });
-  const titles = () => Array.from(outerEl().querySelectorAll('fieldset')).map((f) => f.querySelector(':scope > legend')?.textContent?.trim());
+  const titles = () =>
+    Array.from(outerEl().querySelectorAll('fieldset')).map((f) =>
+      f.querySelector(':scope > legend')?.textContent?.trim(),
+    );
   const FIELD: Record<Stage, string> = { delayer: 'Mean delay', limiter: 'Rate', dropper: 'Loss model' };
 
   it('a new form shows Buffer and Statistics and one "Add ..." button per stage; no stage group, no stage field', async () => {
@@ -136,25 +184,37 @@ describe.each(PAGES)('$name: v22 optional stages', (page: ConfigPage) => {
   it('the "Add ..." buttons sit between Buffer and Statistics in the order delayer, limiter, dropper, inside the outer fieldset', async () => {
     await page.openNew();
     const order = ['Buffer', 'Add delayer', 'Add limiter', 'Add dropper', 'Statistics'];
-    const els = [section('Buffer'), addButton('delayer'), addButton('limiter'), addButton('dropper'), section('Statistics')];
+    const els = [
+      section('Buffer'),
+      addButton('delayer'),
+      addButton('limiter'),
+      addButton('dropper'),
+      section('Statistics'),
+    ];
     for (let i = 0; i + 1 < els.length; i += 1) {
-      expect(els[i].compareDocumentPosition(els[i + 1]) & Node.DOCUMENT_POSITION_FOLLOWING, `${order[i]} before ${order[i + 1]}`).toBeTruthy();
+      expect(
+        els[i].compareDocumentPosition(els[i + 1]) & Node.DOCUMENT_POSITION_FOLLOWING,
+        `${order[i]} before ${order[i + 1]}`,
+      ).toBeTruthy();
     }
     for (const b of els.slice(1, 4)) expect(outerEl()).toContainElement(b);
   });
 
-  it.each(STAGES)('"Add %s" shows exactly that subsection with its fields and a "Remove %s" button; the Add button is gone', async (stage) => {
-    const user = await page.openNew();
-    await user.click(addButton(stage));
-    const sec = section(STAGE_TITLE[stage]);
-    expect(within(sec).getByLabelText(FIELD[stage])).toBeInTheDocument();
-    expect(within(sec).getByRole('button', { name: `Remove ${stage}` })).toBeInTheDocument();
-    expect(queryAddButton(stage)).not.toBeInTheDocument();
-    for (const other of STAGES.filter((x) => x !== stage)) {
-      expect(queryStage(other)).not.toBeInTheDocument();
-      expect(addButton(other)).toBeInTheDocument();
-    }
-  });
+  it.each(STAGES)(
+    '"Add %s" shows exactly that subsection with its fields and a "Remove %s" button; the Add button is gone',
+    async (stage) => {
+      const user = await page.openNew();
+      await user.click(addButton(stage));
+      const sec = section(STAGE_TITLE[stage]);
+      expect(within(sec).getByLabelText(FIELD[stage])).toBeInTheDocument();
+      expect(within(sec).getByRole('button', { name: `Remove ${stage}` })).toBeInTheDocument();
+      expect(queryAddButton(stage)).not.toBeInTheDocument();
+      for (const other of STAGES.filter((x) => x !== stage)) {
+        expect(queryStage(other)).not.toBeInTheDocument();
+        expect(addButton(other)).toBeInTheDocument();
+      }
+    },
+  );
 
   it('clicking "Add ..." does not submit the form: nothing is written and no alert appears', async () => {
     const user = await page.openNew();
@@ -163,14 +223,19 @@ describe.each(PAGES)('$name: v22 optional stages', (page: ConfigPage) => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
-  it.each([
-    [['dropper', 'delayer', 'limiter']], [['limiter', 'dropper', 'delayer']], [['limiter', 'delayer']],
-  ] as [Stage[]][])('the subsections keep the order Buffer, Delayer, Limiter, Dropper, Statistics whatever the clicking order (%j)', async (clicks) => {
-    const user = await page.openNew();
-    await addStages(user, clicks);
-    const expected = SECTIONS.filter((n) => ['Buffer', 'Statistics'].includes(n) || clicks.some((c) => STAGE_TITLE[c] === n));
-    expect(titles()).toEqual(expected);
-  });
+  it.each([[['dropper', 'delayer', 'limiter']], [['limiter', 'dropper', 'delayer']], [['limiter', 'delayer']]] as [
+    Stage[],
+  ][])(
+    'the subsections keep the order Buffer, Delayer, Limiter, Dropper, Statistics whatever the clicking order (%j)',
+    async (clicks) => {
+      const user = await page.openNew();
+      await addStages(user, clicks);
+      const expected = SECTIONS.filter(
+        (n) => ['Buffer', 'Statistics'].includes(n) || clicks.some((c) => STAGE_TITLE[c] === n),
+      );
+      expect(titles()).toEqual(expected);
+    },
+  );
 
   it.each(STAGES)('"Remove %s" collapses the subsection and brings the Add button back', async (stage) => {
     const user = await page.openFull();
@@ -226,18 +291,19 @@ describe.each(PAGES)('$name: v22 optional stages', (page: ConfigPage) => {
     expect(c.delay_stats).toBe(true);
   });
 
-  it.each([
-    [['limiter']], [['delayer']], [['dropper']], [['delayer', 'dropper']],
-  ] as [Stage[]][])('saving with only %j added sends exactly those stages', async (added) => {
-    const user = await page.openNew();
-    await addStages(user, added);
-    await page.ready(user);
-    await page.save(user);
-    const c = page.created();
-    expect(stageOf(c, 'delayer') !== null).toBe(added.includes('delayer'));
-    expect(stageOf(c, 'limiter') !== null).toBe(added.includes('limiter'));
-    expect(stageOf(c, 'loss_model') !== null).toBe(added.includes('dropper'));
-  });
+  it.each([[['limiter']], [['delayer']], [['dropper']], [['delayer', 'dropper']]] as [Stage[]][])(
+    'saving with only %j added sends exactly those stages',
+    async (added) => {
+      const user = await page.openNew();
+      await addStages(user, added);
+      await page.ready(user);
+      await page.save(user);
+      const c = page.created();
+      expect(stageOf(c, 'delayer') !== null).toBe(added.includes('delayer'));
+      expect(stageOf(c, 'limiter') !== null).toBe(added.includes('limiter'));
+      expect(stageOf(c, 'loss_model') !== null).toBe(added.includes('dropper'));
+    },
+  );
 
   it('a stage removed after typing is sent as null / absent, not with its typed values', async () => {
     const user = await page.openFull();
@@ -259,9 +325,14 @@ describe.each(PAGES)('$name: v22 optional stages', (page: ConfigPage) => {
     const c = page.created();
     expect(c.limiter).toEqual({ mode: 'Spacer', rate_bps: 1e10 });
     expect(c.loss_model).toEqual({ type: 'Random', p: 0 });
-    expect(Object.keys(c.delayer!).sort()).toEqual(
-      ['activate_correlation', 'distribution', 'half_life_period_ns', 'initialization_rate_pps', 'mean_ns', 'std_ns'],
-    );
+    expect(Object.keys(must(c.delayer)).sort()).toEqual([
+      'activate_correlation',
+      'distribution',
+      'half_life_period_ns',
+      'initialization_rate_pps',
+      'mean_ns',
+      'std_ns',
+    ]);
   });
 
   it.each([
@@ -270,18 +341,21 @@ describe.each(PAGES)('$name: v22 optional stages', (page: ConfigPage) => {
     ['a delayer and a loss model but no limiter', fx.config(), ['delayer', 'dropper']], // fx.config(): no limiter, Random p=0 loss
     ['only the limiter', { ...fx.configBare(), limiter: { mode: 'Spacer' as const, rate_bps: 2e9 } }, ['limiter']],
     ['a limiter that is explicitly absent', { ...fx.config2(), limiter: undefined }, ['delayer', 'dropper']],
-  ] as [string, ConfigDto, Stage[]][])('a stored config with %s opens with exactly its present stages added', async (_n, config, present) => {
-    await page.openStored(config);
-    for (const s of STAGES) {
-      if (present.includes(s)) {
-        expect(queryStage(s)).toBeInTheDocument();
-        expect(queryAddButton(s)).not.toBeInTheDocument();
-      } else {
-        expect(queryStage(s)).not.toBeInTheDocument();
-        expect(addButton(s)).toBeInTheDocument();
+  ] as [string, ConfigDto, Stage[]][])(
+    'a stored config with %s opens with exactly its present stages added',
+    async (_n, config, present) => {
+      await page.openStored(config);
+      for (const s of STAGES) {
+        if (present.includes(s)) {
+          expect(queryStage(s)).toBeInTheDocument();
+          expect(queryAddButton(s)).not.toBeInTheDocument();
+        } else {
+          expect(queryStage(s)).not.toBeInTheDocument();
+          expect(addButton(s)).toBeInTheDocument();
+        }
       }
-    }
-  });
+    },
+  );
 
   it('saving a stored config unchanged keeps its stages and values (absent stages stay absent)', async () => {
     for (const config of [fx.configBare(), fx.config2(), { ...fx.config3(), delayer: null }]) {
@@ -332,118 +406,139 @@ describe('preset editor: what stays outside the subsections', () => {
   });
 });
 
-describe.each(PAGES)('$name: switch dependent fields are disabled, not hidden, and keep their values', (page: ConfigPage) => {
-  const halfLife = () => ctl('Half-life period');
-  const limiterFields = ['Limiter mode', 'Rate', 'Rate unit'];
+describe.each(PAGES)(
+  '$name: switch dependent fields are disabled, not hidden, and keep their values',
+  (page: ConfigPage) => {
+    const halfLife = () => ctl('Half-life period');
+    const limiterFields = ['Limiter mode', 'Rate', 'Rate unit'];
 
-  it('half-life and its unit are disabled while "Activate correlation" is off and enabled while it is on', async () => {
-    const user = await page.openFull();
-    expect(ctl('Activate correlation')).not.toBeChecked();
-    expect(halfLife()).toBeInTheDocument();
-    expect(halfLife()).toBeDisabled();
-    expect(unitSelect(body(), 'Half-life period')).toBeDisabled();
-    await user.click(ctl('Activate correlation'));
-    expect(halfLife()).toBeEnabled();
-    expect(unitSelect(body(), 'Half-life period')).toBeEnabled();
-    await user.click(ctl('Activate correlation'));
-    expect(halfLife()).toBeDisabled();
-    expect(unitSelect(body(), 'Half-life period')).toBeDisabled();
-  });
+    it('half-life and its unit are disabled while "Activate correlation" is off and enabled while it is on', async () => {
+      const user = await page.openFull();
+      expect(ctl('Activate correlation')).not.toBeChecked();
+      expect(halfLife()).toBeInTheDocument();
+      expect(halfLife()).toBeDisabled();
+      expect(unitSelect(body(), 'Half-life period')).toBeDisabled();
+      await user.click(ctl('Activate correlation'));
+      expect(halfLife()).toBeEnabled();
+      expect(unitSelect(body(), 'Half-life period')).toBeEnabled();
+      await user.click(ctl('Activate correlation'));
+      expect(halfLife()).toBeDisabled();
+      expect(unitSelect(body(), 'Half-life period')).toBeDisabled();
+    });
 
-  it('the initialization rate and its unit are enabled whatever the correlation switch says', async () => {
-    const user = await page.openFull();
-    expect(ctl('Initialization rate')).toBeEnabled();
-    expect(unitSelect(body(), 'Initialization rate')).toBeEnabled();
-    await user.click(ctl('Activate correlation'));
-    expect(ctl('Initialization rate')).toBeEnabled();
-    expect(unitSelect(body(), 'Initialization rate')).toBeEnabled();
-  });
+    it('the initialization rate and its unit are enabled whatever the correlation switch says', async () => {
+      const user = await page.openFull();
+      expect(ctl('Initialization rate')).toBeEnabled();
+      expect(unitSelect(body(), 'Initialization rate')).toBeEnabled();
+      await user.click(ctl('Activate correlation'));
+      expect(ctl('Initialization rate')).toBeEnabled();
+      expect(unitSelect(body(), 'Initialization rate')).toBeEnabled();
+    });
 
-  it('v22: there is no "Limiter active" switch; mode, rate and its unit are enabled as soon as the limiter is added', async () => {
-    await page.openFull();
-    expect(screen.queryByLabelText('Limiter active')).not.toBeInTheDocument();
-    for (const l of limiterFields) expect(ctl(l)).toBeEnabled();
-  });
+    it('v22: there is no "Limiter active" switch; mode, rate and its unit are enabled as soon as the limiter is added', async () => {
+      await page.openFull();
+      expect(screen.queryByLabelText('Limiter active')).not.toBeInTheDocument();
+      for (const l of limiterFields) expect(ctl(l)).toBeEnabled();
+    });
 
-  it('a typed half-life survives switching correlation off and on and is still sent while it is off', async () => {
-    const user = await page.openFull();
-    await user.click(ctl('Activate correlation'));
-    await typeInto(user, body(), 'Half-life period', '5', 'ms');
-    await user.click(ctl('Activate correlation'));
-    expect(halfLife()).toHaveValue(5);
-    await user.click(ctl('Activate correlation'));
-    expect(halfLife()).toHaveValue(5);
-    await user.click(ctl('Activate correlation'));
-    await page.ready(user);
-    await page.save(user);
-    const d = page.created().delayer!;
-    expect(d.activate_correlation).toBe(false);
-    expect(d.half_life_period_ns).toBe(5000000);
-  });
+    it('a typed half-life survives switching correlation off and on and is still sent while it is off', async () => {
+      const user = await page.openFull();
+      await user.click(ctl('Activate correlation'));
+      await typeInto(user, body(), 'Half-life period', '5', 'ms');
+      await user.click(ctl('Activate correlation'));
+      expect(halfLife()).toHaveValue(5);
+      await user.click(ctl('Activate correlation'));
+      expect(halfLife()).toHaveValue(5);
+      await user.click(ctl('Activate correlation'));
+      await page.ready(user);
+      await page.save(user);
+      const d = must(page.created().delayer);
+      expect(d.activate_correlation).toBe(false);
+      expect(d.half_life_period_ns).toBe(5000000);
+    });
 
-  it('typed limiter values survive removing and re-adding the limiter and are sent', async () => {
-    const user = await page.openFull();
-    await user.selectOptions(ctl('Limiter mode'), 'TokenBucketFilter');
-    await typeInto(user, body(), 'Rate', '2.5', 'Gbit/s');
-    await user.click(removeButton('limiter'));
-    await user.click(addButton('limiter'));
-    expect(ctl('Rate')).toHaveValue(2.5);
-    expect(ctl('Limiter mode')).toHaveValue('TokenBucketFilter');
-    await page.ready(user);
-    await page.save(user);
-    expect(page.created().limiter).toEqual({ mode: 'TokenBucketFilter', rate_bps: 2500000000 });
-  });
+    it('typed limiter values survive removing and re-adding the limiter and are sent', async () => {
+      const user = await page.openFull();
+      await user.selectOptions(ctl('Limiter mode'), 'TokenBucketFilter');
+      await typeInto(user, body(), 'Rate', '2.5', 'Gbit/s');
+      await user.click(removeButton('limiter'));
+      await user.click(addButton('limiter'));
+      expect(ctl('Rate')).toHaveValue(2.5);
+      expect(ctl('Limiter mode')).toHaveValue('TokenBucketFilter');
+      await page.ready(user);
+      await page.save(user);
+      expect(page.created().limiter).toEqual({ mode: 'TokenBucketFilter', rate_bps: 2500000000 });
+    });
 
-  it('with the switches on, a stored config has every dependent field enabled', async () => {
-    await page.openStored(fx.config2());
-    expect(halfLife()).toBeEnabled();
-    for (const l of limiterFields) expect(ctl(l)).toBeEnabled();
-  });
+    it('with the switches on, a stored config has every dependent field enabled', async () => {
+      await page.openStored(fx.config2());
+      expect(halfLife()).toBeEnabled();
+      for (const l of limiterFields) expect(ctl(l)).toBeEnabled();
+    });
 
-  it('with the correlation switch off, a stored config shows its half-life in a disabled field; the limiter rate is enabled', async () => {
-    await page.openStored(cfg({ activate_correlation: false, half_life_period_ns: 4000000 }, { rate_bps: 5000000000 }));
-    expect(halfLife()).toBeDisabled();
-    expect(halfLife()).toHaveValue(4);
-    expect(ctl('Rate')).toBeEnabled();
-    expect(ctl('Rate')).toHaveValue(5);
-  });
+    it('with the correlation switch off, a stored config shows its half-life in a disabled field; the limiter rate is enabled', async () => {
+      await page.openStored(
+        cfg({ activate_correlation: false, half_life_period_ns: 4000000 }, { rate_bps: 5000000000 }),
+      );
+      expect(halfLife()).toBeDisabled();
+      expect(halfLife()).toHaveValue(4);
+      expect(ctl('Rate')).toBeEnabled();
+      expect(ctl('Rate')).toHaveValue(5);
+    });
 
-  it('everything else stays enabled whatever the switches say', async () => {
-    await page.openFull();
-    for (const l of ['Delay distribution', 'Mean delay', 'Mean delay unit', 'Delay std', 'Delay std unit', 'Activate correlation',
-      'Loss model', 'Random loss probability', 'Buffer capacity', 'Reordering', 'Seed', 'Delay statistics',
-      'Histogram bins', 'Histogram lo', 'Histogram lo unit', 'Histogram hi', 'Histogram hi unit']) {
-      expect(ctl(l)).toBeEnabled();
-    }
-  });
+    it('everything else stays enabled whatever the switches say', async () => {
+      await page.openFull();
+      for (const l of [
+        'Delay distribution',
+        'Mean delay',
+        'Mean delay unit',
+        'Delay std',
+        'Delay std unit',
+        'Activate correlation',
+        'Loss model',
+        'Random loss probability',
+        'Buffer capacity',
+        'Reordering',
+        'Seed',
+        'Delay statistics',
+        'Histogram bins',
+        'Histogram lo',
+        'Histogram lo unit',
+        'Histogram hi',
+        'Histogram hi unit',
+      ]) {
+        expect(ctl(l)).toBeEnabled();
+      }
+    });
 
-  it('the histogram fields are not switch dependent: enabled while "Delay statistics" is off', async () => {
-    const user = await page.openFull();
-    await user.click(ctl('Delay statistics'));
-    expect(ctl('Delay statistics')).not.toBeChecked();
-    for (const l of ['Histogram bins', 'Histogram lo', 'Histogram lo unit', 'Histogram hi', 'Histogram hi unit']) {
-      expect(ctl(l)).toBeEnabled();
-    }
-  });
+    it('the histogram fields are not switch dependent: enabled while "Delay statistics" is off', async () => {
+      const user = await page.openFull();
+      await user.click(ctl('Delay statistics'));
+      expect(ctl('Delay statistics')).not.toBeChecked();
+      for (const l of ['Histogram bins', 'Histogram lo', 'Histogram lo unit', 'Histogram hi', 'Histogram hi unit']) {
+        expect(ctl(l)).toBeEnabled();
+      }
+    });
 
-  it('typed loss parameters survive switching the loss model away and back', async () => {
-    const user = await page.openFull();
-    await user.clear(ctl('Random loss probability'));
-    await user.type(ctl('Random loss probability'), '0.05');
-    await user.selectOptions(ctl('Loss model'), 'GilbertElliot');
-    await user.clear(ctl('Gilbert-Elliot p'));
-    await user.type(ctl('Gilbert-Elliot p'), '0.02');
-    await user.selectOptions(ctl('Loss model'), 'Random');
-    expect(ctl('Random loss probability')).toHaveValue(0.05);
-    await user.selectOptions(ctl('Loss model'), 'GilbertElliot');
-    expect(ctl('Gilbert-Elliot p')).toHaveValue(0.02);
-  });
+    it('typed loss parameters survive switching the loss model away and back', async () => {
+      const user = await page.openFull();
+      await user.clear(ctl('Random loss probability'));
+      await user.type(ctl('Random loss probability'), '0.05');
+      await user.selectOptions(ctl('Loss model'), 'GilbertElliot');
+      await user.clear(ctl('Gilbert-Elliot p'));
+      await user.type(ctl('Gilbert-Elliot p'), '0.02');
+      await user.selectOptions(ctl('Loss model'), 'Random');
+      expect(ctl('Random loss probability')).toHaveValue(0.05);
+      await user.selectOptions(ctl('Loss model'), 'GilbertElliot');
+      expect(ctl('Gilbert-Elliot p')).toHaveValue(0.02);
+    });
 
-  it('only the loss model that is selected is rendered (the alternatives are hidden, not disabled)', async () => {
-    const user = await page.openFull();
-    expect(screen.queryByLabelText('Gilbert-Elliot p')).not.toBeInTheDocument();
-    await user.selectOptions(ctl('Loss model'), 'GilbertElliot');
-    expect(screen.queryByLabelText('Random loss probability')).not.toBeInTheDocument();
-    expect(numberField(body(), 'Gilbert-Elliot r')).toBeEnabled();
-  });
-});
+    it('only the loss model that is selected is rendered (the alternatives are hidden, not disabled)', async () => {
+      const user = await page.openFull();
+      expect(screen.queryByLabelText('Gilbert-Elliot p')).not.toBeInTheDocument();
+      await user.selectOptions(ctl('Loss model'), 'GilbertElliot');
+      expect(screen.queryByLabelText('Random loss probability')).not.toBeInTheDocument();
+      expect(numberField(body(), 'Gilbert-Elliot r')).toBeEnabled();
+    });
+  },
+);

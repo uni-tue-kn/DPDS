@@ -11,7 +11,10 @@ export const STORAGE_KEY = 'dpds.config.v1';
 export const DEFAULT_SETTINGS: Settings = { main_lcore: null, eal_extra_args: [], poll_interval_ms: 500 };
 
 export const emptyConfig = (): LocalConfig => ({
-  version: 1, links: [], presets: [], settings: { ...DEFAULT_SETTINGS, eal_extra_args: [] },
+  version: 1,
+  links: [],
+  presets: [],
+  settings: { ...DEFAULT_SETTINGS, eal_extra_args: [] },
 });
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -19,21 +22,30 @@ const isString = (v: unknown) => typeof v === 'string';
 const isId = (v: unknown) => typeof v === 'number' && Number.isInteger(v) && v > 0;
 
 function isSettings(v: unknown): boolean {
-  return isObject(v)
-    && Array.isArray(v.eal_extra_args) && v.eal_extra_args.every(isString)
-    && typeof v.poll_interval_ms === 'number'
-    && (v.main_lcore == null || typeof v.main_lcore === 'number');
+  return (
+    isObject(v) &&
+    Array.isArray(v.eal_extra_args) &&
+    v.eal_extra_args.every(isString) &&
+    typeof v.poll_interval_ms === 'number' &&
+    (v.main_lcore == null || typeof v.main_lcore === 'number')
+  );
 }
 
-const isLink = (v: unknown) => isObject(v) && isId(v.id) && isString(v.name) && isString(v.ingress) && isString(v.egress) && isObject(v.config);
+const isLink = (v: unknown) =>
+  isObject(v) && isId(v.id) && isString(v.name) && isString(v.ingress) && isString(v.egress) && isObject(v.config);
 const isPreset = (v: unknown) => isObject(v) && isId(v.id) && isString(v.name) && isObject(v.config);
 
 /** True for a version 1 document with well-formed links, presets and settings (unknown extra members are fine). */
 export function isLocalConfig(v: unknown): v is LocalConfig {
-  return isObject(v) && v.version === 1
-    && Array.isArray(v.links) && v.links.every(isLink)
-    && Array.isArray(v.presets) && v.presets.every(isPreset)
-    && isSettings(v.settings);
+  return (
+    isObject(v) &&
+    v.version === 1 &&
+    Array.isArray(v.links) &&
+    v.links.every(isLink) &&
+    Array.isArray(v.presets) &&
+    v.presets.every(isPreset) &&
+    isSettings(v.settings)
+  );
 }
 
 export interface Stored {
@@ -54,7 +66,9 @@ export function parseStored(raw: string | null): Stored {
 }
 
 const listeners = new Set<() => void>();
-const notify = () => listeners.forEach((l) => l());
+const notify = () => {
+  for (const l of listeners) l();
+};
 
 function subscribe(listener: () => void): () => void {
   listeners.add(listener);
@@ -95,7 +109,12 @@ export function updateConfig(change: (doc: LocalConfig) => LocalConfig): void {
 
 const nextId = (list: { id: number }[]) => list.reduce((m, x) => Math.max(m, x.id), 0) + 1;
 
-function refuseDuplicate(kind: string, list: { id: number; name: string }[], id: number | undefined, name: string): void {
+function refuseDuplicate(
+  kind: string,
+  list: { id: number; name: string }[],
+  id: number | undefined,
+  name: string,
+): void {
   if (list.some((x) => x.id !== id && x.name === name)) throw new Error(`A ${kind} named "${name}" already exists`);
 }
 
@@ -103,9 +122,10 @@ function refuseDuplicate(kind: string, list: { id: number; name: string }[], id:
 export function saveLink(input: LinkInput, id?: number): void {
   updateConfig((doc) => {
     refuseDuplicate('link', doc.links, id, input.name);
-    const links: Link[] = id === undefined
-      ? [...doc.links, { ...input, id: nextId(doc.links) }]
-      : doc.links.map((l) => (l.id === id ? { ...input, id } : l));
+    const links: Link[] =
+      id === undefined
+        ? [...doc.links, { ...input, id: nextId(doc.links) }]
+        : doc.links.map((l) => (l.id === id ? { ...input, id } : l));
     return { ...doc, links };
   });
 }
@@ -120,7 +140,10 @@ export function savePreset(input: PresetInput, id?: number): Preset {
   updateConfig((doc) => {
     refuseDuplicate('preset', doc.presets, id, input.name);
     saved = { ...input, id: id ?? nextId(doc.presets) };
-    return { ...doc, presets: id === undefined ? [...doc.presets, saved] : doc.presets.map((p) => (p.id === id ? saved : p)) };
+    return {
+      ...doc,
+      presets: id === undefined ? [...doc.presets, saved] : doc.presets.map((p) => (p.id === id ? saved : p)),
+    };
   });
   return saved;
 }
@@ -132,11 +155,19 @@ export function deletePreset(id: number): void {
 /** The body of Start (and of the link-dependent hints): links without ids, the settings, nothing else. */
 export function startRequestOf(doc: LocalConfig): StartRequest {
   return {
-    links: doc.links.map((l) => ({ name: l.name, ingress: l.ingress, egress: l.egress, config: l.config, worker: l.worker ?? null })),
+    links: doc.links.map((l) => ({
+      name: l.name,
+      ingress: l.ingress,
+      egress: l.egress,
+      config: l.config,
+      worker: l.worker ?? null,
+    })),
     settings: settingsOf(doc.settings),
   };
 }
 
 export const settingsOf = (s: Settings): Settings => ({
-  main_lcore: s.main_lcore ?? null, eal_extra_args: s.eal_extra_args, poll_interval_ms: s.poll_interval_ms,
+  main_lcore: s.main_lcore ?? null,
+  eal_extra_args: s.eal_extra_args,
+  poll_interval_ms: s.poll_interval_ms,
 });

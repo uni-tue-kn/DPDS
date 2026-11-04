@@ -40,7 +40,12 @@ describe('Host hints page', () => {
 
   it('marks groups and items with their level for the colours', async () => {
     renderApp('/hints');
-    const levels: [RegExp, string][] = [[/^Errors/, 'error'], [/^Warnings/, 'warn'], [/^Info/, 'info'], [/^OK/, 'ok']];
+    const levels: [RegExp, string][] = [
+      [/^Errors/, 'error'],
+      [/^Warnings/, 'warn'],
+      [/^Info/, 'info'],
+      [/^OK/, 'ok'],
+    ];
     for (const [name, level] of levels) {
       const region = await screen.findByRole('region', { name });
       expect(region).toHaveAttribute('data-level', level);
@@ -59,7 +64,13 @@ describe('Host hints page', () => {
 
   it('shows the management NIC error hint in the Errors group', async () => {
     api.getHostHints.mockResolvedValue([
-      { id: 'management_nic', level: 'error', title: 'Management NIC 0000:17:00.0', detail: 'carries a route', suggestion: 'Do not use it.' },
+      {
+        id: 'management_nic',
+        level: 'error',
+        title: 'Management NIC 0000:17:00.0',
+        detail: 'carries a route',
+        suggestion: 'Do not use it.',
+      },
     ]);
     renderApp('/hints');
     const errors = await screen.findByRole('region', { name: /^Errors/ });
@@ -81,7 +92,13 @@ describe('Host hints page', () => {
   // v12: the page shows no ports of its own; port names in hint texts come from the controller and are printed verbatim.
   it('prints a port in a hint text verbatim and does not ask for the interfaces', async () => {
     api.getHostHints.mockResolvedValue([
-      { id: 'numa', level: 'warn', title: 'NUMA mismatch', detail: 'Port 0000:65:00.0 is on node 1.', suggestion: 'Use cores of node 1.' },
+      {
+        id: 'numa',
+        level: 'warn',
+        title: 'NUMA mismatch',
+        detail: 'Port 0000:65:00.0 is on node 1.',
+        suggestion: 'Use cores of node 1.',
+      },
     ]);
     renderApp('/hints');
     expect(await screen.findByText('Port 0000:65:00.0 is on node 1.')).toBeInTheDocument();
@@ -90,7 +107,13 @@ describe('Host hints page', () => {
 });
 
 describe('Host hints page: hints for the local configuration (v22)', () => {
-  const linkHint = { id: 'numa', level: 'warn' as const, title: 'NUMA mismatch', detail: 'a-b crosses nodes.', suggestion: 'Use node 0.' };
+  const linkHint = {
+    id: 'numa',
+    level: 'warn' as const,
+    title: 'NUMA mismatch',
+    detail: 'a-b crosses nodes.',
+    suggestion: 'Use node 0.',
+  };
 
   it('without local links only the host hints are asked for: no POST', async () => {
     renderApp('/hints');
@@ -100,7 +123,11 @@ describe('Host hints page: hints for the local configuration (v22)', () => {
   });
 
   it('with local links it POSTs the start body (links without ids, settings) and lists the host and the link hints together', async () => {
-    const doc = seedStore({ links: [fx.link(), fx.linkRev()], presets: [fx.preset()], settings: fx.settings({ main_lcore: 2, poll_interval_ms: 250 }) });
+    const doc = seedStore({
+      links: [fx.link(), fx.linkRev()],
+      presets: [fx.preset()],
+      settings: fx.settings({ main_lcore: 2, poll_interval_ms: 250 }),
+    });
     api.getHostHintsFor.mockResolvedValue([linkHint]);
     renderApp('/hints');
     const warns = await screen.findByRole('region', { name: /^Warnings/ });
@@ -115,7 +142,13 @@ describe('Host hints page: hints for the local configuration (v22)', () => {
   it('a hint id in both answers is listed once and the POST answer wins', async () => {
     seedLinks([fx.link()]);
     api.getHostHintsFor.mockResolvedValue([
-      { id: 'hugepages', level: 'error', title: 'Hugepages too few for the links', detail: 'a-b needs 8 GiB.', suggestion: 'Reserve 8 GiB.' },
+      {
+        id: 'hugepages',
+        level: 'error',
+        title: 'Hugepages too few for the links',
+        detail: 'a-b needs 8 GiB.',
+        suggestion: 'Reserve 8 GiB.',
+      },
     ]);
     renderApp('/hints');
     const errors = await screen.findByRole('region', { name: /^Errors/ });

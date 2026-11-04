@@ -4,9 +4,7 @@
 // that still calls a removed function fails with "is not a function".
 import { vi } from 'vitest';
 import type { Mock } from 'vitest';
-import type {
-  EmulationView, Hint, HistogramView, Interface, OnlineView, StartRequest, StatsView,
-} from '../api/types';
+import type { EmulationView, Hint, HistogramView, Interface, OnlineView, StartRequest, StatsView } from '../api/types';
 import * as fx from './fixtures';
 
 export class ApiError extends Error {

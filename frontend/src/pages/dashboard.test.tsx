@@ -16,7 +16,11 @@ function twoDirections() {
 // control block start with one stored link; pending restart and "Load running configuration" are in pendingRestart.test.tsx.
 describe('Dashboard: emulation state and control', () => {
   beforeEach(() => {
-    seedStore({ links: [fx.link(), fx.linkRev()], presets: [fx.preset({ id: 4 })], settings: fx.settings({ main_lcore: 2, eal_extra_args: ['--no-huge'], poll_interval_ms: 250 }) });
+    seedStore({
+      links: [fx.link(), fx.linkRev()],
+      presets: [fx.preset({ id: 4 })],
+      settings: fx.settings({ main_lcore: 2, eal_extra_args: ['--no-huge'], poll_interval_ms: 250 }),
+    });
   });
 
   it.each(STATES)('shows a state badge for "%s"', async (state) => {
@@ -41,8 +45,10 @@ describe('Dashboard: emulation state and control', () => {
     const [start, stop] = ENABLED[state];
     const startBtn = screen.getByRole('button', { name: /^start$/i });
     const stopBtn = screen.getByRole('button', { name: /^stop$/i });
-    if (start) expect(startBtn).toBeEnabled(); else expect(startBtn).toBeDisabled();
-    if (stop) expect(stopBtn).toBeEnabled(); else expect(stopBtn).toBeDisabled();
+    if (start) expect(startBtn).toBeEnabled();
+    else expect(startBtn).toBeDisabled();
+    if (stop) expect(stopBtn).toBeEnabled();
+    else expect(stopBtn).toBeDisabled();
   });
 
   it('Start calls startEmulation once and shows the new state', async () => {
@@ -277,7 +283,15 @@ describe('Dashboard: per-direction cards', () => {
 
   it('prints n/a for missing delay values', async () => {
     api.getStats.mockResolvedValue(
-      fx.stats([fx.dirStats(0, { delay_mean_ns: null, delay_std_ns: null, lateness_mean_ns: null, lateness_max_ns: null, buffer_len_max: null })]),
+      fx.stats([
+        fx.dirStats(0, {
+          delay_mean_ns: null,
+          delay_std_ns: null,
+          lateness_mean_ns: null,
+          lateness_max_ns: null,
+          buffer_len_max: null,
+        }),
+      ]),
     );
     renderApp('/');
     const c0 = await screen.findByTestId('direction-card-0');
@@ -288,7 +302,20 @@ describe('Dashboard: per-direction cards', () => {
 
   it('renders zero values as numbers, not as n/a', async () => {
     api.getStats.mockResolvedValue(
-      fx.stats([fx.dirStats(0, { loss_pct: 0, limiter_pct: 0, buffer_full_pct: 0, nic_tx_pct: 0, nic_rx_pct: 0, rx_pps: 0, tx_pps: 0, rx_bps: 0, tx_bps: 0, buffer_len_max: 0 })]),
+      fx.stats([
+        fx.dirStats(0, {
+          loss_pct: 0,
+          limiter_pct: 0,
+          buffer_full_pct: 0,
+          nic_tx_pct: 0,
+          nic_rx_pct: 0,
+          rx_pps: 0,
+          tx_pps: 0,
+          rx_bps: 0,
+          tx_bps: 0,
+          buffer_len_max: 0,
+        }),
+      ]),
     );
     renderApp('/');
     const c0 = await screen.findByTestId('direction-card-0');
@@ -451,7 +478,15 @@ describe('Dashboard: delay histogram', () => {
     api.getStats.mockResolvedValue(
       fx.stats([
         fx.dirStats(0),
-        fx.dirStats(1, { delay_stats: false, delay_mean_ns: null, delay_std_ns: null, delay_min_ns: null, delay_max_ns: null, lateness_mean_ns: null, lateness_max_ns: null }),
+        fx.dirStats(1, {
+          delay_stats: false,
+          delay_mean_ns: null,
+          delay_std_ns: null,
+          delay_min_ns: null,
+          delay_max_ns: null,
+          lateness_mean_ns: null,
+          lateness_max_ns: null,
+        }),
       ]),
     );
     renderApp('/');
@@ -585,7 +620,15 @@ describe('Dashboard: delay min/max and first loss (F2)', () => {
 
   it('prints n/a for the delay minimum/maximum when they are null (delay_stats: false)', async () => {
     api.getStats.mockResolvedValue(
-      fx.stats([fx.dirStats(0, { delay_stats: false, delay_mean_ns: null, delay_std_ns: null, delay_min_ns: null, delay_max_ns: null })]),
+      fx.stats([
+        fx.dirStats(0, {
+          delay_stats: false,
+          delay_mean_ns: null,
+          delay_std_ns: null,
+          delay_min_ns: null,
+          delay_max_ns: null,
+        }),
+      ]),
     );
     renderApp('/');
     const c0 = await screen.findByTestId('direction-card-0');
@@ -613,7 +656,9 @@ describe('Dashboard: delay min/max and first loss (F2)', () => {
 
   it('a first loss without detail still shows reason and time (no "null")', async () => {
     api.getStats.mockResolvedValue(
-      fx.stats([fx.dirStats(0, { first_loss_reason: 'BufferFull', first_loss_detail: null, first_loss_relative_ns: 750_000 })]),
+      fx.stats([
+        fx.dirStats(0, { first_loss_reason: 'BufferFull', first_loss_detail: null, first_loss_relative_ns: 750_000 }),
+      ]),
     );
     renderApp('/');
     const c0 = await screen.findByTestId('direction-card-0');
@@ -640,11 +685,15 @@ describe('Dashboard: NIC ports table (F2)', () => {
 
   /** Text of the cell under `column` in the row whose first cell contains `rowText`. */
   function cell(table: HTMLElement, rowText: string, column: string): string {
-    const headers = within(table).getAllByRole('columnheader').map((h) => h.textContent?.trim());
+    const headers = within(table)
+      .getAllByRole('columnheader')
+      .map((h) => h.textContent?.trim());
     const col = headers.indexOf(column);
     if (col < 0) throw new Error(`no column ${column} in [${headers.join(', ')}]`);
     // The first cell (a <td> or a <th scope=row>) names the port; header cells and data cells index alike.
-    const row = within(table).getAllByRole('row').find((r) => r.children[0]?.textContent?.includes(rowText));
+    const row = within(table)
+      .getAllByRole('row')
+      .find((r) => r.children[0]?.textContent?.includes(rowText));
     if (!row) throw new Error(`no row for ${rowText}`);
     return (row.children[col]?.textContent ?? '').trim();
   }
@@ -655,7 +704,17 @@ describe('Dashboard: NIC ports table (F2)', () => {
       fx.stats([fx.dirStats(0)], {
         ports: [
           fx.portStats(0),
-          fx.portStats(1, { name: '0000:65:00.1', ipackets: 5, opackets: 6, ibytes: 7, obytes: 8, imissed: 9, ierrors: 10, oerrors: 12, rx_nombuf: 13 }),
+          fx.portStats(1, {
+            name: '0000:65:00.1',
+            ipackets: 5,
+            opackets: 6,
+            ibytes: 7,
+            obytes: 8,
+            imissed: 9,
+            ierrors: 10,
+            oerrors: 12,
+            rx_nombuf: 13,
+          }),
         ],
       }),
     );
@@ -663,16 +722,31 @@ describe('Dashboard: NIC ports table (F2)', () => {
     const table = await screen.findByTestId('ports-table');
     // the first column shows the netdev once the interface list has arrived (v16)
     await within(table).findByRole('rowheader', { name: 'enp101s0f0' });
-    const headers = within(table).getAllByRole('columnheader').map((h) => h.textContent?.trim());
+    const headers = within(table)
+      .getAllByRole('columnheader')
+      .map((h) => h.textContent?.trim());
     for (const c of COLUMNS) expect(headers).toContain(c);
     expect(within(table).getAllByRole('row')).toHaveLength(3); // header + 2 ports
     const expected0: Record<string, string> = {
-      ipackets: '1234567', opackets: '7654321', ibytes: '98765432100', obytes: '12345678900',
-      imissed: '11', ierrors: '22', oerrors: '33', rx_nombuf: '44',
+      ipackets: '1234567',
+      opackets: '7654321',
+      ibytes: '98765432100',
+      obytes: '12345678900',
+      imissed: '11',
+      ierrors: '22',
+      oerrors: '33',
+      rx_nombuf: '44',
     };
     for (const c of COLUMNS) expect(digits(cell(table, 'enp101s0f0', c))).toBe(expected0[c]);
     const expected1: Record<string, string> = {
-      ipackets: '5', opackets: '6', ibytes: '7', obytes: '8', imissed: '9', ierrors: '10', oerrors: '12', rx_nombuf: '13',
+      ipackets: '5',
+      opackets: '6',
+      ibytes: '7',
+      obytes: '8',
+      imissed: '9',
+      ierrors: '10',
+      oerrors: '12',
+      rx_nombuf: '13',
     };
     for (const c of COLUMNS) expect(digits(cell(table, 'enp101s0f1', c))).toBe(expected1[c]);
   });
@@ -781,7 +855,9 @@ describe('Dashboard: visible errors (F3)', () => {
     vi.useFakeTimers();
     api.getEmulation.mockResolvedValue(fx.emulation('running'));
     api.getStats.mockResolvedValue(twoDirections());
-    api.getDelayHistogram.mockRejectedValueOnce(new ApiError(500, 'transient')).mockImplementation(async (dir) => fx.histogram(dir));
+    api.getDelayHistogram
+      .mockRejectedValueOnce(new ApiError(500, 'transient'))
+      .mockImplementation(async (dir) => fx.histogram(dir));
     renderApp('/');
     await tick(0);
     await tick(0);
@@ -794,7 +870,9 @@ describe('Dashboard: visible errors (F3)', () => {
 
   it('no histogram note for a direction with delay_stats: false (nothing was fetched)', async () => {
     api.getEmulation.mockResolvedValue(fx.emulation('running'));
-    api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0, { delay_stats: false, delay_mean_ns: null, delay_std_ns: null })]));
+    api.getStats.mockResolvedValue(
+      fx.stats([fx.dirStats(0, { delay_stats: false, delay_mean_ns: null, delay_std_ns: null })]),
+    );
     renderApp('/');
     const c0 = await screen.findByTestId('direction-card-0');
     await waitFor(() => expect(api.getStats).toHaveBeenCalled());
@@ -830,13 +908,19 @@ describe('Dashboard: accessibility and labels (F4)', () => {
     const c0 = await screen.findByTestId('direction-card-0');
     const c1 = await screen.findByTestId('direction-card-1');
     const label = (c: HTMLElement, re: RegExp) =>
-      within(c).getAllByRole('img').map((i) => i.getAttribute('aria-label') ?? '').find((n) => re.test(n)) ?? '';
+      within(c)
+        .getAllByRole('img')
+        .map((i) => i.getAttribute('aria-label') ?? '')
+        .find((n) => re.test(n)) ?? '';
     expect(label(c0, /rate/i)).not.toBe(label(c1, /rate/i));
   });
 
   it('the emulation error is announced as role="alert"', async () => {
     api.getEmulation.mockResolvedValue(
-      fx.emulation('failed', { error: 'dpds exited during startup (status 1)', log_tail: ['EAL: Cannot allocate memory'] }),
+      fx.emulation('failed', {
+        error: 'dpds exited during startup (status 1)',
+        log_tail: ['EAL: Cannot allocate memory'],
+      }),
     );
     api.getStats.mockResolvedValue(fx.stats([]));
     renderApp('/');
@@ -872,11 +956,13 @@ describe('Dashboard: accessibility and labels (F4)', () => {
   });
 
   it('the title uses the link name of the stats entry, ingress as rx and egress as tx (ring of three links)', async () => {
-    api.getStats.mockResolvedValue(fx.stats([
-      fx.dirStats(0, { link: 'a-to-b', rx: 'net_null0', tx: 'net_null1' }),
-      fx.dirStats(1, { link: 'b-to-c', rx: 'net_null1', tx: 'net_null2' }),
-      fx.dirStats(2, { link: 'c-to-a', rx: 'net_null2', tx: 'net_null0' }),
-    ]));
+    api.getStats.mockResolvedValue(
+      fx.stats([
+        fx.dirStats(0, { link: 'a-to-b', rx: 'net_null0', tx: 'net_null1' }),
+        fx.dirStats(1, { link: 'b-to-c', rx: 'net_null1', tx: 'net_null2' }),
+        fx.dirStats(2, { link: 'c-to-a', rx: 'net_null2', tx: 'net_null0' }),
+      ]),
+    );
     renderApp('/');
     expect(await screen.findByText('a-to-b: net_null0 → net_null1')).toBeInTheDocument();
     expect(screen.getByText('b-to-c: net_null1 → net_null2')).toBeInTheDocument();
@@ -885,10 +971,12 @@ describe('Dashboard: accessibility and labels (F4)', () => {
   });
 
   it('API calls still use the direction index, not the link name', async () => {
-    api.getStats.mockResolvedValue(fx.stats([
-      fx.dirStats(0, { link: 'a-to-b', rx: 'net_null0', tx: 'net_null1' }),
-      fx.dirStats(1, { link: 'b-to-c', rx: 'net_null1', tx: 'net_null2' }),
-    ]));
+    api.getStats.mockResolvedValue(
+      fx.stats([
+        fx.dirStats(0, { link: 'a-to-b', rx: 'net_null0', tx: 'net_null1' }),
+        fx.dirStats(1, { link: 'b-to-c', rx: 'net_null1', tx: 'net_null2' }),
+      ]),
+    );
     renderApp('/');
     await screen.findByText('b-to-c: net_null1 → net_null2');
     await waitFor(() => expect(api.getDelayHistogram).toHaveBeenCalledWith(1));
@@ -911,7 +999,9 @@ describe('Dashboard: port labels are the netdev, device name as fallback (v16, r
   });
 
   it('a hairpin on a real NIC shows the label twice', async () => {
-    api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0, { link: 'hair', rx: '0000:65:00.1', tx: '0000:65:00.1' })]));
+    api.getStats.mockResolvedValue(
+      fx.stats([fx.dirStats(0, { link: 'hair', rx: '0000:65:00.1', tx: '0000:65:00.1' })]),
+    );
     renderApp('/');
     expect(await screen.findByText('hair: enp101s0f1 → enp101s0f1')).toBeInTheDocument();
   });
@@ -998,7 +1088,10 @@ describe('Dashboard: port labels are the netdev, device name as fallback (v16, r
   });
 
   describe('NIC ports table', () => {
-    const portNames = (table: HTMLElement) => within(table).getAllByRole('rowheader').map((h) => h.textContent?.trim());
+    const portNames = (table: HTMLElement) =>
+      within(table)
+        .getAllByRole('rowheader')
+        .map((h) => h.textContent?.trim());
 
     it('the first column shows the netdev only', async () => {
       api.getStats.mockResolvedValue(
@@ -1006,9 +1099,7 @@ describe('Dashboard: port labels are the netdev, device name as fallback (v16, r
       );
       renderApp('/');
       const table = await screen.findByTestId('ports-table');
-      await waitFor(() => expect(portNames(table)).toEqual([
-        'enp101s0f0', 'enp101s0f1',
-      ]));
+      await waitFor(() => expect(portNames(table)).toEqual(['enp101s0f0', 'enp101s0f1']));
     });
 
     it('a vdev port, a port without netdev and an unknown PCI address keep their plain name', async () => {

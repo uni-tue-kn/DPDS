@@ -6,7 +6,20 @@ import { renderApp } from '../test/helpers';
 // Columns (columnheader names, in this order): PCI, Vendor, Driver, Netdev, MAC, State, Speed, MTU, NUMA,
 // PCIe link, Usable, Reason. Null values print "n/a". Speed 100000 Mb/s prints "100 Gb/s", 10000 "10 Gb/s".
 // kernel_route interfaces carry the text "management" in their row; no other row does.
-const COLUMNS = ['PCI', 'Vendor', 'Driver', 'Netdev', 'MAC', 'State', 'Speed', 'MTU', 'NUMA', 'PCIe link', 'Usable', 'Reason'];
+const COLUMNS = [
+  'PCI',
+  'Vendor',
+  'Driver',
+  'Netdev',
+  'MAC',
+  'State',
+  'Speed',
+  'MTU',
+  'NUMA',
+  'PCIe link',
+  'Usable',
+  'Reason',
+];
 
 function rowOf(pci: string): HTMLElement {
   return screen.getByRole('cell', { name: pci }).closest('tr') as HTMLElement;

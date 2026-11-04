@@ -4,9 +4,19 @@ import type { UserEvent } from '@testing-library/user-event';
 import type { ConfigDto } from '../api/types';
 import * as fx from '../test/fixtures';
 import {
-  addButton, queryAddButton, queryStage, renderApp, watchStoreWrites, seedStore, storedLinks, storedPresets, typeInto, typeRate,
+  addButton,
+  queryAddButton,
+  queryStage,
+  renderApp,
+  watchStoreWrites,
+  seedStore,
+  storedLinks,
+  storedPresets,
+  typeInto,
+  typeRate,
   unitOf,
 } from '../test/helpers';
+import { must } from '../test/must';
 
 // Contract: "Link editor additions" in the v8 block of src/test/helpers.tsx; v22: links and presets are in the local document
 // (link 1 "a-b" is stored with the presets below), "Save as preset" appends a preset with id max+1, a name another preset has
@@ -17,7 +27,10 @@ const field = (scope: HTMLElement, label: string) => within(scope).getByLabelTex
 const applySelect = () => field(group(), 'Apply preset') as unknown as HTMLSelectElement;
 
 function presets() {
-  return [fx.preset({ id: 1, name: 'wan', config: fx.config3() }), fx.preset({ id: 2, name: 'other', description: null, config: fx.config2() })];
+  return [
+    fx.preset({ id: 1, name: 'wan', config: fx.config3() }),
+    fx.preset({ id: 2, name: 'other', description: null, config: fx.config2() }),
+  ];
 }
 
 let writeCount: () => number = () => 0;
@@ -53,7 +66,9 @@ describe('Link editor: Apply preset', () => {
   it('the link form has exactly one "Apply preset" select listing the preset names (placeholder first)', async () => {
     await openEdit();
     expect(screen.getAllByLabelText('Apply preset')).toHaveLength(1);
-    const opts = within(applySelect()).getAllByRole('option').map((o) => o.textContent);
+    const opts = within(applySelect())
+      .getAllByRole('option')
+      .map((o) => o.textContent);
     expect(opts).toHaveLength(3);
     expect(opts.slice(1)).toEqual(['wan', 'other']);
   });
@@ -78,7 +93,7 @@ describe('Link editor: Apply preset', () => {
     expect(within(applySelect()).getAllByRole('option')).toHaveLength(1);
   });
 
-  it('choosing a preset copies ALL its fields into the link\'s config form', async () => {
+  it("choosing a preset copies ALL its fields into the link's config form", async () => {
     const user = await openEdit();
     await user.selectOptions(applySelect(), 'wan');
     const g = group();
@@ -155,9 +170,9 @@ describe('Link editor: Apply preset', () => {
     await typeInto(user, group(), 'Mean delay', '9999', 'ns');
     await user.click(screen.getByRole('button', { name: /^save$/i }));
     const sent = storedLinks()[0];
-    expect(sent.config.delayer!.mean_ns).toBe(9999);
-    expect(sent.config.delayer!.distribution).toBe('LogNormalDistribution');
-    expect(sent.config.delayer!.initialization_rate_pps).toBe(2500000); // v12: copied from the preset
+    expect(must(sent.config.delayer).mean_ns).toBe(9999);
+    expect(must(sent.config.delayer).distribution).toBe('LogNormalDistribution');
+    expect(must(sent.config.delayer).initialization_rate_pps).toBe(2500000); // v12: copied from the preset
     expect(storedPresets().map((p) => p.id)).toEqual([1, 2]); // the presets are not touched
   });
 
@@ -178,18 +193,22 @@ describe('Link editor: Apply preset', () => {
   });
 
   it('v22: applying a preset whose config lacks stages removes those stages from the form; the saved link has none of them', async () => {
-    const user = await openEdit([fx.preset({ id: 1, name: 'bare', config: fx.configBare({ buffer_capacity: 77 }) }), ...presets().slice(1)]);
+    const user = await openEdit([
+      fx.preset({ id: 1, name: 'bare', config: fx.configBare({ buffer_capacity: 77 }) }),
+      ...presets().slice(1),
+    ]);
     await user.selectOptions(applySelect(), 'other'); // config2: all three stages
     expect(queryStage('limiter')).toBeInTheDocument();
     await user.selectOptions(applySelect(), 'bare');
-    for (const s of ['Delayer', 'Limiter', 'Dropper']) expect(screen.queryByRole('group', { name: s })).not.toBeInTheDocument();
+    for (const s of ['Delayer', 'Limiter', 'Dropper'])
+      expect(screen.queryByRole('group', { name: s })).not.toBeInTheDocument();
     for (const s of ['delayer', 'limiter', 'dropper'] as const) expect(queryAddButton(s)).toBeInTheDocument();
     expect(field(group(), 'Buffer capacity')).toHaveValue(77);
     await user.click(screen.getByRole('button', { name: /^save$/i }));
     expectConfig(storedLinks()[0].config, fx.configBare({ buffer_capacity: 77 }));
   });
 
-  it('v22: applying a preset with a delayer to a form without one adds the delayer with the preset\'s values', async () => {
+  it("v22: applying a preset with a delayer to a form without one adds the delayer with the preset's values", async () => {
     const user = await openEdit();
     await user.click(screen.getByRole('button', { name: 'Remove delayer' }));
     expect(queryStage('delayer')).not.toBeInTheDocument();
@@ -243,9 +262,9 @@ describe('Link editor: Save as preset', () => {
     await user.type(within(dialog).getByLabelText('Preset name'), 'edited');
     await user.click(within(dialog).getByRole('button', { name: 'Save preset' }));
     const sent = storedPresets()[2];
-    expect(sent.config.delayer!.mean_ns).toBe(4242);
-    expect(sent.config.delayer!.initialization_rate_pps).toBe(12500000); // v12: the link's own value
-    expect(storedLinks()[0].config.delayer!.mean_ns).toBe(1000); // the unsaved edit did not reach the link
+    expect(must(sent.config.delayer).mean_ns).toBe(4242);
+    expect(must(sent.config.delayer).initialization_rate_pps).toBe(12500000); // v12: the link's own value
+    expect(must(storedLinks()[0].config.delayer).mean_ns).toBe(1000); // the unsaved edit did not reach the link
     expect(sent.config.buffer_capacity).toBe(1000);
     expect(sent.description ?? null).toBeNull();
   });
@@ -293,7 +312,8 @@ describe('Link editor: Save as preset', () => {
 
   it('v22: a link form with no stage added is saved as a preset without stages', async () => {
     const user = await openEdit([]);
-    for (const s of ['delayer', 'dropper'] as const) await user.click(screen.getByRole('button', { name: `Remove ${s}` }));
+    for (const s of ['delayer', 'dropper'] as const)
+      await user.click(screen.getByRole('button', { name: `Remove ${s}` }));
     await user.click(within(group()).getByRole('button', { name: 'Save as preset' }));
     const dialog = await screen.findByRole('dialog');
     await user.type(within(dialog).getByLabelText('Preset name'), 'bare');
@@ -326,7 +346,7 @@ describe('Link editor: initialization rate and presets (v12)', () => {
     const dialog = await screen.findByRole('dialog');
     await user.type(within(dialog).getByLabelText('Preset name'), 'rate');
     await user.click(within(dialog).getByRole('button', { name: 'Save preset' }));
-    expect(storedPresets()[2].config.delayer!.initialization_rate_pps).toBe(3333333);
+    expect(must(storedPresets()[2].config.delayer).initialization_rate_pps).toBe(3333333);
   });
 
   it('"Save as preset" with an empty initialization rate is refused with an alert naming the field, no request', async () => {
@@ -337,15 +357,17 @@ describe('Link editor: initialization rate and presets (v12)', () => {
     await user.type(within(dialog).getByLabelText('Preset name'), 'bad-rate');
     await user.click(within(dialog).getByRole('button', { name: 'Save preset' }));
     expect(writeCount()).toBe(0);
-    expect((await screen.findAllByRole('alert')).some((a) => /Initialization rate/.test(a.textContent ?? ''))).toBe(true);
+    expect((await screen.findAllByRole('alert')).some((a) => /Initialization rate/.test(a.textContent ?? ''))).toBe(
+      true,
+    );
   });
 
-  it('applying a preset replaces a rate typed before, and the link is saved with the preset\'s rate', async () => {
+  it("applying a preset replaces a rate typed before, and the link is saved with the preset's rate", async () => {
     const user = await openEdit();
     await typeRate(user, '999');
     await user.selectOptions(applySelect(), 'other'); // config2: 8 Mpps
     expect(field(group(), 'Initialization rate')).toHaveValue(8);
     await user.click(screen.getByRole('button', { name: /^save$/i }));
-    expect(storedLinks()[0].config.delayer!.initialization_rate_pps).toBe(8000000);
+    expect(must(storedLinks()[0].config.delayer).initialization_rate_pps).toBe(8000000);
   });
 });

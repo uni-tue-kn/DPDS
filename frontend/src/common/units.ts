@@ -9,14 +9,27 @@ export interface Unit {
 }
 
 export const TIME_UNITS: Unit[] = [
-  { label: 'ns', exp: 0 }, { label: 'µs', exp: 3 }, { label: 'ms', exp: 6 }, { label: 's', exp: 9 },
+  { label: 'ns', exp: 0 },
+  { label: 'µs', exp: 3 },
+  { label: 'ms', exp: 6 },
+  { label: 's', exp: 9 },
 ];
 export const RATE_UNITS: Unit[] = [
-  { label: 'bit/s', exp: 0 }, { label: 'kbit/s', exp: 3 }, { label: 'Mbit/s', exp: 6 }, { label: 'Gbit/s', exp: 9 },
+  { label: 'bit/s', exp: 0 },
+  { label: 'kbit/s', exp: 3 },
+  { label: 'Mbit/s', exp: 6 },
+  { label: 'Gbit/s', exp: 9 },
 ];
-export const PPS_UNITS: Unit[] = [{ label: 'pps', exp: 0 }, { label: 'kpps', exp: 3 }, { label: 'Mpps', exp: 6 }];
+export const PPS_UNITS: Unit[] = [
+  { label: 'pps', exp: 0 },
+  { label: 'kpps', exp: 3 },
+  { label: 'Mpps', exp: 6 },
+];
 export const SIZE_UNITS: Unit[] = [
-  { label: 'bit', exp: 0 }, { label: 'kbit', exp: 3 }, { label: 'Mbit', exp: 6 }, { label: 'Gbit', exp: 9 },
+  { label: 'bit', exp: 0 },
+  { label: 'kbit', exp: 3 },
+  { label: 'Mbit', exp: 6 },
+  { label: 'Gbit', exp: 9 },
 ];
 
 /** What a unit field of the form holds: the typed text and the index of the selected unit. */

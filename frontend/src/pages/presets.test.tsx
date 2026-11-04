@@ -2,18 +2,33 @@ import { screen, within, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { UserEvent } from '@testing-library/user-event';
 import type { ConfigDto, Preset, PresetInput } from '../api/types';
-import { api, ApiError } from '../test/mockApi';
 import * as fx from '../test/fixtures';
 import {
-  addStages, rawStore, renderApp, watchStoreWrites, seedLinks, seedPresets, seedStore, storedDoc, storedPresets, stageOf, TEST_RATE, typeInto,
-  typeRate, unitOf,
+  addStages,
+  rawStore,
+  renderApp,
+  watchStoreWrites,
+  seedPresets,
+  seedStore,
+  storedDoc,
+  storedPresets,
+  stageOf,
+  TEST_RATE,
+  typeInto,
+  typeRate,
+  unitOf,
 } from '../test/helpers';
+import { must } from '../test/must';
 
 // Contract: "Presets page" in the v8 block and the v22 block (local document, optional stages) of src/test/helpers.tsx.
 // v22: presets live in the local document; new presets are appended with id max+1; `openNew` opens the form with delayer,
 // limiter and dropper added (their fields are what most tests need), `openNew(false)` is the bare form.
 const DISTRIBUTIONS = [
-  'DeterministicDistribution', 'LogNormalDistribution', 'NormalDistribution', 'GammaDistribution', 'UniformDistribution',
+  'DeterministicDistribution',
+  'LogNormalDistribution',
+  'NormalDistribution',
+  'GammaDistribution',
+  'UniformDistribution',
 ];
 
 function twoPresets() {
@@ -29,16 +44,21 @@ const save = () => screen.getByRole('button', { name: /^save$/i });
 function expectValidConfig(c: ConfigDto) {
   expect(Number.isInteger(c.buffer_capacity)).toBe(true);
   expect(typeof c.reordering).toBe('boolean');
-  expect(DISTRIBUTIONS).toContain(c.delayer!.distribution);
-  for (const v of [c.delayer!.mean_ns, c.delayer!.std_ns, c.delayer!.half_life_period_ns, c.limiter!.rate_bps]) {
+  expect(DISTRIBUTIONS).toContain(must(c.delayer).distribution);
+  for (const v of [
+    must(c.delayer).mean_ns,
+    must(c.delayer).std_ns,
+    must(c.delayer).half_life_period_ns,
+    must(c.limiter).rate_bps,
+  ]) {
     expect(Number.isFinite(v)).toBe(true);
   }
-  expect(typeof c.delayer!.initialization_rate_pps).toBe('number'); // v12: required, finite >= 1
-  expect(Number.isFinite(c.delayer!.initialization_rate_pps)).toBe(true);
-  expect(c.delayer!.initialization_rate_pps).toBeGreaterThanOrEqual(1);
-  expect(['Spacer', 'TokenBucketFilter']).toContain(c.limiter!.mode);
-  expect(Object.keys(c.limiter!).sort()).toEqual(['mode', 'rate_bps']);
-  expect(['Random', 'GilbertElliot']).toContain(c.loss_model!.type);
+  expect(typeof must(c.delayer).initialization_rate_pps).toBe('number'); // v12: required, finite >= 1
+  expect(Number.isFinite(must(c.delayer).initialization_rate_pps)).toBe(true);
+  expect(must(c.delayer).initialization_rate_pps).toBeGreaterThanOrEqual(1);
+  expect(['Spacer', 'TokenBucketFilter']).toContain(must(c.limiter).mode);
+  expect(Object.keys(must(c.limiter)).sort()).toEqual(['mode', 'rate_bps']);
+  expect(['Random', 'GilbertElliot']).toContain(must(c.loss_model).type);
   expect(typeof c.delay_stats).toBe('boolean');
 }
 
@@ -52,7 +72,9 @@ describe('Presets: sidebar entry', () => {
   it('comes after the five pre-existing links (their order stays pinned by layout.test)', () => {
     renderApp('/');
     const nav = screen.getByRole('navigation', { name: 'Main navigation' });
-    const names = within(nav).getAllByRole('link').map((a) => a.getAttribute('aria-label') ?? a.textContent?.trim());
+    const names = within(nav)
+      .getAllByRole('link')
+      .map((a) => a.getAttribute('aria-label') ?? a.textContent?.trim());
     expect(names.indexOf('Presets')).toBeGreaterThanOrEqual(5);
   });
 
@@ -296,7 +318,7 @@ describe('Presets: create', () => {
     expectNoWrite();
     await typeInto(user, document.body, 'Delay std', '5', 'ns');
     await user.click(save());
-    expect(lastCreate().config.delayer!.std_ns).toBe(5);
+    expect(must(lastCreate().config.delayer).std_ns).toBe(5);
   });
 
   it('a bare form (no stage added) saves a preset with Buffer and Statistics only', async () => {
@@ -362,9 +384,9 @@ describe('Presets: edit', () => {
     expect(sent.id).toBe(1);
     expect(sent.name).toBe('renamed');
     expect(sent.description).toBe('Typical WAN');
-    expect(sent.config.delayer!.mean_ns).toBe(4242);
-    expect(sent.config.delayer!.distribution).toBe('GammaDistribution');
-    expect(sent.config.delayer!.initialization_rate_pps).toBe(8000000); // v12: the stored value goes back
+    expect(must(sent.config.delayer).mean_ns).toBe(4242);
+    expect(must(sent.config.delayer).distribution).toBe('GammaDistribution');
+    expect(must(sent.config.delayer).initialization_rate_pps).toBe(8000000); // v12: the stored value goes back
     expect(sent.config.buffer_capacity).toBe(5000);
     expect(sent.config.seed).toBe(42);
     expect(await screen.findByRole('heading', { level: 1, name: 'Presets' })).toBeInTheDocument();
@@ -388,7 +410,8 @@ describe('Presets: edit', () => {
     renderApp('/presets/1');
     await screen.findByRole('heading', { level: 1, name: 'Edit preset' });
     await waitFor(() => expect(lbl('Name')).toHaveValue('bare'));
-    for (const s of ['delayer', 'limiter', 'dropper']) expect(screen.getByRole('button', { name: `Add ${s}` })).toBeInTheDocument();
+    for (const s of ['delayer', 'limiter', 'dropper'])
+      expect(screen.getByRole('button', { name: `Add ${s}` })).toBeInTheDocument();
     await user.click(save());
     const c = storedPresets()[0].config;
     for (const k of ['delayer', 'limiter', 'loss_model'] as const) expect(stageOf(c, k)).toBeNull();
@@ -428,7 +451,7 @@ describe('Presets: initialization rate (v12)', () => {
     await fillValid(user, 'with-rate');
     expect(lbl(RATE)).toHaveValue(Number(TEST_RATE));
     await user.click(save());
-    expect(lastCreate().config.delayer!.initialization_rate_pps).toBe(Number(TEST_RATE));
+    expect(must(lastCreate().config.delayer).initialization_rate_pps).toBe(Number(TEST_RATE));
   });
 
   it('sends the typed value as a number, also with correlation off', async () => {
@@ -437,7 +460,7 @@ describe('Presets: initialization rate (v12)', () => {
     expect(lbl('Activate correlation')).not.toBeChecked();
     await typeRate(user, '3000000');
     await user.click(save());
-    const sent = lastCreate().config.delayer!.initialization_rate_pps;
+    const sent = must(lastCreate().config.delayer).initialization_rate_pps;
     expect(sent).toBe(3000000);
     expect(typeof sent).toBe('number');
   });
@@ -457,7 +480,7 @@ describe('Presets: initialization rate (v12)', () => {
     await fillName(user, 'one');
     await typeRate(user, '1');
     await user.click(save());
-    expect(lastCreate().config.delayer!.initialization_rate_pps).toBe(1);
+    expect(must(lastCreate().config.delayer).initialization_rate_pps).toBe(1);
   });
 
   it('edit: a changed value is stored', async () => {
@@ -468,6 +491,6 @@ describe('Presets: initialization rate (v12)', () => {
     await waitFor(() => expect(lbl('Name')).toHaveValue('wan-100ms'));
     await typeRate(user, '5000000');
     await user.click(save());
-    expect(storedPresets()[0].config.delayer!.initialization_rate_pps).toBe(5000000);
+    expect(must(storedPresets()[0].config.delayer).initialization_rate_pps).toBe(5000000);
   });
 });

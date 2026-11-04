@@ -43,24 +43,28 @@ function Sidebar({ theme, onToggle }: { theme: Theme; onToggle: () => void }) {
   // Re-polled so "Offline" recovers (and turns back into "Offline" when the controller goes away).
   useEffect(() => {
     let alive = true;
-    const stop = startPolling(async () => {
-      try {
-        const o = await api.getOnline();
-        if (alive) setInfo(o);
-        if (!checked.current) {
-          checked.current = true;
-          // Not awaited: a slow GitHub must not hold up the /api/online polling.
-          void isUpdateAvailable(o.version).then((update) => {
-            if (alive && update) {
-              setUpdateAvailable(true);
-              setShowUpdateModal(true);
-            }
-          });
+    const stop = startPolling(
+      async () => {
+        try {
+          const o = await api.getOnline();
+          if (alive) setInfo(o);
+          if (!checked.current) {
+            checked.current = true;
+            // Not awaited: a slow GitHub must not hold up the /api/online polling.
+            void isUpdateAvailable(o.version).then((update) => {
+              if (alive && update) {
+                setUpdateAvailable(true);
+                setShowUpdateModal(true);
+              }
+            });
+          }
+        } catch {
+          if (alive) setInfo(undefined);
         }
-      } catch {
-        if (alive) setInfo(undefined);
-      }
-    }, ONLINE_POLL_MS, true);
+      },
+      ONLINE_POLL_MS,
+      true,
+    );
     return () => {
       alive = false;
       stop();
@@ -88,20 +92,25 @@ function Sidebar({ theme, onToggle }: { theme: Theme; onToggle: () => void }) {
           <i className={`bi ${theme === 'dark' ? 'bi-sun' : 'bi-moon-stars'}`} aria-hidden="true" />
         </button>
         <a
-          href="/api/docs" target="_blank" rel="noopener noreferrer" className="btn btn-link theme-toggle mb-2"
-          aria-label="API documentation" title="API documentation"
+          href="/api/docs"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="btn btn-link theme-toggle mb-2"
+          title="API documentation"
         >
           <i className="bi bi-book" aria-hidden="true" />
+          <span className="visually-hidden">API documentation</span>
         </a>
         <div className="nav-label" title={info?.dpds_bin}>
           {info ? `v${info.version}` : 'Offline'}
           {info && updateAvailable && (
-            <OverlayTrigger placement="top" overlay={<Tooltip id="update-available-tooltip">New release available</Tooltip>}>
-              <a
-                href={RELEASES_URL} target="_blank" rel="noopener noreferrer"
-                className="text-danger ms-2" aria-label="New DPDS release available"
-              >
+            <OverlayTrigger
+              placement="top"
+              overlay={<Tooltip id="update-available-tooltip">New release available</Tooltip>}
+            >
+              <a href={RELEASES_URL} target="_blank" rel="noopener noreferrer" className="text-danger ms-2">
                 <i className="bi bi-arrow-up-circle-fill" aria-hidden="true" />
+                <span className="visually-hidden">New DPDS release available</span>
               </a>
             </OverlayTrigger>
           )}
@@ -116,8 +125,12 @@ function Sidebar({ theme, onToggle }: { theme: Theme; onToggle: () => void }) {
           A new stable DPDS release is available. Update with ./dpds.sh update --stable (see the releases page).
         </Modal.Body>
         <Modal.Footer>
-          <Button variant="secondary" onClick={() => setShowUpdateModal(false)}>Close</Button>
-          <Button variant="primary" href={RELEASES_URL} target="_blank" rel="noopener noreferrer">Open releases</Button>
+          <Button variant="secondary" onClick={() => setShowUpdateModal(false)}>
+            Close
+          </Button>
+          <Button variant="primary" href={RELEASES_URL} target="_blank" rel="noopener noreferrer">
+            Open releases
+          </Button>
         </Modal.Footer>
       </Modal>
     </div>
@@ -131,10 +144,13 @@ function CorruptConfigAlert() {
   return (
     <div role="alert" className="alert alert-danger d-flex align-items-center gap-3">
       <span>
-        The local configuration of this browser cannot be read (damaged, or written by a newer version), so nothing is shown
-        and nothing can be started. It stays untouched until you reset it. "Export setup" on the Settings page saves the stored text first, if you need it.
+        The local configuration of this browser cannot be read (damaged, or written by a newer version), so nothing is
+        shown and nothing can be started. It stays untouched until you reset it. "Export setup" on the Settings page
+        saves the stored text first, if you need it.
       </span>
-      <Button variant="danger" size="sm" className="text-nowrap" onClick={resetConfig}>Reset local configuration</Button>
+      <Button variant="danger" size="sm" className="text-nowrap" onClick={resetConfig}>
+        Reset local configuration
+      </Button>
     </div>
   );
 }

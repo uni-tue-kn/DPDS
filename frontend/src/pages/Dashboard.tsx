@@ -17,15 +17,33 @@ const POLL_MS = 1000;
 const HISTORY = 120;
 
 const STATE_BG: Record<EmulationState, string> = {
-  stopped: 'secondary', starting: 'warning', running: 'success', stopping: 'warning', failed: 'danger',
+  stopped: 'secondary',
+  starting: 'warning',
+  running: 'success',
+  stopping: 'warning',
+  failed: 'danger',
 };
+
+/** The log lines with a React key each: the line plus its occurrence number, since a line may repeat. */
+function keyedLines(lines: string[]): { key: string; line: string }[] {
+  const seen = new Map<string, number>();
+  return lines.map((line) => {
+    const n = seen.get(line) ?? 0;
+    seen.set(line, n + 1);
+    return { key: `${n}:${line}`, line };
+  });
+}
 
 function sampleOf(d: StatsView['directions'][number]): Sample {
   return {
     t: Date.now(),
-    rx_bps: d.rx_bps, tx_bps: d.tx_bps,
-    loss_pct: d.loss_pct, limiter_pct: d.limiter_pct, buffer_full_pct: d.buffer_full_pct,
-    nic_tx_pct: d.nic_tx_pct, nic_rx_pct: d.nic_rx_pct,
+    rx_bps: d.rx_bps,
+    tx_bps: d.tx_bps,
+    loss_pct: d.loss_pct,
+    limiter_pct: d.limiter_pct,
+    buffer_full_pct: d.buffer_full_pct,
+    nic_tx_pct: d.nic_tx_pct,
+    nic_rx_pct: d.nic_rx_pct,
   };
 }
 
@@ -44,35 +62,43 @@ export default function Dashboard() {
 
   useEffect(() => {
     let alive = true;
-    const stopEmulationPoll = startPolling(async () => {
-      try {
-        const e = await api.getEmulation();
+    const stopEmulationPoll = startPolling(
+      async () => {
+        try {
+          const e = await api.getEmulation();
+          if (!alive) return;
+          setEmulation(e);
+          setPollError(undefined);
+        } catch (err) {
+          if (alive) setPollError(errorMessage(err));
+        }
+      },
+      POLL_MS,
+      true,
+    );
+    const stopStatsPoll = startPolling(
+      async () => {
+        let s: StatsView;
+        try {
+          s = await api.getStats();
+        } catch (err) {
+          if (alive) setStatsError(errorMessage(err));
+          throw err; // startPolling logs it and keeps going
+        }
         if (!alive) return;
-        setEmulation(e);
-        setPollError(undefined);
-      } catch (err) {
-        if (alive) setPollError(errorMessage(err));
-      }
-    }, POLL_MS, true);
-    const stopStatsPoll = startPolling(async () => {
-      let s: StatsView;
-      try {
-        s = await api.getStats();
-      } catch (err) {
-        if (alive) setStatsError(errorMessage(err));
-        throw err; // startPolling logs it and keeps going
-      }
-      if (!alive) return;
-      setStatsError(undefined);
-      setDismissed(undefined);
-      setStats(s);
-      setHistory((h) => {
-        if (s.directions.length === 0) return {};
-        const next: Record<number, Sample[]> = {};
-        for (const d of s.directions) next[d.dir] = [...(h[d.dir] ?? []), sampleOf(d)].slice(-HISTORY);
-        return next;
-      });
-    }, POLL_MS, true);
+        setStatsError(undefined);
+        setDismissed(undefined);
+        setStats(s);
+        setHistory((h) => {
+          if (s.directions.length === 0) return {};
+          const next: Record<number, Sample[]> = {};
+          for (const d of s.directions) next[d.dir] = [...(h[d.dir] ?? []), sampleOf(d)].slice(-HISTORY);
+          return next;
+        });
+      },
+      POLL_MS,
+      true,
+    );
     return () => {
       alive = false;
       stopEmulationPoll();
@@ -113,7 +139,13 @@ export default function Dashboard() {
       <h1 className="mb-3">Dashboard</h1>
       <ErrorAlert message={actionError ?? pollError} />
       {statsError && statsError !== dismissed && (
-        <Alert variant="warning" role="status" dismissible onClose={() => setDismissed(statsError)} data-testid="stats-warning">
+        <Alert
+          variant="warning"
+          role="status"
+          dismissible
+          onClose={() => setDismissed(statsError)}
+          data-testid="stats-warning"
+        >
           Statistics are not updating: {statsError}
         </Alert>
       )}
@@ -137,10 +169,14 @@ export default function Dashboard() {
             <i className="bi bi-stop-fill" aria-hidden="true" /> Stop
           </Button>
           {pendingRestart(doc, emulation).any && (
-            <Badge pill bg="warning" text="dark" data-testid="pending-restart">Restart needed: links or settings changed</Badge>
+            <Badge pill bg="warning" text="dark" data-testid="pending-restart">
+              Restart needed: links or settings changed
+            </Badge>
           )}
           {emulation?.pid != null && (
-            <span className="text-body-secondary">pid {emulation.pid}, main lcore {emulation.main_lcore ?? 'n/a'}</span>
+            <span className="text-body-secondary">
+              pid {emulation.pid}, main lcore {emulation.main_lcore ?? 'n/a'}
+            </span>
           )}
           {showStale && (
             <Badge pill bg="warning" text="dark" data-testid="stale-indicator">
@@ -151,11 +187,15 @@ export default function Dashboard() {
       </Card>
       <LoadRunning emulation={emulation} />
       {emulation?.error && (
-        <div className="alert alert-danger" role="alert">{emulation.error}</div>
+        <div className="alert alert-danger" role="alert">
+          {emulation.error}
+        </div>
       )}
       {emulation && emulation.log_tail.length > 0 && (
         <pre className="log-tail" data-testid="log-tail">
-          {emulation.log_tail.map((line, i) => <div key={i}>{line}</div>)}
+          {keyedLines(emulation.log_tail).map(({ key, line }) => (
+            <div key={key}>{line}</div>
+          ))}
         </pre>
       )}
       {stats?.directions.map((d) => (

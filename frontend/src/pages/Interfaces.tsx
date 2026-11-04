@@ -28,7 +28,9 @@ function Row({ i }: { i: Interface }) {
       <td>{formatInt(i.numa_node)}</td>
       <td>{pcie(i)}</td>
       <td>
-        <Badge pill bg={i.dpds_usable ? 'success' : 'danger'}>{i.dpds_usable ? 'yes' : 'no'}</Badge>
+        <Badge pill bg={i.dpds_usable ? 'success' : 'danger'}>
+          {i.dpds_usable ? 'yes' : 'no'}
+        </Badge>
       </td>
       <td>{reason}</td>
     </tr>
@@ -46,13 +48,28 @@ export default function Interfaces() {
         <Table striped size="sm" responsive>
           <thead className="table-dark">
             <tr>
-              {['PCI', 'Vendor', 'Driver', 'Netdev', 'MAC', 'State', 'Speed', 'MTU', 'NUMA', 'PCIe link', 'Usable', 'Reason'].map((h) => (
+              {[
+                'PCI',
+                'Vendor',
+                'Driver',
+                'Netdev',
+                'MAC',
+                'State',
+                'Speed',
+                'MTU',
+                'NUMA',
+                'PCIe link',
+                'Usable',
+                'Reason',
+              ].map((h) => (
                 <th key={h}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {data.map((i) => <Row key={i.pci} i={i} />)}
+            {data.map((i) => (
+              <Row key={i.pci} i={i} />
+            ))}
           </tbody>
         </Table>
       )}

@@ -71,7 +71,10 @@ describe('api client (real module)', () => {
   });
 
   it('getHostHintsFor POSTs the start request as JSON to /api/host/hints and returns the hints', async () => {
-    const body = { links: [{ name: 'a-b', ingress: '0000:65:00.0', egress: '0000:65:00.1', config: fx.config(), worker: null }], settings: fx.settings() };
+    const body = {
+      links: [{ name: 'a-b', ingress: '0000:65:00.0', egress: '0000:65:00.1', config: fx.config(), worker: null }],
+      settings: fx.settings(),
+    };
     reply(200, fx.hints());
     await expect(client.getHostHintsFor(body)).resolves.toEqual(fx.hints());
     const { url, init } = lastCall();
@@ -91,14 +94,34 @@ describe('api client (real module)', () => {
 
   it('the removed REST surface is gone: no function for links, presets, settings, export or import', () => {
     for (const gone of [
-      'getLinks', 'getLink', 'createLink', 'updateLink', 'deleteLink', 'getSettings', 'updateSettings', 'getPresets', 'getPreset',
-      'createPreset', 'updatePreset', 'deletePreset', 'exportSetup', 'importSetup',
+      'getLinks',
+      'getLink',
+      'createLink',
+      'updateLink',
+      'deleteLink',
+      'getSettings',
+      'updateSettings',
+      'getPresets',
+      'getPreset',
+      'createPreset',
+      'updatePreset',
+      'deletePreset',
+      'exportSetup',
+      'importSetup',
     ]) {
       expect(client, gone).not.toHaveProperty(gone);
     }
     expect(Object.keys(client).sort()).toEqual([
-      'ApiError', 'getDelayHistogram', 'getEmulation', 'getHostHints', 'getHostHintsFor', 'getInterfaces', 'getOnline', 'getStats',
-      'startEmulation', 'stopEmulation',
+      'ApiError',
+      'getDelayHistogram',
+      'getEmulation',
+      'getHostHints',
+      'getHostHintsFor',
+      'getInterfaces',
+      'getOnline',
+      'getStats',
+      'startEmulation',
+      'stopEmulation',
     ]);
   });
 

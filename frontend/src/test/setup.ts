@@ -25,7 +25,10 @@ vi.mock('react-chartjs-2', () => {
 // No test may reach the network, so `fetch` is down by default (an unreachable GitHub means "no update");
 // updateCheck.test.tsx installs its own mock.
 beforeEach(() => {
-  vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new TypeError('Failed to fetch'))));
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(() => Promise.reject(new TypeError('Failed to fetch'))),
+  );
   localStorage.clear();
   document.documentElement.removeAttribute('data-theme');
   setPrefersDark(false);

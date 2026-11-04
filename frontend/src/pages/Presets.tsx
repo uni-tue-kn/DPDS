@@ -35,7 +35,11 @@ export default function Presets() {
       {presets.length > 0 && (
         <Table striped size="sm" responsive>
           <thead className="table-dark">
-            <tr><th>Name</th><th>Description</th><th /></tr>
+            <tr>
+              <th>Name</th>
+              <th>Description</th>
+              <th />
+            </tr>
           </thead>
           <tbody>
             {presets.map((p) => (
@@ -43,10 +47,19 @@ export default function Presets() {
                 <td>{p.name}</td>
                 <td>{p.description}</td>
                 <td className="text-end text-nowrap">
-                  <RouterLink to={`/presets/${p.id}`} className="btn btn-sm btn-outline-secondary me-1" aria-label={`Edit ${p.name}`}>
+                  <RouterLink
+                    to={`/presets/${p.id}`}
+                    className="btn btn-sm btn-outline-secondary me-1"
+                    aria-label={`Edit ${p.name}`}
+                  >
                     <i className="bi bi-pencil" aria-hidden="true" />
                   </RouterLink>
-                  <Button size="sm" variant="outline-danger" aria-label={`Delete ${p.name}`} onClick={() => setTarget(p)}>
+                  <Button
+                    size="sm"
+                    variant="outline-danger"
+                    aria-label={`Delete ${p.name}`}
+                    onClick={() => setTarget(p)}
+                  >
                     <i className="bi bi-trash" aria-hidden="true" />
                   </Button>
                 </td>
@@ -56,11 +69,19 @@ export default function Presets() {
         </Table>
       )}
       <Modal show={target !== null} onHide={() => setTarget(null)} animation={false} centered>
-        <Modal.Header closeButton><Modal.Title>Delete preset</Modal.Title></Modal.Header>
-        <Modal.Body>Delete preset {target?.name}? Links that used it keep their settings. This cannot be undone.</Modal.Body>
+        <Modal.Header closeButton>
+          <Modal.Title>Delete preset</Modal.Title>
+        </Modal.Header>
+        <Modal.Body>
+          Delete preset {target?.name}? Links that used it keep their settings. This cannot be undone.
+        </Modal.Body>
         <Modal.Footer>
-          <Button variant="secondary" onClick={() => setTarget(null)}>Cancel</Button>
-          <Button variant="danger" onClick={confirmDelete}>Confirm delete</Button>
+          <Button variant="secondary" onClick={() => setTarget(null)}>
+            Cancel
+          </Button>
+          <Button variant="danger" onClick={confirmDelete}>
+            Confirm delete
+          </Button>
         </Modal.Footer>
       </Modal>
     </>

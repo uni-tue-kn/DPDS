@@ -4,6 +4,7 @@ import type { EmulationState, Link, Settings } from '../api/types';
 import { api } from '../test/mockApi';
 import * as fx from '../test/fixtures';
 import { dropNulls, rawStore, renderApp, seedRaw, seedStore, storedDoc } from '../test/helpers';
+import { must } from '../test/must';
 
 // Contract: "Pending restart" and "Load running configuration" in the v22 block of src/test/helpers.tsx. The controller stores
 // nothing: the page compares the LOCAL document with `GET /api/emulation`.config (the running start request) and flags what differs.
@@ -12,7 +13,14 @@ const LINKS = () => [fx.link(), fx.linkRev()]; // a-b (id 1), b-a (id 3)
 const RUNNING = (links: Link[] = LINKS(), settings: Settings = fx.settings()) => fx.runningConfig(links, settings);
 
 /** The emulation reports `config` in `state`; the local document is `links` / `settings`. */
-function setup(opts: { local?: Link[]; settings?: Settings; running?: ReturnType<typeof RUNNING> | null; state?: EmulationState } = {}) {
+function setup(
+  opts: {
+    local?: Link[];
+    settings?: Settings;
+    running?: ReturnType<typeof RUNNING> | null;
+    state?: EmulationState;
+  } = {},
+) {
   const { local = LINKS(), settings = fx.settings(), running = RUNNING(), state = 'running' } = opts;
   seedStore({ links: local, settings });
   api.getEmulation.mockResolvedValue(running === null ? fx.emulation(state) : fx.emulation(state, { config: running }));
@@ -25,7 +33,10 @@ const notice = () => screen.queryByTestId('pending-restart');
 const rowOf = async (name: string) => (await screen.findByText(name)).closest('tr') as HTMLElement;
 const rowMarker = (row: HTMLElement) => within(row).queryByTestId('link-pending-restart');
 
-const withConfig = (l: Link, mean_ns: number): Link => ({ ...l, config: { ...l.config, delayer: { ...l.config.delayer!, mean_ns } } });
+const withConfig = (l: Link, mean_ns: number): Link => ({
+  ...l,
+  config: { ...l.config, delayer: { ...must(l.config.delayer), mean_ns } },
+});
 
 describe('pending restart: the local configuration equals the running one', () => {
   it.each(['/', '/links'])('shows nothing on %s', async (path) => {
@@ -36,8 +47,12 @@ describe('pending restart: the local configuration equals the running one', () =
     expect(screen.queryByTestId('link-pending-restart')).not.toBeInTheDocument();
   });
 
-  it('ids, presets and the controller\'s extra keys (assigned id, dir, lcore) do not count', async () => {
-    seedStore({ links: [fx.link({ id: 41 }), fx.linkRev({ id: 42 })], presets: [fx.preset({ id: 9 })], settings: fx.settings() });
+  it("ids, presets and the controller's extra keys (assigned id, dir, lcore) do not count", async () => {
+    seedStore({
+      links: [fx.link({ id: 41 }), fx.linkRev({ id: 42 })],
+      presets: [fx.preset({ id: 9 })],
+      settings: fx.settings(),
+    });
     api.getEmulation.mockResolvedValue(fx.emulation('running', { config: RUNNING() }));
     renderApp('/links');
     await settle();
@@ -46,7 +61,13 @@ describe('pending restart: the local configuration equals the running one', () =
 
   it('null and absent optional values are the same (worker, seed, histogram, a missing stage)', async () => {
     const local = [fx.link({ worker: null, config: { ...fx.config(), seed: null, histogram: null, limiter: null } })];
-    const running = RUNNING([fx.link({ config: dropNulls({ ...fx.config(), seed: null, histogram: null, limiter: null }) as ReturnType<typeof fx.config> })]);
+    const running = RUNNING([
+      fx.link({
+        config: dropNulls({ ...fx.config(), seed: null, histogram: null, limiter: null }) as ReturnType<
+          typeof fx.config
+        >,
+      }),
+    ]);
     for (const l of running.links) delete (l as { worker?: unknown }).worker;
     setup({ local, running });
     renderApp('/links');
@@ -159,13 +180,16 @@ describe('pending restart: something differs', () => {
     expect(await screen.findByTestId('pending-restart')).toBeInTheDocument();
   });
 
-  it.each(['stopped', 'failed'] as EmulationState[])('nothing is compared while %s (no running configuration)', async (state) => {
-    setup({ local: [withConfig(fx.link(), 2000), fx.linkRev()], running: null, state });
-    renderApp('/links');
-    await settle();
-    expect(notice()).not.toBeInTheDocument();
-    expect(screen.queryByTestId('link-pending-restart')).not.toBeInTheDocument();
-  });
+  it.each(['stopped', 'failed'] as EmulationState[])(
+    'nothing is compared while %s (no running configuration)',
+    async (state) => {
+      setup({ local: [withConfig(fx.link(), 2000), fx.linkRev()], running: null, state });
+      renderApp('/links');
+      await settle();
+      expect(notice()).not.toBeInTheDocument();
+      expect(screen.queryByTestId('link-pending-restart')).not.toBeInTheDocument();
+    },
+  );
 
   it('nothing is flagged while stopping, when the run is going away anyway', async () => {
     setup({ local: [withConfig(fx.link(), 2000), fx.linkRev()], state: 'stopping' });
@@ -191,7 +215,11 @@ describe('pending restart: something differs', () => {
 
 describe('Load running configuration', () => {
   const button = () => screen.queryByRole('button', { name: 'Load running configuration' });
-  const running = () => RUNNING([fx.link({ worker: 5 }), fx.linkRev()], fx.settings({ main_lcore: 2, eal_extra_args: ['--no-huge'], poll_interval_ms: 250 }));
+  const running = () =>
+    RUNNING(
+      [fx.link({ worker: 5 }), fx.linkRev()],
+      fx.settings({ main_lcore: 2, eal_extra_args: ['--no-huge'], poll_interval_ms: 250 }),
+    );
 
   it.each(['/', '/links'])('is offered on %s when an emulation runs and the browser has no links', async (path) => {
     setup({ local: [], running: running() });
@@ -242,7 +270,9 @@ describe('Load running configuration', () => {
     ]);
     expect(dropNulls(doc.links[0].config)).toEqual(dropNulls(fx.config()));
     expect(dropNulls(doc.links[1].config)).toEqual(dropNulls(fx.config2()));
-    expect(Object.keys(doc.links[0]).sort()).toEqual(['config', 'egress', 'id', 'ingress', 'name', 'worker'].filter((k) => k in doc.links[0]).sort());
+    expect(Object.keys(doc.links[0]).sort()).toEqual(
+      ['config', 'egress', 'id', 'ingress', 'name', 'worker'].filter((k) => k in doc.links[0]).sort(),
+    );
     expect(doc.settings).toEqual({ main_lcore: 2, eal_extra_args: ['--no-huge'], poll_interval_ms: 250 });
     expect(doc.presets.map((p) => p.id)).toEqual([4]);
   });

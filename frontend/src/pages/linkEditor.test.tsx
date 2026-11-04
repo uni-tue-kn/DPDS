@@ -5,12 +5,30 @@ import type { ConfigDto, Link, LinkInput } from '../api/types';
 import { api, ApiError } from '../test/mockApi';
 import * as fx from '../test/fixtures';
 import {
-  addStages, queryAddButton, queryStage, rawStore, renderApp, watchStoreWrites, section, seedLinks, seedStore, storedDoc, storedLinks,
-  TEST_RATE, typeInto, typeRate, unitOf,
+  addStages,
+  queryAddButton,
+  queryStage,
+  rawStore,
+  renderApp,
+  watchStoreWrites,
+  section,
+  seedLinks,
+  seedStore,
+  storedDoc,
+  storedLinks,
+  TEST_RATE,
+  typeInto,
+  typeRate,
+  unitOf,
 } from '../test/helpers';
+import { must } from '../test/must';
 
 const DISTRIBUTIONS = [
-  'DeterministicDistribution', 'LogNormalDistribution', 'NormalDistribution', 'GammaDistribution', 'UniformDistribution',
+  'DeterministicDistribution',
+  'LogNormalDistribution',
+  'NormalDistribution',
+  'GammaDistribution',
+  'UniformDistribution',
 ];
 
 // v22: links live in the local document (key dpds.config.v1); "created" / "updated" mean what the store holds after Save. New
@@ -81,18 +99,18 @@ function expectValidConfig(c: ConfigDto) {
   expect(c.buffer_capacity).toBeGreaterThan(0);
   expect(typeof c.reordering).toBe('boolean');
   // v22: the stages are optional; these checks run on forms opened with all three added
-  expect(DISTRIBUTIONS).toContain(c.delayer!.distribution);
-  expect(Number.isFinite(c.delayer!.mean_ns)).toBe(true);
-  expect(Number.isFinite(c.delayer!.std_ns)).toBe(true);
-  expect(typeof c.delayer!.activate_correlation).toBe('boolean');
-  expect(Number.isFinite(c.delayer!.half_life_period_ns)).toBe(true);
-  expect(typeof c.delayer!.initialization_rate_pps).toBe('number'); // v12: always sent with a delayer, finite >= 1
-  expect(Number.isFinite(c.delayer!.initialization_rate_pps)).toBe(true);
-  expect(c.delayer!.initialization_rate_pps).toBeGreaterThanOrEqual(1);
-  expect(['Spacer', 'TokenBucketFilter']).toContain(c.limiter!.mode);
-  expect(c.limiter!.rate_bps).toBeGreaterThan(0);
-  expect(Object.keys(c.limiter!).sort()).toEqual(['mode', 'rate_bps']); // spec20: no limit_bit; v22: no activate
-  expect(['Random', 'GilbertElliot']).toContain(c.loss_model!.type);
+  expect(DISTRIBUTIONS).toContain(must(c.delayer).distribution);
+  expect(Number.isFinite(must(c.delayer).mean_ns)).toBe(true);
+  expect(Number.isFinite(must(c.delayer).std_ns)).toBe(true);
+  expect(typeof must(c.delayer).activate_correlation).toBe('boolean');
+  expect(Number.isFinite(must(c.delayer).half_life_period_ns)).toBe(true);
+  expect(typeof must(c.delayer).initialization_rate_pps).toBe('number'); // v12: always sent with a delayer, finite >= 1
+  expect(Number.isFinite(must(c.delayer).initialization_rate_pps)).toBe(true);
+  expect(must(c.delayer).initialization_rate_pps).toBeGreaterThanOrEqual(1);
+  expect(['Spacer', 'TokenBucketFilter']).toContain(must(c.limiter).mode);
+  expect(must(c.limiter).rate_bps).toBeGreaterThan(0);
+  expect(Object.keys(must(c.limiter)).sort()).toEqual(['mode', 'rate_bps']); // spec20: no limit_bit; v22: no activate
+  expect(['Random', 'GilbertElliot']).toContain(must(c.loss_model).type);
   expect(typeof c.delay_stats).toBe('boolean');
 }
 
@@ -118,7 +136,9 @@ describe('Link editor: interface pickers', () => {
   it('lists the interfaces of /api/interfaces in both pickers, labelled by netdev (v16)', async () => {
     await openNew();
     for (const label of ['Ingress', 'Egress']) {
-      const opts = within(select(label)).getAllByRole('option').map((o) => o.textContent ?? '');
+      const opts = within(select(label))
+        .getAllByRole('option')
+        .map((o) => o.textContent ?? '');
       for (const netdev of ['enp101s0f0', 'enp101s0f1', 'enp179s0f0', 'eno1']) {
         expect(opts.some((t) => t.startsWith(netdev))).toBe(true);
       }
@@ -132,7 +152,9 @@ describe('Link editor: interface pickers', () => {
       expect(o.textContent).toBe('enp101s0f0');
       expect(o.value).toBe('0000:65:00.0');
       expect(option(label, /enp101s0f1/).textContent).toBe('enp101s0f1');
-      for (const t of within(select(label)).getAllByRole('option').map((x) => x.textContent ?? '')) {
+      for (const t of within(select(label))
+        .getAllByRole('option')
+        .map((x) => x.textContent ?? '')) {
         expect(t).not.toMatch(/0000:/);
         expect(t).not.toContain('(');
       }
@@ -141,7 +163,8 @@ describe('Link editor: interface pickers', () => {
 
   it('an interface without a netdev (vfio-bound) is labelled by its PCI address', async () => {
     api.getInterfaces.mockResolvedValue([
-      fx.iface({ pci: '0000:65:00.0', netdev: null }), fx.iface({ pci: '0000:65:00.1', netdev: 'enp101s0f1' }),
+      fx.iface({ pci: '0000:65:00.0', netdev: null }),
+      fx.iface({ pci: '0000:65:00.1', netdev: 'enp101s0f1' }),
     ]);
     renderApp('/links/new');
     await screen.findByRole('heading', { level: 1, name: 'New link' });
@@ -257,7 +280,7 @@ describe('Link editor: ports already used by other links', () => {
     expect(o).toHaveTextContent('bind to vfio-pci');
   });
 
-  it('editing a link: its own ports stay selectable, other links\' ports are disabled', async () => {
+  it("editing a link: its own ports stay selectable, other links' ports are disabled", async () => {
     const mine = fx.link(); // id 1: .0 -> .1
     const rev = fx.linkRev(); // id 3: .1 -> .0
     seedLinks([mine, rev]);
@@ -308,7 +331,7 @@ describe('Link editor: create', () => {
     expectValidConfig(sent.config);
     expect(sent.config.delay_stats).toBe(true);
     expect(sent.config.reordering).toBe(false);
-    expect(sent.config.loss_model!.type).toBe('Random');
+    expect(must(sent.config.loss_model).type).toBe('Random');
     expect(sent.worker ?? null).toBeNull();
     expect(sent.config.seed ?? null).toBeNull();
     expect(sent.config.histogram?.bins ?? null).toBeNull();
@@ -355,8 +378,12 @@ describe('Link editor: create', () => {
     await user.click(save());
     const c = lastCreate().config;
     expect(c.delayer).toEqual({
-      distribution: 'GammaDistribution', mean_ns: 2500000, std_ns: 120000,
-      activate_correlation: true, half_life_period_ns: 8000000, initialization_rate_pps: 4000000,
+      distribution: 'GammaDistribution',
+      mean_ns: 2500000,
+      std_ns: 120000,
+      activate_correlation: true,
+      half_life_period_ns: 8000000,
+      initialization_rate_pps: 4000000,
     });
     expect(c.limiter).toEqual({ mode: 'TokenBucketFilter', rate_bps: 100000000000 });
     expect(c.buffer_capacity).toBe(250000);
@@ -438,15 +465,18 @@ describe('Link editor: create', () => {
 
   // The worker field is <input type="number">: the browser/jsdom drop non-numeric characters while typing
   // ("7, 2" arrives as "72", "abc" as ""), so only values a number input can deliver are refused here.
-  it.each(['-1', '-7', '1.5', '0.5'])('refuses the worker value "%s": alert mentioning the worker, no request', async (v) => {
-    const user = await openNew();
-    await fillValid(user, 'w');
-    await user.type(screen.getByLabelText('Worker lcore'), v);
-    await user.click(save());
-    expectNoWrite();
-    expect(await screen.findByRole('alert')).toHaveTextContent(/worker/i);
-    expect(screen.getByRole('heading', { level: 1, name: 'New link' })).toBeInTheDocument();
-  });
+  it.each(['-1', '-7', '1.5', '0.5'])(
+    'refuses the worker value "%s": alert mentioning the worker, no request',
+    async (v) => {
+      const user = await openNew();
+      await fillValid(user, 'w');
+      await user.type(screen.getByLabelText('Worker lcore'), v);
+      await user.click(save());
+      expectNoWrite();
+      expect(await screen.findByRole('alert')).toHaveTextContent(/worker/i);
+      expect(screen.getByRole('heading', { level: 1, name: 'New link' })).toBeInTheDocument();
+    },
+  );
 
   it('non-numeric text cannot be entered into the worker field: it stays empty and means automatic', async () => {
     const user = await openNew();
@@ -746,7 +776,11 @@ describe('Link editor: edit', () => {
   });
 
   it('editing leaves the other links, the presets and the settings of the document alone', async () => {
-    seedStore({ links: [fx.link(), fx.linkRev()], presets: [fx.preset({ id: 9 })], settings: fx.settings({ main_lcore: 2 }) });
+    seedStore({
+      links: [fx.link(), fx.linkRev()],
+      presets: [fx.preset({ id: 9 })],
+      settings: fx.settings({ main_lcore: 2 }),
+    });
     editedId = 1;
     const user = userEvent.setup();
     renderApp('/links/1');
@@ -755,7 +789,10 @@ describe('Link editor: edit', () => {
     await fillName(user, 'a-b2');
     await user.click(save());
     const doc = storedDoc();
-    expect(doc.links.map((l) => [l.id, l.name])).toEqual([[1, 'a-b2'], [3, 'b-a']]);
+    expect(doc.links.map((l) => [l.id, l.name])).toEqual([
+      [1, 'a-b2'],
+      [3, 'b-a'],
+    ]);
     expect(doc.links[1]).toEqual(fx.linkRev());
     expect(doc.presets.map((p) => p.id)).toEqual([9]);
     expect(doc.settings.main_lcore).toBe(2);
@@ -787,7 +824,8 @@ describe('Link editor: ports come only from the pickers (v16)', () => {
 
   it('has no typed port inputs, no typed labels and no override hint (new and edit form)', async () => {
     await openNew();
-    for (const gone of ['Ingress (typed)', 'Egress (typed)']) expect(screen.queryByLabelText(gone)).not.toBeInTheDocument();
+    for (const gone of ['Ingress (typed)', 'Egress (typed)'])
+      expect(screen.queryByLabelText(gone)).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/\(typed\)/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/overrides the picker/i)).not.toBeInTheDocument();
     expect(screen.queryByPlaceholderText(/net_null0/)).not.toBeInTheDocument();
@@ -816,15 +854,18 @@ describe('Link editor: ports come only from the pickers (v16)', () => {
     },
   );
 
-  it.each(['0000:af:00.0', 'net_null12', 'net_ring1'])('a stored egress %s that is not a discovered interface is shown selected and sent back unchanged', async (port) => {
-    const user = await openStored(fx.link({ id: 6, egress: port }));
-    expect(select('Egress').value).toBe(port);
-    expect(selectedText('Egress')).toBe(port);
-    await user.click(save());
-    const sent = lastUpdate();
-    expect(sent.egress).toBe(port);
-    expect(sent.ingress).toBe('0000:65:00.0');
-  });
+  it.each(['0000:af:00.0', 'net_null12', 'net_ring1'])(
+    'a stored egress %s that is not a discovered interface is shown selected and sent back unchanged',
+    async (port) => {
+      const user = await openStored(fx.link({ id: 6, egress: port }));
+      expect(select('Egress').value).toBe(port);
+      expect(selectedText('Egress')).toBe(port);
+      await user.click(save());
+      const sent = lastUpdate();
+      expect(sent.egress).toBe(port);
+      expect(sent.ingress).toBe('0000:65:00.0');
+    },
+  );
 
   it('a stored vdev pair (net_null0 -> net_ring1) keeps both ports', async () => {
     const user = await openStored(fx.link({ id: 6, ingress: 'net_null0', egress: 'net_ring1' }));
@@ -858,20 +899,26 @@ describe('Link editor: ports come only from the pickers (v16)', () => {
   });
 
   // The port rule still applies to what is sent: a stored value the controller would reject is refused here.
-  it.each(['net_pcap0,tx_pcap=/x', 'eth0', '0000:65:00.8'])('a stored ingress %s is refused on save: alert naming the ingress, no request', async (port) => {
-    const user = await openStored(fx.link({ id: 6, ingress: port }));
-    expect(select('Ingress').value).toBe(port);
-    await user.click(save());
-    expectNoWrite();
-    expect(await screen.findByRole('alert')).toHaveTextContent(/ingress/i);
-  });
+  it.each(['net_pcap0,tx_pcap=/x', 'eth0', '0000:65:00.8'])(
+    'a stored ingress %s is refused on save: alert naming the ingress, no request',
+    async (port) => {
+      const user = await openStored(fx.link({ id: 6, ingress: port }));
+      expect(select('Ingress').value).toBe(port);
+      await user.click(save());
+      expectNoWrite();
+      expect(await screen.findByRole('alert')).toHaveTextContent(/ingress/i);
+    },
+  );
 
-  it.each(['net_ring1,nodeaction=x:0:CREATE', 'enp101s0f0', '0000:65:00'])('a stored egress %s is refused on save: alert naming the egress, no request', async (port) => {
-    const user = await openStored(fx.link({ id: 6, egress: port }));
-    await user.click(save());
-    expectNoWrite();
-    expect(await screen.findByRole('alert')).toHaveTextContent(/egress/i);
-  });
+  it.each(['net_ring1,nodeaction=x:0:CREATE', 'enp101s0f0', '0000:65:00'])(
+    'a stored egress %s is refused on save: alert naming the egress, no request',
+    async (port) => {
+      const user = await openStored(fx.link({ id: 6, egress: port }));
+      await user.click(save());
+      expectNoWrite();
+      expect(await screen.findByRole('alert')).toHaveTextContent(/egress/i);
+    },
+  );
 
   it('a refused stored port can be fixed through the picker and then saved', async () => {
     const user = await openStored(fx.link({ id: 6, egress: 'eth0' }));
@@ -1017,7 +1064,7 @@ describe('Link editor: initialization rate (v12)', () => {
     await fillValid(user);
     expect(rate()).toHaveValue(Number(TEST_RATE));
     await user.click(save());
-    expect(lastCreate().config.delayer!.initialization_rate_pps).toBe(Number(TEST_RATE));
+    expect(must(lastCreate().config.delayer).initialization_rate_pps).toBe(Number(TEST_RATE));
   });
 
   it('sends the typed value as a number', async () => {
@@ -1026,7 +1073,7 @@ describe('Link editor: initialization rate (v12)', () => {
     await user.clear(rate());
     await user.type(rate(), '3000000');
     await user.click(save());
-    const sent = lastCreate().config.delayer!.initialization_rate_pps;
+    const sent = must(lastCreate().config.delayer).initialization_rate_pps;
     expect(sent).toBe(3000000);
     expect(typeof sent).toBe('number');
   });
@@ -1037,18 +1084,21 @@ describe('Link editor: initialization rate (v12)', () => {
     await user.clear(rate());
     await user.type(rate(), v);
     await user.click(save());
-    expect(lastCreate().config.delayer!.initialization_rate_pps).toBe(Number(v));
+    expect(must(lastCreate().config.delayer).initialization_rate_pps).toBe(Number(v));
   });
 
-  it.each(['0', '0.5', '0.999', '-1', '-15000000'])('refuses %s (below 1): alert naming the field, no request', async (v) => {
-    const user = await openNew();
-    await fillValid(user);
-    await user.clear(rate());
-    await user.type(rate(), v);
-    await user.click(save());
-    expect(await screen.findByRole('alert')).toHaveTextContent(/Initialization rate/);
-    expectNoWrite();
-  });
+  it.each(['0', '0.5', '0.999', '-1', '-15000000'])(
+    'refuses %s (below 1): alert naming the field, no request',
+    async (v) => {
+      const user = await openNew();
+      await fillValid(user);
+      await user.clear(rate());
+      await user.type(rate(), v);
+      await user.click(save());
+      expect(await screen.findByRole('alert')).toHaveTextContent(/Initialization rate/);
+      expectNoWrite();
+    },
+  );
 
   it('refuses a field that was filled and then cleared: alert naming the field, no request, no silent default', async () => {
     const user = await openNew();
@@ -1069,7 +1119,7 @@ describe('Link editor: initialization rate (v12)', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(/Initialization rate/);
     await typeRate(user, '9000000');
     await user.click(save());
-    expect(lastCreate().config.delayer!.initialization_rate_pps).toBe(9000000);
+    expect(must(lastCreate().config.delayer).initialization_rate_pps).toBe(9000000);
   });
 
   it('the message names the field and does not mention a Direction', async () => {
@@ -1089,19 +1139,21 @@ describe('Link editor: initialization rate (v12)', () => {
   });
 
   it('edit: saving without changes sends the stored value back', async () => {
-    const user = await openEdit(fx.link({ config: fx.config({ delayer: { ...fx.config().delayer!, initialization_rate_pps: 6543210 } }) }));
+    const user = await openEdit(
+      fx.link({ config: fx.config({ delayer: { ...must(fx.config().delayer), initialization_rate_pps: 6543210 } }) }),
+    );
     expect(rate()).toHaveValue(6543.21); // 5 decimals in Mpps, so kpps
     expect(unitOf(group(), RATE)).toBe('kpps');
     await user.click(save());
     expect(writeCount()).toBe(1);
-    expect(lastUpdate().config.delayer!.initialization_rate_pps).toBe(6543210);
+    expect(must(lastUpdate().config.delayer).initialization_rate_pps).toBe(6543210);
   });
 
   it('edit: a changed value is sent instead of the stored one', async () => {
     const user = await openEdit();
     await typeRate(user, '7000000');
     await user.click(save());
-    expect(lastUpdate().config.delayer!.initialization_rate_pps).toBe(7000000);
+    expect(must(lastUpdate().config.delayer).initialization_rate_pps).toBe(7000000);
   });
 
   it('edit: clearing the field is refused, nothing is sent', async () => {

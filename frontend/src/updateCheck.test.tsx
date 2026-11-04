@@ -325,7 +325,9 @@ describe('the update arrow (spec 18, as P4TG)', () => {
     renderApp('/hints');
     await tick(0);
     expect(arrow()).not.toBeNull();
-    act(() => { fireEvent.click(within(modal() as HTMLElement).getAllByRole('button', { name: 'Close' })[0]); });
+    act(() => {
+      fireEvent.click(within(modal() as HTMLElement).getAllByRole('button', { name: 'Close' })[0]);
+    });
     await tick(1000);
     api.getOnline.mockRejectedValue(new Error('Failed to fetch'));
     await tick(11000);
@@ -343,8 +345,9 @@ describe('the update modal (spec 18, as P4TG)', () => {
     expect(m.textContent?.replace(/\s+/g, ' ')).toContain(MODAL_TEXT);
     const closers = within(m).getAllByRole('button', { name: 'Close' });
     expect(closers.some((b) => b.textContent?.trim() === 'Close')).toBe(true);
-    const open = within(m).queryByRole('link', { name: 'Open releases' })
-      ?? within(m).getByRole('button', { name: 'Open releases' });
+    const open =
+      within(m).queryByRole('link', { name: 'Open releases' }) ??
+      within(m).getByRole('button', { name: 'Open releases' });
     expect(open).toBeInTheDocument();
   });
 
@@ -356,8 +359,8 @@ describe('the update modal (spec 18, as P4TG)', () => {
     await renderChecked('1.0.0', '1.0.1\n');
     const m = modal() as HTMLElement;
     // react-bootstrap renders `<Button href>` as an anchor with role="button", so look for either role
-    const open = (within(m).queryByRole('link', { name: 'Open releases' })
-      ?? within(m).getByRole('button', { name: 'Open releases' })) as HTMLElement;
+    const open = (within(m).queryByRole('link', { name: 'Open releases' }) ??
+      within(m).getByRole('button', { name: 'Open releases' })) as HTMLElement;
     if (open.tagName === 'A' && open.hasAttribute('href')) {
       expect(open).toHaveAttribute('href', RELEASES_URL);
       expect(open).toHaveAttribute('target', '_blank');
@@ -374,7 +377,9 @@ describe('the update modal (spec 18, as P4TG)', () => {
     const user = userEvent.setup();
     await renderChecked('1.0.0', '1.0.1\n');
     const m = modal() as HTMLElement;
-    const footer = within(m).getAllByRole('button', { name: 'Close' }).find((b) => b.textContent?.trim() === 'Close');
+    const footer = within(m)
+      .getAllByRole('button', { name: 'Close' })
+      .find((b) => b.textContent?.trim() === 'Close');
     await user.click(footer as HTMLElement);
     await waitFor(() => expect(modal()).toBeNull());
     expect(screen.queryByText('Update available')).not.toBeInTheDocument();
@@ -406,7 +411,9 @@ describe('the update modal (spec 18, as P4TG)', () => {
     await tick(0);
     const m = modal() as HTMLElement;
     const polls = api.getOnline.mock.calls.length;
-    act(() => { fireEvent.click(within(m).getAllByRole('button', { name: 'Close' })[0]); });
+    act(() => {
+      fireEvent.click(within(m).getAllByRole('button', { name: 'Close' })[0]);
+    });
     await tick(1000);
     expect(modal()).toBeNull();
     await tick(30000);

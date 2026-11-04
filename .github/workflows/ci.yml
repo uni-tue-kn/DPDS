@@ -16,20 +16,7 @@ permissions:
   contents: read
 
 jobs:
-  fmt:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v7
-      # Pinned so a new stable release (new clippy lints, rustfmt changes) can't turn CI red on an
-      # unchanged tree; bump deliberately together with dpds-core's rust-version note.
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.99.1
-          components: rustfmt
-      - run: cargo fmt --all -- --check
-
-  rust:
+  backend:
     runs-on: ubuntu-24.04 # 4 vCPUs on public repositories; the e2e tests need 4
     timeout-minutes: 60
     env:
@@ -85,14 +72,19 @@ jobs:
           echo "PKG_CONFIG_PATH=$HOME/dpdk/lib/pkgconfig" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=$HOME/dpdk/lib" >> "$GITHUB_ENV"
 
+      # Pinned so a new stable release (new clippy lints, rustfmt changes) can't turn CI red on an
+      # unchanged tree; bump deliberately together with dpds-core's rust-version note.
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.99.1
-          components: clippy
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
 
+      # First, because it is cheap.
+      - name: Format
+        run: cargo fmt --all -- --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       # `telemetry` (crate dpds) is the only feature that changes code paths, the others of
@@ -131,6 +123,10 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
+      - name: Format check
+        run: npm run format:check
+      - name: Lint
+        run: npm run lint
       # The build dpds.sh install and update run on the host.
       - name: Build
         run: npm run build
@@ -139,7 +135,7 @@ jobs:
       - name: Test
         run: npx vitest run
 
-  packaging:
+  installer:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -152,7 +148,7 @@ jobs:
   # ordinary merges into main do nothing. The release has generated notes and no build assets.
   release:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [fmt, rust, frontend, packaging]
+    needs: [backend, frontend, installer]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

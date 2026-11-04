@@ -8,8 +8,16 @@ import type { UserEvent } from '@testing-library/user-event';
 import type { ConfigDto } from '../api/types';
 import * as fx from './fixtures';
 import {
-  addStages, renderApp, seedLinks, seedPresets, storedLinks, storedPresets, typeRate, watchStoreWrites,
+  addStages,
+  renderApp,
+  seedLinks,
+  seedPresets,
+  storedLinks,
+  storedPresets,
+  typeRate,
+  watchStoreWrites,
 } from './helpers';
+import { must } from './must';
 
 export interface ConfigPage {
   name: string;
@@ -144,7 +152,7 @@ export function cfg(
   const base = fx.config();
   return {
     ...base,
-    delayer: delayer === null ? null : { ...base.delayer!, ...delayer },
+    delayer: delayer === null ? null : { ...must(base.delayer), ...delayer },
     limiter: limiter === null ? null : { mode: 'Spacer', rate_bps: 1e9, ...limiter },
     histogram,
   };

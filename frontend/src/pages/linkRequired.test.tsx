@@ -4,8 +4,17 @@ import type { Distribution } from '../api/types';
 import { PAGES, cfg } from '../test/configPages';
 import type { ConfigPage } from '../test/configPages';
 import {
-  addButton, allRequiredMarkers, expectOptional, expectRequired, numberField, queryStage, removeButton, stageOf, typeInto,
+  addButton,
+  allRequiredMarkers,
+  expectOptional,
+  expectRequired,
+  numberField,
+  queryStage,
+  removeButton,
+  stageOf,
+  typeInto,
 } from '../test/helpers';
+import { must } from '../test/must';
 
 // Contract: "Required fields are visibly marked" in the v16 block of src/test/helpers.tsx. Marker = `.required-marker`,
 // aria-hidden, text "*", in the field's own group; control has `required` + aria-required="true"; one "* required" note.
@@ -27,10 +36,23 @@ function pristineRequired(page: ConfigPage): string[] {
 function neverRequired(page: ConfigPage): string[] {
   return [
     ...(isLink(page) ? ['Worker lcore'] : ['Description']),
-    'Seed', 'Histogram bins', 'Histogram lo', 'Histogram hi', 'Delay distribution', 'Limiter mode', 'Loss model',
-    'Reordering', 'Activate correlation', 'Delay statistics',
-    'Mean delay unit', 'Delay std unit', 'Half-life period unit', 'Initialization rate unit', 'Rate unit',
-    'Histogram lo unit', 'Histogram hi unit',
+    'Seed',
+    'Histogram bins',
+    'Histogram lo',
+    'Histogram hi',
+    'Delay distribution',
+    'Limiter mode',
+    'Loss model',
+    'Reordering',
+    'Activate correlation',
+    'Delay statistics',
+    'Mean delay unit',
+    'Delay std unit',
+    'Half-life period unit',
+    'Initialization rate unit',
+    'Rate unit',
+    'Histogram lo unit',
+    'Histogram hi unit',
     ...(isLink(page) ? ['Apply preset'] : []),
   ];
 }
@@ -47,8 +69,16 @@ describe.each(PAGES)('$name: required fields are marked', (page: ConfigPage) => 
     const user = await page.openNew();
     for (const l of bareRequired(page)) expectRequired(ctl(l));
     expect(allRequiredMarkers()).toHaveLength(bareRequired(page).length);
-    for (const l of ['Seed', 'Histogram bins', 'Histogram lo', 'Histogram hi', 'Reordering', 'Delay statistics']) expectOptional(ctl(l));
-    for (const l of ['Mean delay', 'Delay std', 'Initialization rate', 'Rate', 'Random loss probability', 'Half-life period']) {
+    for (const l of ['Seed', 'Histogram bins', 'Histogram lo', 'Histogram hi', 'Reordering', 'Delay statistics'])
+      expectOptional(ctl(l));
+    for (const l of [
+      'Mean delay',
+      'Delay std',
+      'Initialization rate',
+      'Rate',
+      'Random loss probability',
+      'Half-life period',
+    ]) {
       expect(screen.queryByLabelText(l)).not.toBeInTheDocument();
     }
     // adding a stage adds exactly its required markers, removing it takes them away again
@@ -138,8 +168,11 @@ describe.each(PAGES)('$name: conditionally required fields', (page: ConfigPage) 
   });
 
   it.each([
-    ['NormalDistribution', true], ['LogNormalDistribution', true], ['GammaDistribution', true],
-    ['UniformDistribution', true], ['DeterministicDistribution', false],
+    ['NormalDistribution', true],
+    ['LogNormalDistribution', true],
+    ['GammaDistribution', true],
+    ['UniformDistribution', true],
+    ['DeterministicDistribution', false],
   ] as [Distribution, boolean][])('with %s the delay std is required: %s (the mean always is)', async (dist, std) => {
     const user = await page.openFull();
     await user.selectOptions(ctl('Delay distribution'), dist);
@@ -173,8 +206,19 @@ describe.each(PAGES)('$name: conditionally required fields', (page: ConfigPage) 
   });
 
   it('a stored config with switches on and Gilbert-Elliot loss marks the dependent fields', async () => {
-    await page.openStored({ ...cfg(), delayer: { ...cfg().delayer!, activate_correlation: true }, loss_model: { type: 'GilbertElliot', p: 0.01, r: 0.2, k: 0.9, h: 0.3, state_is_good: true } });
-    for (const l of ['Half-life period', 'Rate', 'Gilbert-Elliot p', 'Gilbert-Elliot r', 'Gilbert-Elliot k', 'Gilbert-Elliot h']) {
+    await page.openStored({
+      ...cfg(),
+      delayer: { ...must(cfg().delayer), activate_correlation: true },
+      loss_model: { type: 'GilbertElliot', p: 0.01, r: 0.2, k: 0.9, h: 0.3, state_is_good: true },
+    });
+    for (const l of [
+      'Half-life period',
+      'Rate',
+      'Gilbert-Elliot p',
+      'Gilbert-Elliot r',
+      'Gilbert-Elliot k',
+      'Gilbert-Elliot h',
+    ]) {
       expectRequired(ctl(l));
     }
   });
@@ -192,8 +236,8 @@ describe.each(PAGES)('$name: a field that is not required is never refused for b
     await user.clear(numberField(body(), 'Delay std'));
     await page.save(user);
     const c = page.created();
-    expect(c.delayer!.distribution).toBe('DeterministicDistribution');
-    expect(c.delayer!.std_ns).toBe(0);
+    expect(must(c.delayer).distribution).toBe('DeterministicDistribution');
+    expect(must(c.delayer).std_ns).toBe(0);
   });
 
   it('a non-deterministic distribution with an empty std is refused (alert naming the field, no request)', async () => {
@@ -212,7 +256,7 @@ describe.each(PAGES)('$name: a field that is not required is never refused for b
     await user.clear(numberField(body(), 'Half-life period'));
     await user.click(ctl('Activate correlation'));
     await page.save(user);
-    const d = page.created().delayer!;
+    const d = must(page.created().delayer);
     expect(d.activate_correlation).toBe(false);
     expect(d.half_life_period_ns).toBe(0);
   });
@@ -258,7 +302,7 @@ describe.each(PAGES)('$name: a field that is not required is never refused for b
     await ready(user);
     await typeInto(user, body(), 'Mean delay', '2', 'ms');
     await page.save(user);
-    expect(page.created().delayer!.mean_ns).toBe(2000000);
+    expect(must(page.created().delayer).mean_ns).toBe(2000000);
   });
 });
 
