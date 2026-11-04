@@ -66,7 +66,8 @@ use std::time::{Duration, Instant};
 use crate::common::*;
 use crate::fake_telemetry::{hist_page, short_tempdir, FakeTelemetryServer, Mode};
 use dpds_controller::api::{self, Deps};
-use dpds_controller::telemetry::{socket_path, Poller, HISTORY_MAX_SAMPLES};
+use dpds_controller::supervisor::{LaunchPlan, State, Supervisor, SupervisorStatus};
+use dpds_controller::telemetry::{socket_path, Poller, TelemetrySource, HISTORY_MAX_SAMPLES};
 use serde_json::{json, Value};
 
 const SAMPLE_FIELDS: [&str; 10] = [
@@ -271,10 +272,21 @@ fn rig() -> Rig {
 impl Rig {
     /// A fake `dpds` with `pid` goes up and the REST start is called: a new run.
     async fn start_run(&mut self, pid: u32, started_at: u64) {
+        self.start_run_links(
+            pid,
+            started_at,
+            vec![link("l", "net_null0", "net_null0", None)],
+        )
+        .await;
+    }
+
+    /// Like `start_run`, with the links of the start body (the fake `dpds` always reports two
+    /// directions, whatever the body has).
+    async fn start_run_links(&mut self, pid: u32, started_at: u64, links: Vec<Value>) {
         self.live = None; // the old socket goes first
         self.live = Some(live(&self.runtime_dir, pid));
         self.supervisor.set_next_run(pid, started_at);
-        let s = setup(vec![link("l", "net_null0", "net_null0", None)]);
+        let s = setup(links);
         let mut body = s.body();
         body["settings"]["poll_interval_ms"] = json!(POLL_MS);
         let r = call(&self.router, "POST", "/api/emulation/start", Some(body)).await;
@@ -1175,4 +1187,507 @@ async fn openapi_lists_elapsed_ms_on_the_stats_view() {
         .cloned()
         .unwrap_or_default();
     assert!(!required.iter().any(|k| k == "elapsed_ms"), "{required:?}");
+}
+
+// ---- spec 29b item 1: run_id and links ------------------------------------------------------------
+//
+// `GET /api/stats/history` also returns `run_id` (u64, one more with every new run the controller
+// sees, null before any run) and `links: [{name, ingress, egress}]` of that run in link-index order,
+// both kept after the stop like the samples and replaced together when a new run begins. Choices of
+// the tester (the spec leaves them open): before any run `links` is `[]`; the link objects have
+// exactly the three fields (no `config`, no `worker`); a new run's id is the previous one plus 1;
+// an answer never pairs the `run_id` of one run with the `links` or `started_at` of another; a
+// request that is refused (400) changes neither.
+
+/// The two links of the runs below, with names and ports that differ from run to run so that a
+/// mixed-up run or link order shows.
+fn links_a() -> Vec<Value> {
+    vec![
+        link("alpha", "net_null0", "net_null1", None),
+        link("beta", "net_null1", "net_null0", None),
+    ]
+}
+
+fn links_b() -> Vec<Value> {
+    vec![
+        link("gamma", "net_null2", "net_null3", None),
+        link("delta", "net_null3", "net_null2", None),
+        link("epsilon", "net_null4", "net_null4", None),
+    ]
+}
+
+fn links_a_json() -> Value {
+    json!([
+        {"name": "alpha", "ingress": "net_null0", "egress": "net_null1"},
+        {"name": "beta", "ingress": "net_null1", "egress": "net_null0"},
+    ])
+}
+
+fn links_b_json() -> Value {
+    json!([
+        {"name": "gamma", "ingress": "net_null2", "egress": "net_null3"},
+        {"name": "delta", "ingress": "net_null3", "egress": "net_null2"},
+        {"name": "epsilon", "ingress": "net_null4", "egress": "net_null4"},
+    ])
+}
+
+/// `run_id` of a history answer; panics unless it is a u64.
+fn run_id(v: &Value) -> u64 {
+    v["run_id"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("run_id is not a u64 in {v}"))
+}
+
+#[tokio::test]
+async fn before_any_run_there_is_no_run_id_and_no_links() {
+    // a source that records nothing (the common fake)
+    let a = TestApp::new(FakeHost::bare_metal());
+    let v = a.get("/api/stats/history").await.json();
+    assert!(v.get("run_id").is_none_or(Value::is_null), "{v}");
+    assert_eq!(v["links"], json!([]), "{v}");
+
+    // the real poller, never started
+    let r = rig();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    for q in ["", "?since_ms=0"] {
+        let v = r.history(q).await;
+        assert!(v.get("run_id").is_none_or(Value::is_null), "{q}: {v}");
+        assert_eq!(v["links"], json!([]), "{q}: {v}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_run_has_a_run_id_and_its_links_in_link_order() {
+    let mut r = rig();
+    r.start_run_links(4242, 1_700_000_000, links_a()).await;
+    let v = r
+        .wait_history("a sample at 1 s", 15, |v| newest_t(v) >= 1.0)
+        .await;
+    run_id(&v);
+    assert_eq!(
+        v["links"],
+        links_a_json(),
+        "the links of the run's configuration, in the order of the start body: {v}"
+    );
+    // the link list is one-to-one with the series keys the fake dpds produces for the first links
+    assert!(
+        v["samples"]["0"].is_array() && v["samples"]["1"].is_array(),
+        "{v}"
+    );
+
+    // every incremental answer carries them too, also when it holds no sample
+    let id = run_id(&v);
+    for q in ["?since_ms=0", "?since_ms=99999999"] {
+        let inc = r.history(q).await;
+        assert_eq!(run_id(&inc), id, "{q}: {inc}");
+        assert_eq!(inc["links"], links_a_json(), "{q}: {inc}");
+    }
+    // and the id stays put while the run goes on
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert_eq!(run_id(&r.history("").await), id);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn run_id_and_links_are_kept_after_the_stop() {
+    let mut r = rig();
+    r.start_run_links(4242, 1_700_000_000, links_a()).await;
+    let live = r
+        .wait_history("a sample at 2 s", 15, |v| newest_t(v) >= 2.0)
+        .await;
+    let id = run_id(&live);
+    r.stop_run().await;
+    tokio::time::sleep(Duration::from_millis(5 * POLL_MS)).await;
+    let stopped = r.history("").await;
+    assert_eq!(run_id(&stopped), id, "{stopped}");
+    assert_eq!(stopped["links"], links_a_json(), "{stopped}");
+    // later and incremental answers too: the stopped run's charts stay readable
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    for q in ["", "?since_ms=99999999"] {
+        let later = r.history(q).await;
+        assert_eq!(run_id(&later), id, "{q}: {later}");
+        assert_eq!(later["links"], links_a_json(), "{q}: {later}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_new_run_gets_the_next_run_id_and_its_own_links() {
+    let mut r = rig();
+    r.start_run_links(4242, 1_700_000_000, links_a()).await;
+    let run1 = r
+        .wait_history("a sample at 1 s", 15, |v| newest_t(v) >= 1.0)
+        .await;
+    let id1 = run_id(&run1);
+    r.stop_run().await;
+    tokio::time::sleep(Duration::from_millis(5 * POLL_MS)).await;
+    assert_eq!(run_id(&r.history("").await), id1, "kept after stop");
+
+    // run 2 has other links, another pid and start time. Every answer from the start request on
+    // is one run or the other, never a mix, and never goes back.
+    r.start_run_links(4243, 1_700_000_900, links_b()).await;
+    let t0 = Instant::now();
+    let mut seen_new = false;
+    let run2 = loop {
+        let v = r.history("").await;
+        match v.get("run_id").filter(|i| !i.is_null()) {
+            None => {
+                assert!(
+                    v["links"] == json!([]) && v["samples"] == json!({}),
+                    "an answer without a run_id claims nothing: {v}"
+                );
+            }
+            Some(i) if *i == json!(id1) => {
+                assert!(!seen_new, "the old run_id came back after the new one: {v}");
+                assert_eq!(
+                    v["links"],
+                    links_a_json(),
+                    "run {id1} has its own links: {v}"
+                );
+                assert_eq!(v["started_at"], json!(1_700_000_000), "{v}");
+            }
+            Some(i) => {
+                assert_eq!(*i, json!(id1 + 1), "a new run is the next id: {v}");
+                assert_eq!(
+                    v["links"],
+                    links_b_json(),
+                    "the new run's id comes with the new run's links, at once: {v}"
+                );
+                seen_new = true;
+                if newest_t(&v) >= 1.0 {
+                    break v;
+                }
+            }
+        }
+        assert!(
+            t0.elapsed() < Duration::from_secs(15),
+            "no sample at 1 s in the new run; last answer {v}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert_eq!(run2["started_at"], json!(1_700_000_900), "{run2}");
+    assert_eq!(run_id(&run2), id1 + 1, "{run2}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refused_start_changes_neither_run_id_nor_links() {
+    let mut r = rig();
+    r.start_run_links(4242, 1_700_000_000, links_a()).await;
+    let live = r
+        .wait_history("a sample at 1 s", 15, |v| newest_t(v) >= 1.0)
+        .await;
+    let id = run_id(&live);
+    r.stop_run().await;
+    tokio::time::sleep(Duration::from_millis(5 * POLL_MS)).await;
+
+    // 400: no links at all; 400: a port name the start refuses
+    for body in [
+        setup(vec![]).body(),
+        setup(vec![link("zeta", "bad port!", "net_null0", None)]).body(),
+    ] {
+        let resp = call(&r.router, "POST", "/api/emulation/start", Some(body)).await;
+        assert_eq!(resp.status, 400, "{}", resp.text());
+    }
+    tokio::time::sleep(Duration::from_millis(5 * POLL_MS)).await;
+    let v = r.history("").await;
+    assert_eq!(run_id(&v), id, "{v}");
+    assert_eq!(v["links"], links_a_json(), "{v}");
+    assert_eq!(v["started_at"], json!(1_700_000_000), "{v}");
+}
+
+#[tokio::test]
+async fn openapi_documents_run_id_and_links_on_the_history() {
+    let a = TestApp::new(FakeHost::bare_metal());
+    let doc = a.get("/api/openapi.json").await.json();
+    let op = &doc["paths"]["/api/stats/history"]["get"];
+    let body = resolve(
+        &doc,
+        &op["responses"]["200"]["content"]["application/json"]["schema"],
+    );
+    let props = body["properties"]
+        .as_object()
+        .unwrap_or_else(|| panic!("no properties: {body}"));
+    let is_integer = |s: &Value| {
+        let t = &s["type"];
+        t == "integer"
+            || t.as_array()
+                .is_some_and(|a| a.iter().any(|x| x == "integer"))
+    };
+    let run_id = props
+        .get("run_id")
+        .unwrap_or_else(|| panic!("no run_id in {body}"));
+    let run_id = resolve(&doc, run_id);
+    assert!(
+        is_integer(run_id)
+            || run_id["oneOf"]
+                .as_array()
+                .or_else(|| run_id["anyOf"].as_array())
+                .is_some_and(|a| a.iter().any(|x| is_integer(resolve(&doc, x)))),
+        "run_id is an integer: {run_id}"
+    );
+    let links = resolve(
+        &doc,
+        props
+            .get("links")
+            .unwrap_or_else(|| panic!("no links in {body}")),
+    );
+    assert_eq!(links["type"], "array", "{links}");
+    let item = resolve(&doc, &links["items"]);
+    let item_props = item["properties"]
+        .as_object()
+        .unwrap_or_else(|| panic!("the items of links have no properties: {links}"));
+    for k in ["name", "ingress", "egress"] {
+        assert!(item_props.contains_key(k), "a link has {k}: {item}");
+    }
+    assert_eq!(
+        item_props.len(),
+        3,
+        "a link is {{name, ingress, egress}}: {item}"
+    );
+}
+
+// ---- spec 29b item 2: a reader never applies a stale supervisor status -----------------------------
+//
+// Observable part of the locking change: a reader (`run_history`, `elapsed_ms`) reads the supervisor
+// status after it took the run lock. The supervisor below stalls one reader inside `status()` after
+// that call has already decided what to return, as a thread descheduled between reading the
+// status and using it. With the status read BEFORE the lock (the spec 29 code) another reader
+// applies the newer status meanwhile and the stalled one then applies its stale one and throws the
+// newer run away. With the status read AFTER taking the lock the other reader waits for the stalled
+// one, and no stale status is ever applied.
+//
+// NOT observable from outside, so not pinned here (review or measurement): that the poller records a
+// sample outside the stats-cell lock (a reader that holds the run lock, as required here, delays
+// `/api/stats` through `elapsed_ms` whatever the poller does) and that `run_history` copies only the
+// requested range under the lock (it needs a series of up to 86400 samples per link, which only
+// 24 h of running or a test hook produce).
+
+struct Gate {
+    armed: bool,
+    entered: bool,
+    open: bool,
+}
+
+/// A supervisor that reports a settable status and can stall one call made by a request handler
+/// (any named thread, i.e. a tokio worker; the poller runs on its own unnamed thread and is never stalled), after
+/// the answer of that call is fixed.
+struct GatedSupervisor {
+    status: Mutex<SupervisorStatus>,
+    gate: Mutex<Gate>,
+    changed: std::sync::Condvar,
+}
+
+fn running(pid: u32, started_at: u64) -> SupervisorStatus {
+    SupervisorStatus {
+        state: State::Running,
+        pid: Some(pid),
+        started_at: Some(started_at),
+        error: None,
+        log_tail: vec![],
+    }
+}
+
+impl GatedSupervisor {
+    fn new(s: SupervisorStatus) -> Arc<GatedSupervisor> {
+        Arc::new(GatedSupervisor {
+            status: Mutex::new(s),
+            gate: Mutex::new(Gate {
+                armed: false,
+                entered: false,
+                open: false,
+            }),
+            changed: std::sync::Condvar::new(),
+        })
+    }
+
+    fn set(&self, s: SupervisorStatus) {
+        *self.status.lock().unwrap() = s;
+    }
+
+    /// The next `status()` call of a request handler stalls until `open_gate`.
+    fn arm(&self) {
+        *self.gate.lock().unwrap() = Gate {
+            armed: true,
+            entered: false,
+            open: false,
+        };
+    }
+
+    fn open_gate(&self) {
+        self.gate.lock().unwrap().open = true;
+        self.changed.notify_all();
+    }
+
+    async fn wait_entered(&self) {
+        let t0 = Instant::now();
+        while !self.gate.lock().unwrap().entered {
+            assert!(
+                t0.elapsed() < Duration::from_secs(5),
+                "no request handler asked the supervisor for its status"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+}
+
+impl Supervisor for GatedSupervisor {
+    fn start(&self, _plan: LaunchPlan) {}
+    fn stop(&self) {}
+    fn status(&self) -> SupervisorStatus {
+        let answer = self.status.lock().unwrap().clone();
+        // every thread but the poller's (`std::thread::spawn`, no name) is a request handler's
+        let handler = std::thread::current().name().is_some();
+        let mut g = self.gate.lock().unwrap();
+        if g.armed && handler {
+            g.armed = false;
+            g.entered = true;
+            self.changed.notify_all();
+            let t0 = Instant::now();
+            while !g.open && t0.elapsed() < Duration::from_secs(10) {
+                g = self
+                    .changed
+                    .wait_timeout(g, Duration::from_millis(50))
+                    .unwrap()
+                    .0;
+            }
+        }
+        answer
+    }
+}
+
+struct GatedRig {
+    router: axum::Router,
+    supervisor: Arc<GatedSupervisor>,
+    _poller: Arc<Poller>,
+    _host: FakeHost,
+    _dir: tempfile::TempDir,
+}
+
+fn gated_rig() -> GatedRig {
+    let rt = short_tempdir();
+    let supervisor = GatedSupervisor::new(running(1, 100));
+    let poller = Poller::spawn(rt.path().to_path_buf(), supervisor.clone());
+    let host = FakeHost::bare_metal();
+    let router = api::router(Deps {
+        roots: host.roots(),
+        supervisor: supervisor.clone(),
+        telemetry: poller.clone(),
+        dpds_bin: PathBuf::from("/usr/local/bin/dpds"),
+        runtime_dir: rt.path().to_path_buf(),
+        dpds_has_telemetry: true,
+        is_root: false,
+    });
+    GatedRig {
+        router,
+        supervisor,
+        _poller: poller,
+        _host: host,
+        _dir: rt,
+    }
+}
+
+/// What `stalled_reader` saw, by run identity (never by the order in which answers happened to
+/// travel back through the router, which no reader orders).
+struct Stalled {
+    /// `run_id` of run 100 before anything stalls.
+    id0: u64,
+    /// The stalled reader's answer (a history or a stats body).
+    first: Value,
+    /// The history answer of the reader that came in meanwhile.
+    second: Value,
+    /// A history read after both are done.
+    after: Value,
+}
+
+/// Stalls the first reader `first` (a path) inside the supervisor's `status()` with run 100's
+/// status in hand, lets run 200 take over, runs a history read meanwhile, then releases the first.
+/// The poller is kept out of it (one wake-up at the start, then an interval of a minute), so only
+/// the readers apply statuses.
+async fn stalled_reader(first: &str) -> Stalled {
+    let g = gated_rig();
+    g._poller.set_poll_interval(60_000);
+    // the poller's first wake-up (at most 500 ms after the spawn) has passed; it reads the
+    // interval above for every later one
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    // run 100 is current: its series exists
+    let v = router_get(&g.router, "/api/stats/history").await.json();
+    assert_eq!(v["started_at"], json!(100), "{v}");
+    let id0 = run_id(&v);
+
+    g.supervisor.arm();
+    let r1 = {
+        let (router, path) = (g.router.clone(), first.to_string());
+        tokio::spawn(async move { router_get(&router, &path).await.json() })
+    };
+    g.supervisor.wait_entered().await;
+
+    // run 200 takes over while the first reader is stalled with run 100's status in hand
+    g.supervisor.set(running(2, 200));
+    let r2 = {
+        let router = g.router.clone();
+        tokio::spawn(async move { router_get(&router, "/api/stats/history").await.json() })
+    };
+    // long enough for a reader that is not held back to finish, and for the first to be
+    // measurably older than the run it holds
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    g.supervisor.open_gate();
+    let (first, second): (Value, Value) = (r1.await.unwrap(), r2.await.unwrap());
+    let after = router_get(&g.router, "/api/stats/history").await.json();
+    Stalled {
+        id0,
+        first,
+        second,
+        after,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stalled_history_reader_does_not_bring_back_an_older_run() {
+    let s = stalled_reader("/api/stats/history").await;
+    // Run 200 is the second run the controller sees, so its id is `id0 + 1`, and it is the one
+    // every later read reports. A stalled reader that applies its stale status (run 100) after
+    // run 200 was taken over makes a third run out of it (`id0 + 2`), and the next read a
+    // fourth. Which of the two readers answers first is not ordered and not asserted: the
+    // stalled one may legitimately be linearised first (it holds the run lock) and answer run 100.
+    for (what, v) in [
+        ("stalled", &s.first),
+        ("second", &s.second),
+        ("after", &s.after),
+    ] {
+        assert!(
+            run_id(v) <= s.id0 + 1,
+            "{what} reader reports run_id {} (only {} and {} exist): a stale status was applied: {v}",
+            run_id(v),
+            s.id0,
+            s.id0 + 1
+        );
+    }
+    assert_eq!(s.second["started_at"], json!(200), "{}", s.second);
+    assert_eq!(run_id(&s.second), s.id0 + 1, "{}", s.second);
+    assert_eq!(s.after["started_at"], json!(200), "{}", s.after);
+    assert_eq!(run_id(&s.after), s.id0 + 1, "{}", s.after);
+    // the stalled answer is one of the two runs, whole: its id and start time belong together
+    let (id, started) = (run_id(&s.first), &s.first["started_at"]);
+    assert!(
+        (id == s.id0 && *started == json!(100)) || (id == s.id0 + 1 && *started == json!(200)),
+        "{}",
+        s.first
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stalled_elapsed_reader_does_not_restart_the_clock_of_an_older_run() {
+    let s = stalled_reader("/api/stats").await;
+    assert_eq!(s.second["started_at"], json!(200), "{}", s.second);
+    assert_eq!(run_id(&s.second), s.id0 + 1, "{}", s.second);
+    assert_eq!(run_id(&s.after), s.id0 + 1, "{}", s.after);
+    let e = s.first["elapsed_ms"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("no elapsed_ms: {}", s.first));
+    // The stalled reader held run 100's status and, holding the run lock, is first in line: run 100
+    // had been running for the 700 ms of the stall at least. A stale status applied after run 200
+    // took over would make a brand new run out of it (elapsed near 0, run_id id0 + 2).
+    assert!(
+        e >= 500,
+        "elapsed_ms {e} ms: the stalled reader applied a stale status and restarted a clock: {}",
+        s.first
+    );
 }
