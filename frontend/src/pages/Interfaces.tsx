@@ -14,7 +14,7 @@ function pcie(i: Interface): string {
 }
 
 function Row({ i }: { i: Interface }) {
-  const reason = i.reason ?? (i.kernel_route ? 'management NIC' : '');
+  const reason = i.reason ?? (i.uplink ? 'uplink' : '');
   return (
     <tr>
       <td>{i.pci}</td>

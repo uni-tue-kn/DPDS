@@ -324,6 +324,30 @@ describe('leftovers (F6)', () => {
   });
 });
 
+describe('host uplink guard (spec v27)', () => {
+  it('src has no kernel_route left (renamed to uplink everywhere)', () => {
+    const hits = execSync('grep -rlE "kernel_route|kernelRoute" src || true', { cwd: frontendDir })
+      .toString()
+      .split('\n')
+      .filter((f) => f && f !== 'src/static.test.ts');
+    expect(hits).toEqual([]);
+  });
+
+  it('the Interface type carries a boolean `uplink` and no management-NIC wording', () => {
+    const types = read('src/api/types.ts');
+    expect(types).toMatch(/\buplink\s*:\s*boolean\b/);
+    expect(types).not.toMatch(/management NIC/i);
+  });
+
+  it('no non-test source says "management NIC" any more', () => {
+    const hits = execSync('grep -rliE "management NIC" src || true', { cwd: frontendDir })
+      .toString()
+      .split('\n')
+      .filter((f) => f && !/\.test\.tsx?$/.test(f) && f !== 'src/test/helpers.tsx');
+    expect(hits).toEqual([]);
+  });
+});
+
 // Frontend formatting and linting (spec v23, changed 2026-11-04): Biome for both, because typescript-eslint
 // doesn't support TypeScript 7. Static checks of the files only; the tool itself runs in CI
 // (`npm run format:check`, `npm run lint`). Flags and config keys checked against @biomejs/biome 2.6.4:

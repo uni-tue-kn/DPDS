@@ -85,8 +85,8 @@ export interface Interface {
   mtu: number | null;
   numa_node: number | null;
   pcie_link: PcieLink | null;
-  /** The netdev (or a master/upper device over it) carries a kernel route: management guard. */
-  kernel_route: boolean;
+  /** The host uses this interface (route, IP address or Open vSwitch port on it or a device above it). */
+  uplink: boolean;
   dpds_usable: boolean;
   reason: string | null;
 }

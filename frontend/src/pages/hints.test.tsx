@@ -62,19 +62,19 @@ describe('Host hints page', () => {
     expect(screen.getByRole('region', { name: /^OK/ })).toBeInTheDocument();
   });
 
-  it('shows the management NIC error hint in the Errors group', async () => {
+  it('shows the host uplink error hint in the Errors group', async () => {
     api.getHostHints.mockResolvedValue([
       {
-        id: 'management_nic',
+        id: 'uplink',
         level: 'error',
-        title: 'Management NIC 0000:17:00.0',
+        title: 'Host uplink',
         detail: 'carries a route',
         suggestion: 'Do not use it.',
       },
     ]);
     renderApp('/hints');
     const errors = await screen.findByRole('region', { name: /^Errors/ });
-    expect(errors).toHaveTextContent('Management NIC 0000:17:00.0');
+    expect(errors).toHaveTextContent('Host uplink');
   });
 
   it('shows a message for an empty hint list', async () => {
@@ -160,9 +160,9 @@ describe('Host hints page: hints for the local configuration (v22)', () => {
 
   it('a failing POST shows its message in an alert while the host hints stay', async () => {
     seedLinks([fx.link()]);
-    api.getHostHintsFor.mockRejectedValue(new ApiError(409, 'port 0000:17:00.0 is a management NIC'));
+    api.getHostHintsFor.mockRejectedValue(new ApiError(409, 'port 0000:17:00.0 is a host uplink'));
     renderApp('/hints');
-    expect(await screen.findByRole('alert')).toHaveTextContent('port 0000:17:00.0 is a management NIC');
+    expect(await screen.findByRole('alert')).toHaveTextContent('port 0000:17:00.0 is a host uplink');
     expect(screen.getByRole('region', { name: /^Errors/ })).toHaveTextContent('No core isolation');
   });
 

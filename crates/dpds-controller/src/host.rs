@@ -1,13 +1,93 @@
 //! Access to the host files the controller reads (sysfs and procfs), rooted at
 //! configurable directories so tests can point at fake trees.
 
+use std::ffi::CStr;
 use std::fs;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::{Path, PathBuf};
+
+/// Where the IP addresses of the host's interfaces come from.
+#[derive(Debug, Clone)]
+pub enum IfAddrs {
+    /// `getifaddrs(3)`.
+    System,
+    /// A fixed `(netdev, address)` list in `getifaddrs` order (tests).
+    Fixed(Vec<(String, IpAddr)>),
+}
+
+impl IfAddrs {
+    /// `(netdev, address)` pairs that make a device a host uplink: every IPv4
+    /// address and every IPv6 address except link-local (`fe80::/10`); loopback
+    /// devices never count. IPv4 addresses come first, each family in the order
+    /// the source returned them.
+    pub fn uplink_addresses(&self) -> Vec<(String, IpAddr)> {
+        let all = match self {
+            IfAddrs::System => system_addresses(),
+            IfAddrs::Fixed(list) => list.clone(),
+        };
+        let mut out: Vec<(String, IpAddr)> = all
+            .into_iter()
+            .filter(|(dev, addr)| {
+                dev != "lo"
+                    && match addr {
+                        IpAddr::V4(_) => true,
+                        IpAddr::V6(a) => (a.segments()[0] & 0xffc0) != 0xfe80,
+                    }
+            })
+            .collect();
+        out.sort_by_key(|(_, a)| a.is_ipv6());
+        out
+    }
+}
+
+/// The IPv4 and IPv6 addresses `getifaddrs` lists, without loopback devices.
+fn system_addresses() -> Vec<(String, IpAddr)> {
+    let mut out = Vec::new();
+    let mut list: *mut libc::ifaddrs = std::ptr::null_mut();
+    // SAFETY: `getifaddrs` fills `list` with a linked list that stays valid until
+    // `freeifaddrs` below. Every pointer read from it is checked for null, the
+    // address family decides which sockaddr struct the pointer really is, and
+    // nothing borrowed from the list outlives the free.
+    unsafe {
+        if libc::getifaddrs(&mut list) != 0 {
+            return out;
+        }
+        let mut cur = list;
+        while !cur.is_null() {
+            let e = &*cur;
+            cur = e.ifa_next;
+            if e.ifa_addr.is_null()
+                || e.ifa_name.is_null()
+                || e.ifa_flags & (libc::IFF_LOOPBACK as u32) != 0
+            {
+                continue;
+            }
+            let addr = match i32::from((*e.ifa_addr).sa_family) {
+                libc::AF_INET => {
+                    let sa = &*(e.ifa_addr as *const libc::sockaddr_in);
+                    IpAddr::V4(Ipv4Addr::from(u32::from_be(sa.sin_addr.s_addr)))
+                }
+                libc::AF_INET6 => {
+                    let sa = &*(e.ifa_addr as *const libc::sockaddr_in6);
+                    IpAddr::V6(Ipv6Addr::from(sa.sin6_addr.s6_addr))
+                }
+                _ => continue,
+            };
+            out.push((
+                CStr::from_ptr(e.ifa_name).to_string_lossy().into_owned(),
+                addr,
+            ));
+        }
+        libc::freeifaddrs(list);
+    }
+    out
+}
 
 #[derive(Debug, Clone)]
 pub struct HostRoots {
     pub sysfs: PathBuf,
     pub procfs: PathBuf,
+    pub ifaddrs: IfAddrs,
 }
 
 impl HostRoots {
@@ -15,6 +95,7 @@ impl HostRoots {
         HostRoots {
             sysfs: PathBuf::from("/sys"),
             procfs: PathBuf::from("/proc"),
+            ifaddrs: IfAddrs::System,
         }
     }
 

@@ -156,7 +156,7 @@ describe('Link editor: interface pickers', () => {
         .getAllByRole('option')
         .map((x) => x.textContent ?? '')) {
         expect(t).not.toMatch(/0000:/);
-        expect(t).not.toContain('(');
+        expect(t.split(' - ')[0]).not.toContain('('); // the label has no "(netdev)" suffix; a reason may contain parentheses
       }
     }
   });
@@ -186,16 +186,48 @@ describe('Link editor: interface pickers', () => {
   });
 
   it.each(['Ingress', 'Egress'] as const)(
-    'disables unusable and management interfaces in the %s picker and shows the reason',
+    'disables unusable and uplink interfaces in the %s picker and shows the reason',
     async (label) => {
       await openNew();
       expect(option(label, /enp101s0f0/)).toBeEnabled();
       const unusable = option(label, /enp179s0f0/);
       expect(unusable).toBeDisabled();
       expect(unusable).toHaveTextContent('bind to vfio-pci');
-      const mgmt = option(label, /eno1/);
-      expect(mgmt).toBeDisabled();
-      expect(mgmt).toHaveTextContent(/management NIC/);
+      const uplink = option(label, /eno1/);
+      expect(uplink).toBeDisabled();
+      expect(uplink.textContent).toMatch(/^eno1 - /);
+      expect(uplink).toHaveTextContent(
+        'eno1 carries a kernel route (host uplink); DPDK would take it away from the host',
+      );
+      expect(uplink.textContent).not.toMatch(/management/i);
+      expect(uplink.textContent).not.toMatch(/0000:17/);
+    },
+  );
+
+  it.each(['Ingress', 'Egress'] as const)(
+    'keeps an uplink without a reason visible and disabled in the %s picker, labelled "uplink"',
+    async (label) => {
+      api.getInterfaces.mockResolvedValue([
+        fx.iface(),
+        fx.iface({ pci: '0000:17:00.0', netdev: 'eno1', uplink: true, dpds_usable: false, reason: null }),
+      ]);
+      await openNew();
+      expect(option(label, /enp101s0f0/)).toBeEnabled();
+      const uplink = option(label, /eno1/);
+      expect(uplink).toBeDisabled();
+      expect(uplink).toHaveTextContent(/uplink/i);
+    },
+  );
+
+  it.each(['Ingress', 'Egress'] as const)(
+    'disables an interface whose uplink flag is set even if dpds_usable says true (%s picker)',
+    async (label) => {
+      api.getInterfaces.mockResolvedValue([
+        fx.iface(),
+        fx.iface({ pci: '0000:17:00.0', netdev: 'eno1', uplink: true, dpds_usable: true, reason: null }),
+      ]);
+      await openNew();
+      expect(option(label, /eno1/)).toBeDisabled();
     },
   );
 

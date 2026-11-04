@@ -5,7 +5,8 @@ import { renderApp } from '../test/helpers';
 
 // Columns (columnheader names, in this order): PCI, Vendor, Driver, Netdev, MAC, State, Speed, MTU, NUMA,
 // PCIe link, Usable, Reason. Null values print "n/a". Speed 100000 Mb/s prints "100 Gb/s", 10000 "10 Gb/s".
-// kernel_route interfaces carry the text "management" in their row; no other row does.
+// uplink interfaces (the host uses them, spec v27) carry the text "uplink" in their row, never "management"; no other row
+// says "uplink". The reason text comes from the API; without one the row falls back to the word "uplink".
 const COLUMNS = [
   'PCI',
   'Vendor',
@@ -53,7 +54,7 @@ describe('Interfaces page', () => {
     expect(cell(r, 'NUMA')).toHaveTextContent('0');
     expect(cell(r, 'PCIe link').textContent).toMatch(/16\.0 GT\/s.*x16/);
     expect(cell(r, 'Usable')).toHaveTextContent(/yes/i);
-    expect(r).not.toHaveTextContent(/management/i);
+    expect(r).not.toHaveTextContent(/uplink/i);
   });
 
   it('shows why an interface is unusable', async () => {
@@ -65,18 +66,32 @@ describe('Interfaces page', () => {
     expect(cell(r, 'Reason')).toHaveTextContent('driver i40e: bind to vfio-pci');
     expect(cell(r, 'Speed')).toHaveTextContent('10 Gb/s');
     expect(cell(r, 'PCIe link')).toHaveTextContent('n/a');
-    expect(r).not.toHaveTextContent(/management/i);
+    expect(r).not.toHaveTextContent(/uplink/i);
   });
 
-  it('flags the management NIC and prints n/a for missing sysfs data', async () => {
+  it('flags the uplink with the API reason and prints n/a for missing sysfs data', async () => {
     renderApp('/interfaces');
     await screen.findByRole('cell', { name: '0000:17:00.0' });
     const r = rowOf('0000:17:00.0');
-    expect(r).toHaveTextContent(/management/i);
+    expect(r).toHaveTextContent(/uplink/i);
+    expect(r).not.toHaveTextContent(/management/i);
+    expect(cell(r, 'Reason')).toHaveTextContent(
+      'eno1 carries a kernel route (host uplink); DPDK would take it away from the host',
+    );
     expect(cell(r, 'Usable')).toHaveTextContent(/no/i);
     expect(cell(r, 'Speed')).toHaveTextContent('n/a');
     expect(cell(r, 'MTU')).toHaveTextContent('n/a');
     expect(cell(r, 'NUMA')).toHaveTextContent('n/a');
+  });
+
+  it('says "uplink" for an uplink interface that comes without a reason, and never "management"', async () => {
+    api.getInterfaces.mockResolvedValue([fx.iface({ uplink: true, dpds_usable: false, reason: null })]);
+    renderApp('/interfaces');
+    await screen.findByRole('cell', { name: '0000:65:00.0' });
+    const r = rowOf('0000:65:00.0');
+    expect(r).toHaveTextContent(/uplink/i);
+    expect(r).not.toHaveTextContent(/management/i);
+    expect(cell(r, 'Usable')).toHaveTextContent(/no/i);
   });
 
   it('falls back to the hex vendor id when the vendor name is unknown', async () => {

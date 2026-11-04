@@ -767,13 +767,21 @@ without internet access, means no notice.
   vet. Ports are a PCI address or `net_null<N>` / `net_ring<N>` (no devargs, no `net_pcap`). Extra
   EAL arguments are limited to `--no-huge`, `--no-pci`, `-m <n>`, `-n <n>`, `--socket-mem=<list>`
   and `--log-level=<spec>`. The mlx5 devargs are fixed to `txq_mpw_en=1` and not configurable. The
-  management-NIC guard refuses to start a link on an interface that carries an IP route (409).
+  uplink guard refuses to start a link on an interface the host uses (409, naming the link, the
+  port and the reason). An interface is an uplink when it, or a bond, VLAN or bridge above it,
+  (1) carries a route in `/proc/net/route` or `/proc/net/ipv6_route`, (2) has an IP address
+  according to `getifaddrs` (any IPv4 address, including 169.254/16, or an IPv6 address that is
+  not link-local; a static address counts while the interface is down), or (3) is a port of Open
+  vSwitch. The interface list shows uplinks disabled with the reason, and the `uplink` host hint is
+  an error for a configured link on one. Blind spots: an interface without any address whose only
+  routes are in a non-main policy-routing table, and a DHCP uplink that is down and has lost its
+  lease, look free.
 - **Host check**: `dpds.sh check` and `install` run `dpds-controller check`, which prints one
   `OK`/`INFO`/`WARN`/`ERROR` line per hint: isolated cores (`isolcpus`, `nohz_full`,
   `rcu_nocbs`), hugepages, NIC driver, NUMA locality, CPU governor, irqbalance, IOMMU, MTU, PCIe
   MaxReadReq. `GET /api/host/hints` serves the hints that depend on the host only and the frontend shows
   them. `POST /api/host/hints` takes a start body and adds the link-dependent ones (NUMA locality,
-  hugepages for the links, management NIC, drain timeout, MTU and MaxReadReq of the used NICs); the
+  hugepages for the links, host uplink, drain timeout, MTU and MaxReadReq of the used NICs); the
   frontend calls it with its current configuration. `dpds-controller check` prints the host-only
   hints. Warnings do not block the installation.
 - **Tuning is never applied.** Neither `dpds.sh`, the controller nor the frontend changes kernel

@@ -153,7 +153,7 @@ export function iface(over: Partial<Interface> = {}): Interface {
     mtu: 1500,
     numa_node: 0,
     pcie_link: { speed: '16.0 GT/s PCIe', width: 16, max_speed: '16.0 GT/s PCIe', max_width: 16 },
-    kernel_route: false,
+    uplink: false,
     dpds_usable: true,
     reason: null,
     ...over,
@@ -185,9 +185,9 @@ export function interfaces(): Interface[] {
       speed_mbps: null,
       mtu: null,
       numa_node: null,
-      kernel_route: true,
+      uplink: true,
       dpds_usable: false,
-      reason: 'carries a kernel route: management NIC',
+      reason: 'eno1 carries a kernel route (host uplink); DPDK would take it away from the host',
     }),
   ];
 }

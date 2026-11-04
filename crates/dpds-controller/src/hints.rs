@@ -103,7 +103,7 @@ pub fn compute_hints(roots: &HostRoots, config: &RunConfig) -> Vec<Hint> {
         interfaces: discover(roots),
         assignment: assign_lcores(roots, config),
     };
-    let mut hints: Vec<Hint> = management_nic(&ctx).into_iter().collect();
+    let mut hints: Vec<Hint> = uplink(&ctx).into_iter().collect();
     hints.extend([
         isolation(&ctx),
         isolated_cores(&ctx),
@@ -149,29 +149,29 @@ fn drain(ctx: &Ctx) -> Option<Hint> {
     })
 }
 
-// ---- management NIC ----------------------------------------------------------
+// ---- host uplink -------------------------------------------------------------
 
-/// An error when a link uses a NIC that carries a kernel route.
-fn management_nic(ctx: &Ctx) -> Option<Hint> {
-    let routed: Vec<String> = ctx
+/// An error when a link uses a NIC the host itself uses.
+fn uplink(ctx: &Ctx) -> Option<Hint> {
+    let uplinks: Vec<String> = ctx
         .used_nics()
         .into_iter()
-        .filter(|i| i.kernel_route)
+        .filter(|i| i.uplink)
         .map(|i| {
             format!(
                 "{}: {}",
                 i.pci,
-                i.reason.as_deref().unwrap_or("kernel route")
+                i.reason.as_deref().unwrap_or("host uplink")
             )
         })
         .collect();
-    (!routed.is_empty()).then(|| {
+    (!uplinks.is_empty()).then(|| {
         hint(
-            "management_nic",
+            "uplink",
             Level::Error,
-            "Management NIC",
-            format!("a link uses a NIC the host routes over: {}", routed.join("; ")),
-            "Use NICs without a kernel route; binding the management NIC to DPDK cuts the host off the network. Start is refused.",
+            "Host uplink",
+            format!("a link uses a NIC the host uses: {}", uplinks.join("; ")),
+            "Use NICs the host does not use (no IP address, no route, not in Open vSwitch); binding the host's uplink to DPDK cuts the host off the network. Start is refused.",
         )
     })
 }

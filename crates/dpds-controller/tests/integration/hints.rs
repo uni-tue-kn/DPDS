@@ -441,8 +441,8 @@ async fn get_hints_are_the_host_only_hints_and_need_no_configuration() {
                 assert!(x.get(k).is_some(), "hint {id} lacks `{k}`: {x}");
             }
         }
-        // nothing that needs links: no hint about a management NIC or a drain timeout
-        for id in ["management_nic", "drain_timeout"] {
+        // nothing that needs links: no hint about an uplink or a drain timeout
+        for id in ["uplink", "drain_timeout"] {
             assert!(!ids(&h).contains(&id.to_string()), "{id} in GET: {h}");
         }
         assert_no_devargs_hint(&h);
@@ -535,7 +535,7 @@ async fn post_hints_start_nothing_and_store_nothing() {
 }
 
 #[tokio::test]
-async fn post_hints_know_the_management_nic_and_the_drain_timeout_of_the_body() {
+async fn post_hints_know_the_uplink_and_the_drain_timeout_of_the_body() {
     let a = TestApp::new(FakeHost::bare_metal());
     let h = a
         .post(
@@ -548,10 +548,31 @@ async fn post_hints_know_the_management_nic_and_the_drain_timeout_of_the_body() 
         .as_array()
         .unwrap()
         .iter()
-        .filter(|x| x["id"] == "management_nic")
+        .filter(|x| x["id"] == "uplink")
         .collect();
     assert_eq!(m.len(), 1, "{h}");
     assert_eq!(m[0]["level"], "error");
+    assert_eq!(m[0]["title"], "Host uplink");
+    // an address alone is an uplink too, and the host-only hints never carry it
+    let h = FakeHost::bare_metal();
+    h.addr("ens1f0", "192.168.1.5");
+    let a2 = TestApp::new(h);
+    let h2 = a2
+        .post(
+            "/api/host/hints",
+            setup(vec![link("m", NIC0, NIC1, None)]).body(),
+        )
+        .await
+        .json();
+    assert_eq!(
+        h2.as_array()
+            .unwrap()
+            .iter()
+            .filter(|x| x["id"] == "uplink")
+            .count(),
+        1,
+        "{h2}"
+    );
     let mut slow = link("crawler", "net_null0", "net_null0", None);
     slow["config"]["buffer_capacity"] = serde_json::json!(1000);
     slow["config"]["limiter"] = serde_json::json!({"mode": "Spacer", "rate_bps": 1.0e3});

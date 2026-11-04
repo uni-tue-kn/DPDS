@@ -19,7 +19,7 @@ type Users = Map<string, string>;
 function optionLabel(i: Interface, usedBy?: string, role?: string): string {
   const base = i.netdev ?? i.pci;
   const reasons: string[] = [];
-  if (!i.dpds_usable || i.kernel_route) reasons.push(i.reason ?? (i.kernel_route ? 'management NIC' : 'not usable'));
+  if (!i.dpds_usable || i.uplink) reasons.push(i.reason ?? (i.uplink ? 'uplink' : 'not usable'));
   if (usedBy !== undefined) reasons.push(`already used as ${role} by ${usedBy}`);
   return reasons.length === 0 ? base : `${base} - ${reasons.join('; ')}`;
 }
@@ -52,7 +52,7 @@ function PortField({
           <option value="">Select a port...</option>
           {unknown && <option value={value}>{value}</option>}
           {interfaces.map((i) => (
-            <option key={i.pci} value={i.pci} disabled={!i.dpds_usable || i.kernel_route || users.has(i.pci)}>
+            <option key={i.pci} value={i.pci} disabled={!i.dpds_usable || i.uplink || users.has(i.pci)}>
               {optionLabel(i, users.get(i.pci), role)}
             </option>
           ))}

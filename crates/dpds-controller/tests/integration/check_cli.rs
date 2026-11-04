@@ -150,12 +150,41 @@ fn the_exit_code_is_never_two_because_of_a_state_file() {
 
 #[test]
 fn the_check_has_no_link_dependent_hints() {
-    // no links are known to `check`: nothing about a management NIC or a drain timeout
+    // no links are known to `check`: nothing about an uplink or a drain timeout
     let host = FakeHost::bare_metal();
     let j = run(&host, true);
     let hints: Value = serde_json::from_slice(&j.stdout).unwrap();
     for h in hints.as_array().unwrap() {
-        assert_ne!(h["id"], "management_nic", "{h}");
+        assert_ne!(h["id"], "uplink", "{h}");
         assert_ne!(h["id"], "drain_timeout", "{h}");
+    }
+}
+
+#[test]
+fn check_takes_the_test_only_ifaddrs_file_and_stays_host_only() {
+    // an address on a NIC that no link uses changes nothing: `check` has no links
+    let host = FakeHost::bare_metal();
+    host.addr("ens1f0", "192.168.1.5");
+    let file = host.ifaddrs_file();
+    for json in [false, true] {
+        let mut c = Command::new(BIN);
+        c.arg("check")
+            .arg("--sysfs-root")
+            .arg(host.sysfs())
+            .arg("--procfs-root")
+            .arg(host.procfs())
+            .arg("--ifaddrs-file")
+            .arg(&file);
+        if json {
+            c.arg("--json");
+        }
+        let o = c.output().unwrap();
+        assert_eq!(
+            o.status.code(),
+            Some(0),
+            "json={json}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        assert!(!lines(&o).is_empty());
     }
 }

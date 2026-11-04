@@ -250,7 +250,7 @@
 //   no worker text). What stays: a hairpin reads "net_null0 → net_null0" in its interface cell, and no "Number of ports" /
 //   "Directions" notion remains.
 // - Link editor labels: "Name", select "Ingress", select "Egress" (same option rules as the old port pickers: text =
-//   netdev [+ " - " + reason] when unusable, unusable/kernel_route options disabled, a stored non-interface port
+//   netdev [+ " - " + reason] when unusable, unusable/uplink options disabled, a stored non-interface port
 //   such as a vdev stays selectable, no preselection, Save does nothing until both are chosen; there are no typed port
 //   inputs any more, see "Ports" in the v16 block), and the optional `<input type="number">` "Worker lcore" (empty ->
 //   null/absent; a number input cannot receive non-numeric text; a value that is not a non-negative integer, e.g. "-1"

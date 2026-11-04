@@ -2,6 +2,7 @@
 
 use std::collections::HashSet;
 use std::fs;
+use std::net::IpAddr;
 use std::path::Path;
 
 use serde::Serialize;
@@ -31,9 +32,11 @@ pub struct Interface {
     pub mtu: Option<u32>,
     pub numa_node: Option<u32>,
     pub pcie_link: Option<PcieLink>,
-    /// The netdev, or a bond/VLAN/bridge above it, carries an IPv4 or IPv6 route
-    /// (`/proc/net/route`, `/proc/net/ipv6_route`): the management interface guard.
-    pub kernel_route: bool,
+    /// The host uses this interface: the netdev, or a bond/VLAN/bridge above it,
+    /// carries a route (`/proc/net/route`, `/proc/net/ipv6_route`), has an IP
+    /// address (`getifaddrs`) or is an Open vSwitch port. Such an interface is
+    /// never usable.
+    pub uplink: bool,
     pub dpds_usable: bool,
     pub reason: Option<String>,
 }
@@ -87,16 +90,22 @@ fn routed_netdevs(roots: &HostRoots) -> HashSet<String> {
     routed
 }
 
-/// The device that carries the route of `netdev`: itself, or a bond, VLAN or
-/// bridge above it (sysfs `upper_*` and `master`, followed transitively).
-fn route_holder(roots: &HostRoots, netdev: &str, routed: &HashSet<String>) -> Option<String> {
+/// Why the host uses `netdev`, if it does: the netdev or a bond, VLAN or bridge
+/// above it (sysfs `upper_*` and `master`, followed transitively) carries a
+/// route, has an IP address or is an Open vSwitch port. The first signal in that
+/// order wins.
+fn uplink_reason(
+    roots: &HostRoots,
+    netdev: &str,
+    routed: &HashSet<String>,
+    addrs: &[(String, IpAddr)],
+) -> Option<String> {
     let mut seen = vec![netdev.to_string()];
+    let mut ovs = None;
     let mut i = 0;
     while i < seen.len() {
         let dev = seen[i].clone();
-        if routed.contains(&dev) {
-            return Some(dev);
-        }
+        i += 1;
         let dir = roots.sys(&format!("class/net/{dev}"));
         let mut uppers: Vec<String> = fs::read_dir(&dir)
             .into_iter()
@@ -113,16 +122,48 @@ fn route_holder(roots: &HostRoots, netdev: &str, routed: &HashSet<String>) -> Op
             .ok()
             .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
         {
-            uppers.push(m);
+            if m == "ovs-system" {
+                ovs.get_or_insert(dev.clone());
+            } else {
+                uppers.push(m);
+            }
         }
         for u in uppers {
-            if !seen.contains(&u) {
+            if u != "lo" && !seen.contains(&u) {
                 seen.push(u);
             }
         }
-        i += 1;
     }
-    None
+    let carrier = |dev: &str| {
+        if dev == netdev {
+            netdev.to_string()
+        } else {
+            format!("{dev} above {netdev}")
+        }
+    };
+    let away = |dev: &str| {
+        if dev == netdev {
+            "it".to_string()
+        } else {
+            netdev.to_string()
+        }
+    };
+    let holder_text = |dev: &str, what: String| {
+        format!(
+            "{} {what} (host uplink); DPDK would take {} away from the host",
+            carrier(dev),
+            away(dev)
+        )
+    };
+    if let Some(dev) = seen.iter().find(|d| routed.contains(*d)) {
+        return Some(holder_text(dev, "carries a kernel route".to_string()));
+    }
+    for dev in &seen {
+        if let Some((_, addr)) = addrs.iter().find(|(d, _)| d == dev) {
+            return Some(holder_text(dev, format!("has the IP address {addr}")));
+        }
+    }
+    ovs.map(|dev| holder_text(&dev, "is an Open vSwitch port".to_string()))
 }
 
 fn read_u32(path: &Path) -> Option<u32> {
@@ -139,20 +180,13 @@ fn first_dir_entry(path: &Path) -> Option<String> {
     names.into_iter().next()
 }
 
-fn route_reason(netdev: &str, holder: &str) -> String {
-    if netdev == holder {
-        format!("{netdev} carries a kernel route (management interface); DPDK would take it away from the host")
-    } else {
-        format!("{holder} above {netdev} carries a kernel route (management interface); DPDK would take {netdev} away from the host")
-    }
-}
-
 /// All PCI network devices, sorted by PCI address.
 pub fn discover(roots: &HostRoots) -> Vec<Interface> {
     let Ok(entries) = fs::read_dir(roots.sys("bus/pci/devices")) else {
         return Vec::new();
     };
     let routed = routed_netdevs(roots);
+    let addrs = roots.ifaddrs.uplink_addresses();
     let mut out = Vec::new();
     for e in entries.flatten() {
         let pci = e.file_name().to_string_lossy().into_owned();
@@ -180,11 +214,11 @@ pub fn discover(roots: &HostRoots) -> Vec<Interface> {
             || pcie.width.is_some()
             || pcie.max_speed.is_some()
             || pcie.max_width.is_some();
-        let holder = netdev
+        let uplink = netdev
             .as_deref()
-            .and_then(|n| route_holder(roots, n, &routed).map(|h| (n.to_string(), h)));
+            .and_then(|n| uplink_reason(roots, n, &routed, &addrs));
         let (dpds_usable, reason) = match driver.as_deref() {
-            _ if holder.is_some() => (false, holder.as_ref().map(|(n, h)| route_reason(n, h))),
+            _ if uplink.is_some() => (false, uplink.clone()),
             Some("mlx5_core") => (true, None),
             Some(d @ ("vfio-pci" | "uio_pci_generic")) => (true, Some(format!("bound to {d}"))),
             Some(d) => (
@@ -203,7 +237,7 @@ pub fn discover(roots: &HostRoots) -> Vec<Interface> {
             vendor_id,
             device_id: read_trim(&dir.join("device")),
             driver,
-            kernel_route: holder.is_some(),
+            uplink: uplink.is_some(),
             mac: net("address"),
             operstate: net("operstate"),
             speed_mbps: net("speed")

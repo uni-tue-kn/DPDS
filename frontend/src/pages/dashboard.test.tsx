@@ -179,12 +179,12 @@ describe('Dashboard: emulation state and control', () => {
 
   it('shows the API error message when start is refused (409)', async () => {
     const user = userEvent.setup();
-    api.startEmulation.mockRejectedValue(new ApiError(409, 'port 0000:17:00.0 is a management NIC'));
+    api.startEmulation.mockRejectedValue(new ApiError(409, 'port 0000:17:00.0 is a host uplink'));
     renderApp('/');
     const btn = await screen.findByRole('button', { name: /^start$/i });
     await waitFor(() => expect(btn).toBeEnabled());
     await user.click(btn);
-    expect(await screen.findByRole('alert')).toHaveTextContent('port 0000:17:00.0 is a management NIC');
+    expect(await screen.findByRole('alert')).toHaveTextContent('port 0000:17:00.0 is a host uplink');
   });
 
   it('shows the API error message when stop fails', async () => {

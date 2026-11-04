@@ -47,7 +47,8 @@ fn mlx5_nic_fields() {
     assert_eq!(n["pcie_link"]["width"], 16);
     assert_eq!(n["pcie_link"]["max_speed"], "16.0 GT/s PCIe");
     assert_eq!(n["pcie_link"]["max_width"], 16);
-    assert_eq!(n["kernel_route"], false);
+    assert_eq!(n["uplink"], false);
+    assert!(n.get("kernel_route").is_none(), "{n}");
     assert_eq!(n["dpds_usable"], true);
 }
 
@@ -79,8 +80,8 @@ fn vendor_names_and_hex_fallback() {
 #[test]
 fn kernel_driver_nics_are_not_usable_and_say_bind_to_vfio() {
     let v = list(&FakeHost::bare_metal());
-    // A routed management NIC explains the route instead (binding it to vfio-pci would be wrong advice).
-    for (pci, needle) in [(INTEL, "vfio-pci"), (MGMT, "route")] {
+    // An uplink NIC explains that instead (binding it to vfio-pci would be wrong advice).
+    for (pci, needle) in [(INTEL, "vfio-pci"), (MGMT, "uplink")] {
         let n = by_pci(&v, pci);
         assert_eq!(n["dpds_usable"], false, "{pci}");
         let reason = n["reason"].as_str().unwrap_or_default();
@@ -90,11 +91,11 @@ fn kernel_driver_nics_are_not_usable_and_say_bind_to_vfio() {
 }
 
 #[test]
-fn management_nic_carries_the_default_route_others_do_not() {
+fn the_nic_with_the_default_route_is_an_uplink_others_are_not() {
     let v = list(&FakeHost::bare_metal());
-    assert_eq!(by_pci(&v, MGMT)["kernel_route"], true);
+    assert_eq!(by_pci(&v, MGMT)["uplink"], true);
     for pci in [NIC0, NIC1, INTEL] {
-        assert_eq!(by_pci(&v, pci)["kernel_route"], false, "{pci}");
+        assert_eq!(by_pci(&v, pci)["uplink"], false, "{pci}");
     }
 }
 
@@ -103,8 +104,40 @@ fn any_route_of_the_netdev_counts_not_only_the_default_route() {
     let h = FakeHost::bare_metal();
     h.routes(&[("ens1f0", "0000A8C0", "00000000", "00FFFFFF")]);
     let v = list(&h);
-    assert_eq!(by_pci(&v, NIC0)["kernel_route"], true);
-    assert_eq!(by_pci(&v, MGMT)["kernel_route"], false);
+    assert_eq!(by_pci(&v, NIC0)["uplink"], true);
+    assert_eq!(by_pci(&v, MGMT)["uplink"], false);
+}
+
+#[test]
+fn an_address_without_any_route_makes_an_uplink() {
+    let h = FakeHost::bare_metal();
+    h.addr("ens1f0", "192.168.1.5");
+    let v = list(&h);
+    let n = by_pci(&v, NIC0);
+    assert_eq!(n["uplink"], true, "{n}");
+    assert_eq!(n["dpds_usable"], false, "{n}");
+    assert!(n["reason"].as_str().unwrap().contains("192.168.1.5"), "{n}");
+    assert_eq!(by_pci(&v, NIC1)["uplink"], false);
+}
+
+#[test]
+fn a_link_local_ipv6_address_alone_does_not_make_an_uplink() {
+    let h = FakeHost::bare_metal();
+    h.addr("ens1f0", "fe80::1");
+    assert_eq!(by_pci(&list(&h), NIC0)["uplink"], false);
+}
+
+#[test]
+fn an_open_vswitch_port_makes_an_uplink() {
+    let h = FakeHost::bare_metal();
+    h.master_link("ens2f0", "ovs-system");
+    let v = list(&h);
+    let n = by_pci(&v, NIC1);
+    assert_eq!(n["uplink"], true, "{n}");
+    assert!(
+        n["reason"].as_str().unwrap().contains("Open vSwitch"),
+        "{n}"
+    );
 }
 
 #[test]
@@ -149,7 +182,7 @@ fn vm_host_reports_missing_data_as_absent() {
     let virtio = by_pci(&v, "0000:00:03.0");
     assert_eq!(virtio["driver"], "virtio-pci");
     assert!(absent(virtio, "speed_mbps"));
-    assert_eq!(virtio["kernel_route"], true);
+    assert_eq!(virtio["uplink"], true);
     assert_eq!(virtio["dpds_usable"], false);
     let vf = by_pci(&v, "0000:00:05.0");
     assert_eq!(vf["dpds_usable"], true);

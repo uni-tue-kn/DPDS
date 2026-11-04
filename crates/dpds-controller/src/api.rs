@@ -385,12 +385,17 @@ impl App {
         validate_config(&config)?;
         let interfaces = discover(&self.deps.roots);
         let mut ports: Vec<EalPort> = Vec::new();
-        for port in config.links.iter().flat_map(|l| [&l.ingress, &l.egress]) {
+        for (link, port) in config
+            .links
+            .iter()
+            .flat_map(|l| [(l, &l.ingress), (l, &l.egress)])
+        {
             let found = find(&interfaces, port);
-            if let Some(i) = found.filter(|i| i.kernel_route) {
+            if let Some(i) = found.filter(|i| i.uplink) {
                 return Err(ApiError::conflict(format!(
-                    "port {port} cannot be used: {}",
-                    i.reason.as_deref().unwrap_or("it carries a kernel route")
+                    "link {}: port {port} cannot be used: {}",
+                    link.name,
+                    i.reason.as_deref().unwrap_or("it is a host uplink")
                 )));
             }
             if !ports.iter().any(|p| p.name == *port) {

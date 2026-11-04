@@ -29,7 +29,8 @@
 //!
 //! ## Binary
 //!
-//! `dpds-controller serve|check`. `check` takes `--sysfs-root --procfs-root --json` only (no
+//! `dpds-controller serve|check`. `check` takes `--sysfs-root --procfs-root --ifaddrs-file --json` only (the first three are
+//! host flags shared with `serve`, test-only; no
 //! state, no `--state-dir`: that flag is a usage error, exit 2, and so is it for `serve`);
 //! `DPDS_CONTROLLER_STATE_DIR` is not read. Text mode prints one line per hint containing the
 //! upper-case level and the title; exit 1 iff any hint has level error.
@@ -42,7 +43,7 @@
 //!   body; non-JSON content type 415 (checked first); malformed or unknown fields 400; empty
 //!   `links` 400 "nothing to start"; while starting/running/stopping 409; every validation
 //!   rule of the old links and settings routes applies to the body (names, ports, port reuse
-//!   409, management NIC 409, dict limit 400 naming 256, lcore plan 400, eal args, poll
+//!   409, uplink 409, dict limit 400 naming 256, lcore plan 400, eal args, poll
 //!   interval 0, `initialization_rate_pps`). Nothing is spawned on an error.
 //! - `GET /api/emulation`: `{state, pid, started_at, directions, main_lcore, error, log_tail,
 //!   config}`; there is no `pending_restart`. While stopped: `config` null/absent,
@@ -55,7 +56,7 @@
 //!   [{dir, link, rx, tx, lcore}]}`.
 //! - `GET /api/host/hints`: host-only hints (ids `isolation`, `governor`, `irqbalance`,
 //!   `hugepages` once each). `POST /api/host/hints` with a StartRequest body: the same plus the
-//!   link-dependent hints for that configuration (ids of `HINT_IDS`, `management_nic`,
+//!   link-dependent hints for that configuration (ids of `HINT_IDS`, `uplink`,
 //!   `drain_timeout`); an empty `links` list is allowed and gives the host-only hints.
 //! - Removed, so 404 (path unknown) or 405 (path known, method not): `/api/links*`,
 //!   `/api/presets*`, `/api/settings`, `/api/export`, `/api/import`.
@@ -73,7 +74,7 @@
 //! files, so every test can vary one knob).
 
 use std::fs;
-use std::net::TcpStream;
+use std::net::{IpAddr, TcpStream};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -83,7 +84,7 @@ use tempfile::TempDir;
 
 use dpds_controller::api::{self, Deps};
 use dpds_controller::dto::ConfigDto;
-use dpds_controller::host::HostRoots;
+use dpds_controller::host::{HostRoots, IfAddrs};
 use dpds_controller::model::Link;
 use dpds_controller::stats::{Polled, Snapshot};
 use dpds_controller::supervisor::{LaunchPlan, State, Supervisor, SupervisorStatus};
@@ -137,12 +138,16 @@ impl Nic {
 
 pub struct FakeHost {
     pub tmp: TempDir,
+    /// What `getifaddrs` returns on this host, in order (see [`FakeHost::addr`]). Tests never
+    /// read the addresses of the machine they run on: `roots()` always carries `IfAddrs::Fixed`.
+    ifaddrs: Mutex<Vec<(String, IpAddr)>>,
 }
 
 impl FakeHost {
     pub fn empty() -> FakeHost {
         let h = FakeHost {
             tmp: tempfile::tempdir().unwrap(),
+            ifaddrs: Mutex::new(Vec::new()),
         };
         fs::create_dir_all(h.sysfs()).unwrap();
         fs::create_dir_all(h.procfs()).unwrap();
@@ -155,11 +160,34 @@ impl FakeHost {
     pub fn procfs(&self) -> PathBuf {
         self.tmp.path().join("proc")
     }
+    /// The roots of this host: the fake trees and the addresses added with [`FakeHost::addr`] so
+    /// far (add them before building a router or a `TestApp`).
     pub fn roots(&self) -> HostRoots {
         HostRoots {
             sysfs: self.sysfs(),
             procfs: self.procfs(),
+            ifaddrs: IfAddrs::Fixed(self.ifaddrs.lock().unwrap().clone()),
         }
+    }
+
+    /// `netdev` has the IP address `ip` (appended: `getifaddrs` order is the call order).
+    pub fn addr(&self, netdev: &str, ip: &str) {
+        let ip: IpAddr = ip.parse().expect("a valid IP address");
+        self.ifaddrs.lock().unwrap().push((netdev.to_string(), ip));
+    }
+
+    /// The addresses added so far as the test-only `--ifaddrs-file`:
+    /// `[{"netdev": "...", "addr": "..."}]`. Returns the path of the written file.
+    pub fn ifaddrs_file(&self) -> PathBuf {
+        let list: Vec<Value> = self
+            .ifaddrs
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(n, a)| json!({"netdev": n, "addr": a.to_string()}))
+            .collect();
+        self.write("ifaddrs.json", &Value::Array(list).to_string());
+        self.tmp.path().join("ifaddrs.json")
     }
 
     /// Writes `content` to `rel` (relative to the tempdir, e.g. `sys/...`).

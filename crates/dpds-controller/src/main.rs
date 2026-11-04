@@ -10,7 +10,7 @@ use clap::{Args, Parser, Subcommand};
 use dpds_controller::api::{self, Deps};
 use dpds_controller::frontend::Frontend;
 use dpds_controller::hints::{compute_hints, Level};
-use dpds_controller::host::HostRoots;
+use dpds_controller::host::{HostRoots, IfAddrs};
 use dpds_controller::model::RunConfig;
 use dpds_controller::supervisor::ProcessSupervisor;
 use dpds_controller::telemetry::{socket_path, Poller};
@@ -46,14 +46,36 @@ struct HostArgs {
     sysfs_root: PathBuf,
     #[arg(long, env = "DPDS_CONTROLLER_PROCFS_ROOT", default_value = "/proc")]
     procfs_root: PathBuf,
+    /// Test only: JSON `[{"netdev": "...", "addr": "..."}]` replacing `getifaddrs`
+    /// (an empty list means no addresses).
+    #[arg(long, env = "DPDS_CONTROLLER_IFADDRS_FILE")]
+    ifaddrs_file: Option<PathBuf>,
+}
+
+/// One entry of `--ifaddrs-file`.
+#[derive(serde::Deserialize)]
+struct IfAddrEntry {
+    netdev: String,
+    addr: std::net::IpAddr,
 }
 
 impl HostArgs {
-    fn roots(&self) -> HostRoots {
-        HostRoots {
+    fn roots(&self) -> Result<HostRoots, String> {
+        let ifaddrs = match &self.ifaddrs_file {
+            None => IfAddrs::System,
+            Some(path) => {
+                let text = std::fs::read_to_string(path)
+                    .map_err(|e| format!("--ifaddrs-file {}: {e}", path.display()))?;
+                let list: Vec<IfAddrEntry> = serde_json::from_str(&text)
+                    .map_err(|e| format!("--ifaddrs-file {}: {e}", path.display()))?;
+                IfAddrs::Fixed(list.into_iter().map(|e| (e.netdev, e.addr)).collect())
+            }
+        };
+        Ok(HostRoots {
             sysfs: self.sysfs_root.clone(),
             procfs: self.procfs_root.clone(),
-        }
+            ifaddrs,
+        })
     }
 }
 
@@ -114,7 +136,7 @@ fn main() -> ExitCode {
 }
 
 fn check(a: &CheckArgs) -> Result<ExitCode, String> {
-    let hints = compute_hints(&a.host.roots(), &RunConfig::default());
+    let hints = compute_hints(&a.host.roots()?, &RunConfig::default());
     if a.json {
         println!(
             "{}",
@@ -173,6 +195,7 @@ fn cors_origin(o: &str) -> Result<HeaderValue, String> {
 }
 
 fn serve(a: ServeArgs) -> Result<ExitCode, String> {
+    let roots = a.host.roots()?;
     check_runtime_dir(&a.runtime_dir)?;
     let origins = a
         .cors_origin
@@ -191,7 +214,7 @@ fn serve(a: ServeArgs) -> Result<ExitCode, String> {
     let frontend = Frontend::embedded();
     let router = api::router_with(
         Deps {
-            roots: a.host.roots(),
+            roots,
             supervisor: supervisor.clone(),
             telemetry,
             dpds_bin: a.dpds_bin,
