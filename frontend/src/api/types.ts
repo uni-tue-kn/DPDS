@@ -61,9 +61,14 @@ export interface Link {
   config: ConfigDto;
   /** Worker lcore; null/absent = automatic. */
   worker?: number | null;
+  /** UI only, never sent to the controller: L2 frame size incl. FCS (bytes) that converts pps to bit/s. Absent = unset. */
+  avg_frame_size_byte?: number | null;
 }
 
 export type LinkInput = Omit<Link, 'id'>;
+
+/** A link as Start sends it: without the UI-only members. */
+export type StartLink = Omit<LinkInput, 'avg_frame_size_byte'>;
 
 export interface PcieLink {
   speed: string | null;
@@ -243,13 +248,15 @@ export interface Preset {
   name: string;
   description?: string | null;
   config: ConfigDto;
+  /** UI only, like `Link.avg_frame_size_byte`. */
+  avg_frame_size_byte?: number | null;
 }
 
 export type PresetInput = Omit<Preset, 'id'>;
 
 /** Body of `POST /api/emulation/start` and `POST /api/host/hints`: the whole configuration, no ids, no presets. */
 export interface StartRequest {
-  links: LinkInput[];
+  links: StartLink[];
   settings: Settings;
 }
 
@@ -258,7 +265,7 @@ export interface StartRequest {
  * index, planned lcore) that the frontend ignores.
  */
 export interface RunningConfig {
-  links: LinkInput[];
+  links: StartLink[];
   settings: Settings;
 }
 

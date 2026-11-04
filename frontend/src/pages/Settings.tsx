@@ -3,6 +3,7 @@ import type { ChangeEvent, FormEvent } from 'react';
 import { Button, Card, Form, InputGroup, Modal } from 'react-bootstrap';
 import ErrorAlert from '../components/ErrorAlert';
 import { errorMessage } from '../common/format';
+import { FieldLabel, InfoTip } from './FieldLabel';
 import {
   emptyConfig,
   isLocalConfig,
@@ -154,7 +155,7 @@ export default function Settings() {
         <Card.Body>
           <Form onSubmit={submit} noValidate>
             <Form.Group className="mb-3" controlId="main-lcore">
-              <Form.Label>Main lcore</Form.Label>
+              <FieldLabel help="Main lcore" />
               <Form.Control
                 type="number"
                 value={form.main_lcore}
@@ -196,10 +197,12 @@ export default function Settings() {
               </Button>
               <Form.Text className="d-block">
                 One argument per row, e.g. <code>--no-huge</code>, <code>-m</code>, <code>256</code>.
+                {/* Not in the <legend>: a button there would become part of the group's accessible name. */}
+                <InfoTip help="EAL extra arguments" />
               </Form.Text>
             </fieldset>
             <Form.Group className="mb-3" controlId="poll-interval">
-              <Form.Label>Poll interval (ms)</Form.Label>
+              <FieldLabel help="Poll interval (ms)" />
               <Form.Control
                 type="number"
                 value={form.poll_interval_ms}
@@ -223,7 +226,7 @@ export default function Settings() {
             Export setup
           </Button>
           <Form.Group controlId="import-file">
-            <Form.Label>Import setup file</Form.Label>
+            <FieldLabel help="Import setup file" />
             <Form.Control type="file" accept=".json,application/json" onChange={chooseFile} />
           </Form.Group>
         </Card.Body>

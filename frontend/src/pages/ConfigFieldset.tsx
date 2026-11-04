@@ -1,25 +1,22 @@
 import type { ReactNode } from 'react';
 import { Button, Col, Form, InputGroup, Row } from 'react-bootstrap';
-import { configToForm, DISTRIBUTIONS, halfLifeRequired, LIMITER_MODES, stdRequired } from './linkForm';
+import {
+  configToForm,
+  DISTRIBUTIONS,
+  frameRequired,
+  halfLifeRequired,
+  INIT_RATE_UNITS,
+  LIMITER_MODES,
+  LIMITER_RATE_UNITS,
+  stdRequired,
+} from './linkForm';
 import type { ConfigForm } from './linkForm';
-import { PPS_UNITS, RATE_UNITS, TIME_UNITS, changeUnit } from '../common/units';
+import { FieldLabel, InfoTip } from './FieldLabel';
+import type { HelpKey } from './fieldHelp';
+import { TIME_UNITS, changeUnit, parseFrame, sameFamily } from '../common/units';
 import type { Unit, UnitValue } from '../common/units';
 import type { Preset } from '../api/types';
 import { derivedLimitText } from './linkSummary';
-
-/** The marker after the label of a required field. aria-hidden: the accessible name stays the plain label. */
-export function RequiredMarker() {
-  return (
-    <span className="required-marker" aria-hidden="true">
-      *
-    </span>
-  );
-}
-
-/** The one note of a form that explains the marker. */
-export function RequiredNote() {
-  return <Form.Text className="d-block mb-3">* required</Form.Text>;
-}
 
 interface Props {
   title: string;
@@ -58,10 +55,8 @@ export default function ConfigFieldset({ title, value, onChange, presets, onSave
     [K in keyof ConfigForm]: ConfigForm[K] extends string ? K : never;
   }[keyof ConfigForm];
 
-  const text = (key: PlainKey, label: string, opts: { required?: boolean; hint?: string } = {}) => (
-    <Form.Group as={Col} md={4} className="mb-3" controlId={id(key)}>
-      <Form.Label>{label}</Form.Label>
-      {opts.required && <RequiredMarker />}
+  const text = (key: PlainKey, label: HelpKey, opts: { required?: boolean; hint?: string; addon?: string } = {}) => {
+    const input = (
       <Form.Control
         type="number"
         step="any"
@@ -70,22 +65,41 @@ export default function ConfigFieldset({ title, value, onChange, presets, onSave
         required={opts.required}
         aria-required={opts.required ? 'true' : undefined}
       />
-      {opts.hint && <Form.Text>{opts.hint}</Form.Text>}
-    </Form.Group>
-  );
+    );
+    return (
+      <Form.Group as={Col} md={4} className="mb-3" controlId={id(key)}>
+        <FieldLabel help={label} required={opts.required} />
+        {opts.addon ? (
+          <InputGroup>
+            {input}
+            <InputGroup.Text>{opts.addon}</InputGroup.Text>
+          </InputGroup>
+        ) : (
+          input
+        )}
+        {opts.hint && <Form.Text>{opts.hint}</Form.Text>}
+      </Form.Group>
+    );
+  };
+
+  const frame = parseFrame(value.avg_frame_size);
 
   /** A number with its own unit select right of it; changing the unit converts the shown number. */
   const unitField = (
     key: UnitKey,
-    label: string,
+    label: HelpKey,
     units: Unit[],
     opts: { required?: boolean; disabled?: boolean; hint?: string } = {},
   ) => {
     const v = value[key];
+    // The first unit is the field's own family. The other family is offered only with a valid frame size, which
+    // converts it; without one, only the unit that is already selected stays (it is no longer convertible).
+    const offered = units.flatMap((u, i) =>
+      frame !== null || sameFamily(u, units[0]) || i === v.unit ? [{ u, i }] : [],
+    );
     return (
       <Form.Group as={Col} md={4} className="mb-3" controlId={id(key)}>
-        <Form.Label>{label}</Form.Label>
-        {opts.required && <RequiredMarker />}
+        <FieldLabel help={label} required={opts.required} />
         <InputGroup>
           <Form.Control
             type="number"
@@ -102,9 +116,9 @@ export default function ConfigFieldset({ title, value, onChange, presets, onSave
             className="unit-select"
             value={v.unit}
             disabled={opts.disabled}
-            onChange={(e) => set(key, changeUnit(v, units, Number(e.target.value)))}
+            onChange={(e) => set(key, changeUnit(v, units, Number(e.target.value), frame))}
           >
-            {units.map((u, i) => (
+            {offered.map(({ u, i }) => (
               <option key={u.label} value={i}>
                 {u.label}
               </option>
@@ -116,21 +130,23 @@ export default function ConfigFieldset({ title, value, onChange, presets, onSave
     );
   };
 
-  const check = (key: keyof ConfigForm, label: string) => (
+  const check = (key: keyof ConfigForm, label: HelpKey) => (
     <Form.Group as={Col} md={4} className="mb-3">
-      <Form.Check
-        type="checkbox"
-        id={id(key)}
-        label={label}
-        checked={Boolean(value[key])}
-        onChange={(e) => set(key, e.target.checked as never)}
-      />
+      <Form.Check id={id(key)}>
+        <Form.Check.Input
+          type="checkbox"
+          checked={Boolean(value[key])}
+          onChange={(e) => set(key, e.target.checked as never)}
+        />
+        <Form.Check.Label>{label}</Form.Check.Label>
+        <InfoTip help={label} />
+      </Form.Check>
     </Form.Group>
   );
 
-  const select = (key: 'distribution' | 'limiter_mode' | 'loss_type', label: string, options: readonly string[]) => (
+  const select = (key: 'distribution' | 'limiter_mode' | 'loss_type', label: HelpKey, options: readonly string[]) => (
     <Form.Group as={Col} md={4} className="mb-3" controlId={id(key)}>
-      <Form.Label>{label}</Form.Label>
+      <FieldLabel help={label} />
       <Form.Select value={value[key]} onChange={(e) => set(key, e.target.value as never)}>
         {options.map((o) => (
           <option key={o} value={o}>
@@ -170,13 +186,13 @@ export default function ConfigFieldset({ title, value, onChange, presets, onSave
         <Row className="align-items-end">
           {presets && (
             <Form.Group as={Col} md={4} className="mb-3" controlId={id('apply-preset')}>
-              <Form.Label>Apply preset</Form.Label>
+              <FieldLabel help="Apply preset" />
               {/* Always shows the placeholder: choosing copies the config, it does not link to the preset. */}
               <Form.Select
                 value=""
                 onChange={(e) => {
                   const p = presets.find((x) => String(x.id) === e.target.value);
-                  if (p) onChange(configToForm(p.config));
+                  if (p) onChange(configToForm(p.config, p.avg_frame_size_byte));
                 }}
               >
                 <option value="">Select a preset...</option>
@@ -201,6 +217,7 @@ export default function ConfigFieldset({ title, value, onChange, presets, onSave
         {text('buffer_capacity', 'Buffer capacity', { required: true })}
         {check('reordering', 'Reordering')}
         {text('seed', 'Seed', { hint: 'Empty: random seed.' })}
+        {text('avg_frame_size', 'Average frame size', { addon: 'B', required: frameRequired(value) })}
       </Section>
       {stage(
         'delayer_added',
@@ -214,7 +231,7 @@ export default function ConfigFieldset({ title, value, onChange, presets, onSave
             required: halfLifeRequired(value),
             disabled: !value.activate_correlation,
           })}
-          {unitField('initialization_rate_pps', 'Initialization rate', PPS_UNITS, {
+          {unitField('initialization_rate_pps', 'Initialization rate', INIT_RATE_UNITS, {
             required: true,
             hint: 'Expected packet rate of this link, e.g. about 8.1 Mpps for 100 Gb/s of 1518 B frames (rate / ((frame + 20 B) x 8))',
           })}
@@ -225,7 +242,7 @@ export default function ConfigFieldset({ title, value, onChange, presets, onSave
         'Limiter',
         <>
           {select('limiter_mode', 'Limiter mode', LIMITER_MODES)}
-          {unitField('rate_bps', 'Rate', RATE_UNITS, { required: true })}
+          {unitField('rate_bps', 'Rate', LIMITER_RATE_UNITS, { required: true })}
           <Col md={12} className="mb-3">
             <Form.Text>{derivedLimitText(value.buffer_capacity)}</Form.Text>
           </Col>

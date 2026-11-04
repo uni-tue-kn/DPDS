@@ -7,9 +7,10 @@ import ErrorAlert from '../components/ErrorAlert';
 import { errorMessage } from '../common/format';
 import { useLoad } from '../common/useLoad';
 import { saveLink, useLocalConfig } from '../common/localConfig';
-import ConfigFieldset, { RequiredMarker, RequiredNote } from './ConfigFieldset';
+import ConfigFieldset from './ConfigFieldset';
+import { FieldLabel, RequiredNote } from './FieldLabel';
 import SavePresetModal from './SavePresetModal';
-import { configToDto, configToForm, defaultConfigForm, parseWorker, portError } from './linkForm';
+import { configToForm, defaultConfigForm, formToDto, parseWorker, portError } from './linkForm';
 import type { ConfigForm } from './linkForm';
 import type { Interface, Link, LinkInput, Preset } from '../api/types';
 
@@ -33,7 +34,7 @@ function PortField({
   users,
   onChange,
 }: {
-  name: string;
+  name: 'Ingress' | 'Egress';
   id: string;
   value: string;
   interfaces: Interface[];
@@ -46,8 +47,7 @@ function PortField({
   return (
     <Col md={6} className="mb-3">
       <Form.Group controlId={id}>
-        <Form.Label>{name}</Form.Label>
-        <RequiredMarker />
+        <FieldLabel help={name} required />
         <Form.Select value={value} onChange={(e) => onChange(e.target.value)} required aria-required="true">
           <option value="">Select a port...</option>
           {unknown && <option value={value}>{value}</option>}
@@ -79,7 +79,9 @@ function Editor({
   const [name, setName] = useState(link?.name ?? '');
   const [ingress, setIngress] = useState(link?.ingress ?? '');
   const [egress, setEgress] = useState(link?.egress ?? '');
-  const [config, setConfig] = useState<ConfigForm>(() => (link ? configToForm(link.config) : defaultConfigForm()));
+  const [config, setConfig] = useState<ConfigForm>(() =>
+    link ? configToForm(link.config, link.avg_frame_size_byte) : defaultConfigForm(),
+  );
   const [worker, setWorker] = useState(link?.worker == null ? '' : String(link.worker));
   const [error, setError] = useState<string>();
   const [presetOpen, setPresetOpen] = useState(false);
@@ -113,7 +115,7 @@ function Editor({
         name: name.trim(),
         ingress: ports[0][1],
         egress: ports[1][1],
-        config: configToDto(config),
+        ...formToDto(config),
         worker: parseWorker(worker),
       };
     } catch (e) {
@@ -142,8 +144,7 @@ function Editor({
           <Card.Body>
             <Row>
               <Form.Group as={Col} md={6} className="mb-3" controlId="link-name">
-                <Form.Label>Name</Form.Label>
-                <RequiredMarker />
+                <FieldLabel label="Name" help="Link name" required />
                 <Form.Control
                   type="text"
                   value={name}
@@ -153,7 +154,7 @@ function Editor({
                 />
               </Form.Group>
               <Form.Group as={Col} md={6} className="mb-3" controlId="link-worker">
-                <Form.Label>Worker lcore</Form.Label>
+                <FieldLabel help="Worker lcore" />
                 <Form.Control
                   type="number"
                   min={0}
@@ -204,7 +205,7 @@ function Editor({
       {/* Outside the <Form>: React submit events bubble through portals and would submit the link. */}
       {presetOpen && (
         <SavePresetModal
-          getConfig={() => configToDto(config)}
+          getConfig={() => formToDto(config)}
           onClose={() => setPresetOpen(false)}
           onSaved={(p) => {
             setPresetOpen(false);

@@ -1,7 +1,17 @@
 // Form model of the link editor: every number is kept as the typed string so inputs can be emptied and
-// retyped; `configToDto` validates and converts back to the wire type.
+// retyped; `formToDto` validates and converts back to the wire type.
 import type { ConfigDto, DelayerDto, Distribution, LimiterMode, LossModelDto } from '../api/types';
-import { PPS_UNITS, RATE_UNITS, TIME_UNITS, emptyUnit, fromBase, toBase } from '../common/units';
+import {
+  PPS_UNITS,
+  RATE_UNITS,
+  TIME_UNITS,
+  convertBase,
+  emptyUnit,
+  fromBase,
+  parseFrame,
+  sameFamily,
+  toBase,
+} from '../common/units';
 import type { Unit, UnitValue } from '../common/units';
 
 export const DISTRIBUTIONS: Distribution[] = [
@@ -18,6 +28,13 @@ export const MS = 2;
 export const MPPS = 2;
 export const GBIT = 3;
 export const MBIT = 2;
+
+/**
+ * The units of the two rate fields once a frame size is known: own family first, so an index into the own family means the
+ * same unit with and without the other one.
+ */
+export const INIT_RATE_UNITS = [...PPS_UNITS, ...RATE_UNITS];
+export const LIMITER_RATE_UNITS = [...RATE_UNITS, ...PPS_UNITS];
 
 export interface ConfigForm {
   /** A stage that is not added is not sent; its typed values stay in the form while it is removed. */
@@ -42,6 +59,8 @@ export interface ConfigForm {
   buffer_capacity: string;
   reordering: boolean;
   seed: string;
+  /** UI only (bytes, typed): not part of the config, kept beside it in the link / preset. */
+  avg_frame_size: string;
   hist_bins: string;
   hist_lo: UnitValue;
   hist_hi: UnitValue;
@@ -51,6 +70,12 @@ export interface ConfigForm {
 /** Conditionally required fields: the form marks them and refuses them empty only while the rule holds. */
 export const stdRequired = (f: ConfigForm) => f.distribution !== 'DeterministicDistribution';
 export const halfLifeRequired = (f: ConfigForm) => f.activate_correlation;
+
+/** True while the rate field of an added stage shows a unit of the other family: only a frame size can convert it. */
+const crossUnit = (added: boolean, v: UnitValue, units: Unit[]) => added && !sameFamily(units[v.unit], units[0]);
+export const frameRequired = (f: ConfigForm) =>
+  crossUnit(f.delayer_added, f.initialization_rate_pps, INIT_RATE_UNITS) ||
+  crossUnit(f.limiter_added, f.rate_bps, LIMITER_RATE_UNITS);
 
 export function defaultConfigForm(): ConfigForm {
   return {
@@ -75,6 +100,7 @@ export function defaultConfigForm(): ConfigForm {
     buffer_capacity: '100000',
     reordering: false,
     seed: '',
+    avg_frame_size: '',
     hist_bins: '',
     hist_lo: emptyUnit(MS),
     hist_hi: emptyUnit(MS),
@@ -86,7 +112,8 @@ const str = (v: number | null | undefined) => (v == null ? '' : String(v));
 const optUnit = (v: number | null | undefined, units: Unit[], dflt: number) =>
   v == null ? emptyUnit(dflt) : fromBase(v, units, dflt);
 
-export function configToForm(c: ConfigDto): ConfigForm {
+/** `frame`: the stored average frame size of the link / preset that holds `c` (null or absent: none). */
+export function configToForm(c: ConfigDto, frame?: number | null): ConfigForm {
   const f: ConfigForm = {
     ...defaultConfigForm(),
     delayer_added: c.delayer != null,
@@ -95,6 +122,7 @@ export function configToForm(c: ConfigDto): ConfigForm {
     buffer_capacity: String(c.buffer_capacity),
     reordering: c.reordering,
     seed: str(c.seed),
+    avg_frame_size: str(frame),
     hist_bins: str(c.histogram?.bins),
     hist_lo: optUnit(c.histogram?.lo_ns, TIME_UNITS, MS),
     hist_hi: optUnit(c.histogram?.hi_ns, TIME_UNITS, MS),
@@ -154,13 +182,43 @@ function unitNum(v: UnitValue, units: Unit[], label: string, required = true): n
   return n;
 }
 
+/**
+ * A rate field in the base unit of its own family (units[0]). A value typed in the other family is converted with the
+ * frame size and rounded to a whole base unit.
+ */
+function rateBase(v: UnitValue, units: Unit[], label: string, frame: number | null): number {
+  const n = toBase(v, units);
+  if (n === null) throw new Error(`${label} must be a number`);
+  const from = units[v.unit];
+  if (sameFamily(from, units[0])) return n;
+  if (frame === null) throw new Error(`Average frame size is required to convert ${label} from ${from.label}`);
+  return Math.round(convertBase(n, from, units[0], frame));
+}
+
 /** No default exists for this rate: the user always chooses it. */
-function initRate(v: UnitValue): number {
+function initRate(v: UnitValue, frame: number | null): number {
   const label = 'Initialization rate';
   if (v.text.trim() === '') throw new Error(`${label} is required`);
-  const n = toBase(v, PPS_UNITS);
-  if (n === null) throw new Error(`${label} must be a number`);
+  const n = rateBase(v, INIT_RATE_UNITS, label, frame);
   if (n < 1) throw new Error(`${label} must be at least 1 pps`);
+  return n;
+}
+
+/** The limiter rate: empty, negative or 0 (also after rounding to a whole bit/s) is refused, the controller needs > 0. */
+function limiterRate(v: UnitValue, frame: number | null): number {
+  const label = 'Rate';
+  if (v.text.trim() === '') throw new Error(`${label} must be a number`);
+  const n = rateBase(v, LIMITER_RATE_UNITS, label, frame);
+  if (n < 0) throw new Error(`${label} must not be negative`);
+  if (n === 0) throw new Error(`${label} must be greater than 0`);
+  return n;
+}
+
+/** The average frame size in bytes, null when empty; an invalid value is refused even if no rate field needs it. */
+function frameToDto(f: ConfigForm): number | null {
+  if (f.avg_frame_size.trim() === '') return null;
+  const n = parseFrame(f.avg_frame_size);
+  if (n === null) throw new Error('Average frame size must be a number of at least 64 (bytes)');
   return n;
 }
 
@@ -201,14 +259,14 @@ export function portError(port: string): string | null {
     : `"${port}" is neither a PCI address (0000:65:00.0) nor a vdev (net_null0, net_ring0)`;
 }
 
-function delayerToDto(f: ConfigForm): DelayerDto {
+function delayerToDto(f: ConfigForm, frame: number | null): DelayerDto {
   return {
     distribution: f.distribution,
     mean_ns: unitNum(f.mean_ns, TIME_UNITS, 'Mean delay'),
     std_ns: unitNum(f.std_ns, TIME_UNITS, 'Delay std', stdRequired(f)),
     activate_correlation: f.activate_correlation,
     half_life_period_ns: unitNum(f.half_life_period_ns, TIME_UNITS, 'Half-life period', halfLifeRequired(f)),
-    initialization_rate_pps: initRate(f.initialization_rate_pps),
+    initialization_rate_pps: initRate(f.initialization_rate_pps, frame),
   };
 }
 
@@ -225,21 +283,36 @@ function lossToDto(f: ConfigForm): LossModelDto {
       };
 }
 
-/** Throws an Error naming the offending field. Stages that are not added are sent as null and not validated. */
-export function configToDto(f: ConfigForm): ConfigDto {
+function configToDto(f: ConfigForm, frame: number | null): ConfigDto {
   const bins = optInt(f.hist_bins, 'Histogram bins');
   const lo_ns = f.hist_lo.text.trim() === '' ? null : unitNum(f.hist_lo, TIME_UNITS, 'Histogram lo');
   const hi_ns = f.hist_hi.text.trim() === '' ? null : unitNum(f.hist_hi, TIME_UNITS, 'Histogram hi');
   return {
     buffer_capacity: nonNegativeInt(f.buffer_capacity, 'Buffer capacity'),
     reordering: f.reordering,
-    delayer: f.delayer_added ? delayerToDto(f) : null,
-    limiter: f.limiter_added ? { mode: f.limiter_mode, rate_bps: unitNum(f.rate_bps, RATE_UNITS, 'Rate') } : null,
+    delayer: f.delayer_added ? delayerToDto(f, frame) : null,
+    limiter: f.limiter_added ? { mode: f.limiter_mode, rate_bps: limiterRate(f.rate_bps, frame) } : null,
     loss_model: f.dropper_added ? lossToDto(f) : null,
     seed: seed(f.seed),
     histogram: bins == null && lo_ns == null && hi_ns == null ? null : { bins, lo_ns, hi_ns },
     delay_stats: f.delay_stats,
   };
+}
+
+/** What a link or preset stores beside its name: the config and the UI-only frame size (left out when empty). */
+export interface FormDto {
+  config: ConfigDto;
+  avg_frame_size_byte?: number;
+}
+
+/**
+ * Throws an Error naming the offending field. Stages that are not added are sent as null and not validated; an invalid
+ * frame size is refused even when no rate field needs it.
+ */
+export function formToDto(f: ConfigForm): FormDto {
+  const frame = frameToDto(f);
+  const config = configToDto(f, frame);
+  return frame === null ? { config } : { config, avg_frame_size_byte: frame };
 }
 
 /** "7" -> 7; empty -> null (automatic). */

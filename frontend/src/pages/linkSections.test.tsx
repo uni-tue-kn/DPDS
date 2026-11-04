@@ -121,9 +121,9 @@ describe.each(PAGES)('$name: subsections', (page: ConfigPage) => {
   it('every control of the config form lies in a subsection, except the preset actions of the link editor', async () => {
     await page.openFull();
     const subs = SECTIONS.map(section);
-    const loose = Array.from(outer(page).querySelectorAll<HTMLElement>('input, select, textarea, button')).filter(
-      (c) => !subs.some((s) => s.contains(c)),
-    );
+    const loose = Array.from(
+      outer(page).querySelectorAll<HTMLElement>('input, select, textarea, button:not([aria-label^="About "])'),
+    ).filter((c) => !subs.some((s) => s.contains(c)));
     const names = loose.map((c) =>
       (c.tagName === 'BUTTON' ? c.textContent : (c as HTMLInputElement).labels?.[0]?.textContent)?.trim(),
     );
@@ -133,9 +133,9 @@ describe.each(PAGES)('$name: subsections', (page: ConfigPage) => {
   it('v22: on a bare form the only loose controls are the three "Add ..." buttons (and the preset actions of the link editor)', async () => {
     await page.openNew();
     const subs = ['Buffer', 'Statistics'].map(section);
-    const loose = Array.from(outer(page).querySelectorAll<HTMLElement>('input, select, textarea, button')).filter(
-      (c) => !subs.some((x) => x.contains(c)),
-    );
+    const loose = Array.from(
+      outer(page).querySelectorAll<HTMLElement>('input, select, textarea, button:not([aria-label^="About "])'),
+    ).filter((c) => !subs.some((x) => x.contains(c)));
     const names = loose.map((c) =>
       (c.tagName === 'BUTTON' ? c.textContent : (c as HTMLInputElement).labels?.[0]?.textContent)?.trim(),
     );

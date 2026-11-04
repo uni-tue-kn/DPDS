@@ -80,9 +80,44 @@ export function fromBase(base: number, units: Unit[], defaultUnit: number): Unit
 /** An empty field for a new form (or an unset optional value). */
 export const emptyUnit = (unit: number): UnitValue => ({ text: '', unit });
 
-/** Switches the unit and converts the shown number; an empty or unparsable text stays as it is. */
-export function changeUnit(v: UnitValue, units: Unit[], unit: number): UnitValue {
-  const t = shiftDecimal(v.text, units[v.unit].exp - units[unit].exp);
+/** Layer-1 overhead per frame (preamble + SFD + inter-frame gap) and the smallest Ethernet frame, FCS included. */
+const L1_OVERHEAD_BYTES = 20;
+export const MIN_FRAME_BYTES = 64;
+
+const isPackets = (u: Unit) => u.label.endsWith('pps');
+
+/** True when both units measure the same thing (packets/s, or bit/s). */
+export const sameFamily = (a: Unit, b: Unit) => isPackets(a) === isPackets(b);
+
+/** The average frame size in bytes (L2 frame incl. FCS) a text holds, or null when it is empty, no number or below 64. */
+export function parseFrame(text: string): number | null {
+  const n = text.trim() === '' ? NaN : Number(text);
+  return Number.isFinite(n) && n >= MIN_FRAME_BYTES ? n : null;
+}
+
+/** A base value of one family in the base unit of the other: pps = bit/s / ((frame + 20) x 8). */
+export function convertBase(n: number, from: Unit, to: Unit, frame: number): number {
+  if (sameFamily(from, to)) return n;
+  const bitsPerFrame = (frame + L1_OVERHEAD_BYTES) * 8;
+  return isPackets(from) ? n * bitsPerFrame : n / bitsPerFrame;
+}
+
+/**
+ * Switches the unit and converts the shown number; an empty or unparsable text stays as it is. Within a family the
+ * conversion is decimal-exact; across families it needs the frame size and shows the number rounded to 3 decimals.
+ * Without one the number cannot be converted, so it is cleared rather than reinterpreted in the new unit.
+ */
+export function changeUnit(v: UnitValue, units: Unit[], unit: number, frame: number | null = null): UnitValue {
+  const from = units[v.unit];
+  const to = units[unit];
+  if (!sameFamily(from, to)) {
+    const n = toBase(v, units);
+    if (frame === null) return { text: '', unit };
+    if (n === null) return { text: v.text, unit };
+    const shown = convertBase(n, from, to, frame) / 10 ** to.exp;
+    return { text: String(Number(shown.toFixed(3))), unit };
+  }
+  const t = shiftDecimal(v.text, from.exp - to.exp);
   return { text: t ?? v.text, unit };
 }
 

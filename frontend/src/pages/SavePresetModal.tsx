@@ -4,15 +4,19 @@ import { Button, Form, Modal } from 'react-bootstrap';
 import { savePreset } from '../common/localConfig';
 import ErrorAlert from '../components/ErrorAlert';
 import { errorMessage } from '../common/format';
-import type { ConfigDto, Preset } from '../api/types';
+import type { Preset } from '../api/types';
+import type { FormDto } from './linkForm';
 
-/** Name prompt for "Save as preset". `getConfig` validates the form and throws a readable Error when it is invalid. */
+/**
+ * Name prompt for "Save as preset". `getConfig` validates the form and returns its config and frame size; it throws a
+ * readable Error when the form is invalid.
+ */
 export default function SavePresetModal({
   getConfig,
   onSaved,
   onClose,
 }: {
-  getConfig: () => ConfigDto;
+  getConfig: () => FormDto;
   onSaved: (p: Preset) => void;
   onClose: () => void;
 }) {
@@ -32,7 +36,7 @@ export default function SavePresetModal({
         savePreset({
           name: name.trim(),
           description: description.trim() === '' ? null : description.trim(),
-          config: getConfig(),
+          ...getConfig(),
         }),
       );
     } catch (e) {

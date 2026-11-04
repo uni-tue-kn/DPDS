@@ -69,6 +69,9 @@ export default function LinkInspect({
               <Item name="Buffer capacity">{c.buffer_capacity}</Item>
               <Item name="Reordering">{onOff(c.reordering)}</Item>
               <Item name="Seed">{c.seed == null ? 'random' : c.seed}</Item>
+              {link.avg_frame_size_byte != null && (
+                <Item name="Average frame size">{`${link.avg_frame_size_byte} B`}</Item>
+              )}
             </Section>
             {c.delayer ? (
               <Section title="Delayer">

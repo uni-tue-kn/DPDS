@@ -269,6 +269,25 @@ fieldset.config-section > legend {
   font-weight: 700;
 }
 
+.info-tip {
+  margin-left: 0.35rem;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--color-text);
+  opacity: 0.6;
+  line-height: 1;
+}
+
+.info-tip:hover,
+.info-tip:focus-visible {
+  opacity: 1;
+}
+
+.info-tip-text {
+  --bs-tooltip-max-width: 22rem;
+}
+
 .inspect-fields {
   display: grid;
   grid-template-columns: max-content 1fr;

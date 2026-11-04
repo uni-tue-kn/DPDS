@@ -5,8 +5,9 @@ import { Link as RouterLink, useNavigate, useParams } from 'react-router';
 import ErrorAlert from '../components/ErrorAlert';
 import { errorMessage } from '../common/format';
 import { savePreset, useLocalConfig } from '../common/localConfig';
-import ConfigFieldset, { RequiredMarker, RequiredNote } from './ConfigFieldset';
-import { configToDto, configToForm, defaultConfigForm } from './linkForm';
+import ConfigFieldset from './ConfigFieldset';
+import { FieldLabel, RequiredNote } from './FieldLabel';
+import { configToForm, defaultConfigForm, formToDto } from './linkForm';
 import type { ConfigForm } from './linkForm';
 import type { Preset, PresetInput } from '../api/types';
 
@@ -14,7 +15,9 @@ function Editor({ id, preset }: { id?: number; preset?: Preset }) {
   const navigate = useNavigate();
   const [name, setName] = useState(preset?.name ?? '');
   const [description, setDescription] = useState(preset?.description ?? '');
-  const [config, setConfig] = useState<ConfigForm>(() => (preset ? configToForm(preset.config) : defaultConfigForm()));
+  const [config, setConfig] = useState<ConfigForm>(() =>
+    preset ? configToForm(preset.config, preset.avg_frame_size_byte) : defaultConfigForm(),
+  );
   const [error, setError] = useState<string>();
 
   const submit = (ev: FormEvent) => {
@@ -26,7 +29,7 @@ function Editor({ id, preset }: { id?: number; preset?: Preset }) {
       input = {
         name: name.trim(),
         description: description.trim() === '' ? null : description.trim(),
-        config: configToDto(config),
+        ...formToDto(config),
       };
     } catch (e) {
       setError(errorMessage(e));
@@ -47,8 +50,7 @@ function Editor({ id, preset }: { id?: number; preset?: Preset }) {
       <Card className="mb-3">
         <Card.Body>
           <Form.Group className="mb-3" controlId="preset-name">
-            <Form.Label>Name</Form.Label>
-            <RequiredMarker />
+            <FieldLabel label="Name" help="Preset name" required />
             <Form.Control
               type="text"
               maxLength={64}
@@ -59,7 +61,7 @@ function Editor({ id, preset }: { id?: number; preset?: Preset }) {
             />
           </Form.Group>
           <Form.Group controlId="preset-description">
-            <Form.Label>Description</Form.Label>
+            <FieldLabel help="Description" />
             <Form.Control type="text" value={description} onChange={(e) => setDescription(e.target.value)} />
           </Form.Group>
         </Card.Body>

@@ -33,9 +33,11 @@ describe.each(PAGES)('$name: no burst limit field', (page: ConfigPage) => {
     expect(body().textContent).not.toMatch(/burst limit/i);
   });
 
-  it('the Limiter subsection holds exactly four controls: mode, rate, its unit and "Remove limiter"', async () => {
+  it('the Limiter subsection holds exactly four controls (besides info tooltips): mode, rate, its unit and "Remove limiter"', async () => {
     await page.openFull();
-    const controls = Array.from(section('Limiter').querySelectorAll('input, select, textarea, button'));
+    const controls = Array.from(
+      section('Limiter').querySelectorAll('input, select, textarea, button:not([aria-label^="About "])'),
+    );
     expect(controls).toHaveLength(4);
     expect(controls.map((c) => c.getAttribute('aria-label') ?? '').filter(Boolean)).not.toContain('Burst limit');
     for (const l of ['Limiter mode', 'Rate', 'Rate unit']) {

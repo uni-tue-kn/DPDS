@@ -1,6 +1,6 @@
 // "Pending restart": the local configuration differs from the one the running emulation was started with.
 import { settingsOf } from './localConfig';
-import type { EmulationView, LinkInput, LocalConfig, Settings } from '../api/types';
+import type { EmulationView, LocalConfig, Settings, StartLink } from '../api/types';
 
 /** Canonical JSON: keys sorted, null and undefined members dropped (null and absent are the same optional value). */
 function canon(v: unknown): string {
@@ -19,7 +19,7 @@ function canon(v: unknown): string {
   return JSON.stringify(strip(v));
 }
 
-const linkKey = (l: LinkInput) =>
+const linkKey = (l: StartLink) =>
   canon({
     name: l.name,
     ingress: l.ingress,
