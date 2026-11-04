@@ -36,7 +36,7 @@
 //!         (hairpin) or in two (ring), is fine)
 //!       - some links with `lcore` and some without              -> Err naming "lcore"
 //!       - the same lcore on two links                           -> Err naming the lcore
-//!       - `histogram`: `bins` not an integer in 1..=500; `lo_ns`/`hi_ns`
+//!       - `histogram`: `bins` not an integer in 1..=4096; `lo_ns`/`hi_ns`
 //!         negative or not a number; both given and `lo_ns >= hi_ns` -> Err naming the link
 //!       - the /dpds/ports dict limit: `3 + 5 * ports + 10 * links` keys must be
 //!         <= 256 (`ports` = distinct ports named by the links); the error names "256"
@@ -679,6 +679,8 @@ fn the_documented_limits_are_inclusive() {
     for h in [
         json!({ "bins": 1 }),
         json!({ "bins": 500 }),
+        json!({ "bins": 501 }),
+        json!({ "bins": 4096 }),
         json!({ "lo_ns": 0.0 }),
         json!({ "lo_ns": 0.0, "hi_ns": 0.001 }),
     ] {
@@ -693,7 +695,7 @@ fn the_documented_limits_are_inclusive() {
 fn bad_histograms_are_errors_naming_the_link() {
     for bad in [
         json!({ "bins": 0 }),
-        json!({ "bins": 501 }),
+        json!({ "bins": 4097 }),
         json!({ "bins": 100000 }),
         json!({ "lo_ns": -1.0 }),
         json!({ "hi_ns": -1.0 }),
@@ -702,6 +704,17 @@ fn bad_histograms_are_errors_naming_the_link() {
     ] {
         let e = err_of(vec![link_h("hist-link", "p", "q", 1, bad.clone())]);
         assert!(e.contains("hist-link"), "{bad}: {e}");
+    }
+    // spec 30: a bins value above the maximum names the maximum
+    for bins in [4097, 100_000] {
+        let e = err_of(vec![link_h(
+            "hist-link",
+            "p",
+            "q",
+            1,
+            json!({ "bins": bins }),
+        )]);
+        assert!(e.contains("4096"), "bins {bins}: {e}");
     }
     // values of the wrong JSON type are errors too (the message need not name the link)
     for bad in [

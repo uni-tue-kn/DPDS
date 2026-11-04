@@ -3798,13 +3798,16 @@ mod links_telemetry {
             [
                 "bin_ns",
                 "bins",
+                "first_bin",
                 "lo_ns",
                 "num_bins",
                 "overflow",
+                "page",
                 "underflow"
             ],
-            "{h0}"
+            "the six fields and the page position (spec 30): {h0}"
         );
+        assert_eq!((u(&h0, "page"), u(&h0, "first_bin")), (0, 0), "{h0}");
         assert_eq!(bins_of(&h0).len(), 256, "{h0}");
         assert_eq!(hist_total(&h0), N0 as u64, "{h0}");
         assert_eq!((u(&h0, "underflow"), u(&h0, "overflow")), (0, 0), "{h0}");
@@ -3949,6 +3952,123 @@ fn a_custom_histogram_per_link_sets_bins_and_range() {
     // sigma = 4.2 bins around bin 25: +-3 sigma is bins 12..=37
     let core: u64 = b1[12..=37].iter().sum();
     assert!(core * 100 >= N1 as u64 * 99, "{core} of {N1}: {h1}");
+
+    run.signal(libc::SIGINT);
+    assert_clean_exit(run.wait_exit(), &run);
+}
+
+/// Spec 30: a histogram of 4096 bins is read in pages of at most 500 bins
+/// (`/dpds/delay_hist,<dir>,<page>`); the pages together are the whole histogram.
+#[cfg(feature = "telemetry")]
+#[test]
+fn a_4096_bin_histogram_is_read_in_nine_pages() {
+    // link 0: Normal(2 ms, 0.3 ms) over [0, 4.096 ms) in 4096 bins of 1 us, so the samples
+    // (1.1 ms .. 2.9 ms = bins ~1100..2900) lie on pages 2 to 5. link 1: 100 bins, one page.
+    const N0: u32 = 2000;
+    const N1: u32 = 100;
+    require_cpus(3);
+    let _g = serial();
+    let mut env = links_env(
+        "0-2",
+        &[
+            link_json_hist(
+                "a-to-b",
+                "net_pcap0",
+                "net_pcap1",
+                &config_dist("NormalDistribution", 2_000_000, 300_000),
+                r#"{ "bins": 4096, "lo_ns": 0, "hi_ns": 4096000 }"#,
+            ),
+            link_json_hist(
+                "b-to-a",
+                "net_pcap1",
+                "net_pcap0",
+                &config_json(1_000_000, 0.0),
+                r#"{ "bins": 100, "lo_ns": 999000, "hi_ns": 1001000 }"#,
+            ),
+        ],
+    );
+    add_pcap_port(&mut env, 0, &frames(0, N0));
+    add_pcap_port(&mut env, 1, &frames(1, N1));
+    let mut run = env.spawn();
+    for (d, n) in [(0, N0), (1, N1)] {
+        let cmd = format!("/dpds/stats,{d}");
+        run.wait_until(&format!("{cmd} tx_sent == {n}"), START_TIMEOUT, |r| {
+            r.try_query(&cmd)
+                .is_some_and(|v| u(&v, "tx_sent") >= n as u64)
+        });
+    }
+
+    let mut all = Vec::new();
+    let mut per_page = Vec::new();
+    for p in 0..9u64 {
+        let h = run.query(&format!("/dpds/delay_hist,0,{p}"));
+        assert_eq!(u(&h, "num_bins"), 4096, "page {p}: {h}");
+        assert_eq!((u(&h, "page"), u(&h, "first_bin")), (p, p * 500), "{h}");
+        assert!((num(&h, "bin_ns") - 1000.0).abs() < 1e-6, "{h}");
+        assert_eq!(num(&h, "lo_ns"), 0.0, "{h}");
+        let b = arr_u(&h, "bins");
+        // exactly what the page says it carries, nothing cut at DPDK's 512 entries
+        assert_eq!(b.len(), if p < 8 { 500 } else { 96 }, "page {p}: {h}");
+        assert_eq!(
+            (u(&h, "underflow"), u(&h, "overflow")),
+            (0, 0),
+            "6 sigma: {h}"
+        );
+        per_page.push(b.iter().sum::<u64>());
+        all.extend(b);
+    }
+    assert_eq!(all.len(), 4096);
+    assert_eq!(all.iter().sum::<u64>(), N0 as u64, "{per_page:?}");
+    assert!(
+        per_page.iter().filter(|&&n| n > 0).count() >= 3,
+        "the samples spread over several pages: {per_page:?}"
+    );
+    // sigma = 300 bins around bin 2000: +-3 sigma is bins 1100..=2900
+    let core: u64 = all[1100..=2900].iter().sum();
+    assert!(core * 100 >= N0 as u64 * 99, "{core} of {N0}");
+
+    // `,<dir>` alone is page 0
+    let alone = run.query("/dpds/delay_hist,0");
+    let p0 = run.query("/dpds/delay_hist,0,0");
+    assert_eq!(
+        alone, p0,
+        "the cumulative counts do not change after tx_sent"
+    );
+    assert_eq!(arr_u(&alone, "bins").len(), 500);
+
+    // a page that does not exist is an error reply, not an empty or a truncated one
+    for bad in [
+        "0,9",
+        "0,10",
+        "0,99999",
+        "0,18446744073709551615",
+        "0,x",
+        "0,-1",
+        "0,",
+        "0,1,2",
+    ] {
+        // an error reply is a null or a dict without bins (the rule of the bad `<dir>` above)
+        let reply = run.try_query(&format!("/dpds/delay_hist,{bad}"));
+        assert!(
+            reply.as_ref().is_none_or(|v| v.get("bins").is_none()),
+            "/dpds/delay_hist,{bad} must be an error reply: {reply:?}"
+        );
+    }
+
+    // the 100-bin link is one page
+    let h1 = run.query("/dpds/delay_hist,1");
+    assert_eq!(
+        (u(&h1, "num_bins"), u(&h1, "page"), u(&h1, "first_bin")),
+        (100, 0, 0),
+        "{h1}"
+    );
+    assert_eq!(arr_u(&h1, "bins").len(), 100, "{h1}");
+    assert_eq!(arr_u(&h1, "bins").iter().sum::<u64>(), N1 as u64, "{h1}");
+    let beyond = run.try_query("/dpds/delay_hist,1,1");
+    assert!(
+        beyond.is_none_or(|v| v.get("bins").is_none()),
+        "page 1 of 100 bins"
+    );
 
     run.signal(libc::SIGINT);
     assert_clean_exit(run.wait_exit(), &run);
@@ -4375,7 +4495,7 @@ fn bad_histogram_settings_are_clean_exits_naming_the_link() {
     let cfg = || config_json(1_000_000, 0.0); // automatic range [999_500, 1_000_500)
     for (hist, what) in [
         (r#"{ "bins": 0 }"#, "bins 0"),
-        (r#"{ "bins": 501 }"#, "bins 501"),
+        (r#"{ "bins": 4097 }"#, "bins 4097"),
         (r#"{ "lo_ns": 5000, "hi_ns": 5000 }"#, "lo == hi"),
         (r#"{ "lo_ns": -1 }"#, "negative lo"),
         // valid on its own, but beyond the automatic hi: caught at startup
@@ -4394,6 +4514,9 @@ fn bad_histogram_settings_are_clean_exits_naming_the_link() {
             "0-1",
         );
         assert!(out.contains("histlink"), "{what}: the link is named\n{out}");
+        if what == "bins 4097" {
+            assert!(out.contains("4096"), "{what}: the maximum is named\n{out}");
+        }
     }
     // the histogram is one object per link, not the v1 array
     let out = links_failure(

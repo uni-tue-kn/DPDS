@@ -122,8 +122,17 @@ impl Container {
     /// Append one uint64 entry (`rte_tel_data_add_array_uint`). Must have
     /// been started via [`new_uint_array`](Self::new_uint_array), not
     /// [`new_string_array`](Self::new_string_array).
-    pub fn add_uint(&mut self, v: u64) {
-        unsafe { dpdk_sys::rte_tel_data_add_array_uint(self.raw.as_ptr(), v) };
+    ///
+    /// An array holds at most `RTE_TEL_MAX_ARRAY_ENTRIES` (512) entries; from
+    /// entry 513 on DPDK drops the value and this returns its error
+    /// (`-ENOSPC`), so a caller cannot send a cut array by accident.
+    pub fn add_uint(&mut self, v: u64) -> Result<(), DpdkError> {
+        let ret = unsafe { dpdk_sys::rte_tel_data_add_array_uint(self.raw.as_ptr(), v) };
+        if ret < 0 {
+            Err(DpdkError(ret))
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -314,9 +323,9 @@ mod tests {
     #[test]
     fn container_new_uint_array_and_add_uint_do_not_panic() {
         let mut container = Container::new_uint_array();
-        container.add_uint(0);
-        container.add_uint(1_000_000_000);
-        container.add_uint(u64::MAX);
+        container.add_uint(0).unwrap();
+        container.add_uint(1_000_000_000).unwrap();
+        container.add_uint(u64::MAX).unwrap();
         // No public accessor exists to read the array's contents back;
         // the most this test can assert is that construction and
         // population didn't panic, and that dropping an un-attached
@@ -348,8 +357,8 @@ mod tests {
         let mut dict = Dict { raw: root };
 
         let mut container = Container::new_uint_array();
-        container.add_uint(42);
-        container.add_uint(1_234_567_890);
+        container.add_uint(42).unwrap();
+        container.add_uint(1_234_567_890).unwrap();
 
         // keep=0: DPDK now owns the container's rte_tel_data and frees it
         // itself when the outer dict is freed -- `add_array_container`

@@ -461,3 +461,66 @@ fn the_memory_locking_section_documents_the_four_rlimit_cases() {
         "LimitMEMLOCK=infinity: {flat}"
     );
 }
+
+// ---- spec 30: docs/TELEMETRY.md describes the paged histogram ----------------------------------
+
+fn telemetry_doc() -> String {
+    fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/TELEMETRY.md"))
+        .expect("docs/TELEMETRY.md")
+}
+
+/// The lines of the `## /dpds/delay_hist,<dir>` section (the heading line itself picks it, not
+/// a substring: the table of contents and the command table mention the command too).
+fn delay_hist_section(text: &str) -> String {
+    let mut lines = text
+        .lines()
+        .skip_while(|l| l.trim_end() != "## `/dpds/delay_hist,<dir>`");
+    assert!(lines.next().is_some(), "the delay_hist section heading");
+    lines
+        .take_while(|l| !l.starts_with("## "))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn the_telemetry_doc_describes_paging_and_the_4096_cap() {
+    let section = delay_hist_section(&telemetry_doc());
+    for needle in [
+        "4096",
+        "/dpds/delay_hist,<dir>,<page>",
+        "`page`",
+        "`first_bin`",
+        "500",
+    ] {
+        assert!(
+            section.contains(needle),
+            "the section names {needle:?}:\n{section}"
+        );
+    }
+    let lower = section.to_lowercase();
+    assert!(
+        lower.contains("page 0"),
+        "`,<dir>` alone is page 0:\n{section}"
+    );
+    assert!(
+        lower.contains("error"),
+        "an out-of-range page is an error reply:\n{section}"
+    );
+}
+
+#[test]
+fn the_telemetry_doc_no_longer_gives_500_as_the_bins_limit() {
+    let doc = telemetry_doc();
+    for stale in ["1..=500", "the reply holds up to 500 counts"] {
+        assert!(
+            !doc.contains(stale),
+            "stale text {stale:?} in docs/TELEMETRY.md"
+        );
+    }
+    // the command table lists the page parameter too
+    let row = doc
+        .lines()
+        .find(|l| l.starts_with("| `/dpds/delay_hist,<dir>"))
+        .expect("the command table row");
+    assert!(row.contains("<page>"), "{row}");
+}

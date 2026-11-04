@@ -3,7 +3,7 @@
 //! `noop_core`), a present one requires and validates all its fields; `limiter.activate` is gone.
 
 use crate::common::*;
-use dpds_controller::dto::ConfigDto;
+use dpds_controller::dto::{ConfigDto, HistogramDto, MAX_HISTOGRAM_BINS};
 use dpds_core::delayer::RVDistribution;
 use dpds_core::dropper::LossModel;
 use dpds_core::limiter::LimiterMode;
@@ -517,4 +517,39 @@ fn a_config_with_every_stage_still_roundtrips_exactly() {
     for stage in ["delayer", "limiter", "loss_model"] {
         assert_eq!(out[stage], v[stage], "{stage}");
     }
+}
+
+// ---- spec 30: the histogram holds up to 4096 bins -------------------------------------------------
+
+fn hist_bins(bins: u32) -> HistogramDto {
+    HistogramDto {
+        bins: Some(bins),
+        lo_ns: None,
+        hi_ns: None,
+    }
+}
+
+#[test]
+fn the_histogram_accepts_4096_bins_and_refuses_4097() {
+    assert_eq!(MAX_HISTOGRAM_BINS, 4096);
+    for n in [1, 256, 500, 501, 512, 4096] {
+        assert!(hist_bins(n).validate().is_ok(), "bins = {n}");
+    }
+    for n in [0, 4097, 5000, u32::MAX] {
+        assert!(hist_bins(n).validate().is_err(), "bins = {n}");
+    }
+    let e = hist_bins(4097).validate().unwrap_err().to_string();
+    assert!(e.contains("4096"), "the message names the maximum: {e}");
+    assert!(e.contains("bins"), "{e}");
+}
+
+#[test]
+fn a_config_with_4096_histogram_bins_converts_and_one_with_4097_does_not() {
+    let mut v = cfg_json(1.0e6, 1.0e5);
+    v["histogram"] = json!({"bins": 4096});
+    dto_from(v).to_core().unwrap();
+    let mut v = cfg_json(1.0e6, 1.0e5);
+    v["histogram"] = json!({"bins": 4097});
+    let e = dto_from(v).to_core().unwrap_err().to_string();
+    assert!(e.contains("4096"), "{e}");
 }

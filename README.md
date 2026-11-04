@@ -503,7 +503,7 @@ Build with `--features telemetry` to register the commands:
 | --- | --- |
 | `/dpds/stats,<dir>` | Packet counters of link `<dir>` (its index in the [links file](#several-links-in-one-process---links); 0 or 1 with `--config*`) since start (`rx_pkts`, `dpds_rejects` and its causes `loss_drops` / `limiter_drops` / `buffer_full_drops`, `pops`, `tx_sent`, `tx_drops`, ...), gauges, delay statistics (`delay_mean_ns`, `delay_std_ns`, `delay_min_ns`, `delay_max_ns`, `lateness_mean_ns`, `lateness_max_ns`; absent for a link with `delay_stats` off), first-loss result. |
 | `/dpds/epochs,<dir>` | The same per epoch (a burst of traffic, closed after 500 ms of silence). |
-| `/dpds/delay_hist,<dir>` | Cumulative histogram of the intended delay of the accepted packets (`lo_ns`, `bin_ns`, `num_bins`, `bins`, `underflow`, `overflow`; empty for a link with `delay_stats` off). |
+| `/dpds/delay_hist,<dir>[,<page>]` | Cumulative histogram of the intended delay of the accepted packets, up to 4096 bins, read in pages of at most 500 bins (`<page>` from 0, default 0; each page has `lo_ns`, `bin_ns`, `num_bins`, `underflow`, `overflow`, `page`, `first_bin` and its `bins`; empty page 0 for a link with `delay_stats` off). See [docs/TELEMETRY.md](docs/TELEMETRY.md). |
 | `/dpds/ports` | Port names, descriptor ring sizes (applied and requested), the number of links, and per link its name, ports (ids and device names), lcore, config path, pool size, free path and whether its delay statistics are on (`3 + 5 * ports + 10 * links` keys, at most 256). |
 | `/nic/hw_first_loss,<port>` | First NIC hardware drop (`imissed`, `rx_nombuf`, ...) seen by the main lcore. |
 | `/nic/epochs,<port>` | Per-epoch NIC `rx_packets` / `imissed` / `rx_port_discards`. |

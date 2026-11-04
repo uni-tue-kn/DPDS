@@ -44,8 +44,12 @@ use crate::reply::{Reply, Value};
 
 /// Default number of histogram bins.
 pub const HIST_BINS: usize = 256;
-/// Largest number of bins (DPDK's telemetry array limit is 512 entries).
-pub const MAX_BINS: usize = 500;
+/// Largest number of bins. The histogram is read in pages of at most
+/// [`PAGE_BINS`] bins (`/dpds/delay_hist,<dir>,<page>`).
+pub const MAX_BINS: usize = 4096;
+/// Most bins in one page of the histogram reply (one DPDK telemetry array holds at most 512
+/// entries).
+pub const PAGE_BINS: usize = 500;
 /// Minimum width (ns) of the automatic histogram range.
 pub const MIN_WIDTH_NS: f64 = 1000.0;
 
@@ -67,7 +71,7 @@ pub struct HistogramSpec {
 }
 
 impl HistogramSpec {
-    /// The checks that need no config: `bins` in `1..=500`, `lo_ns` / `hi_ns`
+    /// The checks that need no config: `bins` in `1..=4096`, `lo_ns` / `hi_ns`
     /// finite and not negative, and `lo_ns < hi_ns` if both are given.
     pub fn validate(&self) -> Result<(), HistogramError> {
         if let Some(bins) = self.bins {
@@ -541,19 +545,27 @@ impl DelayStats {
         ]
     }
 
-    /// The `/dpds/delay_hist` reply: `lo_ns` and `bin_ns` (decimal strings,
-    /// DPDK telemetry has no float setter), `num_bins`, `bins` (one count per
-    /// bin), `underflow`, `overflow`. Cumulative since start. Empty when the
-    /// statistics are switched off.
-    pub fn hist_reply(&self) -> Reply {
+    /// Page `page` (0-based) of the `/dpds/delay_hist` reply: `lo_ns` and `bin_ns`
+    /// (decimal strings, DPDK telemetry has no float setter), `num_bins` (of the
+    /// whole histogram), `bins` (the page's slice, at most [`PAGE_BINS`] counts),
+    /// `underflow`, `overflow`, `page` and `first_bin` (`PAGE_BINS * page`, the index
+    /// of the page's first bin). Cumulative since start. `None` for a page past the
+    /// last one. With the statistics switched off, page 0 is empty and there is no
+    /// other page.
+    pub fn hist_page(&self, page: usize) -> Option<Reply> {
         if !self.enabled {
-            return Vec::new();
+            return (page == 0).then(Vec::new);
         }
+        let first = page.checked_mul(PAGE_BINS)?;
+        if first >= self.range.bins {
+            return None;
+        }
+        let end = self.range.bins.min(first + PAGE_BINS);
         #[cfg(feature = "telemetry")]
         let (bins, underflow, overflow) = {
             let l = &self.live;
             (
-                l.bins
+                l.bins[first..end]
                     .iter()
                     .map(|b| b.load(Ordering::Relaxed))
                     .collect::<Vec<u64>>(),
@@ -562,14 +574,16 @@ impl DelayStats {
             )
         };
         #[cfg(not(feature = "telemetry"))]
-        let (bins, underflow, overflow) = (vec![0u64; self.range.bins], 0, 0);
-        vec![
+        let (bins, underflow, overflow) = (vec![0u64; end - first], 0, 0);
+        Some(vec![
             ("lo_ns".into(), Value::Str(self.range.lo_ns.to_string())),
             ("bin_ns".into(), Value::Str(self.range.bin_ns.to_string())),
             ("num_bins".into(), Value::Uint(self.range.bins as u64)),
             ("bins".into(), Value::UintArray(bins)),
             ("underflow".into(), Value::Uint(underflow)),
             ("overflow".into(), Value::Uint(overflow)),
-        ]
+            ("page".into(), Value::Uint(page as u64)),
+            ("first_bin".into(), Value::Uint(first as u64)),
+        ])
     }
 }

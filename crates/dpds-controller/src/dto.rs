@@ -12,8 +12,9 @@ use dpds_core::{Config, DelayerConfig, LimiterConfig};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-/// Most bins a delay histogram may have (DPDK telemetry arrays hold 512 entries).
-pub const MAX_HISTOGRAM_BINS: u32 = 500;
+/// Most bins a delay histogram may have. `dpds` serves it in pages of 500 bins (DPDK
+/// telemetry arrays hold 512 entries), see `telemetry::poll_once`.
+pub const MAX_HISTOGRAM_BINS: u32 = 4096;
 
 /// Largest `buffer_capacity` (the hugepage need and the allocation grow with it).
 pub const MAX_BUFFER_CAPACITY: u64 = 1 << 31;
@@ -107,7 +108,7 @@ pub struct HistogramDto {
 }
 
 impl HistogramDto {
-    /// 1 <= bins <= 500, `lo_ns` and `hi_ns` finite and not negative, `lo_ns < hi_ns`.
+    /// 1 <= bins <= 4096, `lo_ns` and `hi_ns` finite and not negative, `lo_ns < hi_ns`.
     pub fn validate(&self) -> Result<(), DtoError> {
         let bad = |m: String| Err(DtoError(m));
         if let Some(n) = self.bins {

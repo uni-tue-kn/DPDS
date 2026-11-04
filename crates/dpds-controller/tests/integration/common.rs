@@ -1240,6 +1240,7 @@ pub fn snapshot(dirs: [DirSample; 2], ports: [PortSample; 2]) -> Snapshot {
         eth: vec![eth_json(&ports[0]), eth_json(&ports[1])],
         // direction 1 has a non-default number of bins, like a link with `histograms`
         hists: vec![hist_json(1000.0, 10.0, 256), hist_json(2000.0, 20.0, 100)],
+        ..Snapshot::default()
     }
 }
 

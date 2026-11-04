@@ -33,7 +33,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::common::*;
-use crate::fake_telemetry::{short_tempdir, FakeTelemetryServer, Mode};
+use crate::fake_telemetry::{hist_page, short_tempdir, FakeTelemetryServer, Mode};
 use crate::histogram_extras::{cfg, hist, num_of, snap};
 use dpds_controller::api::{self, Deps};
 use dpds_controller::stats::{Polled, Snapshot};
@@ -473,7 +473,7 @@ fn poller_rig() -> PollerRig {
                     }
                     d
                 }),
-                "/dpds/delay_hist" => base.hists.get(idx).cloned(),
+                "/dpds/delay_hist" => hist_page(&base.hists, param),
                 "/ethdev/stats" => base.eth.get(idx).cloned(),
                 _ => None,
             }

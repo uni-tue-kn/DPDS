@@ -351,11 +351,16 @@ async fn the_other_config_fields_keep_their_rules_without_stages() {
     assert_eq!(r.status, 400, "{}", r.text());
     assert!(r.message().contains("buffer_capacity"));
     let mut c = cfg_bare();
-    c["histogram"] = json!({"bins": 501});
+    c["histogram"] = json!({"bins": 4097});
     let r = a
         .start_links(vec![link_cfg("l", "net_null0", "net_null0", c)])
         .await;
     assert_eq!(r.status, 400, "{}", r.text());
+    assert!(
+        r.message().contains("4096"),
+        "spec 30: names the maximum: {}",
+        r.message()
+    );
     // a config without a buffer is still incomplete
     let r = a
         .start_links(vec![link_cfg(

@@ -3,6 +3,9 @@
 //! `{"version", "pid", "max_output_len"}`, then one reply datagram per request
 //! `{"<command without ,param>": value}`; an unknown command gets `null`.
 //!
+//! Spec 30: `/dpds/delay_hist,<dir>[,<page>]` answers in pages of at most [`PAGE_BINS`] bins like the
+//! real `dpds` ([`hist_page`]); `FakeTelemetryServer::serving` slices the histograms of its snapshot.
+//!
 //! Connections take their behaviour from a script of [`Mode`]s: the n-th accepted
 //! connection uses `modes[n]`, the last mode repeats. [`FakeTelemetryServer::break_all`]
 //! drops every open connection (a transport error for its client).
@@ -29,6 +32,33 @@ pub enum Mode {
     Hang,
     /// Greeting, then answer every request with `null` ("no such command").
     Nulls,
+}
+
+/// Bins per page of the real `/dpds/delay_hist` reply (spec 30).
+pub const PAGE_BINS: usize = 500;
+
+/// The reply of `/dpds/delay_hist,<param>` (`param` is `<dir>` or `<dir>,<page>`) for the full
+/// histograms `hists` (one object per direction, `bins` holding all bins): the page's slice of
+/// `bins` plus `page` and `first_bin`, every other field copied. `None` (a null reply) for a bad
+/// param or a page that does not exist; a histogram without bins has an empty page 0.
+pub fn hist_page(hists: &[Value], param: &str) -> Option<Value> {
+    let (dir, page) = match param.split_once(',') {
+        Some((d, p)) => (d, p.parse::<usize>().ok()?),
+        None => (param, 0),
+    };
+    let h = hists.get(dir.parse::<usize>().ok()?)?;
+    let first = page.checked_mul(PAGE_BINS)?;
+    let Some(bins) = h["bins"].as_array() else {
+        return (page == 0).then(|| h.clone());
+    };
+    if first >= bins.len().max(1) {
+        return None;
+    }
+    let mut out = h.clone();
+    out["bins"] = Value::Array(bins[first..(first + PAGE_BINS).min(bins.len())].to_vec());
+    out["page"] = json!(page);
+    out["first_bin"] = json!(first);
+    Some(out)
 }
 
 type Handler = Box<dyn Fn(&str) -> Option<Value> + Send + Sync>;
@@ -115,7 +145,7 @@ impl FakeTelemetryServer {
             match name {
                 "/dpds/ports" => Some(snapshot.ports.clone()),
                 "/dpds/stats" => snapshot.dirs.get(idx).cloned(),
-                "/dpds/delay_hist" => snapshot.hists.get(idx).cloned(),
+                "/dpds/delay_hist" => hist_page(&snapshot.hists, param),
                 "/ethdev/stats" => snapshot.eth.get(idx).cloned(),
                 _ => None,
             }

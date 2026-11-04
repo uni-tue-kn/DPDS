@@ -31,6 +31,7 @@ mod fixtures_sanity;
 mod frontend;
 mod hints;
 mod histogram_extras;
+mod histogram_paging;
 mod histogram_window;
 mod host_fixes;
 mod host_guard;

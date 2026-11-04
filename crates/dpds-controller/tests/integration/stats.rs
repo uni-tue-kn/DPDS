@@ -332,6 +332,7 @@ fn ring_snapshot(t_s: u64) -> dpds_controller::stats::Snapshot {
         dirs: (0..4).map(dir).collect(),
         eth: (0..4).map(eth).collect(),
         hists: (0..4).map(|_| hist_json(0.0, 1.0, 16)).collect(),
+        ..Default::default()
     }
 }
 

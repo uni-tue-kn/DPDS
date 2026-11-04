@@ -179,6 +179,7 @@ mod counters;
 mod delay_stats;
 mod first_loss;
 mod forward;
+mod hist_pages;
 mod links;
 mod quit;
 mod readme;

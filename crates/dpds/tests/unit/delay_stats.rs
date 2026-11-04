@@ -6,7 +6,7 @@
 //!
 //! ```text
 //! pub const HIST_BINS: usize = 256;        (the default number of bins)
-//! pub const MAX_BINS: usize = 500;         (DPDK's telemetry array limit is 512)
+//! pub const MAX_BINS: usize = 4096;        (spec 30: read in pages of 500, see hist_pages.rs)
 //! pub const MIN_WIDTH_NS: f64 = 1000.0;
 //! #[derive(Debug, Clone, Copy, PartialEq)]
 //! pub struct HistRange { pub lo_ns: f64, pub bin_ns: f64, pub bins: usize }
@@ -55,7 +55,7 @@
 //! direction's config). `bin_ns = (hi - lo) / bins`. Explicit values are taken
 //! as given (the 1 us minimum width applies to the automatic range only).
 //! Errors (`HistogramError`, Display names the offending field): `bins` not in
-//! `1..=500`; `lo_ns` or `hi_ns` negative or not finite; the EFFECTIVE `lo >= hi`
+//! `1..=4096`; `lo_ns` or `hi_ns` negative or not finite; the EFFECTIVE `lo >= hi`
 //! (also when only one of them is given and it lies beyond the automatic other):
 //! that message names both `lo_ns` and `hi_ns`.
 //!
@@ -79,10 +79,11 @@
 //!   `Stats::delay_hist_reply(&self) -> Reply` and
 //!   `DirectionStats::delay_hist_reply(&self, param: &str) -> Option<Reply>`
 //!   (`None` for a bad direction param, as `stats_reply`).
-//!   Keys, exactly these six: `lo_ns`, `bin_ns` (numbers: Uint or a decimal
-//!   Str, the tests accept both), `num_bins` (Uint, the actual number of
-//!   bins), `bins` (UintArray of `num_bins` entries), `underflow`, `overflow`
-//!   (Uint). Cumulative since start; every accepted packet is in
+//!   Spec 30: the reply is a PAGE (see hist_pages.rs). Keys, exactly these eight:
+//!   `lo_ns`, `bin_ns` (numbers: Uint or a decimal Str, the tests accept both),
+//!   `num_bins` (Uint, the actual number of bins of the whole histogram),
+//!   `bins` (UintArray, at most 500 entries of the page), `underflow`, `overflow`
+//!   (Uint), `page`, `first_bin` (Uint, the position of the page). Cumulative since start; every accepted packet is in
 //!   exactly one of bins/underflow/overflow.
 //!
 //! The telemetry-dependent tests only run with `--features telemetry`.
@@ -152,7 +153,7 @@ fn wb(lo_ns: f64, bin_ns: f64, bins: usize) -> HistRange {
 #[test]
 fn constants_and_the_default_range() {
     assert_eq!(HIST_BINS, 256);
-    assert_eq!(MAX_BINS, 500);
+    assert_eq!(MAX_BINS, 4096);
     assert_eq!(MIN_WIDTH_NS, 1000.0);
     let d = HistRange::default();
     assert_eq!((d.lo_ns, d.bin_ns, d.bins), (0.0, 1000.0 / 256.0, 256));
@@ -349,11 +350,12 @@ fn bin_placement_with_a_custom_number_of_bins() {
     assert_eq!(one.bin(10.0), Bin::Index(0));
     assert_eq!(one.bin(11.999), Bin::Index(0));
     assert_eq!(one.bin(12.0), Bin::Overflow);
-    // the maximum of 500 bins
+    // the maximum of 4096 bins
     let max = wb(0.0, 2.0, MAX_BINS);
-    assert_eq!(max.hi_ns(), 1000.0);
-    assert_eq!(max.bin(999.999), Bin::Index(499));
-    assert_eq!(max.bin(1000.0), Bin::Overflow);
+    assert_eq!(max.hi_ns(), 8192.0);
+    assert_eq!(max.bin(8191.999), Bin::Index(4095));
+    assert_eq!(max.bin(8192.0), Bin::Overflow);
+    assert_eq!(max.bin(1000.0), Bin::Index(500));
     assert_eq!(max.bin(0.0), Bin::Index(0));
 }
 
@@ -435,6 +437,40 @@ fn explicit_values_are_used_as_given() {
             .bin_ns,
         2.0
     );
+    // spec 30: 4096 is the new maximum
+    assert_eq!(
+        from_spec(c, spec(Some(4096), Some(0.0), Some(8192.0)))
+            .unwrap()
+            .bins,
+        4096
+    );
+    assert_eq!(
+        from_spec(c, spec(Some(4096), None, None)).unwrap().bins,
+        4096
+    );
+}
+
+#[test]
+fn bins_above_4096_are_refused_and_the_message_names_the_limit() {
+    let c = cfg(10e6, 1e6, None);
+    assert!(spec(Some(4096), None, None).validate().is_ok());
+    assert!(
+        spec(Some(501), None, None).validate().is_ok(),
+        "501 was the old limit + 1"
+    );
+    for n in [4097, 5000, 100_000] {
+        let e = spec(Some(n), None, None)
+            .validate()
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("4096"),
+            "bins = {n}: the message names the maximum: {e}"
+        );
+        assert!(e.contains("bins"), "{e}");
+        let e = from_spec(c, spec(Some(n), None, None)).unwrap_err();
+        assert!(e.contains("4096"), "bins = {n}: {e}");
+    }
 }
 
 #[test]
@@ -595,8 +631,9 @@ mod with_feature {
             assert_eq!(uint(&r, k), 0, "{k}");
         }
         let h = s.delay_hist_reply();
-        assert_eq!(h.len(), 6, "{h:?}");
+        assert_eq!(h.len(), 8, "the six fields and the page position: {h:?}");
         assert_eq!(uint(&h, "num_bins"), 256);
+        assert_eq!((uint(&h, "page"), uint(&h, "first_bin")), (0, 0));
         assert_eq!(bins(&h), vec![0u64; 256]);
         assert_eq!((uint(&h, "underflow"), uint(&h, "overflow")), (0, 0));
         assert_eq!(num(&h, "lo_ns"), 0.0);
@@ -806,9 +843,11 @@ mod with_feature {
             [
                 "bin_ns",
                 "bins",
+                "first_bin",
                 "lo_ns",
                 "num_bins",
                 "overflow",
+                "page",
                 "underflow"
             ]
         );

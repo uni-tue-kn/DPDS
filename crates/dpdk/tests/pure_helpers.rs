@@ -142,7 +142,7 @@ fn telemetry_containers_build_and_drop_without_an_eal() {
     s.add_string("a=1");
     s.add_string("");
     let mut u = dpdk::telemetry::Container::new_uint_array();
-    u.add_uint(0);
-    u.add_uint(u64::MAX);
+    u.add_uint(0).unwrap();
+    u.add_uint(u64::MAX).unwrap();
     drop((s, u));
 }

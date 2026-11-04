@@ -16,8 +16,13 @@ pub struct Snapshot {
     pub dirs: Vec<Value>,
     /// `eth[p]` = reply of `/ethdev/stats,<p>` (p = DPDK port id).
     pub eth: Vec<Value>,
-    /// `hists[d]` = reply of `/dpds/delay_hist,<d>`.
+    /// `hists[d]` = reply of `/dpds/delay_hist,<d>` (page 0).
     pub hists: Vec<Value>,
+    /// `hist_bins[d]` = every bin of direction `d`, the bins of all its pages in order. A
+    /// polled snapshot has them here (as `Vec<u64>`, 8 bytes a bin) and no `bins` in
+    /// `hists[d]`; for a direction without an entry (a hand-built snapshot) the `bins`
+    /// array of `hists[d]` is used.
+    pub hist_bins: Vec<Vec<u64>>,
 }
 
 /// The two latest snapshots; rates come from their difference.
@@ -405,12 +410,15 @@ pub fn delay_histogram(cur: &Snapshot, dir: usize) -> Option<HistogramView> {
         return None;
     }
     let h = cur.hists.get(dir)?;
-    let bins: Vec<u64> = h
-        .get("bins")?
-        .as_array()?
-        .iter()
-        .map(|b| b.as_u64().unwrap_or(0))
-        .collect();
+    let bins: Vec<u64> = match cur.hist_bins.get(dir) {
+        Some(bins) => bins.clone(),
+        None => h
+            .get("bins")?
+            .as_array()?
+            .iter()
+            .map(|b| b.as_u64().unwrap_or(0))
+            .collect(),
+    };
     let lo_ns = num(h, "lo_ns")?;
     let bin_ns = num(h, "bin_ns")?;
     let edges_ns = (0..=bins.len())

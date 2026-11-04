@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use socket2::{Domain, SockAddr, Socket, Type};
 
+use crate::dto::MAX_HISTOGRAM_BINS;
 pub use crate::stats::Polled;
 use crate::stats::Snapshot;
 use crate::supervisor::{State, Supervisor};
@@ -92,6 +93,72 @@ pub trait TelemetrySource: Send + Sync + 'static {
     fn set_poll_interval(&self, _ms: u64) {}
 }
 
+/// Most bins in one page of `/dpds/delay_hist`.
+const PAGE_BINS: u64 = 500;
+
+fn bad_page(d: u64, page: u64, what: &str) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("/dpds/delay_hist direction {d} page {page}: {what}"),
+    )
+}
+
+/// One page of `/dpds/delay_hist` of direction `d`, which must say it is `page` of a
+/// histogram of `num_bins` bins and carry exactly the bins it should. Replies are matched to
+/// requests by send order only, so a replayed, cut or mixed-up page is caught here.
+fn check_page(d: u64, page: u64, num_bins: u64, reply: &Value) -> io::Result<Vec<u64>> {
+    let first = page * PAGE_BINS;
+    let want = PAGE_BINS.min(num_bins - first);
+    let field = |key: &str| reply.get(key).and_then(Value::as_u64);
+    if field("page") != Some(page) || field("first_bin") != Some(first) {
+        return Err(bad_page(d, page, "the page says it is another page"));
+    }
+    if field("num_bins") != Some(num_bins) {
+        return Err(bad_page(d, page, "num_bins differs from page 0"));
+    }
+    let bins = reply
+        .get("bins")
+        .and_then(Value::as_array)
+        .and_then(|a| a.iter().map(Value::as_u64).collect::<Option<Vec<u64>>>())
+        .ok_or_else(|| bad_page(d, page, "no bins, or a bin that is not a count"))?;
+    if bins.len() as u64 != want {
+        return Err(bad_page(
+            d,
+            page,
+            &format!("{} bins, expected {want}", bins.len()),
+        ));
+    }
+    Ok(bins)
+}
+
+/// The delay histogram of direction `d`: page 0 without its bins, and all bins of all pages.
+/// Page 0 gives the number of bins, so the pages 1.. follow in order, none past the last. A
+/// direction without a histogram (an older `dpds`, or delay statistics off) gives a page 0
+/// without `bins`, and no bins. A page that is wrong is an error: a histogram is never put
+/// together from pieces that do not fit.
+fn poll_histogram(client: &mut Client, d: u64) -> io::Result<(Value, Vec<u64>)> {
+    // the histogram only exists in newer builds; its absence is not an error
+    let Ok(mut page0) = client.query(&format!("/dpds/delay_hist,{d}")) else {
+        return Ok((Value::Null, Vec::new()));
+    };
+    if page0.get("bins").is_none() {
+        return Ok((page0, Vec::new()));
+    }
+    let num_bins = page0.get("num_bins").and_then(Value::as_u64).unwrap_or(0);
+    if num_bins > u64::from(MAX_HISTOGRAM_BINS) {
+        return Err(bad_page(d, 0, &format!("num_bins {num_bins} is too large")));
+    }
+    let mut bins = check_page(d, 0, num_bins, &page0)?;
+    for page in 1..num_bins.div_ceil(PAGE_BINS) {
+        let reply = client.query(&format!("/dpds/delay_hist,{d},{page}"))?;
+        bins.extend(check_page(d, page, num_bins, &reply)?);
+    }
+    if let Some(page0) = page0.as_object_mut() {
+        page0.remove("bins");
+    }
+    Ok((page0, bins))
+}
+
 /// One full poll: ports, per-direction stats and histogram, per-port NIC stats.
 pub fn poll_once(client: &mut Client) -> io::Result<Snapshot> {
     let ports = client.query("/dpds/ports")?;
@@ -103,12 +170,9 @@ pub fn poll_once(client: &mut Client) -> io::Result<Snapshot> {
     };
     for d in 0..n_dirs {
         snap.dirs.push(client.query(&format!("/dpds/stats,{d}"))?);
-        // the histogram only exists in newer builds; its absence is not an error
-        snap.hists.push(
-            client
-                .query(&format!("/dpds/delay_hist,{d}"))
-                .unwrap_or(Value::Null),
-        );
+        let (hist, bins) = poll_histogram(client, d)?;
+        snap.hists.push(hist);
+        snap.hist_bins.push(bins);
     }
     for p in 0..n_ports {
         snap.eth.push(client.query(&format!("/ethdev/stats,{p}"))?);

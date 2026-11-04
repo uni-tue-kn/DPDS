@@ -59,10 +59,15 @@ impl Stats {
         }
     }
 
-    /// The `/dpds/delay_hist` reply: the cumulative histogram of the intended
-    /// delay of the accepted packets.
+    /// Page 0 of the `/dpds/delay_hist` reply: the cumulative histogram of the
+    /// intended delay of the accepted packets (see [`delay_hist_page`](Self::delay_hist_page)).
     pub fn delay_hist_reply(&self) -> Reply {
-        self.delay.hist_reply()
+        self.delay.hist_page(0).unwrap_or_default()
+    }
+
+    /// Page `page` of the `/dpds/delay_hist` reply, `None` past the last page.
+    pub fn delay_hist_page(&self, page: usize) -> Option<Reply> {
+        self.delay.hist_page(page)
     }
 
     /// The `/dpds/stats` reply: cumulative since start. Gauges are the max
@@ -163,10 +168,18 @@ impl DirectionStats {
         Some(self.stats.get(index_param(param)?)?.epochs_reply())
     }
 
-    /// `/dpds/delay_hist,<param>`: the delay histogram of that direction.
-    /// `None` for a bad param.
+    /// `/dpds/delay_hist,<param>`: one page of the delay histogram of a
+    /// direction. `<param>` is `<dir>` (page 0) or `<dir>,<page>`, both plain
+    /// decimal numbers. `None` for a bad param, a direction that does not exist
+    /// or a page past the last one.
     pub fn delay_hist_reply(&self, param: &str) -> Option<Reply> {
-        Some(self.stats.get(index_param(param)?)?.delay_hist_reply())
+        let mut parts = param.split(',');
+        let dir = index_param(parts.next()?)?;
+        let page = parts.next().map_or(Some(0), index_param)?;
+        if parts.next().is_some() {
+            return None;
+        }
+        self.stats.get(dir)?.delay_hist_page(page)
     }
 
     /// Registers `/dpds/stats`, `/dpds/epochs` and `/dpds/delay_hist` (no-op
@@ -206,7 +219,7 @@ impl DirectionStats {
         )?;
         dpdk::telemetry::register_command(
             "/dpds/delay_hist",
-            "Cumulative histogram of the intended delay of one direction (query with ,0 / ,1 ...)",
+            "One page of the cumulative histogram of the intended delay of one direction (query with ,<dir>,<page>)",
             move |param, d| {
                 if let Some(reply) = stats.delay_hist_reply(param) {
                     fill(d, reply);
@@ -226,8 +239,13 @@ fn fill(d: &mut dpdk::telemetry::Dict, reply: Reply) {
             Value::Str(v) => d.add_str(&key, &v),
             Value::UintArray(vs) => {
                 let mut c = Container::new_uint_array();
-                for v in vs {
-                    c.add_uint(v);
+                if let Some(e) = vs.iter().find_map(|&v| c.add_uint(v).err()) {
+                    // leave the key out rather than send a cut array
+                    eprintln!(
+                        "telemetry array {key:?} of {} entries dropped: {e}",
+                        vs.len()
+                    );
+                    continue;
                 }
                 d.add_array_container(&key, c);
             }

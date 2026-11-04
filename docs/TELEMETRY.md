@@ -55,7 +55,7 @@ echo '/dpds/stats,0' | dpdk-telemetry.py -f <file-prefix>
 | --- | --- |
 | `/dpds/stats,<dir>` | Counters of link `<dir>`, cumulative since start, the delay statistics, plus that link's whole-run first-loss result. |
 | `/dpds/epochs,<dir>` | The same counters per epoch (deltas) and gauges per epoch (maxima), plus per-epoch first loss, for link `<dir>`. |
-| `/dpds/delay_hist,<dir>` | The cumulative histogram of the intended delay of link `<dir>`. |
+| `/dpds/delay_hist,<dir>[,<page>]` | One page (500 bins) of the cumulative histogram of the intended delay of link `<dir>`; `,<dir>` alone is page 0. |
 | `/dpds/ports` | Static: device name and descriptor ring sizes of each port, the number of links, and the layout of each link. |
 | `/nic/hw_first_loss,<port>` | First NIC hardware drop seen by the main lcore on port `<port>` (a DPDK port id, any port of the links). |
 | `/nic/epochs,<port>` | Per-epoch NIC `rx_packets` / `imissed` / `rx_port_discards` of port `<port>`. |
@@ -222,7 +222,7 @@ README). For a link with `false`:
   `lateness_max_ns` (20 keys instead of 26; they are absent, not `null` and not
   0, which dicts cannot express anyway). Everything else is unchanged: the
   counters, the drop causes, the gauges, the first-loss result and the epochs;
-- `/dpds/delay_hist,<dir>` returns an empty reply;
+- `/dpds/delay_hist,<dir>` (page 0) returns an empty reply and has no page 1;
 - `/dpds/ports` reports `dir<d>_delay_stats` `0` (and `1` for the others).
 
 A consumer checks `dir<d>_delay_stats` once, or tests for the absent keys.
@@ -230,16 +230,33 @@ A consumer checks `dir<d>_delay_stats` once, or tests for the absent keys.
 ## `/dpds/delay_hist,<dir>`
 
 A cumulative linear histogram of the intended delay (as defined above) of every
-accepted packet of link `<dir>`, since start. Fields:
+accepted packet of link `<dir>`, since start, with up to 4096 bins. One DPDK
+telemetry array holds at most 512 entries, so the histogram is read in pages of at
+most 500 bins: `/dpds/delay_hist,<dir>,<page>`, where `<page>` is a 0-based plain
+decimal number. `/dpds/delay_hist,<dir>` alone is page 0. A histogram of `num_bins`
+bins has `ceil(num_bins / 500)` pages (4096 bins: eight pages of 500 and one of 96).
+A page that does not exist (`<page>` >= the number of pages), a `<page>` that is not
+a plain decimal number and a bad `<dir>` give an error reply (`null`, like an unknown
+command), never a short or empty histogram. Every page has exactly these fields:
 
 | field | meaning |
 | --- | --- |
 | `lo_ns` | Lower edge (inclusive) of bin 0, a decimal string (telemetry has no float). |
 | `bin_ns` | Width of each bin, a decimal string. |
-| `num_bins` | Number of bins (uint). |
-| `bins` | Array of `num_bins` counts; bin `i` counts delays in `[lo_ns + i * bin_ns, lo_ns + (i + 1) * bin_ns)`. |
-| `underflow` | Delays below `lo_ns`. |
-| `overflow` | Delays at or above `lo_ns + num_bins * bin_ns`. |
+| `num_bins` | Number of bins of the whole histogram (uint), the same on every page. |
+| `bins` | The page's counts: bins `first_bin` to `first_bin + len - 1`, at most 500 of them; bin `i` counts delays in `[lo_ns + i * bin_ns, lo_ns + (i + 1) * bin_ns)`. |
+| `underflow` | Delays below `lo_ns`, cumulative; on every page. |
+| `overflow` | Delays at or above `lo_ns + num_bins * bin_ns`, cumulative; on every page. |
+| `page` | The 0-based index of this page (uint). |
+| `first_bin` | The index of the page's first bin, `500 * page` (uint). |
+
+A reader checks `page` and `first_bin` (replies are keyed without the `,<param>`
+suffix, so a client matches them to requests by send order), that `bins` has
+`min(500, num_bins - first_bin)` entries, and that the pages together hold
+`num_bins` bins. The pages are read one after another, not as one atomic
+snapshot: packets that arrive between two reads show up in the pages read later,
+and `underflow` / `overflow` differ slightly between pages. The controller takes
+them from page 0.
 
 Every accepted packet is in exactly one of the bins, `underflow` or `overflow`.
 The bin index is one subtraction and one multiplication by the reciprocal of
@@ -264,19 +281,18 @@ and a Normal delay `mean +- 6 sigma`. A Token Bucket Filter adds no delay and no
 allowance. With explicit values: a missing `bins` is 256, a missing `lo_ns` /
 `hi_ns` is the automatic one, `bin_ns = (hi - lo) / bins`, and explicit values are
 used as given (the 1 us minimum applies to the automatic range only). Startup
-fails, naming the link, if `bins` is not in 1..=500 (DPDK's telemetry array limit
-is 512 entries), `lo_ns` or `hi_ns` is negative, or the effective `lo_ns` is not
-below the effective `hi_ns`, also when only one of them is given and it lies beyond
-the automatic other one.
+fails, naming the link, if `bins` is not in 1..=4096, `lo_ns` or `hi_ns` is
+negative, or the effective `lo_ns` is not below the effective `hi_ns`, also when
+only one of them is given and it lies beyond the automatic other one.
 
-Keep the histogram out of frequent polls: the reply holds up to 500 counts, about
+Keep the histogram out of frequent polls: a full page holds 500 counts, about
 5 KB with small counts and up to about 10.5 KB for 500 bins whose counts have
 reached 20 digits (500 x 21 characters with the comma), below the 16384-byte reply limit
-of DPDK's telemetry socket.
+of DPDK's telemetry socket; a histogram of 4096 bins takes nine such replies.
 
 **Switched off.** A link with `"delay_stats": false` has no histogram:
-`/dpds/delay_hist,<dir>` returns an empty reply, like for a bad `<dir>` (see
-[Delay statistics off](#delay-statistics-off)).
+`/dpds/delay_hist,<dir>` (page 0) returns an empty reply, and there is no page 1,
+like for a bad `<dir>` (see [Delay statistics off](#delay-statistics-off)).
 
 ## First-loss reasons
 
