@@ -94,6 +94,50 @@ describe('api client (real module)', () => {
     expect(JSON.parse(String(init.body))).toEqual(body);
   });
 
+  // Spec 34: `getHostHintsFor(req, { recheck: true })` makes the controller read the NIC firmware again; the body is unchanged.
+  describe('getHostHintsFor recheck (spec 34)', () => {
+    const body = () => ({
+      links: [{ name: 'a-b', ingress: '0000:65:00.0', egress: '0000:65:00.1', config: fx.config(), worker: null }],
+      settings: fx.settings(),
+    });
+
+    it('{ recheck: true } POSTs /api/host/hints?recheck=true with the same JSON body and returns the hints', async () => {
+      reply(200, fx.hints());
+      await expect(client.getHostHintsFor(body(), { recheck: true })).resolves.toEqual(fx.hints());
+      const { url, init } = lastCall();
+      expect(url).toBe('/api/host/hints?recheck=true');
+      expect(init.method?.toUpperCase()).toBe('POST');
+      expect(header(init, 'content-type')).toMatch(/^application\/json/);
+      expect(JSON.parse(String(init.body))).toEqual(body());
+    });
+
+    it.each([
+      ['no second argument', () => client.getHostHintsFor(body())],
+      ['an empty options object', () => client.getHostHintsFor(body(), {})],
+      ['{ recheck: false }', () => client.getHostHintsFor(body(), { recheck: false })],
+      ['{ recheck: undefined }', () => client.getHostHintsFor(body(), { recheck: undefined })],
+    ])('%s sends no query at all (the first load never asks for a recheck)', async (_name, call) => {
+      reply(200, []);
+      await call();
+      expect(lastCall().url).toBe('/api/host/hints');
+    });
+
+    it('getHostHints (the GET) takes no recheck: it never carries a query', async () => {
+      reply(200, []);
+      await client.getHostHints();
+      expect(lastCall().url).toBe('/api/host/hints');
+      expect(lastCall().url).not.toContain('?');
+    });
+
+    it('a recheck that fails rejects with the ApiError of the controller (400 naming recheck)', async () => {
+      reply(400, { message: 'query parameter recheck must be true or false' });
+      const err = await client.getHostHintsFor(body(), { recheck: true }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(client.ApiError);
+      expect((err as InstanceType<Client['ApiError']>).status).toBe(400);
+      expect((err as Error).message).toContain('recheck');
+    });
+  });
+
   it('getHostHints stays a body-less GET of /api/host/hints', async () => {
     reply(200, []);
     await client.getHostHints();

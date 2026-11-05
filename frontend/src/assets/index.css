@@ -371,3 +371,21 @@ fieldset.config-section > legend {
 .histogram-optimization-action:focus-visible {
   color: var(--color-primary);
 }
+
+/* The Recheck icon of the Host hints page turns while a check runs; an inline <i> needs inline-block to rotate. */
+.icon-spin {
+  display: inline-block;
+  animation: icon-spin 1s linear infinite;
+}
+
+@keyframes icon-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .icon-spin {
+    animation: none;
+  }
+}

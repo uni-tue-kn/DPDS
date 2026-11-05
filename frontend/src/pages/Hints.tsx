@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { Badge, Button, OverlayTrigger, Tooltip } from 'react-bootstrap';
 import * as api from '../api/client';
 import ErrorAlert from '../components/ErrorAlert';
@@ -82,9 +82,21 @@ export default function Hints() {
   const { doc, corrupt } = useLocalConfig();
   // Host-only hints, plus the ones that depend on the links of this browser's configuration (nothing is started).
   const host = useLoad(api.getHostHints);
+  // Set only around the reloads of a click on Recheck, which read the loaders synchronously.
+  const recheck = useRef(false);
   const forLinks = useLoad(() =>
-    corrupt || doc.links.length === 0 ? Promise.resolve([]) : api.getHostHintsFor(startRequestOf(doc)),
+    corrupt || doc.links.length === 0
+      ? Promise.resolve([])
+      : api.getHostHintsFor(startRequestOf(doc), recheck.current ? { recheck: true } : undefined),
   );
+  const busy = host.loading || forLinks.loading;
+  const recheckNow = () => {
+    if (busy) return;
+    recheck.current = true;
+    host.reload();
+    forLinks.reload();
+    recheck.current = false;
+  };
 
   const settled = (host.data ?? host.error) !== undefined && (forLinks.data ?? forLinks.error) !== undefined;
   // By hint id; the answer for the links wins.
@@ -94,7 +106,24 @@ export default function Hints() {
   const failed = host.error !== undefined || forLinks.error !== undefined;
   return (
     <>
-      <h1 className="mb-3">Host hints</h1>
+      <h1 className="mb-3 d-inline-block me-3 align-middle">Host hints</h1>
+      <Button
+        type="button"
+        size="sm"
+        variant="outline-primary"
+        className="me-3 align-middle"
+        disabled={busy}
+        onClick={recheckNow}
+      >
+        <i className={`bi bi-arrow-clockwise me-1${busy ? ' icon-spin' : ''}`} aria-hidden="true" />
+        Recheck
+      </Button>
+      {busy && (
+        <output className="text-body-secondary align-middle">
+          <span className="spinner-border spinner-border-sm me-2" aria-hidden="true" />
+          Checking host…
+        </output>
+      )}
       <ErrorAlert message={host.error} />
       <ErrorAlert message={forLinks.error} />
       {data && data.length === 0 && !failed && <p>No hints.</p>}

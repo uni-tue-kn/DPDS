@@ -32,8 +32,11 @@ export const api = {
   getInterfaces: vi.fn() as Mock<() => Promise<Interface[]>>,
   /** GET /api/host/hints: host-only hints. */
   getHostHints: vi.fn() as Mock<() => Promise<Hint[]>>,
-  /** POST /api/host/hints with a start request: the hints that depend on the links. */
-  getHostHintsFor: vi.fn() as Mock<(req: StartRequest) => Promise<Hint[]>>,
+  /**
+   * POST /api/host/hints with a start request: the hints that depend on the links. Spec 34: `{ recheck: true }` as the second
+   * argument asks the controller to read the NIC firmware again (`?recheck=true`); the first load passes no second argument.
+   */
+  getHostHintsFor: vi.fn() as Mock<(req: StartRequest, opts?: { recheck?: boolean }) => Promise<Hint[]>>,
   getEmulation: vi.fn() as Mock<() => Promise<EmulationView>>,
   startEmulation: vi.fn() as Mock<(req: StartRequest) => Promise<EmulationView>>,
   stopEmulation: vi.fn() as Mock<() => Promise<EmulationView>>,

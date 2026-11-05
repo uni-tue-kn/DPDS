@@ -160,7 +160,12 @@ describe('Host hints: the commands buttons', () => {
     renderApp('/hints');
     await screen.findByRole('region', { name: /^Errors/ });
     expect(screen.queryAllByRole('button', { name: /commands/i })).toEqual([]);
-    expect(within(pageOf()).queryAllByRole('button')).toEqual([]);
+    // Spec 34: the Recheck button next to the page title is the only button of the page (pages/hintsRecheck.test.tsx).
+    expect(
+      within(pageOf())
+        .queryAllByRole('button')
+        .map((b) => b.textContent),
+    ).toEqual(['Recheck']);
   });
 
   it.each<HintLevel>(['error', 'warn', 'info', 'ok'])('a %s hint with commands gets the buttons too', async (level) => {

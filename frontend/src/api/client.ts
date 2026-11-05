@@ -48,8 +48,10 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 export const getOnline = () => request<OnlineView>('GET', '/online');
 export const getInterfaces = () => request<Interface[]>('GET', '/interfaces');
 export const getHostHints = () => request<Hint[]>('GET', '/host/hints');
-/** Host-only hints (GET) plus the ones that depend on the links (POST with the configuration, nothing is started). */
-export const getHostHintsFor = (req: StartRequest) => request<Hint[]>('POST', '/host/hints', req);
+/** Host-only hints (GET) plus the ones that depend on the links (POST with the configuration, nothing is started).
+ * `recheck` makes the controller read the NIC firmware again instead of answering from its cache. */
+export const getHostHintsFor = (req: StartRequest, opts?: { recheck?: boolean }) =>
+  request<Hint[]>('POST', `/host/hints${opts?.recheck ? '?recheck=true' : ''}`, req);
 export const getEmulation = () => request<EmulationView>('GET', '/emulation');
 /** The whole configuration travels with the start: the controller stores nothing. */
 export const startEmulation = (req: StartRequest) => request<EmulationView>('POST', '/emulation/start', req);
