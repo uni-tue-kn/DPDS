@@ -2,7 +2,6 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { vi } from 'vitest';
 import type { EmulationState } from '../api/types';
-import * as fx from '../test/fixtures';
 import {
   activePanel,
   card,
@@ -16,13 +15,15 @@ import {
   runButton,
   runButtonNames,
   runButtons,
+  summaryTab,
   tab,
   tabBadge,
   tabs,
   tabTitle,
 } from '../test/dashboardUi';
+import * as fx from '../test/fixtures';
 import { deferred, renderApp, seedRaw, seedStore, tick } from '../test/helpers';
-import { api, ApiError, fakeController, serveHistory } from '../test/mockApi';
+import { ApiError, api, fakeController, serveHistory } from '../test/mockApi';
 import { must } from '../test/must';
 
 // Spec 35 (user 2026-11-05): minimal, P4TG-like dashboard. Spec: scratchpad/spec35-dashboard.md, items F1 to F7. The loss donut
@@ -563,7 +564,7 @@ describe('Dashboard (spec 35 F3): one tab per link', () => {
     expect(tabTitle(1)).toBe('b-a: enp101s0f1 → enp101s0f0');
     expect(screen.getAllByRole('tablist')).toHaveLength(1);
     expect(tabs()).toHaveLength(2);
-    expect(within(screen.getByRole('tablist')).getAllByRole('tab')).toHaveLength(2);
+    expect(within(screen.getByRole('tablist')).getAllByRole('tab')).toHaveLength(3); // spec 36: Summary comes first
   });
 
   it('a live tab has no badge: no lcore badge, no state badge', async () => {
@@ -575,12 +576,15 @@ describe('Dashboard (spec 35 F3): one tab per link', () => {
     expect(screen.getByRole('tab', { name: /^a-b: .* → .*$/ })).toBeInTheDocument();
   });
 
-  it('the first tab is selected at first and its panel is the one that shows', async () => {
+  // Spec 36: the Summary tab is the first and the default (the Summary tab itself is pinned in dashboardSummary.test.tsx).
+  it('no link tab is selected at first, and selecting one makes its panel the one that shows', async () => {
     renderApp('/');
     await findTabs(2);
-    expect(tab(0)).toHaveAttribute('aria-selected', 'true');
+    expect(tab(0)).toHaveAttribute('aria-selected', 'false');
     expect(tab(1)).toHaveAttribute('aria-selected', 'false');
-    expect(activePanel()).toBe(card(0));
+    const panel = card(0);
+    expect(tab(0)).toHaveAttribute('aria-selected', 'true');
+    expect(activePanel()).toBe(panel);
   });
 
   it('clicking a tab shows the chart area of that link', async () => {
@@ -653,7 +657,7 @@ describe('Dashboard (spec 35 F3): one tab per link', () => {
     expect(tab(1)).toHaveAttribute('aria-selected', 'true');
   });
 
-  it('CHOICE: when the selected link is gone (a new run with fewer links) the first tab is selected, not none', async () => {
+  it('CHOICE: when the selected link is gone (a new run with fewer links) the first tab (the Summary) is selected, not none', async () => {
     vi.useFakeTimers();
     const s = { startedAt: 1762000000, samples: { '0': fx.historySamples(0, 3), '1': fx.historySamples(0, 3) } };
     serveHistory(s);
@@ -665,7 +669,8 @@ describe('Dashboard (spec 35 F3): one tab per link', () => {
     api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0)]));
     await tick(2500);
     expect(tabs()).toHaveLength(1);
-    expect(tab(0)).toHaveAttribute('aria-selected', 'true');
+    expect(summaryTab()).toHaveAttribute('aria-selected', 'true');
+    expect(tab(0)).toHaveAttribute('aria-selected', 'false');
     expect(within(activePanel()).getByTestId('chart-line')).toBeInTheDocument();
   });
 

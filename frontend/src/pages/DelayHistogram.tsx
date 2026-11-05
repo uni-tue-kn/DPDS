@@ -8,6 +8,7 @@ import { startPolling } from '../common/polling';
 import { useTheme } from '../common/theme';
 import { chartInk, chartOptions } from '../components/charts';
 import ChartBox from './ChartBox';
+import HistogramTables from './HistogramTables';
 
 const POLL_MS = 1000;
 const BAR_COLOR = '#e74c3c';
@@ -40,13 +41,16 @@ function percentileLines(hist: HistogramView, textColor: string) {
   return lines;
 }
 
-/** The delay histogram of the whole run of link `dir`, with the mean delay and the jitter in its title line. */
+/** The delay histogram of the whole run of link `dir`: its numbers in tables above the bars. */
 export default function DelayHistogram({
   dir,
+  dirLabel,
   meanNs,
   stdNs,
 }: {
   dir: number;
+  /** "ingress → egress" of the link. */
+  dirLabel: string;
   meanNs?: number | null;
   stdNs?: number | null;
 }) {
@@ -90,21 +94,12 @@ export default function DelayHistogram({
   }, [hist]);
   const options = useMemo(() => {
     if (!hist) return null;
-    const ink = chartInk(theme);
     const base = chartOptions<'bar'>(theme, 'Delay', 'Packets', false);
     return {
       ...base,
-      plugins: {
-        ...base.plugins,
-        title: {
-          display: true,
-          text: `Mean ${formatDuration(meanNs)} · Jitter (σ) ${formatDuration(stdNs)}`,
-          color: ink.text,
-        },
-        annotation: { annotations: percentileLines(hist, ink.text) },
-      },
+      plugins: { ...base.plugins, annotation: { annotations: percentileLines(hist, chartInk(theme).text) } },
     } as ChartOptions<'bar'>;
-  }, [hist, theme, meanNs, stdNs]);
+  }, [hist, theme]);
 
   if (error) {
     return (
@@ -113,10 +108,13 @@ export default function DelayHistogram({
       </small>
     );
   }
-  if (!data || !options) return null;
+  if (!hist || !data || !options) return null;
   return (
-    <ChartBox label={`Delay histogram of link ${dir}`}>
-      <Bar data={data} options={options} />
-    </ChartBox>
+    <>
+      <HistogramTables hist={hist} dirLabel={dirLabel} meanNs={meanNs} stdNs={stdNs} />
+      <ChartBox label={`Delay histogram of link ${dir}`}>
+        <Bar data={data} options={options} />
+      </ChartBox>
+    </>
   );
 }

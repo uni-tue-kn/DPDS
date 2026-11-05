@@ -12,7 +12,8 @@ import { api } from '../test/mockApi';
 // 'percentiles' (the list p50..p99.9 with clamp markers; the dashed annotation lines stay and are pinned in
 // dashboardP4tg.test.tsx), 'log scale' (the y axis is linear), 'expected-distribution overlay' (one dataset, the bars) and
 // 'chart registration' (LineController was needed for the bar + line overlay; the line charts register their own).
-// The mean delay and jitter now sit in the chart's title line (dashboardP4tg.test.tsx).
+// Spec 36: the mean delay and jitter sit in the histogram tables (histogramTables.test.tsx); 'p99.9' is no longer checked absent, as
+// the Percentiles table has that header (the old list is still pinned absent by its test id).
 // What stays here: the one-argument requests, that the chart follows the reply, and that an older controller's reply (without
 // the optional extras) still renders.
 
@@ -40,7 +41,7 @@ describe('Dashboard histogram: no window, no log scale, no overlay, no percentil
     expect(within(card(0)).queryByLabelText('Log scale')).not.toBeInTheDocument();
     expect(within(card(0)).queryByLabelText('Show expected distribution')).not.toBeInTheDocument();
     expect(within(card(0)).queryByTestId('percentiles')).not.toBeInTheDocument();
-    for (const text of ['Since start', '300 s', 'Underflow', 'Overflow', 'p99.9']) {
+    for (const text of ['Since start', '300 s', 'Underflow', 'Overflow']) {
       expect(within(card(0)).queryByText(new RegExp(text)), text).not.toBeInTheDocument();
     }
   });

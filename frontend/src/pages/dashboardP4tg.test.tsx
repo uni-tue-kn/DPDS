@@ -919,63 +919,8 @@ describe('Dashboard (spec 28): delay histogram chart look and percentile lines',
     expect(optsOf(chart).scales?.y?.type ?? 'linear').toBe('linear');
   });
 
-  // Spec 35 F4: mean delay and jitter in the chart's title line, "Mean <d> · Jitter (σ) <d>", units by formatDuration.
-  describe('the title line shows the mean delay and the jitter', () => {
-    const titleOf = (o: ChartOptions): string => {
-      const t = o.plugins?.title;
-      expect(t?.display, 'plugins.title.display').toBe(true);
-      const text = t?.text;
-      return Array.isArray(text) ? text.join(' ') : (text ?? '');
-    };
-
-    it('reads "Mean 1.00 ms · Jitter (σ) 50.00 µs" from delay_mean_ns 1000000 and delay_std_ns 50000', async () => {
-      expect(titleOf(optsOf(await hist()))).toMatch(/Mean 1\.00 ms · Jitter \(σ\) 50\.00 [µμ]s/);
-    });
-
-    it('each link has the numbers of its own stats', async () => {
-      api.getStats.mockResolvedValue(
-        fx.stats([fx.dirStats(0), fx.dirStats(1, { delay_mean_ns: 2_500_000_000, delay_std_ns: 800 })]),
-      );
-      const user = userEvent.setup();
-      await openCards();
-      // A link whose tab is not shown does not render its histogram: read each link's title while its tab shows.
-      const title = async (d: number) => titleOf(optsOf(await showChart(user, d, 'Delay histogram')));
-      expect(await title(0)).toMatch(/Mean 1\.00 ms/);
-      expect(await title(1)).toMatch(/Mean 2\.50 s · Jitter \(σ\) 800\.00 ns/);
-    });
-
-    it('follows the stats of the next polls', async () => {
-      vi.useFakeTimers();
-      renderApp('/');
-      await tick(0);
-      await tick(0);
-      fireEvent.click(radio(0, 'Delay histogram'));
-      await tick(1000);
-      expect(titleOf(optsOf(within(card(0)).getByTestId('chart-bar')))).toMatch(/Mean 1\.00 ms/);
-      api.getStats.mockResolvedValue(
-        fx.stats([fx.dirStats(0, { delay_mean_ns: 3_000_000, delay_std_ns: 120_000 }), fx.dirStats(1)]),
-      );
-      await tick(2500);
-      expect(titleOf(optsOf(within(card(0)).getByTestId('chart-bar')))).toMatch(
-        /Mean 3\.00 ms · Jitter \(σ\) 120\.00 [µμ]s/,
-      );
-    });
-
-    it('CHOICE: a missing mean or std reads n/a, like every other missing duration', async () => {
-      api.getStats.mockResolvedValue(
-        fx.stats([fx.dirStats(0, { delay_mean_ns: null, delay_std_ns: null }), fx.dirStats(1)]),
-      );
-      const user = userEvent.setup();
-      await openCards();
-      const chart = await showChart(user, 0, 'Delay histogram');
-      expect(titleOf(optsOf(chart))).toBe('Mean n/a · Jitter (σ) n/a');
-    });
-
-    it('is in the chart options, not in the page text around the chart', async () => {
-      await hist();
-      expect(within(card(0)).queryByText(/Jitter/)).not.toBeInTheDocument();
-    });
-  });
+  // Spec 36 removes the title line "Mean <d> · Jitter (σ) <d>" of spec 35 F4 (its tests were here); the numbers are in the
+  // histogram tables above the chart (histogramTables.test.tsx).
 });
 
 describe('Dashboard (spec 28): chart text and grid colours follow dark mode', () => {
@@ -1025,21 +970,17 @@ describe('Dashboard (spec 28): chart text and grid colours follow dark mode', ()
     return optsOf(await showChart(user, 0, view));
   }
 
-  // Spec 35 F4: the histogram's title line is text too (its colour must follow the theme).
-  const withTitle = (o: ChartOptions, view: (typeof VIEWS)[number]): [string, string | undefined][] =>
-    view === 'Delay histogram' ? [...textColours(o), ['title', o.plugins?.title?.color]] : textColours(o);
-
   it.each(VIEWS)('%s chart, dark: light text and light grid lines', async (view) => {
     setPrefersDark(true);
     const o = await optionsOf(view);
-    for (const [what, css] of withTitle(o, view)) expect(brightness(css, what), what).toBeGreaterThan(0.6);
+    for (const [what, css] of textColours(o)) expect(brightness(css, what), what).toBeGreaterThan(0.6);
     for (const [what, css] of gridColours(o)) expect(brightness(css, what), what).toBeGreaterThan(0.5);
   });
 
   it.each(VIEWS)('%s chart, light: dark text and dark grid lines', async (view) => {
     setPrefersDark(false);
     const o = await optionsOf(view);
-    for (const [what, css] of withTitle(o, view)) expect(brightness(css, what), what).toBeLessThan(0.4);
+    for (const [what, css] of textColours(o)) expect(brightness(css, what), what).toBeLessThan(0.4);
     for (const [what, css] of gridColours(o)) expect(brightness(css, what), what).toBeLessThan(0.5);
   });
 

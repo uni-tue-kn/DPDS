@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react';
-import { Form } from 'react-bootstrap';
+import { Fragment, useId, useMemo, useState } from 'react';
+import { Form, OverlayTrigger, Tooltip } from 'react-bootstrap';
 import { Line } from 'react-chartjs-2';
 import type { HistorySample } from '../api/types';
 import { formatElapsed } from '../common/format';
@@ -18,15 +18,20 @@ const OVERLOAD_COLOR = '#e74c3c';
 /**
  * The chart area of one link: the chart, the radios below it and the loss donut. `live` carries the live delay numbers; a
  * link of an ended run has none, and so no histogram (it needs live telemetry), nor has a link with delay statistics off.
+ * Without `dir` it is the Summary of all links: `history` and `drops` are their aggregates, and the histogram radio is
+ * there but disabled (a histogram is per link).
  */
 export default function LinkCharts({
   dir,
+  dirLabel = '',
   active,
   history,
   drops,
   live,
 }: {
-  dir: number;
+  dir?: number;
+  /** "ingress → egress" of the link, for the histogram tables. */
+  dirLabel?: string;
   /** Whether the link's tab is shown: react-bootstrap keeps hidden panes mounted, and a hidden histogram must not poll. */
   active: boolean;
   history: HistorySample[];
@@ -35,11 +40,14 @@ export default function LinkCharts({
 }) {
   const theme = useTheme();
   const [chosen, setChosen] = useState<View>('rate');
+  const id = useId();
+  const summary = dir === undefined;
+  const of = summary ? 'all links' : `link ${dir}`;
   const hasHistogram = live?.delayStats === true;
   const view = chosen === 'histogram' && !hasHistogram ? 'rate' : chosen;
   const views: [View, string][] = [
     ['rate', 'Rate'],
-    ...(hasHistogram ? ([['histogram', 'Delay histogram']] as [View, string][]) : []),
+    ...(hasHistogram || summary ? ([['histogram', 'Delay histogram']] as [View, string][]) : []),
     ['loss', 'Loss'],
   ];
   const labels = useMemo(() => history.map((s) => formatElapsed(s.t_ms)), [history]);
@@ -92,29 +100,45 @@ export default function LinkCharts({
   return (
     <>
       {view === 'rate' && (
-        <ChartBox label={`Rate chart of link ${dir}`}>
+        <ChartBox label={`Rate chart of ${of}`}>
           <Line data={rateData} options={rateOptions} />
         </ChartBox>
       )}
       {view === 'loss' && (
-        <ChartBox label={`Loss chart of link ${dir}`}>
+        <ChartBox label={`Loss chart of ${of}`}>
           <Line data={lossData} options={lossOptions} />
         </ChartBox>
       )}
-      {view === 'histogram' && active && <DelayHistogram dir={dir} meanNs={live?.meanNs} stdNs={live?.stdNs} />}
+      {view === 'histogram' && active && dir !== undefined && (
+        <DelayHistogram dir={dir} dirLabel={dirLabel} meanNs={live?.meanNs} stdNs={live?.stdNs} />
+      )}
       <Form.Group role="radiogroup" aria-label="Chart" className="text-center my-3">
-        {views.map(([v, text]) => (
-          <Form.Check
-            key={v}
-            inline
-            type="radio"
-            name={`chart-${dir}`}
-            id={`chart-${dir}-${v}`}
-            label={text}
-            checked={view === v}
-            onChange={() => setChosen(v)}
-          />
-        ))}
+        {views.map(([v, text]) => {
+          const radio = (
+            <Form.Check
+              key={v}
+              inline
+              type="radio"
+              name={`chart-${id}`}
+              id={`chart-${id}-${v}`}
+              label={text}
+              checked={view === v}
+              disabled={summary && v === 'histogram'}
+              onChange={() => setChosen(v)}
+            />
+          );
+          return summary && v === 'histogram' ? (
+            <OverlayTrigger
+              key={v}
+              placement="top"
+              overlay={<Tooltip id={`${id}-tip`}>Delay histograms are per link; select a link tab.</Tooltip>}
+            >
+              <span className="d-inline-block">{radio}</span>
+            </OverlayTrigger>
+          ) : (
+            <Fragment key={v}>{radio}</Fragment>
+          );
+        })}
       </Form.Group>
       <LossDonut drops={drops} />
     </>

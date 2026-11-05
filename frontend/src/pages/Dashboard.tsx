@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, Badge, Button, ButtonGroup, Col, Row, Spinner, Tab, Tabs } from 'react-bootstrap';
 import * as api from '../api/client';
 import type { EmulationState, EmulationView, HistoryTotals, StatsView } from '../api/types';
@@ -7,7 +7,7 @@ import { readConfig, startRequestOf, useLocalConfig } from '../common/localConfi
 import { pendingRestart } from '../common/pendingRestart';
 import { startPolling } from '../common/polling';
 import { usePortLabeler } from '../common/portLabel';
-import { type History, NO_SAMPLES, useRunHistory } from '../common/runHistory';
+import { type History, NO_SAMPLES, sumHistories, useRunHistory } from '../common/runHistory';
 import ErrorAlert from '../components/ErrorAlert';
 import LinkCharts from './LinkCharts';
 import LoadRunning from './LoadRunning';
@@ -16,6 +16,9 @@ import { type DropCounts, dropsOfCounters, dropsOfTotals } from './LossDonut';
 const POLL_MS = 1000;
 
 const NO_DROPS: DropCounts = { loss: 0, limiter: 0, bufferFull: 0, nicTx: 0, imissed: 0, nombuf: 0 };
+
+/** The key of the Summary tab; the keys of the link tabs are their indexes. */
+const SUMMARY_TAB = 'summary';
 
 const ENDED_TEXT = { stopping: 'Stopping', stopped: 'Stopped', failed: 'Failed' } as const;
 
@@ -31,6 +34,15 @@ const STATE_BG: Record<EmulationState, string> = {
 };
 
 const DASH = '–';
+
+const addDrops = (a: DropCounts, b: DropCounts): DropCounts => ({
+  loss: a.loss + b.loss,
+  limiter: a.limiter + b.limiter,
+  bufferFull: a.bufferFull + b.bufferFull,
+  nicTx: a.nicTx + b.nicTx,
+  imissed: a.imissed + b.imissed,
+  nombuf: a.nombuf + b.nombuf,
+});
 
 /**
  * The pills of a finished run: the last sample of every link summed (the final live second), and the share of dropped
@@ -104,7 +116,7 @@ export default function Dashboard() {
   const [emulation, setEmulation] = useState<EmulationView>();
   const [stats, setStats] = useState<StatsView>();
   const { history, links, totals: runTotalsByLink, error: historyError } = useRunHistory();
-  /** The tab the user chose (a link index); the first link's while it is gone. */
+  /** The tab the user chose (the Summary or a link index); the Summary while that link is gone. */
   const [selected, setSelected] = useState<string>();
   const [pollError, setPollError] = useState<string>();
   const [statsError, setStatsError] = useState<string>();
@@ -208,12 +220,29 @@ export default function Dashboard() {
   const finished = ended !== undefined && Object.values(history).some((list) => list.length > 0);
   const pills = finished ? runTotals(history, runTotalsByLink) : live && totalsOf(live);
   const restartNeeded = pendingRestart(doc, emulation).any;
-  const shown = finished
-    ? Object.keys(history)
-        .map(Number)
-        .filter(Number.isInteger)
-        .sort((a, b) => a - b)
-    : (live ?? []).map((d) => d.dir);
+  const shown = useMemo(
+    () =>
+      finished
+        ? Object.keys(history)
+            .map(Number)
+            .filter(Number.isInteger)
+            .sort((a, b) => a - b)
+        : (live ?? []).map((d) => d.dir),
+    [finished, history, live],
+  );
+  const starting = state === 'starting';
+  const summaryHistory = useMemo(
+    () => sumHistories(shown.map((dir) => (starting ? NO_SAMPLES : (history[String(dir)] ?? NO_SAMPLES)))),
+    [shown, history, starting],
+  );
+  const dropsOf = (dir: number): DropCounts => {
+    if (finished) {
+      const t = runTotalsByLink[String(dir)];
+      return t ? dropsOfTotals(t) : NO_DROPS;
+    }
+    const s = live?.find((d) => d.dir === dir);
+    return s ? dropsOfCounters(s.counters) : NO_DROPS;
+  };
   // A finished run is titled by the links of its own history, a live one by its stats or the plan.
   const titleOf = (dir: number) => {
     if (finished) {
@@ -225,7 +254,7 @@ export default function Dashboard() {
     if (!s && !p) return `Link ${dir}`;
     return linkLabel(s?.link ?? p?.link, s?.rx ?? p?.rx, s?.tx ?? p?.tx, label);
   };
-  const activeTab = selected !== undefined && shown.includes(Number(selected)) ? selected : String(shown[0]);
+  const activeTab = selected !== undefined && shown.includes(Number(selected)) ? selected : SUMMARY_TAB;
   const pillClass = `status-pill ${state === 'running' ? 'status-pill-active' : ''}`;
 
   return (
@@ -344,9 +373,17 @@ export default function Dashboard() {
       )}
       {shown.length > 0 && (
         <Tabs id="link-tabs" transition={false} activeKey={activeTab} onSelect={(k) => k && setSelected(k)}>
+          <Tab eventKey={SUMMARY_TAB} title="Summary">
+            <div className="pt-3">
+              <LinkCharts
+                active={activeTab === SUMMARY_TAB}
+                history={summaryHistory}
+                drops={shown.map(dropsOf).reduce(addDrops, NO_DROPS)}
+              />
+            </div>
+          </Tab>
           {shown.map((dir) => {
             const s = live?.find((d) => d.dir === dir);
-            const t = runTotalsByLink[String(dir)];
             return (
               <Tab
                 key={dir}
@@ -367,7 +404,8 @@ export default function Dashboard() {
                     dir={dir}
                     active={String(dir) === activeTab}
                     history={state === 'starting' ? NO_SAMPLES : (history[String(dir)] ?? NO_SAMPLES)}
-                    drops={finished ? (t ? dropsOfTotals(t) : NO_DROPS) : s ? dropsOfCounters(s.counters) : NO_DROPS}
+                    dirLabel={`${label(s?.rx) || '?'} → ${label(s?.tx) || '?'}`}
+                    drops={dropsOf(dir)}
                     live={
                       finished || !s
                         ? undefined
