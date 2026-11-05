@@ -35,7 +35,15 @@ const NAV = [
   },
 ];
 
-function Sidebar({ theme, onToggle }: { theme: Theme; onToggle: () => void }) {
+function Sidebar({
+  theme,
+  onToggle,
+  onConnected,
+}: {
+  theme: Theme;
+  onToggle: () => void;
+  onConnected: (others: number) => void;
+}) {
   const [info, setInfo] = useState<OnlineView>();
   const [updateAvailable, setUpdateAvailable] = useState(false);
   const [showUpdateModal, setShowUpdateModal] = useState(false);
@@ -48,7 +56,10 @@ function Sidebar({ theme, onToggle }: { theme: Theme; onToggle: () => void }) {
       async () => {
         try {
           const o = await api.getOnline();
-          if (alive) setInfo(o);
+          if (alive) {
+            setInfo(o);
+            onConnected(o.connected_clients ?? 0);
+          }
           if (!checked.current) {
             checked.current = true;
             // Not awaited: a slow GitHub must not hold up the /api/online polling.
@@ -60,7 +71,10 @@ function Sidebar({ theme, onToggle }: { theme: Theme; onToggle: () => void }) {
             });
           }
         } catch {
-          if (alive) setInfo(undefined);
+          if (alive) {
+            setInfo(undefined);
+            onConnected(0);
+          }
         }
       },
       ONLINE_POLL_MS,
@@ -70,7 +84,7 @@ function Sidebar({ theme, onToggle }: { theme: Theme; onToggle: () => void }) {
       alive = false;
       stop();
     };
-  }, []);
+  }, [onConnected]);
   return (
     <div className="sidebar">
       <div className="sidebar-brand">
@@ -157,8 +171,31 @@ function CorruptConfigAlert() {
   );
 }
 
+/** P4TG's SessionWarning: other users have the GUI open. */
+function SessionWarning({ others }: { others: number }) {
+  if (others <= 0) return null;
+  return (
+    <div
+      data-testid="session-warning"
+      style={{
+        marginRight: '10px',
+        marginBottom: '10px',
+        padding: '5px 25px',
+        color: '#000',
+        borderRadius: '10px',
+        textAlign: 'center',
+        display: 'inline-block',
+        background: 'var(--bs-warning)',
+      }}
+    >
+      {`⚠ Currently, ${others} other user${others > 1 ? 's are' : ' is'} connected to this DPDS instance`}
+    </div>
+  );
+}
+
 export default function App() {
   const [theme, setTheme] = useState<Theme>(initialTheme);
+  const [others, setOthers] = useState(0);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -174,8 +211,9 @@ export default function App() {
   return (
     <ThemeContext.Provider value={theme}>
       <div className="app-shell">
-        <Sidebar theme={theme} onToggle={toggle} />
+        <Sidebar theme={theme} onToggle={toggle} onConnected={setOthers} />
         <main className="main-content">
+          <SessionWarning others={others} />
           <CorruptConfigAlert />
           <Routes>
             <Route path="/" element={<Dashboard />} />

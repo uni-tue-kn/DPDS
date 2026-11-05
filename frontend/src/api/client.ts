@@ -1,7 +1,7 @@
 // REST client of the dpds-controller. Base URL `/api` (same origin: the controller serves the frontend,
 // and the Vite dev proxy forwards it).
 // Every function returns the parsed JSON body. Any non-2xx response rejects with `ApiError`; a network
-// failure rejects with the plain fetch error. Every non-GET request carries `Content-Type: application/json`
+// failure rejects with the plain fetch error. Every request carries `X-Session-Id`; every non-GET request carries `Content-Type: application/json`
 // (the controller answers 415 otherwise), also the body-less stop.
 import type {
   EmulationView,
@@ -24,10 +24,36 @@ export class ApiError extends Error {
   }
 }
 
+const SESSION_KEY = 'dpds-session-id';
+let sessionId: string | undefined;
+
+/** The id of this browser tab (spec 48), like P4TG's getSessionId: kept in sessionStorage, in memory if that throws. */
+function getSessionId(): string {
+  if (sessionId) return sessionId;
+  try {
+    sessionId = sessionStorage.getItem(SESSION_KEY) || undefined;
+  } catch {
+    // sessionStorage is not available: the id stays in memory
+  }
+  if (!sessionId) {
+    sessionId =
+      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : Math.random().toString(36).slice(2) + Date.now().toString(36);
+    try {
+      sessionStorage.setItem(SESSION_KEY, sessionId);
+    } catch {
+      // see above
+    }
+  }
+  return sessionId;
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const init: RequestInit = { method };
+  const headers: Record<string, string> = { 'X-Session-Id': getSessionId() };
+  const init: RequestInit = { method, headers };
   if (method !== 'GET') {
-    init.headers = { 'Content-Type': 'application/json' };
+    headers['Content-Type'] = 'application/json';
     if (body !== undefined) init.body = JSON.stringify(body);
   }
   const res = await fetch(`/api${path}`, init);

@@ -256,10 +256,13 @@ fn serve(a: ServeArgs) -> Result<ExitCode, String> {
                      bundled (install it with dpds.sh install, or run npm run build in frontend/)"
                 );
             }
-            axum::serve(listener, router)
-                .with_graceful_shutdown(shutdown_signal())
-                .await
-                .map_err(|e| e.to_string())
+            axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .with_graceful_shutdown(shutdown_signal())
+            .await
+            .map_err(|e| e.to_string())
         })?;
 
     // stop dpds the same way as POST /api/emulation/stop before exiting

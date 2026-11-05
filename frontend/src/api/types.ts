@@ -111,6 +111,8 @@ export interface OnlineView {
   dpds_bin: string;
   telemetry: boolean;
   root: boolean;
+  /** Other GUI sessions seen in the last 15 s (spec 48). */
+  connected_clients?: number;
 }
 
 export interface DirectionPlan {

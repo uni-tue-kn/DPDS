@@ -2,12 +2,12 @@
 //! OpenAPI document at `/api/openapi.json`. Error bodies are `{"message": ...}`.
 
 use std::collections::HashSet;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use axum::extract::{
-    DefaultBodyLimit, FromRequest, FromRequestParts, Path, RawQuery, Request, State,
+    ConnectInfo, DefaultBodyLimit, FromRequest, FromRequestParts, Path, RawQuery, Request, State,
 };
 use axum::http::request::Parts;
 use axum::http::{header, HeaderValue, StatusCode};
@@ -34,6 +34,7 @@ use crate::host::HostRoots;
 use crate::lcores::{assign_lcores, DirectionPlan};
 use crate::model::{Link, RunConfig, StartLink, StartRequest, MAX_NAME_CHARS};
 use crate::nic_hints::FirmwareCache;
+use crate::sessions::SessionTracker;
 use crate::stats::{
     compute_stats, delay_histogram, delay_stats_on, uptime_ms, Clamped, Counters, DirectionStats,
     ExpectedModel, HistogramView, HistoryLink, HistorySample, HistoryView, Percentiles, StatsView,
@@ -73,6 +74,8 @@ struct App {
     lifecycle: AsyncMutex<()>,
     /// The firmware query results of the hints, until the controller restarts or a recheck.
     firmware: FirmwareCache,
+    /// The GUI sessions that polled `/api/online` lately.
+    sessions: SessionTracker,
 }
 
 type Shared = State<Arc<App>>;
@@ -198,6 +201,8 @@ pub struct OnlineView {
     /// The `dpds` binary has the `telemetry` feature (needed for start and stats).
     telemetry: bool,
     root: bool,
+    /// The number of OTHER GUI sessions that polled `/api/online` in the last 15 s.
+    connected_clients: usize,
 }
 
 /// `GET /api/version`.
@@ -440,12 +445,21 @@ impl App {
 // ---- handlers ----------------------------------------------------------------
 
 #[utoipa::path(get, path = "/api/online", responses((status = 200, body = OnlineView)))]
-async fn online(State(app): Shared) -> Json<OnlineView> {
+async fn online(State(app): Shared, req: Request) -> Json<OnlineView> {
+    // The session id of the tab, else the client IP, else a fixed id (no ConnectInfo in in-process tests).
+    let id = match req.headers().get("x-session-id") {
+        Some(v) => String::from_utf8_lossy(v.as_bytes()).into_owned(),
+        None => req
+            .extensions()
+            .get::<ConnectInfo<SocketAddr>>()
+            .map_or_else(|| "unknown".into(), |ConnectInfo(a)| a.ip().to_string()),
+    };
     Json(OnlineView {
         version: env!("CARGO_PKG_VERSION").into(),
         dpds_bin: app.deps.dpds_bin.to_string_lossy().into_owned(),
         telemetry: app.deps.dpds_has_telemetry,
         root: app.deps.is_root,
+        connected_clients: app.sessions.track_and_count_others(&id),
     })
 }
 
@@ -846,6 +860,7 @@ pub fn router_with(deps: Deps, frontend: Frontend) -> Router {
         run: Mutex::new(None),
         lifecycle: AsyncMutex::new(()),
         firmware: FirmwareCache::default(),
+        sessions: SessionTracker::default(),
     });
     let api = Router::new()
         .route("/api/online", get(online))

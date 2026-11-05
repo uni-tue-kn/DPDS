@@ -791,6 +791,12 @@ without internet access, means no notice.
 - **Frontend**: `http://<host>:<controller port>/`, served by the controller itself. Pages for the
   dashboard (start/stop, per-link rates, drop shares per cause, delay statistics and histogram),
   interfaces, host hints and settings (the links, with import and export).
+- **Connected users** (`GET /api/online`): besides `version`, `dpds_bin`, `telemetry` and `root` it answers
+  `connected_clients`, the number of OTHER sessions that polled `/api/online` in the last 15 s, like P4TG. A
+  session is the value of the `X-Session-Id` request header (cut to 64 bytes; the frontend sends a random id per
+  browser tab on every request), else the client IP. Only `GET /api/online` tracks. While `connected_clients` is
+  above 0 the frontend shows a warning above the page ("Currently, n other users are connected to this DPDS
+  instance").
 - **REST API**: served by the controller on port 8100 (`/api/...`), the same port as the frontend.
   The interactive OpenAPI documentation is at `http://<host>:8100/api/docs`.
 - **Delay histogram extras** (`GET /api/stats/{dir}/delay_histogram`): `?window_s=10|60|300` returns

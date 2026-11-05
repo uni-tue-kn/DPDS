@@ -13,6 +13,7 @@ pub mod host;
 pub mod lcores;
 pub mod model;
 pub mod nic_hints;
+pub mod sessions;
 pub mod stats;
 pub mod supervisor;
 pub mod telemetry;
