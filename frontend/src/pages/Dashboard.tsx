@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, Badge, Button, ButtonGroup, Col, Row, Spinner, Tab, Tabs } from 'react-bootstrap';
 import * as api from '../api/client';
-import type { EmulationState, EmulationView, HistoryTotals, StatsView } from '../api/types';
+import type { EmulationState, EmulationView, StatsView } from '../api/types';
 import { errorMessage, formatElapsed, formatPct, formatRatePill, linkLabel } from '../common/format';
 import { readConfig, startRequestOf, useLocalConfig } from '../common/localConfig';
 import { pendingRestart } from '../common/pendingRestart';
 import { startPolling } from '../common/polling';
 import { usePortLabeler } from '../common/portLabel';
-import { type History, NO_SAMPLES, sumHistories, useRunHistory } from '../common/runHistory';
+import { NO_SAMPLES, sumHistories, useRunHistory } from '../common/runHistory';
 import ErrorAlert from '../components/ErrorAlert';
 import LinkCharts from './LinkCharts';
 import LoadRunning from './LoadRunning';
@@ -35,6 +35,8 @@ const STATE_BG: Record<EmulationState, string> = {
 
 const DASH = '–';
 
+const ZERO_PILLS = { rxBps: 0, rxPps: 0, txBps: 0, txPps: 0, droppedPct: 0 };
+
 const addDrops = (a: DropCounts, b: DropCounts): DropCounts => ({
   loss: a.loss + b.loss,
   limiter: a.limiter + b.limiter,
@@ -43,39 +45,6 @@ const addDrops = (a: DropCounts, b: DropCounts): DropCounts => ({
   imissed: a.imissed + b.imissed,
   nombuf: a.nombuf + b.nombuf,
 });
-
-/**
- * The pills of a finished run: the last sample of every link summed (the final live second), and the share of dropped
- * packets over the whole run from the final counters (undefined without them).
- */
-function runTotals(history: History, totals: Record<string, HistoryTotals>) {
-  let rxGbps = 0;
-  let txGbps = 0;
-  let rxMpps = 0;
-  let txMpps = 0;
-  for (const list of Object.values(history)) {
-    const last = list.at(-1);
-    if (!last) continue;
-    rxGbps += last.rx_gbps;
-    txGbps += last.tx_gbps;
-    rxMpps += last.rx_mpps;
-    txMpps += last.tx_mpps;
-  }
-  let rx = 0;
-  let dropped = 0;
-  for (const t of Object.values(totals)) {
-    rx += t.rx_pkts;
-    dropped +=
-      t.loss_drops + t.limiter_drops + t.buffer_full_drops + t.nic_tx_drops + t.nic_rx_imissed + t.nic_rx_nombuf;
-  }
-  return {
-    rxBps: rxGbps * 1e9,
-    txBps: txGbps * 1e9,
-    rxPps: rxMpps * 1e6,
-    txPps: txMpps * 1e6,
-    droppedPct: Object.keys(totals).length === 0 ? undefined : rx > 0 ? (dropped / rx) * 100 : 0,
-  };
-}
 
 /** The log lines with a React key each: the line plus its occurrence number, since a line may repeat. */
 function keyedLines(lines: string[]): { key: string; line: string }[] {
@@ -218,7 +187,8 @@ export default function Dashboard() {
   // After the run ends (or while it ends) the controller keeps its series until the next start: the final charts stay.
   const ended = state === 'stopping' || state === 'stopped' || state === 'failed' ? state : undefined;
   const finished = ended !== undefined && Object.values(history).some((list) => list.length > 0);
-  const pills = finished ? runTotals(history, runTotalsByLink) : live && totalsOf(live);
+  // Like live statistics: once the run has ended the rates and the loss are 0 (the charts and donuts keep the run).
+  const pills = finished ? ZERO_PILLS : live && totalsOf(live);
   const restartNeeded = pendingRestart(doc, emulation).any;
   const shown = useMemo(
     () =>
@@ -287,7 +257,7 @@ export default function Dashboard() {
             </span>
           )}
           <span className="status-pill" data-testid="pill-dropped">
-            dropped {pills?.droppedPct === undefined ? DASH : formatPct(pills.droppedPct)}
+            dropped {pills ? formatPct(pills.droppedPct) : DASH}
           </span>
         </Col>
         <Col xs={4} className="text-end">

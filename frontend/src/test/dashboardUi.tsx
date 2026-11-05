@@ -5,6 +5,11 @@
 // ## Layout, top to bottom
 //   top row    data-testid="top-row", two columns like P4TG's Home.tsx:
 //                data-testid="top-pills"   `col-8 text-start`: state-badge, pill-rx, pill-tx, pill-elapsed, pill-dropped (DOM order)
+//                                          Spec 37 (user 2026-11-05), like P4TG: the pills are live statistics. While stopped, stopping
+//                                          or failed after a run, RX/TX read `RX|TX ${formatRatePill(0, 0)}`, dropped reads
+//                                          "dropped 0.00 %" and pill-elapsed keeps the frozen elapsed_ms. Before any run: "–" for
+//                                          RX/TX/dropped, no elapsed pill. Running: the live sums. The charts (all tabs, Summary too)
+//                                          and the donuts keep the ended run's history and totals; the pills never read those.
 //                data-testid="run-buttons" the ButtonGroup (role "group") inside a `col-4 text-end` column: exactly two buttons,
 //                                          always [Restart] [Start | Stop | Stopping… | Restarting…]
 //   notices    data-testid="notices", a row after the top row: "Restart needed" (pending-restart), stale-indicator, stats-warning,

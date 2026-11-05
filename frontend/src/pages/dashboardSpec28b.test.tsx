@@ -2,8 +2,8 @@ import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { vi } from 'vitest';
 import { formatRatePill } from '../common/format';
 import * as fx from '../test/fixtures';
-import { api, ApiError, fakeController, serveHistory } from '../test/mockApi';
 import { expectStartBody, renderApp, seedStore, storedDoc, tick } from '../test/helpers';
+import { ApiError, api, fakeController, serveHistory } from '../test/mockApi';
 import { must } from '../test/must';
 
 // Spec 28b: fixes from the review of bcca62b (items 1, 3, 4 and 5 here; item 2 is dashboardMemo.test.tsx, item 6 is
@@ -324,9 +324,9 @@ describe('Dashboard (spec 28b item 4): the action error and the live poll error'
   });
 });
 
-// Spec 35 F2. Was: 'no RX/TX pills while stopped' (no pill when the stats have no directions; they went away with the run). The
-// pills stay now: "–" while nothing has run, the run's final numbers after it. The full contract is in dashboardSpec35.test.tsx.
-describe('Dashboard (spec 28b item 4, spec 35 F2): RX and TX pills when the stats have no directions', () => {
+// Spec 35 F2, spec 37. Was: 'no RX/TX pills while stopped' (no pill when the stats have no directions; they went away with the run).
+// The pills stay now: "–" while nothing has run, 0 (formatRatePill(0, 0)) after it. Full contract: dashboardSpec35.test.tsx.
+describe('Dashboard (spec 28b item 4, spec 37): RX and TX pills when the stats have no directions', () => {
   it('stopped, nothing ever ran: "RX –" and "TX –", not "RX 0 bit/s (0 pps)"', async () => {
     vi.useFakeTimers();
     api.getEmulation.mockResolvedValue(fx.emulation('stopped'));
@@ -341,7 +341,7 @@ describe('Dashboard (spec 28b item 4, spec 35 F2): RX and TX pills when the stat
     expect(screen.queryByText(/0 bit\/s/)).not.toBeInTheDocument();
   });
 
-  it("they show the live numbers while links run and the run's final ones when it has stopped", async () => {
+  it('they show the live numbers while links run and 0 when it has stopped', async () => {
     vi.useFakeTimers();
     serveHistory({
       startedAt: 1762000000,
@@ -357,8 +357,8 @@ describe('Dashboard (spec 28b item 4, spec 35 F2): RX and TX pills when the stat
     api.getEmulation.mockResolvedValue(fx.emulation('stopped'));
     api.getStats.mockResolvedValue(fx.stats([], { stale: true, age_ms: undefined, elapsed_ms: 4000 }));
     await tick(2500);
-    expect(screen.getByTestId('pill-rx')).toHaveTextContent('RX 4.50 Gbit/s (2.00 Mpps)');
-    expect(screen.getByTestId('pill-tx')).toHaveTextContent('TX 4.00 Gbit/s (1.50 Mpps)');
+    expect(screen.getByTestId('pill-rx')).toHaveTextContent(`RX ${formatRatePill(0, 0)}`);
+    expect(screen.getByTestId('pill-tx')).toHaveTextContent(`TX ${formatRatePill(0, 0)}`);
   });
 
   it('a starting emulation without directions yet shows "–", not empty pills and not the old run', async () => {

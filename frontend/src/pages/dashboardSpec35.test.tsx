@@ -2,6 +2,7 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { vi } from 'vitest';
 import type { EmulationState } from '../api/types';
+import { formatRatePill } from '../common/format';
 import {
   activePanel,
   card,
@@ -313,11 +314,13 @@ describe('Dashboard (spec 35 F1): notices go in a row below the top row, never i
 
 // ---- F2: the pills after a stop -----------------------------------------------------------------------------------------
 
-describe('Dashboard (spec 35 F2): the pills stay after the run has ended', () => {
+describe('Dashboard (spec 37, was spec 35 F2): the pills show 0 once the run has ended, the history stays in charts and donuts', () => {
+  const ZERO_RX = `RX ${formatRatePill(0, 0)}`;
+  const ZERO_TX = `TX ${formatRatePill(0, 0)}`;
+
   /**
-   * Two links, each with an early sample and a final one (the final one is what the pills show), and `totals` of the run:
-   * link 0 received 1000 packets and dropped 50 (5 %), link 1 received 3000 and dropped 300 (10 %): cumulative 350 / 4000 = 8.75 %
-   * (the mean of the two shares would be 7.50, the sum of the final samples' shares something else again).
+   * Two links, each with an early sample and a final one, and `totals` of the run: link 0 received 1000 packets and dropped 50,
+   * link 1 received 3000 and dropped 300. Before spec 37 the pills showed 9.25 / 7.25 Gbit/s and 8.75 % from this; now they must not.
    */
   function twoLinkRun() {
     const early = { rx_gbps: 1, tx_gbps: 1, rx_mpps: 0.5, tx_mpps: 0.5 };
@@ -357,18 +360,22 @@ describe('Dashboard (spec 35 F2): the pills stay after the run has ended', () =>
   }
 
   it.each(['stopped', 'stopping', 'failed'] as const)(
-    '"%s": RX and TX are the last sample summed over the links, dropped is cumulative from the totals, elapsed is the frozen time',
+    '"%s": RX and TX read the 0 of formatRatePill(0, 0), dropped is 0.00 percent, elapsed is the frozen time',
     async (state) => {
       twoLinkRun();
       ended(state, 305_400);
       await open();
       await tick(1000);
-      expect(pillText('pill-rx')).toBe('RX 9.25 Gbit/s (7.31 Mpps)');
-      expect(pillText('pill-tx')).toBe('TX 7.25 Gbit/s (6.31 Mpps)');
-      expect(pillText('pill-dropped')).toBe('dropped 8.75 %');
+      expect(pillText('pill-rx')).toBe(ZERO_RX);
+      expect(pillText('pill-tx')).toBe(ZERO_TX);
+      expect(pillText('pill-dropped')).toBe('dropped 0.00 %');
       expect(pillText('pill-elapsed')).toBe('0h 5m 5s');
     },
   );
+
+  it('the 0 rate text is the live formatter\'s own, not "–" and not empty', () => {
+    expect(ZERO_RX).toMatch(/^RX 0(\.0+)? bit\/s \(0(\.0+)? pps\)$/);
+  });
 
   it('the pills do not move on while the run stays ended', async () => {
     twoLinkRun();
@@ -378,9 +385,10 @@ describe('Dashboard (spec 35 F2): the pills stay after the run has ended', () =>
     const before = ['pill-rx', 'pill-tx', 'pill-dropped', 'pill-elapsed'].map(pillText);
     await tick(30_000);
     expect(['pill-rx', 'pill-tx', 'pill-dropped', 'pill-elapsed'].map(pillText)).toEqual(before);
+    expect(before.slice(0, 3)).toEqual([ZERO_RX, ZERO_TX, 'dropped 0.00 %']);
   });
 
-  it("after a live run stops the pills turn from the live numbers to the run's own final ones", async () => {
+  it('after a live run stops the pills turn from the live numbers to 0, the elapsed time stays', async () => {
     twoLinkRun();
     api.getEmulation.mockResolvedValue(fx.emulation('running'));
     api.getStats.mockResolvedValue(
@@ -392,86 +400,43 @@ describe('Dashboard (spec 35 F2): the pills stay after the run has ended', () =>
     expect(pillText('pill-rx')).toBe('RX 2.00 Gbit/s (200.00 kpps)');
     ended('stopped', 9000);
     await tick(2500);
-    expect(pillText('pill-rx')).toBe('RX 9.25 Gbit/s (7.31 Mpps)');
+    expect(pillText('pill-rx')).toBe(ZERO_RX);
+    expect(pillText('pill-tx')).toBe(ZERO_TX);
+    expect(pillText('pill-dropped')).toBe('dropped 0.00 %');
     expect(pillText('pill-elapsed')).toBe('0h 0m 9s');
   });
 
-  it('the dropped share follows the totals the controller serves (each poll answers with the newest counters)', async () => {
+  it('the totals of the history no longer reach the dropped pill, whatever they say', async () => {
     twoLinkRun();
     ended('stopping');
-    const s = { totals: {} as Record<string, ReturnType<typeof fx.totals>> };
-    api.getStatsHistory.mockImplementation(async () => ({
-      ...fx.history({ '0': [fx.historySample(1000)], '1': [fx.historySample(1000)] }),
-      totals: s.totals,
-    }));
-    s.totals = {
-      '0': fx.totals({
-        rx_pkts: 1000,
-        loss_drops: 10,
-        limiter_drops: 0,
-        buffer_full_drops: 0,
-        nic_tx_drops: 0,
-        nic_rx_imissed: 0,
-        nic_rx_nombuf: 0,
-      }),
-    };
     await open();
-    expect(pillText('pill-dropped')).toBe('dropped 1.00 %');
-    s.totals = {
-      '0': fx.totals({
-        rx_pkts: 1000,
-        loss_drops: 10,
-        limiter_drops: 0,
-        buffer_full_drops: 0,
-        nic_tx_drops: 0,
-        nic_rx_imissed: 5,
-        nic_rx_nombuf: 5,
-      }),
-    };
     await tick(2500);
-    expect(pillText('pill-dropped')).toBe('dropped 2.00 %');
-  });
-
-  it('every cause counts as a drop: imissed and rx_nombuf alone give a share', async () => {
-    serveHistory({
-      startedAt: 1762000000,
-      samples: { '0': [fx.historySample(1000)] },
-      totals: {
-        '0': fx.totals({
-          rx_pkts: 2000,
-          loss_drops: 0,
-          limiter_drops: 0,
-          buffer_full_drops: 0,
-          nic_tx_drops: 0,
-          nic_rx_imissed: 30,
-          nic_rx_nombuf: 10,
-        }),
-      },
-    });
-    ended('stopped');
-    await open();
-    expect(pillText('pill-dropped')).toBe('dropped 2.00 %');
-  });
-
-  it('a run without a single drop reads "dropped 0.00 %"', async () => {
-    serveHistory({
-      startedAt: 1762000000,
-      samples: { '0': [fx.historySample(1000)] },
-      totals: {
-        '0': fx.totals({
-          rx_pkts: 5000,
-          loss_drops: 0,
-          limiter_drops: 0,
-          buffer_full_drops: 0,
-          nic_tx_drops: 0,
-          nic_rx_imissed: 0,
-          nic_rx_nombuf: 0,
-        }),
-      },
-    });
-    ended('stopped');
-    await open();
     expect(pillText('pill-dropped')).toBe('dropped 0.00 %');
+  });
+
+  it('the charts keep the ended run: every link tab and the Summary still plot the history, the donuts show the totals', async () => {
+    twoLinkRun();
+    ended('stopped');
+    await open();
+    await tick(1000);
+    const rx = (panel: HTMLElement) =>
+      (
+        JSON.parse(within(panel).getByTestId('chart-line').getAttribute('data-chart') ?? 'null') as {
+          datasets: { label: string; data: number[] }[];
+        }
+      ).datasets.find((d) => /RX/.test(d.label))?.data;
+    const donut = (panel: HTMLElement) =>
+      JSON.parse(within(panel).getByTestId('chart-doughnut').getAttribute('data-chart') ?? 'null').datasets[0]
+        .data as number[];
+    // the Summary (selected by default) sums the links per sample; its donut sums the totals per cause
+    expect(rx(activePanel())?.map((v) => Math.round(v * 100) / 100)).toEqual([2, 9.25]);
+    expect(donut(activePanel())).toEqual([110, 120, 55, 25, 27, 13]);
+    expect(rx(card(0))).toEqual([1, 6.1]);
+    expect(donut(card(0))).toEqual([10, 20, 5, 5, 7, 3]);
+    expect(rx(card(1))).toEqual([1, 3.15]);
+    expect(donut(card(1))).toEqual([100, 100, 50, 20, 20, 10]);
+    // and the pills beside them say 0 all along
+    expect(pillText('pill-rx')).toBe(ZERO_RX);
   });
 
   it('before any run the RX, TX and dropped pills are there and say "–"', async () => {
@@ -501,11 +466,11 @@ describe('Dashboard (spec 35 F2): the pills stay after the run has ended', () =>
     expect(pillText('pill-dropped')).toBe('dropped –');
   });
 
-  it('CHOICE: once a new run is "starting" the old run\'s numbers are gone from the pills', async () => {
+  it('CHOICE: once a new run is "starting" the pills go back from 0 to "–"', async () => {
     twoLinkRun();
     ended('stopped');
     await open();
-    expect(pillText('pill-rx')).toBe('RX 9.25 Gbit/s (7.31 Mpps)');
+    expect(pillText('pill-rx')).toBe(ZERO_RX);
     api.getEmulation.mockResolvedValue(fx.emulation('starting'));
     api.getStats.mockResolvedValue(fx.stats([], { stale: true, age_ms: undefined }));
     await tick(2500);
