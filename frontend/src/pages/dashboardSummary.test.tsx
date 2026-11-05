@@ -134,16 +134,17 @@ describe('Summary tab (spec 36 S1): position, default and visibility', () => {
     expect(summaryTab()).toHaveAttribute('aria-selected', 'true');
   });
 
-  it('there is no Summary tab, no tablist and no tabpanel without link tabs', async () => {
+  it('with no stored link and no run there is only the Summary tab (spec 39): no link tab, one tablist, one tabpanel', async () => {
     vi.useFakeTimers();
     api.getStats.mockResolvedValue(fx.stats([]));
     renderApp('/');
     await tick(0);
     await tick(0);
-    expect(hasSummary()).toBe(false);
-    expect(allTabs()).toHaveLength(0);
-    expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
-    expect(screen.queryAllByRole('tabpanel', { hidden: true })).toHaveLength(0);
+    expect(hasSummary()).toBe(true);
+    expect(allTabs()).toHaveLength(1);
+    expect(tabs()).toHaveLength(0);
+    expect(screen.getAllByRole('tablist')).toHaveLength(1);
+    expect(screen.getAllByRole('tabpanel', { hidden: true })).toHaveLength(1);
   });
 
   it('after a stop the Summary tab stays, first, with the link tabs badged "Stopped" and the Summary tab not', async () => {

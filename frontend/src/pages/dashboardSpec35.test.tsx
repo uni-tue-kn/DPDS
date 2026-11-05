@@ -689,7 +689,7 @@ describe('Dashboard (spec 35 F3): one tab per link', () => {
     expect(within(activePanel()).getByTestId('chart-line')).toBeInTheDocument();
   });
 
-  it('no tabs while the stats have no directions and nothing ran', async () => {
+  it('no tabs while running but the stats have no directions yet (the run gives the tabs, spec 39)', async () => {
     api.getStats.mockResolvedValue(fx.stats([]));
     await open();
     expect(tabs()).toHaveLength(0);

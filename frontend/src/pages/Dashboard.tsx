@@ -190,6 +190,9 @@ export default function Dashboard() {
   // Like live statistics: once the run has ended the rates and the loss are 0 (the charts and donuts keep the run).
   const pills = finished ? ZERO_PILLS : live && totalsOf(live);
   const restartNeeded = pendingRestart(doc, emulation).any;
+  // Before any run the stored links give the (empty) tabs, like P4TG's overview.
+  const beforeRun = !finished && !live && state !== undefined && state !== 'running' && state !== 'starting';
+  const storedLinks = doc.links;
   const shown = useMemo(
     () =>
       finished
@@ -197,8 +200,10 @@ export default function Dashboard() {
             .map(Number)
             .filter(Number.isInteger)
             .sort((a, b) => a - b)
-        : (live ?? []).map((d) => d.dir),
-    [finished, history, live],
+        : beforeRun
+          ? storedLinks.map((_, i) => i)
+          : (live ?? []).map((d) => d.dir),
+    [finished, beforeRun, history, live, storedLinks],
   );
   const starting = state === 'starting';
   const summaryHistory = useMemo(
@@ -215,6 +220,8 @@ export default function Dashboard() {
   };
   // A finished run is titled by the links of its own history, a live one by its stats or the plan.
   const titleOf = (dir: number) => {
+    const stored = storedLinks[dir];
+    if (beforeRun && stored) return linkLabel(stored.name, stored.ingress, stored.egress, label);
     if (finished) {
       const l = links[dir];
       return l ? linkLabel(l.name, l.ingress, l.egress, label) : `Link ${dir}`;
@@ -344,7 +351,7 @@ export default function Dashboard() {
           </pre>
         </details>
       )}
-      {shown.length > 0 && (
+      {(shown.length > 0 || beforeRun) && (
         <Tabs id="link-tabs" transition={false} activeKey={activeTab} onSelect={(k) => k && setSelected(k)}>
           <Tab eventKey={SUMMARY_TAB} title="Summary">
             <div className="pt-3">
@@ -379,6 +386,7 @@ export default function Dashboard() {
                     history={state === 'starting' ? NO_SAMPLES : (history[String(dir)] ?? NO_SAMPLES)}
                     dirLabel={`${label(s?.rx) || '?'} → ${label(s?.tx) || '?'}`}
                     drops={dropsOf(dir)}
+                    empty={beforeRun}
                     live={
                       finished || !s
                         ? undefined

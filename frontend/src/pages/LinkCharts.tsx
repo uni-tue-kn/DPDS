@@ -28,6 +28,7 @@ export default function LinkCharts({
   history,
   drops,
   live,
+  empty = false,
 }: {
   dir?: number;
   /** "ingress → egress" of the link, for the histogram tables. */
@@ -36,6 +37,8 @@ export default function LinkCharts({
   active: boolean;
   history: HistorySample[];
   drops: DropCounts;
+  /** Before any run: the link has no telemetry, so its histogram radio is there but disabled, like the Summary's. */
+  empty?: boolean;
   live?: { delayStats: boolean; meanNs?: number | null; stdNs?: number | null };
 }) {
   const theme = useTheme();
@@ -43,11 +46,12 @@ export default function LinkCharts({
   const id = useId();
   const summary = dir === undefined;
   const of = summary ? 'all links' : `link ${dir}`;
+  const noHistogram = summary || empty;
   const hasHistogram = live?.delayStats === true;
   const view = chosen === 'histogram' && !hasHistogram ? 'rate' : chosen;
   const views: [View, string][] = [
     ['rate', 'Rate'],
-    ...(hasHistogram || summary ? ([['histogram', 'Delay histogram']] as [View, string][]) : []),
+    ...(hasHistogram || noHistogram ? ([['histogram', 'Delay histogram']] as [View, string][]) : []),
     ['loss', 'Loss'],
   ];
   const labels = useMemo(() => history.map((s) => formatElapsed(s.t_ms)), [history]);
@@ -123,7 +127,7 @@ export default function LinkCharts({
               id={`chart-${id}-${v}`}
               label={text}
               checked={view === v}
-              disabled={summary && v === 'histogram'}
+              disabled={noHistogram && v === 'histogram'}
               onChange={() => setChosen(v)}
             />
           );

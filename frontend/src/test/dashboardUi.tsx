@@ -45,6 +45,15 @@
 //              "Histogram config" (Bin Range, #Bins, Bin Width), "Values" (Dir, Delay, σ(Delay), Outlier, Total #Packets) and
 //              "Percentiles" (Dir, p50, p90, p99, p99.9). The tooltip texts of their header rows are shown on hover.
 //
+// ## Spec 39 (empty diagrams before any run; spec: .git/claude-specs/spec35-dashboard.md, "Spec 39")
+//   Before any run (no history samples, state not running/starting, so also stopping/stopped/failed without a run) the chart area
+//   is shown from localStorage: the Summary tab, then one link tab per STORED link in stored order, titled "name: ingress →
+//   egress" (netdev labels, same fallbacks as live), no ended badge. No stored links: only the Summary tab (a tablist with one tab
+//   and one tabpanel). Every tab: the Rate chart with no points (datasets RX, TX with empty data, axes titled, legend on), the radios
+//   Rate / Delay histogram / Loss with "Delay histogram" present but disabled on link tabs too, and the grey "No drops" donut with
+//   the six-cause legend. getDelayHistogram is never called. While "starting" there are no tabs (as before); a running or ended run
+//   takes its tabs from the run (live stats / history), never from the stored links.
+//
 // ## Helpers
 // `tabs()`, `tab(d)`, `hasTab(d)`, `card(d)` and the other helpers below address the LINK tabs only (the Summary tab is not counted),
 // so the indexes of the existing tests are unchanged. `summaryTab()`, `summary()` and `summaryRadio()` address the Summary tab.
