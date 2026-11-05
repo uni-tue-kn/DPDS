@@ -816,8 +816,17 @@ without internet access, means no notice.
   start body (400 naming the field, 409 for a duplicate name or reused port), and adds the
   link-dependent hints, which need the links to know the NICs (NUMA locality, hugepages for the
   links, NIC interrupts (`irq_affinity`), host uplink, drain timeout, MTU and the per-NIC hints of
-  the used NICs); the frontend calls it with its current configuration. Warnings do not block the
-  installation.
+  the used NICs); the frontend calls it with its current configuration. The firmware query is slow,
+  so its successful result is kept in a cache per card (function 0) until the controller restarts,
+  or until a recheck drops it with `POST /api/host/hints?recheck=true` (the frontend's Recheck
+  button); `recheck=false` or no query is the normal behaviour, and any other value or query key is
+  a 400 naming `recheck`, before anything runs. A cached result runs no tool and costs no budget
+  time. It is used while an emulation is starting, running or stopping, also with `recheck=true`,
+  and a NIC without a cached result stays "not checked while an emulation is running". The detail
+  of a cached hint ends with "(firmware values read <N> s ago; Recheck to read them again)". A
+  failure, a timeout, a missing tool and a used-up budget are never cached, and `ethtool` and `dcb`
+  are not cached at all. `dpds-controller check` is another process with no cache and no recheck.
+  Warnings do not block the installation.
 - **Hint commands**: a hint that can be fixed has an optional `commands` array (omitted when empty):
   the exact shell commands an administrator runs as root to enable the tuning on this host, computed
   by the controller from what it read (netdev names, PCI addresses, interrupt numbers, core lists,

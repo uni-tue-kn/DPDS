@@ -987,3 +987,87 @@ fn the_readme_no_longer_says_a_start_waits_for_a_running_query() {
         assert!(!flat.contains(stale), "the README still says {stale:?}");
     }
 }
+
+// ---- spec 34: the firmware query is cached until the controller restarts or a recheck -----------
+
+/// The controller section with all whitespace runs joined to single spaces.
+fn controller_flat() -> String {
+    controller_section(&readme())
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The sentences of the controller section that talk about a cache.
+fn cache_sentences() -> Vec<String> {
+    controller_flat()
+        .split(". ")
+        .filter(|s| s.to_lowercase().contains("cache"))
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn the_readme_says_the_firmware_query_is_cached_until_the_controller_restarts_or_a_recheck() {
+    let sentences = cache_sentences();
+    assert!(
+        !sentences.is_empty(),
+        "no sentence of the controller section mentions the cache"
+    );
+    let text = sentences.join(". ").to_lowercase();
+    for needle in ["firmware", "until the controller restarts", "recheck"] {
+        assert!(
+            text.contains(needle),
+            "the cache sentences lack {needle:?}: {text}"
+        );
+    }
+    // one sentence says all of it
+    assert!(
+        sentences.iter().any(|s| {
+            let s = s.to_lowercase();
+            s.contains("firmware")
+                && s.contains("until the controller restarts")
+                && s.contains("recheck")
+        }),
+        "{sentences:?}"
+    );
+}
+
+#[test]
+fn the_readme_documents_recheck_true_on_the_hints_post() {
+    let items = controller_items_with("`POST /api/host/hints");
+    assert!(!items.is_empty(), "no item documents the hints post");
+    let item = items.join(" ");
+    assert!(
+        item.contains("recheck=true"),
+        "the hints post documents `recheck=true`: {item}"
+    );
+    let flat = controller_flat();
+    assert!(
+        flat.contains("`recheck`") && flat.contains("`recheck=false`"),
+        "the query values are documented"
+    );
+    // a bad value is a 400 naming `recheck`
+    assert!(
+        flat.contains("400 naming `recheck`"),
+        "the README says a bad `recheck` is a 400 naming `recheck`"
+    );
+}
+
+#[test]
+fn the_readme_says_a_cached_result_is_used_while_an_emulation_runs_and_that_check_has_no_cache() {
+    let text = cache_sentences().join(". ").to_lowercase();
+    assert!(
+        text.contains("emulation"),
+        "a cached result is used while an emulation is starting, running or stopping: {text}"
+    );
+    let flat = controller_flat();
+    assert!(
+        flat.contains("`dpds-controller check`")
+            && flat
+                .split(". ")
+                .any(|s| s.contains("`dpds-controller check`")
+                    && s.to_lowercase().contains("no cache")),
+        "a sentence names `dpds-controller check` and says it has no cache"
+    );
+}

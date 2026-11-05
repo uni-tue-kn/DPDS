@@ -116,6 +116,30 @@
 //! - Spec 33c item 4: the message of a timed-out tool gives the timeout the call really had,
 //!   with millisecond precision below 1 s (`timed out after 0.9 s`, never `0 s`).
 //!
+//! ## Spec 34 (the firmware query is cached)
+//!
+//! - The controller keeps, in memory and per router (never a process-wide static, never on disk),
+//!   the result of each NIC's firmware query (`mstconfig|mlxconfig -d <function 0> -e -j <file> q`),
+//!   keyed by the function-0 address the query uses, so two functions of one card share an entry.
+//!   Only a query that answered and parsed is stored, together with the tool that answered and the
+//!   `Exec::now()` it was read at. A missing tool, a failing or timed-out tool, an answer without
+//!   firmware settings and a hint that was "not checked" (budget used up, emulation running) store
+//!   nothing: the next request queries again.
+//! - A hint computed from a stored result runs no `mstconfig`/`mlxconfig`, costs no budget time
+//!   (also when the budget is used up) and has the level, title, commands and suggestion of a fresh
+//!   one. Its detail ends with "(firmware values read <N> s ago; Recheck to read them again)", `<N>`
+//!   being `Exec::now()` minus the time of the read in seconds. A fresh read has no such note.
+//!   `ethtool` and `dcb` are not cached.
+//! - While an emulation is starting, running or stopping a stored result is used (no tool runs);
+//!   without one the hint stays "not checked while an emulation is running".
+//! - `POST /api/host/hints?recheck=true` drops the stored results of the NICs (function 0) of the
+//!   posted links before computing, and stores the new one. While no tool may run the stored result
+//!   stays and is used. The query is `recheck=true`, `recheck=false` (like absent) or absent:
+//!   anything else (`1`, `yes`, `True`, empty, a repeated key, any other key) is a 400 naming
+//!   `recheck`, before anything is read or dropped. `GET /api/host/hints` ignores its query as
+//!   before and never touches the store. OpenAPI documents `recheck` on the POST only.
+//! - `dpds-controller check` is another process without a store; it has no `--recheck`.
+//!
 //! ## Sources
 //!
 //! No source file executes a mutating argv (`ethtool -A`, `... set`), writes below `/proc` or
@@ -3006,6 +3030,742 @@ async fn a_hints_request_while_a_start_is_in_progress_runs_no_tools() {
             hint(&h, &id)
         );
     }
+}
+
+// ---- spec 34: the firmware query is cached until a restart or a recheck -------------------------
+
+const HINTS: &str = "/api/host/hints";
+const NOTE_START: &str = "(firmware values read ";
+const NOTE_END: &str = " s ago; Recheck to read them again)";
+/// What the `ethtool` call of NIC1 takes in `fw_app`: a request on NIC1 moves the simulated clock by
+/// this much without touching NIC0's firmware.
+const TICK: Duration = Duration::from_secs(25);
+
+/// The tools of `all_tools`, a handle on the firmware state of NIC0's card, and a router over it.
+fn fw_app() -> (TestApp, Arc<FakeExec>, Arc<Mutex<MstState>>) {
+    let host = FakeHost::bare_metal();
+    all_tools(&host);
+    let exec = host.exec();
+    let st = fake_mst(&exec, "mstconfig", BDF0, MstState::untuned());
+    exec.takes(&["ethtool", "--json", "-a", "ens2f0"], TICK);
+    (TestApp::new(host), exec, st)
+}
+
+/// The firmware queries made so far for the device `bdf`, by either tool.
+fn fw_queries(exec: &FakeExec, bdf: &str) -> usize {
+    exec.calls()
+        .iter()
+        .filter(|c| {
+            matches!(c[0].as_str(), "mstconfig" | "mlxconfig")
+                && c.get(2).map(String::as_str) == Some(bdf)
+                && c.last().map(String::as_str) == Some("q")
+        })
+        .count()
+}
+
+async fn post_hints(a: &TestApp, query: &str, s: &Setup) -> Reply {
+    a.post(&format!("{HINTS}{query}"), s.body()).await
+}
+
+async fn hints_at(a: &TestApp, query: &str, s: &Setup) -> Value {
+    let r = post_hints(a, query, s).await;
+    assert_eq!(r.status, 200, "{query}: {}", r.text());
+    r.json()
+}
+
+/// A request on NIC1 only: it moves the simulated clock by `TICK`.
+async fn tick(a: &TestApp) {
+    hints_at(a, "", &link_on(NIC1)).await;
+}
+
+fn fw_detail(h: &Value, id: &str) -> String {
+    hint(h, id)["detail"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// `<N>` of "(firmware values read <N> s ago; Recheck to read them again)", when the detail has it.
+fn age_note(detail: &str) -> Option<f64> {
+    let rest = &detail[detail.find(NOTE_START)? + NOTE_START.len()..];
+    rest[..rest.find(NOTE_END)?].trim().parse().ok()
+}
+
+/// The hint says its values were read about `secs` seconds ago (on the fake clock).
+fn assert_read_ago(h: &Value, id: &str, secs: f64) {
+    let d = fw_detail(h, id);
+    let n = age_note(&d).unwrap_or_else(|| panic!("no age note in the detail of {id}: {d}"));
+    assert!(
+        (n - secs).abs() < 0.6,
+        "read {n} s ago, expected {secs} s: {d}"
+    );
+    assert!(d.trim_end().ends_with(')'), "the note ends the detail: {d}");
+}
+
+/// A hint from a fresh read says nothing of a cache.
+fn assert_fresh(h: &Value, id: &str) {
+    let d = fw_detail(h, id).to_lowercase();
+    assert!(
+        !d.contains("firmware values read") && !d.contains("recheck"),
+        "a fresh read has no cache note: {d}"
+    );
+}
+
+/// `later` is `first` computed from the cache: the same level, title, suggestion and commands, and
+/// the same detail followed by the age note.
+fn assert_same_hint(first: &Value, later: &Value, id: &str) {
+    let (a, b) = (hint(first, id), hint(later, id));
+    for key in ["level", "title", "suggestion", "commands"] {
+        assert_eq!(a.get(key), b.get(key), "{key} of {id}");
+    }
+    let (d1, d2) = (fw_detail(first, id), fw_detail(later, id));
+    let rest = d2
+        .strip_prefix(d1.trim_end())
+        .unwrap_or_else(|| panic!("the detail keeps its text: {d1:?} then {d2:?}"));
+    let rest = rest.trim_start_matches(['.', ' ']);
+    assert!(
+        rest.starts_with(NOTE_START) && rest.ends_with(NOTE_END),
+        "the detail ends with the note: {d2:?}"
+    );
+}
+
+fn fw_untuned_commands() -> Vec<String> {
+    fw_set("mstconfig", BDF0).to_vec()
+}
+
+#[tokio::test]
+async fn a_second_post_for_the_same_nic_runs_no_firmware_query_and_gives_the_same_hint() {
+    let (a, exec, _) = fw_app();
+    let id = fw_id();
+    let s = link_on(NIC0);
+    let first = hints_at(&a, "", &s).await;
+    assert_eq!(fw_queries(&exec, BDF0), 1);
+    assert_eq!(commands_of(&first, &id), fw_untuned_commands());
+    assert_fresh(&first, &id);
+    let ethtool_before = exec.calls_with("ethtool").len();
+    let second = hints_at(&a, "", &s).await;
+    assert_eq!(fw_queries(&exec, BDF0), 1, "{:?}", exec.calls());
+    assert_same_hint(&first, &second, &id);
+    assert_read_ago(&second, &id, 0.0);
+    assert!(
+        exec.calls_with("ethtool").len() > ethtool_before,
+        "only the firmware query is cached, flow control is read again"
+    );
+    let third = hints_at(&a, "", &s).await;
+    assert_eq!(fw_queries(&exec, BDF0), 1);
+    assert_same_hint(&first, &third, &id);
+}
+
+#[tokio::test]
+async fn a_cached_hint_keeps_the_level_and_the_commands_of_every_firmware_state() {
+    let states = [
+        ("untuned", MstState::untuned(), "info", 2usize),
+        ("tuned", MstState::tuned(), "ok", 0),
+        (
+            "pending a reset",
+            MstState {
+                max_cur: 0,
+                ..MstState::tuned()
+            },
+            "info",
+            0,
+        ),
+    ];
+    for (name, state, level, commands) in states {
+        let (a, exec, st) = fw_app();
+        *st.lock().unwrap() = state;
+        let id = fw_id();
+        let first = hints_at(&a, "", &link_on(NIC0)).await;
+        let second = hints_at(&a, "", &link_on(NIC0)).await;
+        assert_eq!(fw_queries(&exec, BDF0), 1, "{name}");
+        assert_level(&second, &id, level, level);
+        assert_eq!(commands_of(&second, &id).len(), commands, "{name}");
+        assert_same_hint(&first, &second, &id);
+    }
+    // the virtual machine note is part of the detail the cache note follows
+    let (a, _, _) = fw_app();
+    a.host.write("sys/hypervisor/type", "xen\n");
+    hints_at(&a, "", &link_on(NIC0)).await;
+    let h = hints_at(&a, "", &link_on(NIC0)).await;
+    assert!(detail_has(&h, &fw_id(), "hypervisor"), "{h}");
+    assert_read_ago(&h, &fw_id(), 0.0);
+}
+
+#[tokio::test]
+async fn a_cached_hint_comes_from_the_cache_even_when_the_budget_is_used_up() {
+    let (a, exec, _) = fw_app();
+    let id = fw_id();
+    // flow control off, so the port buffer is read as well
+    fake_ethtool(&exec, "ens1f0", eth(false, false, false));
+    let first = hints_at(&a, "", &link_on(NIC0)).await;
+    assert_eq!(commands_of(&first, &id), fw_untuned_commands());
+    // from now on ethtool and dcb use the whole budget of 60 s before the firmware is looked at
+    exec.takes(&["ethtool"], T30);
+    exec.takes(&["dcb"], T30);
+    let t0 = exec.now();
+    let second = hints_at(&a, "", &link_on(NIC0)).await;
+    assert_eq!(
+        exec.now() - t0,
+        Duration::from_secs(60),
+        "the other tools used the budget up"
+    );
+    assert_eq!(fw_queries(&exec, BDF0), 1);
+    assert_same_hint(&first, &second, &id);
+    assert!(
+        !text(&second, &id).contains(USED_UP),
+        "a cached result needs no time: {}",
+        hint(&second, &id)
+    );
+}
+
+#[tokio::test]
+async fn the_age_note_follows_the_clock_of_the_controller() {
+    let (a, exec, _) = fw_app();
+    let id = fw_id();
+    let s = link_on(NIC0);
+    hints_at(&a, "", &s).await;
+    tick(&a).await;
+    let h = hints_at(&a, "", &s).await;
+    assert_read_ago(&h, &id, 25.0);
+    tick(&a).await;
+    let h = hints_at(&a, "", &s).await;
+    assert_read_ago(&h, &id, 50.0);
+    assert_eq!(
+        fw_queries(&exec, BDF0),
+        1,
+        "the age does not make the entry expire"
+    );
+}
+
+// ---- what is not cached -------------------------------------------------------------------------
+
+/// Asks twice while the query fails (`broken` is registered for NIC0's card first), then lets it
+/// succeed: the failure is never stored, the success is.
+async fn failure_is_not_cached(broken: Out, what: &str) {
+    let (a, exec, _) = fw_app();
+    let id = fw_id();
+    let s = link_on(NIC0);
+    exec.on(&["mstconfig", "-d", BDF0], broken);
+    for round in 1..=2 {
+        let h = hints_at(&a, "", &s).await;
+        assert_eq!(fw_queries(&exec, BDF0), round, "{what}: asked again");
+        assert_level(&h, &id, "info", "info");
+        assert_no_commands(&h, &id);
+        assert_fresh(&h, &id);
+    }
+    // the tool works again
+    fake_mst(&exec, "mstconfig", BDF0, MstState::untuned());
+    let h = hints_at(&a, "", &s).await;
+    assert_eq!(fw_queries(&exec, BDF0), 3, "{what}");
+    assert_eq!(commands_of(&h, &id), fw_untuned_commands(), "{what}");
+    assert_fresh(&h, &id);
+    let h = hints_at(&a, "", &s).await;
+    assert_eq!(fw_queries(&exec, BDF0), 3, "{what}: the success is cached");
+    assert_read_ago(&h, &id, 0.0);
+}
+
+#[tokio::test]
+async fn a_failing_query_is_not_cached() {
+    failure_is_not_cached(Out::Fail(1, "boom".into()), "failure").await;
+}
+
+#[tokio::test]
+async fn a_timed_out_query_is_not_cached() {
+    failure_is_not_cached(Out::Timeout, "timeout").await;
+}
+
+#[tokio::test]
+async fn an_answer_without_firmware_settings_is_not_cached() {
+    failure_is_not_cached(
+        Out::JsonFile(json!({"Device #1": {"tlv_configuration": {}}})),
+        "no settings",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_missing_tool_is_not_cached() {
+    let host = FakeHost::bare_metal();
+    let exec = host.exec();
+    for dev in ["ens1f0", "ens2f0"] {
+        fake_ethtool(&exec, dev, eth(false, true, true));
+    }
+    let a = TestApp::new(host);
+    let id = fw_id();
+    let s = link_on(NIC0);
+    for _ in 0..2 {
+        let before = fw_queries(&exec, BDF0);
+        let h = hints_at(&a, "", &s).await;
+        assert_commands(&h, &id, &["apt install mstflint"]);
+        assert!(
+            fw_queries(&exec, BDF0) > before,
+            "a missing tool is looked for again: {:?}",
+            exec.calls()
+        );
+    }
+    // mstflint was installed in the meantime
+    fake_mst(&exec, "mstconfig", BDF0, MstState::untuned());
+    let h = hints_at(&a, "", &s).await;
+    assert_eq!(commands_of(&h, &id), fw_untuned_commands());
+    let n = fw_queries(&exec, BDF0);
+    let h = hints_at(&a, "", &s).await;
+    assert_eq!(fw_queries(&exec, BDF0), n);
+    assert_read_ago(&h, &id, 0.0);
+}
+
+#[tokio::test]
+async fn a_result_not_read_because_the_budget_was_used_up_is_not_cached() {
+    let (a, exec, _) = fw_app();
+    let id = fw_id();
+    fake_ethtool(&exec, "ens1f0", eth(false, false, false));
+    exec.takes(&["ethtool"], T30);
+    exec.takes(&["dcb"], T30);
+    let s = link_on(NIC0);
+    let h = hints_at(&a, "", &s).await;
+    assert_used_up(&h, &id);
+    assert_eq!(fw_queries(&exec, BDF0), 0);
+    exec.takes(&["ethtool"], Duration::ZERO);
+    exec.takes(&["dcb"], Duration::ZERO);
+    let h = hints_at(&a, "", &s).await;
+    assert_eq!(fw_queries(&exec, BDF0), 1, "the next request reads it");
+    assert_eq!(commands_of(&h, &id), fw_untuned_commands());
+    hints_at(&a, "", &s).await;
+    assert_eq!(fw_queries(&exec, BDF0), 1);
+}
+
+#[tokio::test]
+async fn the_cache_remembers_which_tool_answered() {
+    // only mlxconfig is installed: the cached hint still names it and probes nothing
+    let host = FakeHost::bare_metal();
+    let exec = host.exec();
+    fake_mst(&exec, "mlxconfig", BDF0, MstState::untuned());
+    let a = TestApp::new(host);
+    let s = link_on(NIC0);
+    let first = hints_at(&a, "", &s).await;
+    let want: Vec<String> = fw_set("mlxconfig", BDF0).to_vec();
+    assert_eq!(commands_of(&first, &fw_id()), want);
+    let calls = exec.calls().len();
+    let again = hints_at(&a, "", &s).await;
+    assert_eq!(commands_of(&again, &fw_id()), want);
+    assert!(
+        exec.calls()[calls..]
+            .iter()
+            .all(|c| c[0] != "mstconfig" && c[0] != "mlxconfig"),
+        "no firmware tool is run for a cached result: {:?}",
+        &exec.calls()[calls..]
+    );
+}
+
+#[tokio::test]
+async fn two_routers_do_not_share_a_cache() {
+    // the cache belongs to one controller (router), it is no process-wide static
+    let host = FakeHost::bare_metal();
+    all_tools(&host);
+    let exec = host.exec();
+    let (r1, r2) = (router_over(host.roots()), router_over(host.roots()));
+    let body = link_on(NIC0).body();
+    for router in [&r1, &r2, &r1, &r2] {
+        let r = call(router, "POST", HINTS, Some(body.clone())).await;
+        assert_eq!(r.status, 200, "{}", r.text());
+    }
+    assert_eq!(fw_queries(&exec, BDF0), 2, "one query per router");
+}
+
+// ---- recheck ------------------------------------------------------------------------------------
+
+#[tokio::test]
+async fn recheck_true_queries_again_and_refreshes_the_cache() {
+    let (a, exec, st) = fw_app();
+    let id = fw_id();
+    let s = link_on(NIC0);
+    hints_at(&a, "", &s).await;
+    tick(&a).await;
+    assert_read_ago(&hints_at(&a, "", &s).await, &id, 25.0);
+    assert_eq!(fw_queries(&exec, BDF0), 1);
+    // an administrator tuned the card and reset it
+    *st.lock().unwrap() = MstState::tuned();
+    let h = hints_at(&a, "?recheck=true", &s).await;
+    assert_eq!(fw_queries(&exec, BDF0), 2);
+    assert_level(&h, &id, "ok", "ok");
+    assert_no_commands(&h, &id);
+    assert_fresh(&h, &id);
+    // the new result is the cached one, read just now
+    let h = hints_at(&a, "", &s).await;
+    assert_eq!(fw_queries(&exec, BDF0), 2);
+    assert_level(&h, &id, "ok", "ok");
+    assert_read_ago(&h, &id, 0.0);
+    // and it can be refreshed again
+    hints_at(&a, "?recheck=true", &s).await;
+    assert_eq!(fw_queries(&exec, BDF0), 3);
+}
+
+#[tokio::test]
+async fn recheck_true_on_an_empty_cache_is_a_plain_read() {
+    let (a, exec, _) = fw_app();
+    let h = hints_at(&a, "?recheck=true", &link_on(NIC0)).await;
+    assert_eq!(fw_queries(&exec, BDF0), 1);
+    assert_eq!(commands_of(&h, &fw_id()), fw_untuned_commands());
+    assert_fresh(&h, &fw_id());
+}
+
+#[tokio::test]
+async fn a_recheck_that_fails_drops_the_old_result() {
+    let (a, exec, _) = fw_app();
+    let id = fw_id();
+    let s = link_on(NIC0);
+    hints_at(&a, "", &s).await;
+    exec.on(&["mstconfig", "-d", BDF0], Out::Fail(1, "boom".into()));
+    let h = hints_at(&a, "?recheck=true", &s).await;
+    assert_eq!(fw_queries(&exec, BDF0), 2);
+    assert_level(&h, &id, "info", "info");
+    assert_no_commands(&h, &id);
+    assert_fresh(&h, &id);
+    // the stale value is gone: the next plain request asks again
+    hints_at(&a, "", &s).await;
+    assert_eq!(fw_queries(&exec, BDF0), 3, "{:?}", exec.calls());
+}
+
+#[tokio::test]
+async fn recheck_false_behaves_like_no_parameter() {
+    let (a, exec, _) = fw_app();
+    let id = fw_id();
+    let s = link_on(NIC0);
+    // on an empty cache it reads, like any request
+    let first = hints_at(&a, "?recheck=false", &s).await;
+    assert_eq!(fw_queries(&exec, BDF0), 1);
+    assert_fresh(&first, &id);
+    // with a cached result it uses it
+    let second = hints_at(&a, "?recheck=false", &s).await;
+    assert_eq!(fw_queries(&exec, BDF0), 1);
+    assert_same_hint(&first, &second, &id);
+    assert_read_ago(&second, &id, 0.0);
+}
+
+#[tokio::test]
+async fn a_recheck_drops_only_the_nics_of_the_posted_links() {
+    let (a, exec, _) = fw_app();
+    let both = setup(vec![link("l", NIC0, NIC1, None)]);
+    hints_at(&a, "", &both).await;
+    assert_eq!(fw_queries(&exec, BDF0), 1);
+    assert_eq!(fw_queries(&exec, NIC1), 1);
+    hints_at(&a, "?recheck=true", &link_on(NIC0)).await;
+    assert_eq!(fw_queries(&exec, BDF0), 2);
+    assert_eq!(
+        fw_queries(&exec, NIC1),
+        1,
+        "NIC1 was not part of the request"
+    );
+    let h = hints_at(&a, "", &both).await;
+    assert_eq!(fw_queries(&exec, BDF0), 2);
+    assert_eq!(fw_queries(&exec, NIC1), 1);
+    assert!(
+        age_note(&fw_detail(&h, &nic_id("firmware", NIC1))).is_some(),
+        "NIC1's hint comes from the cache: {h}"
+    );
+    // both NICs of the posted link are read again
+    hints_at(&a, "?recheck=true", &both).await;
+    assert_eq!(fw_queries(&exec, BDF0), 3);
+    assert_eq!(fw_queries(&exec, NIC1), 2);
+    // a post without links names no NIC, so it drops nothing
+    hints_at(&a, "?recheck=true", &Setup::default()).await;
+    hints_at(&a, "", &both).await;
+    assert_eq!(fw_queries(&exec, BDF0), 3);
+    assert_eq!(fw_queries(&exec, NIC1), 2);
+}
+
+#[tokio::test]
+async fn bad_recheck_values_are_a_400_naming_recheck_before_anything_runs() {
+    let (a, exec, _) = fw_app();
+    let s = link_on(NIC0);
+    hints_at(&a, "", &s).await; // a cached result that no bad request may drop
+    let calls = exec.calls().len();
+    let bad = [
+        "?recheck=1",
+        "?recheck=0",
+        "?recheck=2",
+        "?recheck=yes",
+        "?recheck=no",
+        "?recheck=True",
+        "?recheck=TRUE",
+        "?recheck=False",
+        "?recheck=truee",
+        "?recheck=false1",
+        "?recheck=",
+        "?recheck",
+        "?recheck=true&recheck=true",
+        "?recheck=false&recheck=false",
+        "?recheck=true&recheck=false",
+        "?recheck=false&recheck=true",
+        "?recheck=true&x=1",
+        "?x=1&recheck=true",
+        "?x=1",
+        "?x",
+        "?Recheck=true",
+        "?since_ms=5",
+    ];
+    for q in bad {
+        let r = post_hints(&a, q, &s).await;
+        assert_eq!(r.status, 400, "{q}: {}", r.text());
+        assert!(r.message().contains("recheck"), "{q}: {}", r.message());
+    }
+    assert_eq!(exec.calls().len(), calls, "{:?}", &exec.calls()[calls..]);
+    hints_at(&a, "", &s).await;
+    assert_eq!(fw_queries(&exec, BDF0), 1, "the cache survived the 400s");
+}
+
+#[tokio::test]
+async fn get_hints_ignores_its_query_and_never_touches_the_cache() {
+    let (a, exec, _) = fw_app();
+    let s = link_on(NIC0);
+    let plain = a.get(HINTS).await;
+    assert_eq!(plain.status, 200);
+    for q in [
+        "?recheck=true",
+        "?recheck=false",
+        "?recheck=banana",
+        "?x=1",
+        "?recheck",
+    ] {
+        let r = a.get(&format!("{HINTS}{q}")).await;
+        assert_eq!(r.status, 200, "GET {q}: {}", r.text());
+        assert_eq!(r.json(), plain.json(), "GET {q}");
+    }
+    assert!(
+        exec.calls().is_empty(),
+        "GET has no NIC hints: {:?}",
+        exec.calls()
+    );
+    hints_at(&a, "", &s).await;
+    assert_eq!(fw_queries(&exec, BDF0), 1);
+    let r = a.get(&format!("{HINTS}?recheck=true")).await;
+    assert_eq!(r.status, 200);
+    hints_at(&a, "", &s).await;
+    assert_eq!(
+        fw_queries(&exec, BDF0),
+        1,
+        "GET ?recheck=true drops nothing"
+    );
+}
+
+// ---- while an emulation starts, runs or stops ------------------------------------------------
+
+#[tokio::test]
+async fn while_an_emulation_is_busy_a_cached_result_is_used_and_no_tool_runs() {
+    for state in [State::Starting, State::Running, State::Stopping] {
+        let (a, exec, _) = fw_app();
+        let (id0, id1) = (fw_id(), nic_id("firmware", NIC1));
+        let s = setup(vec![link("l", NIC0, NIC1, None)]);
+        let first = hints_at(&a, "", &link_on(NIC0)).await; // only NIC0 is cached
+        a.supervisor.force_status(status(state));
+        let calls = exec.calls().len();
+        for query in ["", "?recheck=true", "?recheck=false"] {
+            let h = hints_at(&a, query, &s).await;
+            assert_eq!(
+                exec.calls().len(),
+                calls,
+                "{state:?} {query}: {:?}",
+                &exec.calls()[calls..]
+            );
+            // the cached NIC: its hint as it was read, with the note
+            assert_same_hint(&first, &h, &id0);
+            assert_read_ago(&h, &id0, 0.0);
+            assert!(
+                !text(&h, &id0).contains("not checked while an emulation is running"),
+                "{state:?} {query}: {}",
+                hint(&h, &id0)
+            );
+            // the other NIC: nothing cached, so still not checked
+            assert_level(&h, &id1, "info", "info");
+            assert_no_commands(&h, &id1);
+            assert!(
+                text(&h, &id1).contains("not checked while an emulation is running"),
+                "{state:?} {query}: {}",
+                hint(&h, &id1)
+            );
+            assert!(age_note(&fw_detail(&h, &id1)).is_none(), "{state:?}");
+            // what else needs a tool stays not checked, only the firmware is cached
+            for kind in ["flow_control", "port_buffer"] {
+                assert!(
+                    text(&h, &nic_id(kind, NIC0))
+                        .contains("not checked while an emulation is running"),
+                    "{state:?} {kind}"
+                );
+            }
+        }
+        // the recheck during the run did not drop the entry
+        a.supervisor.force_status(status(State::Stopped));
+        let h = hints_at(&a, "", &link_on(NIC0)).await;
+        assert_eq!(fw_queries(&exec, BDF0), 1, "{state:?}");
+        assert_same_hint(&first, &h, &id0);
+    }
+}
+
+#[tokio::test]
+async fn a_result_read_before_a_real_start_is_used_during_the_run() {
+    let (a, exec, _) = fw_app();
+    let s = link_on(NIC0);
+    let first = hints_at(&a, "", &s).await;
+    a.start_ok(vec![link("r", NIC1, NIC1, None)]).await;
+    let calls = exec.calls().len();
+    let h = hints_at(&a, "?recheck=true", &s).await;
+    assert_eq!(exec.calls().len(), calls);
+    assert_same_hint(&first, &h, &fw_id());
+}
+
+// ---- one card, one entry --------------------------------------------------------------------------
+
+#[tokio::test]
+async fn two_functions_of_one_card_share_a_cache_entry() {
+    let (a, exec, _) = fw_app();
+    const FN1: &str = "0000:17:00.1";
+    a.host.add_nic(&Nic::mlx5(FN1, "ens1f1", Some(0)));
+    let id1 = nic_id("firmware", FN1);
+    let first = hints_at(&a, "", &link_on(NIC0)).await;
+    assert_eq!(fw_queries(&exec, BDF0), 1);
+    // the other function: the same card, so no query and the commands of function 0
+    let h = hints_at(&a, "", &link_on(FN1)).await;
+    assert_eq!(fw_queries(&exec, BDF0), 1, "{:?}", exec.calls_with("q"));
+    assert_eq!(commands_of(&h, &id1), fw_untuned_commands());
+    assert_eq!(hint(&h, &id1)["level"], hint(&first, &fw_id())["level"]);
+    assert_read_ago(&h, &id1, 0.0);
+    // a recheck through function 1 drops the card's entry
+    hints_at(&a, "?recheck=true", &link_on(FN1)).await;
+    assert_eq!(fw_queries(&exec, BDF0), 2);
+    hints_at(&a, "", &link_on(NIC0)).await;
+    assert_eq!(fw_queries(&exec, BDF0), 2);
+}
+
+#[tokio::test]
+async fn both_functions_of_a_card_in_one_request_make_one_query() {
+    let (a, exec, _) = fw_app();
+    const FN1: &str = "0000:17:00.1";
+    a.host.add_nic(&Nic::mlx5(FN1, "ens1f1", Some(0)));
+    let h = hints_at(&a, "", &setup(vec![link("l", NIC0, FN1, None)])).await;
+    assert_eq!(fw_queries(&exec, BDF0), 1, "{:?}", exec.calls_with("q"));
+    let (a0, a1) = (fw_id(), nic_id("firmware", FN1));
+    assert_eq!(commands_of(&h, &a0), fw_untuned_commands());
+    assert_eq!(commands_of(&h, &a1), fw_untuned_commands());
+    assert_eq!(hint(&h, &a0)["level"], hint(&h, &a1)["level"]);
+}
+
+#[tokio::test]
+async fn cards_do_not_share_entries() {
+    let (a, exec, _) = fw_app();
+    hints_at(&a, "", &link_on(NIC0)).await;
+    let h = hints_at(&a, "", &link_on(NIC1)).await;
+    assert_eq!(fw_queries(&exec, BDF0), 1);
+    assert_eq!(fw_queries(&exec, NIC1), 1, "NIC1 is another card");
+    assert_fresh(&h, &nic_id("firmware", NIC1));
+}
+
+// ---- OpenAPI, the CLI, the real binary ---------------------------------------------------------------
+
+#[tokio::test]
+async fn openapi_documents_recheck_on_the_hints_post_only() {
+    let a = TestApp::new(FakeHost::bare_metal());
+    let doc = a.get("/api/openapi.json").await.json();
+    let params = |method: &str| -> Vec<Value> {
+        doc["paths"][HINTS][method]["parameters"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+    };
+    let post = params("post");
+    let recheck = post
+        .iter()
+        .find(|p| p["name"] == "recheck")
+        .unwrap_or_else(|| panic!("no `recheck` parameter on POST {HINTS}: {post:?}"));
+    assert_eq!(recheck["in"], "query", "{recheck}");
+    assert_ne!(recheck["required"], json!(true), "{recheck}");
+    assert!(
+        recheck["description"]
+            .as_str()
+            .is_some_and(|d| !d.trim().is_empty()),
+        "described: {recheck}"
+    );
+    assert!(
+        params("get").iter().all(|p| p["name"] != "recheck"),
+        "GET takes no query: {:?}",
+        params("get")
+    );
+}
+
+#[test]
+fn check_has_no_recheck_and_prints_no_cache_note() {
+    let host = FakeHost::bare_metal();
+    let bin = env!("CARGO_BIN_EXE_dpds-controller");
+    let run = |extra: &[&str]| {
+        Command::new(bin)
+            .arg("check")
+            .args(extra)
+            .arg("--sysfs-root")
+            .arg(host.sysfs())
+            .arg("--procfs-root")
+            .arg(host.procfs())
+            .output()
+            .expect("cannot run dpds-controller")
+    };
+    let o = run(&["--recheck"]);
+    assert_eq!(o.status.code(), Some(2), "an unknown flag is a usage error");
+    assert!(String::from_utf8_lossy(&o.stderr).contains("--recheck"));
+    let o = run(&[]);
+    let out = String::from_utf8_lossy(&o.stdout).to_lowercase();
+    assert!(out.contains("swappiness"), "the check ran: {out}");
+    assert!(
+        !out.contains("recheck") && !out.contains("firmware values read"),
+        "{out}"
+    );
+    let help = run(&["--help"]);
+    assert!(!String::from_utf8_lossy(&help.stdout)
+        .to_lowercase()
+        .contains("recheck"));
+}
+
+#[test]
+fn the_real_binary_caches_the_firmware_query_until_a_recheck() {
+    let dir = tempfile::tempdir().unwrap();
+    let counter = dir.path().join("runs");
+    let answer = r#"{"Device #1":{"tlv_configuration":{"ADVANCED_PCI_SETTINGS":{"next_value":"False(0)","current_value":"False(0)"},"MAX_ACC_OUT_READ":{"next_value":0,"current_value":0},"CQE_COMPRESSION":{"next_value":"BALANCED(0)","current_value":"BALANCED(0)"}}}}"#;
+    let script = dir.path().join("mstconfig");
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\necho run >> '{}'\nprintf '%s' '{answer}' > \"$5\"\n",
+            counter.display()
+        ),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    let host = FakeHost::bare_metal();
+    let c = serve_over(&host, &[("PATH", dir.path().to_str().unwrap())]);
+    let runs = || fs::read_to_string(&counter).map_or(0, |s| s.lines().count());
+    let body = link_on(NIC0).body();
+    let post = |query: &str| {
+        let (st, v) = http(&c.addr, "POST", &format!("{HINTS}{query}"), Some(&body)).unwrap();
+        assert_eq!(st, 200, "{v}");
+        v
+    };
+    let first = post("");
+    assert_eq!(runs(), 1);
+    assert_eq!(commands_of(&first, &fw_id()), fw_untuned_commands());
+    let second = post("");
+    assert_eq!(runs(), 1, "the second request reads the cache");
+    assert!(
+        age_note(&fw_detail(&second, &fw_id())).is_some(),
+        "{second}"
+    );
+    post("?recheck=true");
+    assert_eq!(runs(), 2);
+    post("");
+    assert_eq!(runs(), 2);
+    let (st, v) = http(&c.addr, "POST", &format!("{HINTS}?recheck=1"), Some(&body)).unwrap();
+    assert_eq!(st, 400, "{v}");
+    assert!(v["message"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("recheck"));
+    assert_eq!(runs(), 2);
 }
 
 // ---- the sources -----------------------------------------------------------------------------

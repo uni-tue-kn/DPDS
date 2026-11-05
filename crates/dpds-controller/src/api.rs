@@ -29,10 +29,11 @@ use crate::dto::{
 };
 use crate::eal::{drain_timeout, eal_argv, links_file_json, EalInput, EalPort};
 use crate::frontend::Frontend;
-use crate::hints::{compute_hints, Hint, Level};
+use crate::hints::{compute_hints_cached, Hint, Level};
 use crate::host::HostRoots;
 use crate::lcores::{assign_lcores, DirectionPlan};
 use crate::model::{Link, RunConfig, Settings, StartLink, StartRequest, MAX_NAME_CHARS};
+use crate::nic_hints::FirmwareCache;
 use crate::stats::{
     compute_stats, delay_histogram, delay_stats_on, uptime_ms, Clamped, Counters, DirectionStats,
     ExpectedModel, HistogramView, HistoryLink, HistorySample, HistoryView, Percentiles, PortStats,
@@ -71,6 +72,8 @@ struct App {
     run: Mutex<Option<Run>>,
     /// Serialises start and stop: the state check and the launch are one step.
     lifecycle: AsyncMutex<()>,
+    /// The firmware query results of the hints, until the controller restarts or a recheck.
+    firmware: FirmwareCache,
 }
 
 type Shared = State<Arc<App>>;
@@ -479,16 +482,18 @@ async fn interfaces(State(app): Shared) -> Result<Json<Vec<Interface>>, ApiError
     responses((status = 200, body = Vec<Hint>), (status = 500, body = ErrorBody))
 )]
 async fn host_hints(State(app): Shared) -> Result<Json<Vec<Hint>>, ApiError> {
-    hints_of(app, RunConfig::default()).await
+    hints_of(app, RunConfig::default(), false).await
 }
 
 /// The host hints plus the ones that depend on the links of a configuration. The body is
 /// validated like the start body (400 naming the field, 409 for a duplicate link name or a reused
 /// port; links may be empty, which gives the host hints), but nothing is planned, started or
 /// kept, so a port the host uses is a hint, not a 409. Hints suggest root commands for an
-/// administrator; DPDS runs none of them.
+/// administrator; DPDS runs none of them. The firmware query of a NIC is cached until the controller
+/// restarts; `recheck=true` drops the cached results of the posted links' NICs first.
 #[utoipa::path(
     post, path = "/api/host/hints", request_body = StartRequest,
+    params(("recheck" = Option<bool>, Query, description = "true: read the firmware settings of the posted links' NICs again instead of using the cached result (default false); any other value is a 400")),
     responses(
         (status = 200, body = Vec<Hint>), (status = 400, body = ErrorBody), (status = 409, body = ErrorBody),
         (status = 413, body = ErrorBody), (status = 415, body = ErrorBody), (status = 500, body = ErrorBody)
@@ -496,8 +501,10 @@ async fn host_hints(State(app): Shared) -> Result<Json<Vec<Hint>>, ApiError> {
 )]
 async fn host_hints_for(
     State(app): Shared,
+    RawQuery(query): RawQuery,
     ApiJson(req): ApiJson<StartRequest>,
 ) -> Result<Json<Vec<Hint>>, ApiError> {
+    let recheck = parse_recheck(query.as_deref())?;
     let mut config = req.into_run_config();
     validate_body(&config)?;
     // validation accepts upper-case PCI addresses; sysfs has them in lower case
@@ -505,17 +512,39 @@ async fn host_hints_for(
         l.ingress.make_ascii_lowercase();
         l.egress.make_ascii_lowercase();
     }
-    hints_of(app, config).await
+    hints_of(app, config, recheck).await
+}
+
+/// `recheck` of the hints query: absent, `recheck=true` or `recheck=false`, each at most once.
+fn parse_recheck(query: Option<&str>) -> Result<bool, ApiError> {
+    let mut recheck = None;
+    for pair in query.unwrap_or("").split('&').filter(|p| !p.is_empty()) {
+        let value = match pair.split_once('=') {
+            Some(("recheck", "true")) if recheck.is_none() => true,
+            Some(("recheck", "false")) if recheck.is_none() => false,
+            _ => {
+                return Err(ApiError::bad(format!(
+                    "query {pair:?}: only recheck=true or recheck=false, given once, is accepted"
+                )))
+            }
+        };
+        recheck = Some(value);
+    }
+    Ok(recheck.unwrap_or(false))
 }
 
 /// Computes the hints. The emulation state is read once: tools run only while no emulation is
 /// starting, running or stopping. No lock is taken, so a start or stop is never delayed by a
 /// running query and queries do not queue behind each other.
-async fn hints_of(app: Arc<App>, config: RunConfig) -> Result<Json<Vec<Hint>>, ApiError> {
+async fn hints_of(
+    app: Arc<App>,
+    config: RunConfig,
+    recheck: bool,
+) -> Result<Json<Vec<Hint>>, ApiError> {
     Ok(Json(
         blocking(move || {
             let tools = tools_may_run(&app);
-            compute_hints(&app.deps.roots, &config, tools)
+            compute_hints_cached(&app.deps.roots, &config, tools, &app.firmware, recheck)
         })
         .await?,
     ))
@@ -832,6 +861,7 @@ pub fn router_with(deps: Deps, frontend: Frontend) -> Router {
         frontend,
         run: Mutex::new(None),
         lifecycle: AsyncMutex::new(()),
+        firmware: FirmwareCache::default(),
     });
     let api = Router::new()
         .route("/api/online", get(online))

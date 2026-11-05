@@ -20,7 +20,7 @@ use crate::eal::drain_timeout;
 use crate::host::{fmt_cpus, parse_cpulist, read_trim, HostRoots};
 use crate::lcores::{assign_lcores, Assignment, LcoreError};
 use crate::model::RunConfig;
-use crate::nic_hints::{blocked, nic_hints};
+use crate::nic_hints::{blocked, nic_hints, FirmwareCache};
 
 /// Mbuf size in hugepage memory (README: about 1.9 KB per mbuf).
 const BYTES_PER_MBUF: u64 = 1920;
@@ -90,6 +90,10 @@ pub(crate) struct Ctx<'a> {
     pub run_tools: bool,
     /// When this request began its tool time budget, read from `roots.exec.now()`.
     pub started: Instant,
+    /// Where the firmware query results are kept between requests; `None` keeps nothing.
+    pub cache: Option<&'a FirmwareCache>,
+    /// Drop the cached firmware results of the used NICs first.
+    pub recheck: bool,
     config: &'a RunConfig,
     interfaces: Vec<Interface>,
     assignment: Result<Assignment, LcoreError>,
@@ -136,10 +140,34 @@ pub(crate) fn nic_label(nic: &Interface) -> String {
 
 /// All hints, in a fixed order, one per check.
 pub fn compute_hints(roots: &HostRoots, config: &RunConfig, run_tools: bool) -> Vec<Hint> {
+    compute(roots, config, run_tools, None, false)
+}
+
+/// Like `compute_hints`, but the firmware query results are kept in `cache` and read from it; with
+/// `recheck` the results of the NICs of `config` are dropped first (only when tools may run).
+pub fn compute_hints_cached(
+    roots: &HostRoots,
+    config: &RunConfig,
+    run_tools: bool,
+    cache: &FirmwareCache,
+    recheck: bool,
+) -> Vec<Hint> {
+    compute(roots, config, run_tools, Some(cache), recheck)
+}
+
+fn compute(
+    roots: &HostRoots,
+    config: &RunConfig,
+    run_tools: bool,
+    cache: Option<&FirmwareCache>,
+    recheck: bool,
+) -> Vec<Hint> {
     let ctx = Ctx {
         roots,
         run_tools,
         started: roots.exec.now(),
+        cache,
+        recheck,
         config,
         interfaces: discover(roots),
         assignment: assign_lcores(roots, config),

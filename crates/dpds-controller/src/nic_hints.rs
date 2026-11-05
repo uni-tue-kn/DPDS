@@ -7,11 +7,17 @@
 //! `dcb -j buffer show dev <netdev>` and `mstconfig|mlxconfig -d <bdf> -e -j <file> q`, each with
 //! a timeout, and none while an emulation is starting, running or stopping. A missing tool is a
 //! hint naming its package, never a failure.
+//!
+//! The firmware query is slow, so a successful result is kept in memory (`FirmwareCache`, one per
+//! router, never on disk) until the controller restarts or a recheck drops it. A cached result
+//! runs no tool, costs no budget time and is used while an emulation runs.
 
+use std::collections::HashMap;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -118,6 +124,11 @@ pub(crate) fn blocked(nic: &Interface) -> Option<&str> {
 /// The hints of every used PCI NIC, NIC by NIC.
 pub(crate) fn nic_hints(ctx: &Ctx) -> Vec<Hint> {
     let mut hints = Vec::new();
+    if let (Some(cache), true) = (ctx.cache, ctx.recheck && ctx.run_tools) {
+        for nic in ctx.used_nics() {
+            cache.drop_card(&function_zero(&nic.pci));
+        }
+    }
     for nic in ctx.used_nics() {
         let label = &nic_label(nic);
         let pause = tool_netdev(nic).map(|nd| read_pause(ctx, nd));
@@ -515,6 +526,7 @@ struct FwParam {
     next_text: String,
 }
 
+#[derive(Clone)]
 struct Firmware {
     advanced: FwParam,
     max_acc_out_read: FwParam,
@@ -547,6 +559,36 @@ fn fw_param(tlv: &Value, name: &str) -> FwParam {
         next: next.and_then(fw_number),
         current: p.and_then(|p| p.get("current_value")).and_then(fw_number),
         next_text: next.map_or_else(|| "not listed".to_string(), fw_text),
+    }
+}
+
+/// A successful firmware query: what it said, which tool answered and when.
+#[derive(Clone)]
+struct Cached {
+    tool: &'static str,
+    fw: Firmware,
+    read_at: Instant,
+}
+
+/// The firmware query results of one controller, by function 0 of the card.
+#[derive(Default)]
+pub struct FirmwareCache(Mutex<HashMap<String, Cached>>);
+
+impl FirmwareCache {
+    fn entries(&self) -> std::sync::MutexGuard<'_, HashMap<String, Cached>> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn get(&self, card: &str) -> Option<Cached> {
+        self.entries().get(card).cloned()
+    }
+
+    fn store(&self, card: &str, cached: Cached) {
+        self.entries().insert(card.to_string(), cached);
+    }
+
+    fn drop_card(&self, card: &str) {
+        self.entries().remove(card);
     }
 }
 
@@ -610,25 +652,53 @@ fn firmware(ctx: &Ctx, nic: &Interface, label: &str) -> Hint {
     let id = format!("firmware:{}", nic.pci);
     let title = format!("NIC firmware {label}");
     let bdf = function_zero(&nic.pci);
+    // a cached result is checked before the budget: it needs no tool
+    if let Some(c) = ctx.cache.and_then(|c| c.get(&bdf)) {
+        let mut h = firmware_hint(ctx, nic, label, c.tool, &c.fw);
+        let age = ctx.roots.exec.now().saturating_duration_since(c.read_at);
+        h.detail.push_str(&format!(
+            " (firmware values read {} s ago; Recheck to read them again)",
+            age.as_secs()
+        ));
+        return h;
+    }
     // mstconfig (mstflint) first, mlxconfig (MFT) when it is not installed
     let (tool, state) = match query_firmware(ctx, "mstconfig", &bdf) {
         Err(Gap::Missing) => ("mlxconfig", query_firmware(ctx, "mlxconfig", &bdf)),
         other => ("mstconfig", other),
     };
-    let fw = match state {
-        Ok(fw) => fw,
-        Err(gap) => {
-            return gap_hint(
-                &id,
-                &title,
-                label,
-                "firmware settings",
-                "mstconfig",
-                "mstflint",
-                &gap,
-            )
+    match state {
+        Ok(fw) => {
+            if let Some(cache) = ctx.cache {
+                let read_at = ctx.roots.exec.now();
+                cache.store(
+                    &bdf,
+                    Cached {
+                        tool,
+                        fw: fw.clone(),
+                        read_at,
+                    },
+                );
+            }
+            firmware_hint(ctx, nic, label, tool, &fw)
         }
-    };
+        Err(gap) => gap_hint(
+            &id,
+            &title,
+            label,
+            "firmware settings",
+            "mstconfig",
+            "mstflint",
+            &gap,
+        ),
+    }
+}
+
+/// The hint for firmware settings read with `tool`.
+fn firmware_hint(ctx: &Ctx, nic: &Interface, label: &str, tool: &str, fw: &Firmware) -> Hint {
+    let id = format!("firmware:{}", nic.pci);
+    let title = format!("NIC firmware {label}");
+    let bdf = function_zero(&nic.pci);
     let targets = [
         (&fw.advanced, 1),
         (&fw.max_acc_out_read, FW_MAX_ACC_OUT_READ),
