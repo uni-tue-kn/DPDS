@@ -47,6 +47,7 @@ mod optional_stages;
 mod release;
 mod spec41;
 mod spec48;
+mod spec49;
 mod start_body;
 mod startup_errors;
 mod stateless;

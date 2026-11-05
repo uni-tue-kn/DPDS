@@ -29,7 +29,7 @@ use crate::dto::{
 };
 use crate::eal::{drain_timeout, eal_argv, links_file_json, EalInput, EalPort};
 use crate::frontend::Frontend;
-use crate::hints::{compute_hints_cached, Hint, Level};
+use crate::hints::{compute_hints_cached, hugepage_bytes, link_need, mib, Hint, Level};
 use crate::host::HostRoots;
 use crate::lcores::{assign_lcores, DirectionPlan};
 use crate::model::{Link, RunConfig, StartLink, StartRequest, MAX_NAME_CHARS};
@@ -442,6 +442,34 @@ impl App {
     }
 }
 
+/// Refuses a start whose mbuf pools need more hugepage memory than is free. A host that reports
+/// no hugepages at all is not refused: `dpds` reports it.
+fn check_hugepages(roots: &HostRoots, config: &RunConfig) -> Result<(), ApiError> {
+    let needs: Vec<(&Link, u64)> = config
+        .links
+        .iter()
+        .map(|l| (l, link_need(&l.config)))
+        .collect();
+    let need = needs.iter().fold(0u64, |a, (_, n)| a.saturating_add(*n));
+    let (total, free) = hugepage_bytes(roots);
+    if total == 0 || need <= free {
+        return Ok(());
+    }
+    let Some((link, n)) = needs.iter().max_by_key(|(_, n)| *n) else {
+        return Ok(());
+    };
+    Err(ApiError::bad(format!(
+        "the links need about {} of hugepage memory for their mbuf pools, but only {} are free; \
+         link \"{}\" needs about {} (buffer capacity {} packets). \
+         Lower its buffer capacity or reserve more hugepages.",
+        mib(need),
+        mib(free),
+        link.name,
+        mib(*n),
+        link.config.buffer_capacity
+    )))
+}
+
 // ---- handlers ----------------------------------------------------------------
 
 #[utoipa::path(get, path = "/api/online", responses((status = 200, body = OnlineView)))]
@@ -595,7 +623,12 @@ async fn start(
         )));
     }
     let a = app.clone();
-    let (plan, config) = blocking(move || a.launch_plan(req)).await??;
+    let (plan, config) = blocking(move || {
+        let planned = a.launch_plan(req)?;
+        check_hugepages(&a.deps.roots, &planned.1)?;
+        Ok::<_, ApiError>(planned)
+    })
+    .await??;
     app.deps.telemetry.set_run_links(
         config
             .links

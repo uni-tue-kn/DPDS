@@ -344,7 +344,7 @@ fn isolated_cores(ctx: &Ctx) -> Hint {
 // ---- hugepages -------------------------------------------------------------
 
 /// (total, free) hugepage memory in bytes over all page sizes.
-fn hugepage_bytes(roots: &HostRoots) -> (u64, u64) {
+pub(crate) fn hugepage_bytes(roots: &HostRoots) -> (u64, u64) {
     let (mut total, mut free) = (0u64, 0u64);
     let mut found = false;
     if let Ok(entries) = fs::read_dir(roots.sys("kernel/mm/hugepages")) {
@@ -382,7 +382,7 @@ fn hugepage_bytes(roots: &HostRoots) -> (u64, u64) {
     (total, free)
 }
 
-fn mib(bytes: u64) -> String {
+pub(crate) fn mib(bytes: u64) -> String {
     format!("{} MiB", bytes / (1024 * 1024))
 }
 
@@ -446,7 +446,7 @@ fn hugepages(ctx: &Ctx) -> Hint {
 }
 
 /// Memory the mbuf pools of one link need.
-fn link_need(c: &crate::dto::ConfigDto) -> u64 {
+pub(crate) fn link_need(c: &crate::dto::ConfigDto) -> u64 {
     (c.buffer_capacity as u64)
         .saturating_add(POOL_EXTRA)
         .saturating_mul(BYTES_PER_MBUF)

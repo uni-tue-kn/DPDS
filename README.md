@@ -721,7 +721,13 @@ without internet access, means no notice.
   `{"links": [{name, ingress, egress, config}]}`; unknown fields (such as a `settings` member or a
   link's core) are a 400 (`deny_unknown_fields`). It answers 202 and starts
   `dpds`, 400 when a rule is broken or `links` is empty (`nothing to start`), and 409 while the
-  emulation is starting, running or stopping. Nothing is spawned on an error.
+  emulation is starting, running or stopping. Nothing is spawned on an error. Start also refuses
+  (400) when the links' mbuf pools need more hugepage memory than is free, naming the need, the free
+  memory and the link with the largest need (the estimate of the hugepage hint); a host that reports
+  no hugepages is not refused (`dpds` reports it), and validate skips this check. When `dpds` exits
+  with a non-zero status, the emulation's `error` is `dpds exited with exit status N: <reason>` (or
+  `signal S`), the reason being the last output line starting with `dpds: ` that is not a
+  `dpds: warning:` line, without the prefix; without such a line the error has no reason.
   `POST /api/emulation/validate` takes the same body, applies the same rules and answers 200
   `{main_lcore, directions: [{dir, link, rx, tx, lcore}]}`, the lcores a start would use, or the same
   400/409 errors. It starts nothing and ignores the state of the emulation; the frontend uses it

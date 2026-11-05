@@ -220,6 +220,14 @@ fn describe(status: ExitStatus) -> String {
     }
 }
 
+/// The last captured line that `dpds` itself wrote (`dpds: ` prefix, not a warning), without the prefix.
+fn dpds_reason(log: &VecDeque<String>) -> Option<&str> {
+    log.iter()
+        .rev()
+        .filter_map(|l| l.strip_prefix("dpds: "))
+        .find(|l| !l.starts_with("warning:"))
+}
+
 fn spawn(plan: &LaunchPlan) -> Result<Child, String> {
     // stale files of an earlier run (a crashed dpds leaves its socket behind)
     remove_runtime_dir(plan);
@@ -438,7 +446,10 @@ fn run_instance(
             } else {
                 "exited"
             };
-            break Some(format!("dpds {what} with {}", describe(status)));
+            let reason = dpds_reason(&lock(&shared.log))
+                .map(|r| format!(": {r}"))
+                .unwrap_or_default();
+            break Some(format!("dpds {what} with {}{reason}", describe(status)));
         }
         match rx.recv_timeout(POLL) {
             Ok(Cmd::Stop) => {
