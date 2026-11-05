@@ -25,7 +25,7 @@
 # Environment overrides:
 #   DPDS_CHANNEL      release channel: latest, nightly or a tag (v1.0.0) (default latest)
 #   DPDS_PREFIX       install prefix, binaries go to $DPDS_PREFIX/bin   (default /usr/local)
-#   DPDS_ETC_DIR      config dir, holds controller.env                   (default /etc/dpds)
+#   DPDS_ETC_DIR      config dir, holds controller.env, installed-commit (default /etc/dpds)
 #   DPDS_SYSTEMD_DIR  where the unit file is installed                   (default /etc/systemd/system)
 #   DPDS_BIND         bind address written into a NEW controller.env     (default 0.0.0.0:8100)
 #   CARGO_TARGET_DIR  cargo target dir the build output is read from     (default <repo>/target)
@@ -62,6 +62,8 @@ SERVICE="dpds-controller"
 UNIT_SRC="$REPO_ROOT/packaging/dpds-controller.service"
 UNIT_DEST="$SYSTEMD_DIR/$SERVICE.service"
 ENV_FILE="$ETC_DIR/controller.env"
+# Holds the commit hash of the installed tree; update compares it with HEAD.
+STAMP_FILE="$ETC_DIR/installed-commit"
 BIN_DIR="$PREFIX/bin"
 DEFAULT_PORT=8100
 
@@ -402,6 +404,8 @@ install_flow() {
     confirm "Continue with the installation?"
   fi
 
+  # No stamp while the installation is half done.
+  run_privileged rm -f "$STAMP_FILE"
   info "Installing binaries to $BIN_DIR"
   run_privileged install -d -m 0755 "$BIN_DIR"
   run_privileged install -m 0755 "$release_dir/dpds" "$BIN_DIR/dpds"
@@ -410,7 +414,19 @@ install_flow() {
   install_unit
   install_env_file
   run_privileged systemctl daemon-reload
+  local head
+  if head="$(git rev-parse HEAD 2>/dev/null)"; then
+    echo "$head" | run_privileged tee "$STAMP_FILE" >/dev/null
+  fi
   info "Installed. Start it with: $0 start"
+}
+
+# True when the installed commit (the stamp) is HEAD and the installed files are all there.
+installed_is_current() {
+  local head
+  head="$(git rev-parse HEAD 2>/dev/null)" || return 1
+  [[ -f "$STAMP_FILE" && "$(<"$STAMP_FILE")" == "$head" ]] || return 1
+  [[ -f "$BIN_DIR/dpds" && -f "$BIN_DIR/dpds-controller" && -f "$UNIT_DEST" ]]
 }
 
 # The working tree must be clean before git moves HEAD: a checkout with local changes can fail
@@ -572,6 +588,10 @@ cmd_update() {
     git checkout "$CHANNEL_BRANCH"
     git pull --ff-only
   fi
+  if installed_is_current; then
+    info "Already up to date at commit $(git rev-parse --short HEAD); nothing to do. $0 install rebuilds and reinstalls anyway."
+    return 0
+  fi
   install_flow
   if (( was_active )); then
     info "$SERVICE was running, restarting it"
@@ -584,8 +604,8 @@ cmd_update() {
 cmd_uninstall() {
   info "Stopping $SERVICE"
   run_privileged systemctl disable --now "$SERVICE" || warn "Could not disable $SERVICE (not installed?)."
-  info "Removing binaries and unit"
-  run_privileged rm -f "$BIN_DIR/dpds" "$BIN_DIR/dpds-controller" "$UNIT_DEST"
+  info "Removing binaries, unit and $STAMP_FILE"
+  run_privileged rm -f "$BIN_DIR/dpds" "$BIN_DIR/dpds-controller" "$UNIT_DEST" "$STAMP_FILE"
   run_privileged systemctl daemon-reload || warn "systemctl daemon-reload failed."
   # An older version kept the controller's configuration here; nothing reads it any more.
   local leftover=/var/lib/dpds-controller
@@ -610,8 +630,8 @@ usage() {
   echo ""
   echo "Commands:"
   echo "  check        Check the prerequisites (Rust, clang/lld, DPDK $DPDK_MIN, Node/npm), then print the host hints (dpds-controller check)"
-  echo "  install      Check prerequisites, build the frontend (npm ci, npm run build) and the binaries, run the host check, ask to continue, install binaries and unit"
-  echo "  update       Switch to the channel's branch (git fetch, checkout, pull --ff-only) or release tag (git fetch --tags, checkout --detach), rebuild the frontend and the binaries, reinstall, restart if it was running"
+  echo "  install      Check prerequisites, build the frontend (npm ci, npm run build) and the binaries, run the host check, ask to continue, install binaries and unit (always rebuilds, so it forces a rebuild)"
+  echo "  update       Switch to the channel's branch (git fetch, checkout, pull --ff-only) or release tag (git fetch --tags, checkout --detach), rebuild the frontend and the binaries, reinstall, restart if it was running; does nothing when the installed commit is already the channel's head"
   echo "  start        Enable and start the controller service (it serves the web frontend)"
   echo "  stop         Disable and stop the controller service"
   echo "  restart      Stop, then start"

@@ -645,11 +645,16 @@ server on port 5173 proxies `/api` to a controller on `127.0.0.1:8100` (`DPDS_CO
 ./dpds.sh status     # service, GET /api/online and the installed version
 ./dpds.sh stop       # systemctl disable --now dpds-controller
 ./dpds.sh restart    # stop, then start
-./dpds.sh update     # switch to the channel's branch and pull it, rebuild, reinstall; restarts only if it was running
+./dpds.sh update     # switch to the channel's branch and pull it, rebuild, reinstall; restarts only if it was running;
+                     # does nothing when the installed commit is already the channel's head
 ./dpds.sh --nightly update # the same on the nightly channel (or DPDS_CHANNEL=nightly ./dpds.sh update)
 DPDS_CHANNEL=v1.0.0 ./dpds.sh update # install exactly the release v1.0.0 (see the channel paragraph below)
 ./dpds.sh uninstall  # remove binaries and unit (and the /var/lib/dpds-controller of an older version); keeps controller.env
 ```
+
+`install` records the installed commit in `/etc/dpds/installed-commit`; `update` does nothing (no build, no
+reinstall, no restart) when that commit is already the channel's head, and `install` always rebuilds and
+reinstalls, e.g. after a toolchain or DPDK upgrade. `uninstall` removes the record.
 
 `--yes` skips the question that `install` and `update` ask after the host check. `status` prints the
 channel, the branch of the checkout and the installed version, as reported by `/api/online`.

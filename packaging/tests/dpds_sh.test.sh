@@ -201,6 +201,19 @@
 #     (a path in the sandbox), so no test can touch the real directory: the script must name the old state directory exactly
 #     as that literal (not assemble it from parts) for the uninstall tests to see it.
 #
+# spec 42 (update does nothing when already up to date)
+#   - Stamp file $DPDS_ETC_DIR/installed-commit (default /etc/dpds/installed-commit; its name has no "state"): one line, the full
+#     `git rev-parse HEAD` of the installed tree. install_flow removes any existing stamp right before it copies the binaries
+#     (after the host check and the confirmation), and writes the new one after everything else (binaries, unit, env file,
+#     daemon-reload) succeeded, so a failed install never leaves a stamp claiming success. A tree without git writes no stamp and
+#     is not an error; a declined confirmation or a failed build leaves the existing stamp alone.
+#   - update (prerequisites, dirty-tree refusal and git steps unchanged): when the stamp equals HEAD and $BIN_DIR/dpds,
+#     $BIN_DIR/dpds-controller and the unit file exist, it prints an info line (naming the commit; saying it is already up to
+#     date and that `./dpds.sh install` rebuilds anyway) and exits 0 with no npm, no cargo, no host check, no question, no
+#     install of binaries/unit/env and no systemctl call that changes anything (the service stays as it was). Otherwise it
+#     proceeds as before and writes the stamp. install always rebuilds and reinstalls and writes the stamp. uninstall removes
+#     the stamp. The git stub answers `rev-parse HEAD` with STUB_GIT_HEAD_COMMIT.
+#
 # Sandbox conventions used by this file (PATH contains only stubs + whitelisted base utilities):
 #   Every test runs a COPY of dpds.sh in a sandbox repository ($T/repo, with the unit file,
 #   frontend/package.json, Cargo.toml and crates/dpds-core/Cargo.toml copied from the real tree), so
@@ -741,11 +754,13 @@ test_the_flags_override_the_environment_both_ways() {
   assert_rc 0 "$ERR"
   CTX="DPDS_CHANNEL=nightly --stable" assert_update_follows main
   : >"$STUB_LOG"
+  rm -f "$(stamp_file)"  # spec 42: see above
   export STUB_GIT_BRANCH=nightly
   DPDS_CHANNEL=latest run_dpds --nightly --yes update
   assert_rc 0 "$ERR"
   CTX="DPDS_CHANNEL=latest --nightly" assert_update_follows nightly
   : >"$STUB_LOG"
+  rm -f "$(stamp_file)"  # spec 42: see above
   # the same value as the flag
   DPDS_CHANNEL=nightly run_dpds --nightly --yes update
   assert_rc 0 "$ERR"
@@ -832,11 +847,13 @@ test_update_restarts_only_a_service_that_was_active_on_every_channel() {
   local args
   for args in "--stable" "--nightly"; do
     : >"$STUB_LOG"
+    rm -f "$(stamp_file)"  # spec 42: see above
     STUB_ACTIVE=1 run_dpds $args --yes update
     CTX="active, $args" assert_rc 0 "$ERR"
     CTX="active, $args" assert_log_has '^systemctl disable --now dpds-controller$'
     CTX="active, $args" assert_log_has '^systemctl enable --now dpds-controller$'
     : >"$STUB_LOG"
+    rm -f "$(stamp_file)"  # spec 42: see above
     STUB_ACTIVE=0 run_dpds $args --yes update
     CTX="inactive, $args" assert_rc 0 "$ERR"
     CTX="inactive, $args" assert_log_lacks '^systemctl (enable|start|restart)'
@@ -1142,6 +1159,7 @@ test_update_on_a_tag_from_a_detached_head_or_another_branch_works_and_never_pull
   local br
   for br in HEAD nightly main feature-x; do
     : >"$STUB_LOG"
+    rm -f "$(stamp_file)"  # spec 42: see above
     STUB_GIT_BRANCH="$br" DPDS_CHANNEL=v1.0.0 run_dpds --yes update
     CTX="on '$br'" assert_rc 0 "$ERR"
     CTX="on '$br'" assert_update_detaches_onto v1.0.0
@@ -1230,11 +1248,13 @@ test_the_flags_override_a_tag_channel_in_the_environment() {
   assert_rc 0 "$ERR"
   CTX="v1.0.0 --nightly" assert_update_follows nightly
   : >"$STUB_LOG"
+  rm -f "$(stamp_file)"  # spec 42: see above
   DPDS_CHANNEL=v1.0.0 run_dpds --stable --yes update
   assert_rc 0 "$ERR"
   CTX="v1.0.0 --stable" assert_update_follows main
   # also over an invalid value, and with install and status the flag's channel is the one shown
   : >"$STUB_LOG"
+  rm -f "$(stamp_file)"  # spec 42: see above
   DPDS_CHANNEL=v1 run_dpds --nightly --yes update
   assert_rc 0 "$ERR"
   CTX="v1 --nightly" assert_update_follows nightly
@@ -1257,6 +1277,7 @@ test_a_branch_channel_after_a_tag_goes_back_to_the_branch() {
   assert_rc 0 "$ERR"
   assert_update_follows nightly
   : >"$STUB_LOG"
+  rm -f "$(stamp_file)"  # spec 42: the previous update stamped HEAD; this one must not be a no-op
   run_dpds --yes update
   assert_rc 0 "$ERR"
   assert_update_follows main
@@ -2563,7 +2584,7 @@ test_install_and_update_download_and_unpack_nothing() {
   run_dpds --yes update
   assert_rc 0 "$ERR"
   assert_nothing_downloaded
-  assert_log_lacks '^git (rev-parse|status .*frontend)'
+  assert_log_lacks '^git (rev-parse .*frontend|status .*frontend)'  # spec 42 needs plain `git rev-parse HEAD`
   assert_no_temp_leftovers
 }
 
@@ -3241,6 +3262,215 @@ test_install_leaves_an_existing_leftover_state_dir_alone() {
   assert_rc 0 "$ERR"
   assert_file "$LEGACY_STATE_DIR/marker"
   assert_file "$LEGACY_STATE_DIR/state.json"
+}
+
+# ------------------------------------------------------------------ tests: spec 42 (update is a no-op when up to date)
+stamp_file() { echo "$DPDS_ETC_DIR/installed-commit"; }
+write_stamp() { mkdir -p "$DPDS_ETC_DIR"; printf '%s\n' "$1" >"$(stamp_file)"; }
+# A complete install (binaries, unit, env) whose stamp names COMMIT; the git stub's HEAD is COMMIT as well.
+fake_stamped_install() { fake_install; write_stamp "$1"; export STUB_GIT_HEAD_COMMIT="$1"; }
+# Snapshot of everything an install writes, to prove a no-op touched none of it.
+installed_snapshot() {
+  cat "$DPDS_PREFIX/bin/dpds" "$DPDS_PREFIX/bin/dpds-controller" "$(installed_unit)" "$DPDS_ETC_DIR/controller.env" "$(stamp_file)" 2>&1
+  ls -l --time-style=full-iso "$DPDS_PREFIX/bin" "$DPDS_SYSTEMD_DIR" "$DPDS_ETC_DIR" 2>&1
+}
+assert_update_was_a_noop() {
+  local commit="$1"
+  assert_rc 0 "$ERR"
+  assert_all_has "up to date"
+  assert_all_has "${commit:0:7}"
+  assert_all_has "install"
+  assert_all_has "rebuild"
+  # the git steps still ran; nothing was built, checked or installed; no systemctl call that changes anything
+  assert_log_has '^git fetch'
+  assert_log_has '^git checkout '
+  assert_log_has '^git pull --ff-only$'
+  assert_log_lacks '^npm (ci|run)'
+  assert_log_lacks '^cargo build'
+  assert_log_lacks '^dpds-controller check'
+  assert_log_lacks '^systemctl (daemon-reload|enable|disable|start|stop|restart|reload)'
+  assert_no_file "$REPO_ROOT/frontend/dist"
+  assert_eq "$(installed_snapshot)" "$SNAPSHOT" "installed files, unit, env or stamp touched"
+}
+assert_update_was_a_full_update() {
+  assert_rc 0 "$ERR"
+  assert_log_has '^npm ci( |$)'
+  assert_log_has '^cargo build .*(-p|--package|--bin)[ =]dpds-controller( |$)'
+  assert_log_has '^systemctl daemon-reload'
+  assert_file_has "$DPDS_PREFIX/bin/dpds-controller" 'STUB-BINARY-dpds-controller'
+  assert_file_has "$DPDS_PREFIX/bin/dpds" 'STUB-BINARY-dpds'
+}
+
+test_update_is_a_noop_when_the_installed_commit_is_the_head_and_the_service_is_stopped() {
+  fake_stamped_install deadbeefcafe0123456789deadbeefcafe012345
+  export STUB_ACTIVE=0
+  SNAPSHOT="$(installed_snapshot)"
+  run_dpds update   # no --yes: there must be no confirmation question either
+  assert_update_was_a_noop "$STUB_GIT_HEAD_COMMIT"
+}
+
+test_update_is_a_noop_when_the_installed_commit_is_the_head_and_the_service_is_active() {
+  fake_stamped_install deadbeefcafe0123456789deadbeefcafe012345
+  export STUB_ACTIVE=1
+  SNAPSHOT="$(installed_snapshot)"
+  run_dpds --yes update
+  assert_update_was_a_noop "$STUB_GIT_HEAD_COMMIT"
+}
+
+test_update_noop_works_on_the_nightly_channel_and_for_a_release_tag() {
+  fake_stamped_install 1111111111111111111111111111111111111111
+  export STUB_GIT_BRANCH=nightly
+  SNAPSHOT="$(installed_snapshot)"
+  run_dpds --nightly --yes update
+  assert_update_was_a_noop "$STUB_GIT_HEAD_COMMIT"
+  : >"$STUB_LOG"
+  fake_stamped_install commit-of-v1.0.0
+  export STUB_GIT_TAGS="v1.0.0"
+  SNAPSHOT="$(installed_snapshot)"
+  DPDS_CHANNEL=v1.0.0 run_dpds --yes update
+  assert_rc 0 "$ERR"
+  assert_all_has "up to date"
+  assert_log_has '^git checkout --detach v1\.0\.0$'
+  assert_log_lacks '^(npm (ci|run)|cargo build)'
+  assert_log_lacks '^systemctl (daemon-reload|enable|disable|start|stop|restart)'
+  assert_eq "$(installed_snapshot)" "$SNAPSHOT" "installed files, unit, env or stamp touched"
+}
+
+test_update_with_a_different_installed_commit_does_the_full_update_and_stamps_the_new_head() {
+  fake_stamped_install aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  export STUB_GIT_HEAD_COMMIT=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  run_dpds --yes update
+  assert_update_was_a_full_update
+  assert_eq "$(cat "$(stamp_file)")" "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" "stamp"
+  assert_eq "$(wc -l <"$(stamp_file)" | tr -d ' ')" 1 "stamp is one line"
+}
+
+test_update_without_a_stamp_does_the_full_update_and_writes_it() {
+  fake_install
+  export STUB_GIT_HEAD_COMMIT=cccccccccccccccccccccccccccccccccccccccc
+  run_dpds --yes update
+  assert_update_was_a_full_update
+  assert_eq "$(cat "$(stamp_file)")" "cccccccccccccccccccccccccccccccccccccccc" "stamp"
+}
+
+test_update_with_a_stamp_but_missing_installed_files_does_the_full_update() {
+  local missing
+  for missing in "$DPDS_PREFIX/bin/dpds" "$DPDS_PREFIX/bin/dpds-controller" "$DPDS_SYSTEMD_DIR/dpds-controller.service"; do
+    : >"$STUB_LOG"
+    fake_stamped_install dddddddddddddddddddddddddddddddddddddddd
+    rm -f "$missing"
+    CTX="missing ${missing##*/}" run_dpds --yes update
+    CTX="missing ${missing##*/}" assert_update_was_a_full_update
+    CTX="missing ${missing##*/}" assert_file "$(installed_unit)"
+    CTX="missing ${missing##*/}" assert_eq "$(cat "$(stamp_file)")" "dddddddddddddddddddddddddddddddddddddddd" "stamp"
+  done
+}
+
+test_update_noop_still_needs_the_prerequisites_a_clean_tree_and_working_git() {
+  fake_stamped_install eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+  remove_stub cargo
+  run_dpds --yes update
+  assert_rc_nonzero
+  assert_err_has "cargo"
+  assert_log_lacks '^git '
+  setup_sandbox; fake_stamped_install eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+  STUB_GIT_DIRTY=1 run_dpds --yes update
+  assert_rc_nonzero
+  assert_log_lacks '^git (checkout|pull)'
+  setup_sandbox; fake_stamped_install eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+  STUB_GIT_FAIL_SUB=pull run_dpds --yes update
+  assert_rc_nonzero
+  assert_log_lacks '^(npm (ci|run)|cargo build)'
+}
+
+test_install_writes_the_stamp_with_the_head_commit() {
+  export STUB_GIT_HEAD_COMMIT=0123456789abcdef0123456789abcdef01234567
+  run_dpds --yes install
+  assert_rc 0 "$ERR"
+  assert_eq "$(cat "$(stamp_file)")" "0123456789abcdef0123456789abcdef01234567" "stamp"
+  assert_eq "$(wc -l <"$(stamp_file)" | tr -d ' ')" 1 "stamp is one line"
+  assert_no_state_dir_anywhere
+}
+
+test_install_always_rebuilds_even_when_the_stamp_matches_and_rewrites_it() {
+  fake_stamped_install ffffffffffffffffffffffffffffffffffffffff
+  run_dpds --yes install
+  assert_update_was_a_full_update
+  assert_eq "$(cat "$(stamp_file)")" "ffffffffffffffffffffffffffffffffffffffff" "stamp"
+}
+
+test_install_replaces_an_older_stamp() {
+  fake_stamped_install oldoldoldoldoldoldoldoldoldoldoldoldold0
+  export STUB_GIT_HEAD_COMMIT=newnewnewnewnewnewnewnewnewnewnewnewnew0
+  run_dpds --yes install
+  assert_rc 0 "$ERR"
+  assert_eq "$(cat "$(stamp_file)")" "newnewnewnewnewnewnewnewnewnewnewnewnew0" "stamp"
+}
+
+test_a_declined_or_failed_install_leaves_the_existing_stamp_alone() {
+  fake_stamped_install oldoldoldoldoldoldoldoldoldoldoldoldold0
+  feed $'n\n'
+  run_dpds install
+  assert_rc 1
+  assert_eq "$(cat "$(stamp_file)" 2>&1)" "oldoldoldoldoldoldoldoldoldoldoldoldold0" "stamp after a declined install"
+  local failure
+  for failure in STUB_CARGO_FAIL=1 STUB_NPM_FAIL_SUB=ci STUB_NPM_FAIL_SUB=run; do
+    setup_sandbox
+    fake_stamped_install oldoldoldoldoldoldoldoldoldoldoldoldold0
+    export "$failure"
+    run_dpds --yes install
+    CTX="$failure" assert_rc_nonzero
+    CTX="$failure" assert_eq "$(cat "$(stamp_file)" 2>&1)" "oldoldoldoldoldoldoldoldoldoldoldoldold0" "stamp after a failed build"
+  done
+}
+
+test_an_install_that_fails_halfway_leaves_no_stamp_so_the_next_update_rebuilds() {
+  fake_stamped_install 9999999999999999999999999999999999999999
+  STUB_SYSTEMCTL_FAIL_SUB=daemon-reload run_dpds --yes install
+  assert_rc_nonzero
+  assert_no_file "$(stamp_file)"
+  # the stamp matched HEAD before: without the removal the next update would wrongly be a no-op
+  : >"$STUB_LOG"
+  run_dpds --yes update
+  assert_update_was_a_full_update
+  assert_eq "$(cat "$(stamp_file)")" "9999999999999999999999999999999999999999" "stamp"
+}
+
+test_a_failed_first_install_writes_no_stamp() {
+  STUB_SYSTEMCTL_FAIL_SUB=daemon-reload run_dpds --yes install
+  assert_rc_nonzero
+  assert_no_file "$(stamp_file)"
+}
+
+test_install_from_a_tree_without_git_writes_no_stamp_and_drops_an_old_one() {
+  export STUB_GIT_NOT_A_REPO=1
+  run_dpds --yes install
+  assert_rc 0 "$ERR"
+  assert_exec "$DPDS_PREFIX/bin/dpds-controller"
+  assert_no_file "$(stamp_file)"
+  # an old stamp must not survive an install that cannot say which commit it installed
+  write_stamp oldoldoldoldoldoldoldoldoldoldoldoldold0
+  run_dpds --yes install
+  assert_rc 0 "$ERR"
+  assert_no_file "$(stamp_file)"
+}
+
+test_uninstall_removes_the_stamp_and_keeps_the_env_file() {
+  fake_stamped_install 7777777777777777777777777777777777777777
+  run_dpds --yes uninstall
+  assert_rc 0 "$ERR"
+  assert_no_file "$(stamp_file)"
+  assert_file "$DPDS_ETC_DIR/controller.env"
+}
+
+test_update_after_an_uninstall_reinstalls() {
+  fake_stamped_install 6666666666666666666666666666666666666666
+  run_dpds --yes uninstall
+  assert_rc 0 "$ERR"
+  : >"$STUB_LOG"
+  run_dpds --yes update
+  assert_update_was_a_full_update
+  assert_eq "$(cat "$(stamp_file)")" "6666666666666666666666666666666666666666" "stamp"
 }
 
 # ------------------------------------------------------------------ runner
