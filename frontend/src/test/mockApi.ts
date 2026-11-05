@@ -63,7 +63,7 @@ export function resetApi(): void {
   api.stopEmulation.mockResolvedValue(fx.emulation('stopping'));
   api.getStats.mockResolvedValue(fx.stats([]));
   api.getDelayHistogram.mockImplementation(async (dir, windowS) => fx.histogram(dir, { window_s: windowS ?? 0 }));
-  api.getStatsHistory.mockResolvedValue(fx.history({}, { started_at: null, run_id: null, links: [] })); // nothing ran
+  api.getStatsHistory.mockResolvedValue(fx.history({}, { started_at: null, run_id: null, links: [], totals: {} })); // nothing ran
 }
 
 /**
@@ -80,6 +80,8 @@ export interface HistoryServer {
   samples: Record<string, HistorySample[]>;
   runId?: number | null;
   links?: HistoryView['links'];
+  /** Spec 35 (C1): the run's final counters per link index; absent = `{}` (the answer of a controller that never ran). */
+  totals?: HistoryView['totals'];
 }
 
 export function serveHistory(server: HistoryServer): void {
@@ -89,6 +91,7 @@ export function serveHistory(server: HistoryServer): void {
       run_id: server.runId === undefined ? (ran ? 1 : null) : server.runId,
       started_at: server.startedAt,
       links: server.links ?? (ran ? fx.historyLinks() : []),
+      totals: server.totals ?? {},
       samples: Object.fromEntries(
         Object.entries(server.samples).map(([link, list]) => [
           link,

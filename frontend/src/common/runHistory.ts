@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import * as api from '../api/client';
-import type { HistoryLink, HistorySample } from '../api/types';
+import type { HistoryLink, HistorySample, HistoryTotals } from '../api/types';
 import { errorMessage } from './format';
 import { startPolling } from './polling';
 
@@ -39,11 +39,18 @@ function newestOf(h: History): number | undefined {
 /**
  * The series of the run the controller holds: everything once, then only what is newer than the newest sample held.
  * Another run (`run_id` changed) starts at 0 again, so its first answer must be a full one. `error` is the message of
- * the last request while it failed, undefined after a success.
+ * the last request while it failed, undefined after a success. `totals` are the run's newest counters per link, from the
+ * latest answer.
  */
-export function useRunHistory(): { history: History; links: HistoryLink[]; error?: string } {
+export function useRunHistory(): {
+  history: History;
+  links: HistoryLink[];
+  totals: Record<string, HistoryTotals>;
+  error?: string;
+} {
   const [history, setHistory] = useState<History>({});
   const [links, setLinks] = useState<HistoryLink[]>([]);
+  const [totals, setTotals] = useState<Record<string, HistoryTotals>>({});
   const [error, setError] = useState<string>();
 
   useEffect(() => {
@@ -70,6 +77,7 @@ export function useRunHistory(): { history: History; links: HistoryLink[]; error
             setHistory(next);
           }
           setLinks(h.links);
+          setTotals(h.totals);
           setError(undefined);
         } catch (err) {
           if (alive) setError(errorMessage(err));
@@ -85,5 +93,5 @@ export function useRunHistory(): { history: History; links: HistoryLink[]; error
     };
   }, []);
 
-  return { history, links, error };
+  return { history, links, totals, error };
 }

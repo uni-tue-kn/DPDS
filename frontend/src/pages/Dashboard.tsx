@@ -1,19 +1,26 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Alert, Badge, Button, Card, Spinner } from 'react-bootstrap';
+import { Alert, Badge, Button, ButtonGroup, Col, Row, Spinner, Tab, Tabs } from 'react-bootstrap';
 import * as api from '../api/client';
-import type { DirectionStats, EmulationState, EmulationView, StatsView } from '../api/types';
+import type { EmulationState, EmulationView, HistoryTotals, StatsView } from '../api/types';
 import { errorMessage, formatElapsed, formatPct, formatRatePill, linkLabel } from '../common/format';
 import { readConfig, startRequestOf, useLocalConfig } from '../common/localConfig';
 import { pendingRestart } from '../common/pendingRestart';
 import { startPolling } from '../common/polling';
 import { usePortLabeler } from '../common/portLabel';
-import { NO_SAMPLES, useRunHistory } from '../common/runHistory';
+import { type History, NO_SAMPLES, useRunHistory } from '../common/runHistory';
 import ErrorAlert from '../components/ErrorAlert';
-import DirectionCard from './DirectionCard';
+import LinkCharts from './LinkCharts';
 import LoadRunning from './LoadRunning';
-import PortsTable from './PortsTable';
+import { type DropCounts, dropsOfCounters, dropsOfTotals } from './LossDonut';
 
 const POLL_MS = 1000;
+
+const NO_DROPS: DropCounts = { loss: 0, limiter: 0, bufferFull: 0, nicTx: 0, imissed: 0, nombuf: 0 };
+
+const ENDED_TEXT = { stopping: 'Stopping', stopped: 'Stopped', failed: 'Failed' } as const;
+
+/** Every button of the group has this width, so that Start, Stop, "Stopping…" and "Restarting…" never move the others. */
+const BUTTON_STYLE = { minWidth: '8rem' };
 
 const STATE_BG: Record<EmulationState, string> = {
   stopped: 'secondary',
@@ -22,6 +29,41 @@ const STATE_BG: Record<EmulationState, string> = {
   stopping: 'warning',
   failed: 'danger',
 };
+
+const DASH = '–';
+
+/**
+ * The pills of a finished run: the last sample of every link summed (the final live second), and the share of dropped
+ * packets over the whole run from the final counters (undefined without them).
+ */
+function runTotals(history: History, totals: Record<string, HistoryTotals>) {
+  let rxGbps = 0;
+  let txGbps = 0;
+  let rxMpps = 0;
+  let txMpps = 0;
+  for (const list of Object.values(history)) {
+    const last = list.at(-1);
+    if (!last) continue;
+    rxGbps += last.rx_gbps;
+    txGbps += last.tx_gbps;
+    rxMpps += last.rx_mpps;
+    txMpps += last.tx_mpps;
+  }
+  let rx = 0;
+  let dropped = 0;
+  for (const t of Object.values(totals)) {
+    rx += t.rx_pkts;
+    dropped +=
+      t.loss_drops + t.limiter_drops + t.buffer_full_drops + t.nic_tx_drops + t.nic_rx_imissed + t.nic_rx_nombuf;
+  }
+  return {
+    rxBps: rxGbps * 1e9,
+    txBps: txGbps * 1e9,
+    rxPps: rxMpps * 1e6,
+    txPps: txMpps * 1e6,
+    droppedPct: Object.keys(totals).length === 0 ? undefined : rx > 0 ? (dropped / rx) * 100 : 0,
+  };
+}
 
 /** The log lines with a React key each: the line plus its occurrence number, since a line may repeat. */
 function keyedLines(lines: string[]): { key: string; line: string }[] {
@@ -61,7 +103,9 @@ function totalsOf(directions: StatsView['directions']) {
 export default function Dashboard() {
   const [emulation, setEmulation] = useState<EmulationView>();
   const [stats, setStats] = useState<StatsView>();
-  const { history, links, error: historyError } = useRunHistory();
+  const { history, links, totals: runTotalsByLink, error: historyError } = useRunHistory();
+  /** The tab the user chose (a link index); the first link's while it is gone. */
+  const [selected, setSelected] = useState<string>();
   const [pollError, setPollError] = useState<string>();
   const [statsError, setStatsError] = useState<string>();
   /** The stats error the user closed; the warning returns only for a different message. */
@@ -156,54 +200,39 @@ export default function Dashboard() {
   };
 
   const live = stats && stats.directions.length > 0 ? stats.directions : undefined;
-  const totals = live && totalsOf(live);
   const plan = (dir: number) => emulation?.directions.find((p) => p.dir === dir);
   // The controller reports stale: true with no age_ms for a stopped emulation; that is not "old data".
   const showStale = state === 'running' && stats?.stale === true && stats.age_ms != null;
   // After the run ends (or while it ends) the controller keeps its series until the next start: the final charts stay.
   const ended = state === 'stopping' || state === 'stopped' || state === 'failed' ? state : undefined;
   const finished = ended !== undefined && Object.values(history).some((list) => list.length > 0);
-  const shown: { dir: number; stats?: DirectionStats }[] = finished
+  const pills = finished ? runTotals(history, runTotalsByLink) : live && totalsOf(live);
+  const restartNeeded = pendingRestart(doc, emulation).any;
+  const shown = finished
     ? Object.keys(history)
         .map(Number)
         .filter(Number.isInteger)
         .sort((a, b) => a - b)
-        .map((dir) => ({ dir }))
-    : (live ?? []).map((d) => ({ dir: d.dir, stats: d }));
+    : (live ?? []).map((d) => d.dir);
   // A finished run is titled by the links of its own history, a live one by its stats or the plan.
-  const titleOf = (dir: number, s?: DirectionStats) => {
+  const titleOf = (dir: number) => {
     if (finished) {
       const l = links[dir];
       return l ? linkLabel(l.name, l.ingress, l.egress, label) : `Link ${dir}`;
     }
+    const s = live?.find((d) => d.dir === dir);
     const p = plan(dir);
     if (!s && !p) return `Link ${dir}`;
     return linkLabel(s?.link ?? p?.link, s?.rx ?? p?.rx, s?.tx ?? p?.tx, label);
   };
+  const activeTab = selected !== undefined && shown.includes(Number(selected)) ? selected : String(shown[0]);
+  const pillClass = `status-pill ${state === 'running' ? 'status-pill-active' : ''}`;
 
   return (
     <>
       <h1 className="mb-3">Dashboard</h1>
-      <ErrorAlert message={actionError} />
-      <ErrorAlert message={pollError} />
-      {statsError && statsError !== dismissed && (
-        <Alert
-          variant="warning"
-          role="status"
-          dismissible
-          onClose={() => setDismissed(statsError)}
-          data-testid="stats-warning"
-        >
-          Statistics are not updating: {statsError}
-        </Alert>
-      )}
-      {historyError && (
-        <Alert variant="warning" role="status" data-testid="history-warning">
-          The history of the charts is not updating: {historyError}
-        </Alert>
-      )}
-      <Card className="mb-3">
-        <Card.Body className="d-flex flex-wrap align-items-center gap-3">
+      <Row className="align-items-center mb-3" data-testid="top-row">
+        <Col xs={8} className="text-start d-flex flex-wrap align-items-center gap-3" data-testid="top-pills">
           <span aria-live="polite">
             <Badge
               pill
@@ -215,96 +244,142 @@ export default function Dashboard() {
               {state ?? 'unknown'}
             </Badge>
           </span>
-          {totals && (
-            <>
-              <span className={`status-pill ${state === 'running' ? 'status-pill-active' : ''}`} data-testid="pill-rx">
-                <i className="bi bi-arrow-down-circle-fill" aria-hidden="true" />
-                RX {formatRatePill(totals.rxBps, totals.rxPps)}
-              </span>
-              <span className={`status-pill ${state === 'running' ? 'status-pill-active' : ''}`} data-testid="pill-tx">
-                <i className="bi bi-arrow-up-circle-fill" aria-hidden="true" />
-                TX {formatRatePill(totals.txBps, totals.txPps)}
-              </span>
-            </>
-          )}
+          <span className={pillClass} data-testid="pill-rx">
+            <i className="bi bi-arrow-down-circle-fill" aria-hidden="true" />
+            RX {pills ? formatRatePill(pills.rxBps, pills.rxPps) : DASH}
+          </span>
+          <span className={pillClass} data-testid="pill-tx">
+            <i className="bi bi-arrow-up-circle-fill" aria-hidden="true" />
+            TX {pills ? formatRatePill(pills.txBps, pills.txPps) : DASH}
+          </span>
           {stats?.elapsed_ms != null && (
             <span className="status-pill" data-testid="pill-elapsed">
               {formatElapsed(stats.elapsed_ms)}
             </span>
           )}
-          {totals && totals.droppedPct > 0 && (
-            <span className="status-pill" data-testid="pill-dropped">
-              dropped {formatPct(totals.droppedPct)}
-            </span>
-          )}
-          {busy === 'restart' ? (
-            <Button variant="primary" disabled>
-              <Spinner size="sm" aria-hidden="true" /> Restarting…
-            </Button>
-          ) : state === 'stopping' ? (
-            <Button variant="primary" disabled>
-              <Spinner size="sm" aria-hidden="true" /> Stopping…
-            </Button>
-          ) : state === 'starting' || state === 'running' ? (
-            <Button variant="primary" disabled={busy !== undefined} onClick={() => act('stop')}>
-              <i className="bi bi-stop-fill" aria-hidden="true" /> Stop
-            </Button>
-          ) : (
+          <span className="status-pill" data-testid="pill-dropped">
+            dropped {pills?.droppedPct === undefined ? DASH : formatPct(pills.droppedPct)}
+          </span>
+        </Col>
+        <Col xs={4} className="text-end">
+          <ButtonGroup data-testid="run-buttons">
             <Button
-              variant="success"
-              disabled={state === undefined || corrupt || busy !== undefined}
-              onClick={() => act('start')}
+              variant="outline-primary"
+              style={BUTTON_STYLE}
+              disabled={state !== 'running' || corrupt || busy !== undefined}
+              onClick={() => act('restart')}
             >
-              <i className="bi bi-play-fill" aria-hidden="true" /> Start
-            </Button>
-          )}
-          {state === 'running' && busy !== 'restart' && (
-            <Button variant="outline-primary" disabled={corrupt || busy !== undefined} onClick={() => act('restart')}>
               <i className="bi bi-arrow-clockwise" aria-hidden="true" /> Restart
             </Button>
-          )}
-          {pendingRestart(doc, emulation).any && (
-            <Badge pill bg="warning" text="dark" data-testid="pending-restart">
-              Restart needed: links or settings changed
-            </Badge>
-          )}
-          {emulation?.pid != null && (
-            <span className="text-body-secondary">
-              pid {emulation.pid}, main lcore {emulation.main_lcore ?? 'n/a'}
-            </span>
-          )}
-          {showStale && (
-            <Badge pill bg="warning" text="dark" data-testid="stale-indicator">
-              Stale data ({((stats?.age_ms ?? 0) / 1000).toFixed(1)} s old)
-            </Badge>
-          )}
-        </Card.Body>
-      </Card>
+            {busy === 'restart' ? (
+              <Button variant="primary" style={BUTTON_STYLE} disabled>
+                <Spinner size="sm" aria-hidden="true" /> Restarting…
+              </Button>
+            ) : state === 'stopping' ? (
+              <Button variant="primary" style={BUTTON_STYLE} disabled>
+                <Spinner size="sm" aria-hidden="true" /> Stopping…
+              </Button>
+            ) : state === 'starting' || state === 'running' ? (
+              <Button variant="primary" style={BUTTON_STYLE} disabled={busy !== undefined} onClick={() => act('stop')}>
+                <i className="bi bi-stop-fill" aria-hidden="true" /> Stop
+              </Button>
+            ) : (
+              <Button
+                variant="success"
+                style={BUTTON_STYLE}
+                disabled={state === undefined || corrupt || busy !== undefined}
+                onClick={() => act('start')}
+              >
+                <i className="bi bi-play-fill" aria-hidden="true" /> Start
+              </Button>
+            )}
+          </ButtonGroup>
+        </Col>
+      </Row>
+      <div data-testid="notices">
+        <ErrorAlert message={actionError} />
+        <ErrorAlert message={pollError} />
+        <ErrorAlert message={emulation?.error} />
+        {statsError && statsError !== dismissed && (
+          <Alert
+            variant="warning"
+            role="status"
+            dismissible
+            onClose={() => setDismissed(statsError)}
+            data-testid="stats-warning"
+          >
+            Statistics are not updating: {statsError}
+          </Alert>
+        )}
+        {historyError && (
+          <Alert variant="warning" role="status" data-testid="history-warning">
+            The history of the charts is not updating: {historyError}
+          </Alert>
+        )}
+        {(restartNeeded || showStale) && (
+          <div className="d-flex flex-wrap gap-3 mb-3">
+            {restartNeeded && (
+              <Badge pill bg="warning" text="dark" data-testid="pending-restart">
+                Restart needed: links or settings changed
+              </Badge>
+            )}
+            {showStale && (
+              <Badge pill bg="warning" text="dark" data-testid="stale-indicator">
+                Stale data ({((stats?.age_ms ?? 0) / 1000).toFixed(1)} s old)
+              </Badge>
+            )}
+          </div>
+        )}
+      </div>
       <LoadRunning emulation={emulation} />
-      {emulation?.error && (
-        <div className="alert alert-danger" role="alert">
-          {emulation.error}
-        </div>
+      {state === 'failed' && emulation && emulation.log_tail.length > 0 && (
+        <details className="mb-3">
+          <summary>Show log</summary>
+          <pre className="log-tail" data-testid="log-tail">
+            {keyedLines(emulation.log_tail).map(({ key, line }) => (
+              <div key={key}>{line}</div>
+            ))}
+          </pre>
+        </details>
       )}
-      {emulation && emulation.log_tail.length > 0 && (
-        <pre className="log-tail" data-testid="log-tail">
-          {keyedLines(emulation.log_tail).map(({ key, line }) => (
-            <div key={key}>{line}</div>
-          ))}
-        </pre>
+      {shown.length > 0 && (
+        <Tabs id="link-tabs" transition={false} activeKey={activeTab} onSelect={(k) => k && setSelected(k)}>
+          {shown.map((dir) => {
+            const s = live?.find((d) => d.dir === dir);
+            const t = runTotalsByLink[String(dir)];
+            return (
+              <Tab
+                key={dir}
+                eventKey={String(dir)}
+                title={
+                  <>
+                    {titleOf(dir)}
+                    {finished && (
+                      <Badge pill bg={ended === 'failed' ? 'danger' : 'secondary'} className="ms-2">
+                        {ENDED_TEXT[ended]}
+                      </Badge>
+                    )}
+                  </>
+                }
+              >
+                <div className="pt-3">
+                  <LinkCharts
+                    dir={dir}
+                    active={String(dir) === activeTab}
+                    history={state === 'starting' ? NO_SAMPLES : (history[String(dir)] ?? NO_SAMPLES)}
+                    drops={finished ? (t ? dropsOfTotals(t) : NO_DROPS) : s ? dropsOfCounters(s.counters) : NO_DROPS}
+                    live={
+                      finished || !s
+                        ? undefined
+                        : { delayStats: s.delay_stats === true, meanNs: s.delay_mean_ns, stdNs: s.delay_std_ns }
+                    }
+                  />
+                </div>
+              </Tab>
+            );
+          })}
+        </Tabs>
       )}
-      {shown.map(({ dir, stats: s }) => (
-        <DirectionCard
-          key={dir}
-          dir={dir}
-          title={titleOf(dir, s)}
-          stats={s}
-          plan={plan(dir)}
-          history={state === 'starting' ? NO_SAMPLES : (history[String(dir)] ?? NO_SAMPLES)}
-          ended={finished ? ended : undefined}
-        />
-      ))}
-      {stats && stats.ports.length > 0 && <PortsTable ports={stats.ports} label={label} />}
     </>
   );
 }

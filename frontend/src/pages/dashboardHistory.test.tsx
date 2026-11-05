@@ -5,6 +5,7 @@ import * as fx from '../test/fixtures';
 import { api, serveHistory } from '../test/mockApi';
 import type { HistoryServer } from '../test/mockApi';
 import { renderApp, seedStore, tick } from '../test/helpers';
+import { card, hasTab, queryRadio, tab, tabBadge } from '../test/dashboardUi';
 import { must } from '../test/must';
 
 // Spec 29 (user 2026-11-04, "Server-side series"): the dashboard charts are built from the controller's series,
@@ -31,7 +32,6 @@ interface ChartData {
   datasets: Dataset[];
 }
 
-const card = (d: number) => screen.getByTestId(`direction-card-${d}`);
 const dataOf = (el: HTMLElement): ChartData => JSON.parse(el.getAttribute('data-chart') ?? 'null');
 const chartOf = (d: number) => dataOf(within(card(d)).getByTestId('chart-line'));
 const dataset = (c: ChartData, re: RegExp) =>
@@ -208,7 +208,7 @@ describe('Dashboard (spec 29): the charts show the whole run with elapsed-time l
       '1': [],
     });
     await open();
-    fireEvent.click(within(card(0)).getByRole('radio', { name: 'Drops' }));
+    fireEvent.click(within(card(0)).getByRole('radio', { name: 'Loss' }));
     await tick(0);
     const c = chartOf(0);
     expect(dataset(c, /model loss/i).data).toEqual([0.5, 0]);
@@ -319,7 +319,7 @@ describe('Dashboard (spec 29): leaving the dashboard and coming back, and reload
     await tick(0);
     fireEvent.click(screen.getByRole('link', { name: 'Links' }));
     await tick(0);
-    expect(screen.queryByTestId('direction-card-0')).not.toBeInTheDocument();
+    expect(hasTab(0)).toBe(false);
     s.samples['0'].push(...fx.historySamples(4, 3));
     s.samples['1'].push(...fx.historySamples(4, 3));
     const calls = api.getStatsHistory.mock.calls.length;
@@ -449,7 +449,7 @@ describe('Dashboard (spec 29): a failing history request', () => {
     const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     await open();
     await tick(4000);
-    expect(screen.getByTestId('direction-card-0')).toBeInTheDocument();
+    expect(hasTab(0)).toBe(true);
     expect(api.getStats.mock.calls.length).toBeGreaterThanOrEqual(4);
     expect(api.getEmulation.mock.calls.length).toBeGreaterThanOrEqual(4);
     errors.mockRestore();
@@ -458,13 +458,15 @@ describe('Dashboard (spec 29): a failing history request', () => {
 
 // ---- spec 29, second round: the final charts stay after a stop -----------------------------------------------------------
 //
+// Spec 35: the cards are tabs, the "Stopped" marker is the badge in the tab title, "Drops" is "Loss".
+//
 // User decision (2026-11-04): after a stop the dashboard keeps showing the stopped run's link cards with their final rate and
 // drops charts (from the history, which the controller keeps until the next start), marked as stopped, until the next start.
 // Contract the tests pin (the tester's choices, not user-confirmed):
 //   - the marker is the visible text "Stopped" inside each card (the card of a running link has none); spec 29b item 5 makes
 //     it the state: "Stopping", "Stopped" or "Failed" (dashboardSpec29b.test.tsx);
 //   - cards are there while the polled state is `stopped` (spec 29b: also `stopping` and `failed`) and the history of the run
-//     is not empty: one card per link index in the history (testid `direction-card-<index>`), in the same session after a stop
+//     is not empty: one card per link index in the history (spec 35: one tab per link index), in the same session after a stop
 //     and after a reload/remount alike. The live stat list is NOT pinned; the titles are (spec 29b item 5, they come from the
 //     history's `links`);
 //   - the charts are the history's, Rate and Drops, both selectable; there is no "Delay histogram" choice on a stopped card
@@ -476,8 +478,9 @@ describe('Dashboard (spec 29): a failing history request', () => {
 
 describe('Dashboard (spec 29, round 2): the final charts of a stopped run stay until the next start', () => {
   const stoppedStats = (elapsed_ms = 305_400) => fx.stats([], { stale: true, age_ms: undefined, elapsed_ms });
-  const marker = (d: number) => within(card(d)).queryByText('Stopped');
-  const radioOf = (d: number, name: string) => within(card(d)).queryByRole('radio', { name });
+  // Spec 35 F3: the marker is the badge in the tab title (it was text inside the card)
+  const marker = (d: number) => within(tab(d)).queryByText('Stopped');
+  const radioOf = (d: number, name: string) => queryRadio(d, name);
 
   /** A running emulation with two links and a 5 s series, opened and settled; `stop()` turns it into the stopped payload. */
   async function runThenStop() {
@@ -515,14 +518,14 @@ describe('Dashboard (spec 29, round 2): the final charts of a stopped run stay u
     expect(rxOf(1)).toHaveLength(5);
   });
 
-  it('the Drops chart of a stopped card works too, and Rate comes back', async () => {
+  it('the Loss chart of a stopped link works too, and Rate comes back', async () => {
     const { s, stop } = await runThenStop();
     s.samples['0'].push(
       fx.historySample(5000, { loss_pct: 2, limiter_pct: 0, buffer_full_pct: 0, nic_tx_pct: 0, nic_rx_pct: 3 }),
       fx.historySample(6000, { loss_pct: 4, limiter_pct: 0, buffer_full_pct: 0, nic_tx_pct: 0, nic_rx_pct: 0 }),
     );
     await stop();
-    fireEvent.click(must(radioOf(0, 'Drops'), 'Drops radio'));
+    fireEvent.click(must(radioOf(0, 'Loss'), 'Drops radio'));
     await tick(0);
     expect(dataset(chartOf(0), /model loss/i).data.slice(-2)).toEqual([2, 4]);
     expect(dataset(chartOf(0), /overload/i).data.slice(-2)).toEqual([3, 0]);
@@ -564,8 +567,8 @@ describe('Dashboard (spec 29, round 2): the final charts of a stopped run stay u
     api.getStats.mockResolvedValue(stoppedStats());
     await tick(2500);
     for (const d of [0, 1]) {
-      expect(within(card(d)).getByText('Stopping'), `card ${d}`).toBeInTheDocument();
-      expect(marker(d), `card ${d}`).not.toBeInTheDocument();
+      expect(tabBadge(d), `tab ${d}`).toBe('Stopping');
+      expect(marker(d), `tab ${d}`).not.toBeInTheDocument();
     }
     expect(rxOf(0)).toEqual(Array(5).fill(1.5));
   });
@@ -573,7 +576,7 @@ describe('Dashboard (spec 29, round 2): the final charts of a stopped run stay u
   it('a new start clears them: once the state is "starting" no card is left', async () => {
     const { s, stop } = await runThenStop();
     await stop();
-    expect(screen.getByTestId('direction-card-0')).toBeInTheDocument();
+    expect(hasTab(0)).toBe(true);
     // the controller started again: its series is empty so far (a new started_at), the first polls carry no directions yet
     s.runId = 2;
     s.startedAt = S1 + 900;
@@ -581,8 +584,8 @@ describe('Dashboard (spec 29, round 2): the final charts of a stopped run stay u
     api.getEmulation.mockResolvedValue(fx.emulation('starting'));
     api.getStats.mockResolvedValue(fx.stats([], { stale: true, age_ms: undefined }));
     await tick(2500);
-    expect(screen.queryByTestId('direction-card-0')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('direction-card-1')).not.toBeInTheDocument();
+    expect(hasTab(0)).toBe(false);
+    expect(hasTab(1)).toBe(false);
   });
 
   it('even when the history still holds the old run at that moment', async () => {
@@ -592,20 +595,20 @@ describe('Dashboard (spec 29, round 2): the final charts of a stopped run stay u
     api.getEmulation.mockResolvedValue(fx.emulation('starting'));
     api.getStats.mockResolvedValue(fx.stats([], { stale: true, age_ms: undefined }));
     await tick(1000);
-    expect(screen.queryByTestId('direction-card-0')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('direction-card-1')).not.toBeInTheDocument();
+    expect(hasTab(0)).toBe(false);
+    expect(hasTab(1)).toBe(false);
   });
 
   it('pressing Start clears them as soon as the controller has accepted the request', async () => {
     seedStore({ links: [fx.link(), fx.linkRev()] });
     const { stop } = await runThenStop();
     await stop();
-    expect(screen.getByTestId('direction-card-0')).toBeInTheDocument();
+    expect(hasTab(0)).toBe(true);
     api.startEmulation.mockResolvedValue(fx.emulation('starting'));
     fireEvent.click(screen.getByRole('button', { name: /^start$/i }));
     await tick(0);
     expect(api.startEmulation).toHaveBeenCalledTimes(1);
-    expect(screen.queryByTestId('direction-card-0')).not.toBeInTheDocument();
+    expect(hasTab(0)).toBe(false);
   });
 
   it('the next run is charted from its own samples only, as live cards', async () => {
@@ -642,7 +645,7 @@ describe('Dashboard (spec 29, round 2): the final charts of a stopped run stay u
     await open();
     await tick(1000);
     expect(marker(0)).toBeInTheDocument();
-    expect(screen.queryByTestId('direction-card-1')).not.toBeInTheDocument();
+    expect(hasTab(1)).toBe(false);
   });
 
   it('a controller that never ran has no cards', async () => {
@@ -651,7 +654,7 @@ describe('Dashboard (spec 29, round 2): the final charts of a stopped run stay u
     api.getStats.mockResolvedValue(fx.stats([], { stale: true, age_ms: undefined }));
     await open();
     await tick(2000);
-    expect(screen.queryByTestId('direction-card-0')).not.toBeInTheDocument();
+    expect(hasTab(0)).toBe(false);
     expect(screen.queryByText('Stopped')).not.toBeInTheDocument();
   });
 
@@ -661,6 +664,6 @@ describe('Dashboard (spec 29, round 2): the final charts of a stopped run stay u
     api.getStats.mockResolvedValue(stoppedStats(400));
     await open();
     await tick(2000);
-    expect(screen.queryByTestId('direction-card-0')).not.toBeInTheDocument();
+    expect(hasTab(0)).toBe(false);
   });
 });

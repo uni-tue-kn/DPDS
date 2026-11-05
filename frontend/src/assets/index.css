@@ -151,25 +151,22 @@ body {
   text-transform: capitalize;
 }
 
-.stat-list {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 0.2rem 1rem;
-  margin: 0;
-}
-
-.stat-list dt {
-  font-weight: 600;
-  color: var(--color-secondary-light);
-}
-
-.stat-list dd {
-  margin: 0;
-}
-
 .chart-box {
   position: relative;
   height: 200px;
+}
+
+.donut-box {
+  position: relative;
+  width: 220px;
+  height: 220px;
+}
+
+.legend-swatch {
+  display: inline-block;
+  width: 0.9rem;
+  height: 0.9rem;
+  border-radius: 3px;
 }
 
 .log-tail {

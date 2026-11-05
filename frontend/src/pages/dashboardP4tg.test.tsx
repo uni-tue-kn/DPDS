@@ -1,13 +1,14 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { vi } from 'vitest';
 import type { EmulationState } from '../api/types';
+import { card, findCard, queryRadio, radio } from '../test/dashboardUi';
 import * as fx from '../test/fixtures';
-import { api, ApiError, fakeController, serveHistory } from '../test/mockApi';
-import { setPrefersDark } from '../test/matchMedia';
 import { deferred, expectStartBody, renderApp, seedRaw, seedStore, storedDoc, tick } from '../test/helpers';
+import { setPrefersDark } from '../test/matchMedia';
+import { ApiError, api, fakeController, serveHistory } from '../test/mockApi';
 import { must } from '../test/must';
 
 // Spec 28 (user 2026-11-04): the P4TG-like dashboard. Spec: items 1-3 of scratchpad/spec28.md (item 4, server-side history, is
@@ -21,6 +22,11 @@ import { must } from '../test/must';
 //   - Restart refuses locally (no stop) when the local document has no links or is unreadable
 //   - the histogram controls, percentile list and under/overflow line belong to the histogram view only
 // The chart stubs in test/setup.ts expose the chart data as `data-chart` and the options as `data-options`.
+//
+// Spec 35 (2026-11-05) reworked this file; each changed or removed block says what it was. In short: the button group always
+// holds [Restart] [Start|Stop|...] (Restart is disabled, not absent, unless running); the "dropped" pill is always there; the
+// per-card radio group is per-tab ("Drops" is "Loss", "Delay histogram" is second); the histogram has no controls, no percentile
+// list and no expected overlay (F4); the NIC ports table moved to the Interfaces page (interfacesPorts.test.tsx).
 
 const STATES: EmulationState[] = ['stopped', 'starting', 'running', 'stopping', 'failed'];
 
@@ -35,7 +41,7 @@ async function openIn(state: EmulationState, over: Partial<ReturnType<typeof fx.
   await waitFor(() => expect(screen.getByTestId('state-badge')).toHaveAttribute('data-state', state));
 }
 
-describe('Dashboard (spec 28): one contextual Start/Stop button', () => {
+describe('Dashboard (spec 28, spec 35 F1): one contextual Start/Stop button next to an always present Restart', () => {
   beforeEach(() => {
     seedStore({ links: [fx.link(), fx.linkRev()] });
   });
@@ -44,7 +50,7 @@ describe('Dashboard (spec 28): one contextual Start/Stop button', () => {
     await openIn(state);
     expect(startBtn()).toBeEnabled();
     expect(stopBtn()).not.toBeInTheDocument();
-    expect(restartBtn()).not.toBeInTheDocument();
+    expect(restartBtn()).toBeDisabled(); // spec 35 F1. Was: not in the document
     expect(stoppingBtn()).not.toBeInTheDocument();
   });
 
@@ -55,14 +61,14 @@ describe('Dashboard (spec 28): one contextual Start/Stop button', () => {
     expect(stoppingBtn()).not.toBeInTheDocument();
   });
 
-  it('"stopping": a disabled "Stopping…" button with a spinner; no Start, Stop or Restart', async () => {
+  it('"stopping": a disabled "Stopping…" button with a spinner; no Start or Stop, Restart disabled', async () => {
     await openIn('stopping');
     const b = must(stoppingBtn(), 'the Stopping… button');
     expect(b).toBeDisabled();
     expect(b.querySelector('.spinner-border')).not.toBeNull();
     expect(startBtn()).not.toBeInTheDocument();
     expect(stopBtn()).not.toBeInTheDocument();
-    expect(restartBtn()).not.toBeInTheDocument();
+    expect(restartBtn()).toBeDisabled(); // spec 35 F1. Was: not in the document
   });
 
   it('exactly one of Start / Stop / "Stopping…" is shown in every state', async () => {
@@ -76,13 +82,14 @@ describe('Dashboard (spec 28): one contextual Start/Stop button', () => {
     }
   });
 
-  it('Restart is visible only while running (not starting, stopping, stopped or failed)', async () => {
+  // Spec 35 F1. Was: 'Restart is visible only while running'. It is always rendered now and enabled only while running.
+  it('Restart is enabled only while running (not starting, stopping, stopped or failed) and always visible', async () => {
     for (const state of STATES) {
       api.getEmulation.mockResolvedValue(fx.emulation(state));
       const view = renderApp('/');
       await waitFor(() => expect(screen.getByTestId('state-badge')).toHaveAttribute('data-state', state));
       if (state === 'running') expect(restartBtn(), state).toBeEnabled();
-      else expect(restartBtn(), state).not.toBeInTheDocument();
+      else expect(restartBtn(), state).toBeDisabled();
       view.unmount();
     }
   });
@@ -393,8 +400,15 @@ describe('Dashboard (spec 28): status pills', () => {
       expect(screen.queryByTestId('pill-elapsed')).not.toBeInTheDocument();
     });
 
+    // Spec 35: DirectionCard.tsx is gone; the scan covers Dashboard.tsx and every page source that draws a chart.
     it('the dashboard sources use no browser clock and no local tick', () => {
-      for (const file of ['src/pages/Dashboard.tsx', 'src/pages/DirectionCard.tsx']) {
+      const dir = join(process.cwd(), 'src/pages');
+      const files = readdirSync(dir)
+        .filter((f) => /\.tsx?$/.test(f) && !/\.test\./.test(f))
+        .filter((f) => f === 'Dashboard.tsx' || readFileSync(join(dir, f), 'utf8').includes('react-chartjs-2'))
+        .map((f) => join('src/pages', f));
+      expect(files).toContain(join('src/pages', 'Dashboard.tsx'));
+      for (const file of files) {
         const src = readFileSync(join(process.cwd(), file), 'utf8');
         for (const forbidden of ['Date.now', 'new Date', 'toLocaleTimeString', 'performance.now', 'setInterval']) {
           expect(src, `${file} uses ${forbidden}`).not.toContain(forbidden);
@@ -403,7 +417,7 @@ describe('Dashboard (spec 28): status pills', () => {
     });
   });
 
-  describe('the "dropped" pill: neutral, only when something was dropped', () => {
+  describe('the "dropped" pill: neutral', () => {
     const shares = (m: number, rx_pps: number) =>
       ({
         rx_pps,
@@ -439,7 +453,9 @@ describe('Dashboard (spec 28): status pills', () => {
       expect(pill.getAttribute('role')).not.toBe('alert');
     });
 
-    it('is absent when every drop share is zero', async () => {
+    // Spec 35 F1/F2. Was: 'is absent when every drop share is zero' and 'appears and disappears with the polls': the pill is
+    // always there now (CHOICE: "dropped 0.00 %" while nothing is dropped, like the other pills).
+    it('CHOICE: reads "dropped 0.00 %" when every drop share is zero', async () => {
       api.getStats.mockResolvedValue(
         fx.stats([
           fx.dirStats(0, { loss_pct: 0, limiter_pct: 0, buffer_full_pct: 0, nic_tx_pct: 0, nic_rx_pct: 0 }),
@@ -447,26 +463,24 @@ describe('Dashboard (spec 28): status pills', () => {
         ]),
       );
       renderApp('/');
-      await screen.findByTestId('pill-rx');
-      await screen.findByTestId('direction-card-0');
-      expect(screen.queryByTestId('pill-dropped')).not.toBeInTheDocument();
-      expect(screen.queryByText(/dropped\s+\d/i)).not.toBeInTheDocument();
+      await findCard(1);
+      await waitFor(() => expect(screen.getByTestId('pill-dropped')).toHaveTextContent(/^dropped\s+0\.00\s?%$/i));
     });
 
-    it('appears and disappears with the polls', async () => {
+    it('follows the polls: 0.00 %, then 2.00 %, then 0.00 % again', async () => {
       vi.useFakeTimers();
       const none = { loss_pct: 0, limiter_pct: 0, buffer_full_pct: 0, nic_tx_pct: 0, nic_rx_pct: 0 };
       api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0, none)]));
       renderApp('/');
       await tick(0);
       await tick(0);
-      expect(screen.queryByTestId('pill-dropped')).not.toBeInTheDocument();
+      expect(screen.getByTestId('pill-dropped')).toHaveTextContent(/dropped\s+0\.00\s?%/i);
       api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0, { ...none, loss_pct: 2 })]));
       await tick(2500);
       expect(screen.getByTestId('pill-dropped')).toHaveTextContent(/dropped\s+2\.00\s?%/i);
       api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0, none)]));
       await tick(2500);
-      expect(screen.queryByTestId('pill-dropped')).not.toBeInTheDocument();
+      expect(screen.getByTestId('pill-dropped')).toHaveTextContent(/dropped\s+0\.00\s?%/i);
     });
   });
 });
@@ -496,13 +510,12 @@ interface ChartOptions {
   scales?: { x?: AxisOptions; y?: AxisOptions };
   plugins?: {
     legend?: { display?: boolean; position?: string; labels?: { color?: string } };
+    title?: { display?: boolean; text?: string | string[]; color?: string };
     tooltip?: { enabled?: boolean };
     annotation?: { annotations?: unknown };
   };
 }
 
-const card = (d: number) => screen.getByTestId(`direction-card-${d}`);
-const radio = (d: number, name: string) => within(card(d)).getByRole('radio', { name });
 const dataOf = (el: HTMLElement): ChartData => JSON.parse(el.getAttribute('data-chart') ?? 'null');
 const optsOf = (el: HTMLElement): ChartOptions => JSON.parse(el.getAttribute('data-options') ?? 'null');
 const imgName = (el: HTMLElement) => el.closest('[role="img"]')?.getAttribute('aria-label') ?? '';
@@ -522,78 +535,76 @@ function serveFixtureHistory() {
 
 async function openCards() {
   renderApp('/');
-  await screen.findByTestId('direction-card-0');
-  await screen.findByTestId('direction-card-1');
+  await findCard(1);
+  card(0);
 }
 
 /** Picks a chart in the card's selector and returns the (one) chart element it shows. */
 async function showChart(
   user: ReturnType<typeof userEvent.setup>,
   d: number,
-  name: 'Rate' | 'Drops' | 'Delay histogram',
+  name: 'Rate' | 'Loss' | 'Delay histogram',
 ) {
   await user.click(radio(d, name));
   return within(card(d)).findByTestId(name === 'Delay histogram' ? 'chart-bar' : 'chart-line');
 }
 
-describe('Dashboard (spec 28): radio chart selector per link', () => {
+// Spec 35 F3/F4. Was: 'radio chart selector per link' with a radio group per card (Rate, Drops, Delay histogram) and the
+// histogram's own controls. Now: the radios sit in the chart area of each link's tab (Rate, Delay histogram, Loss). Removed
+// here: 'each link has its own selection' (the spec only says the selection persists; dashboardSpec35.test.tsx pins that it
+// survives polls and a visit to the other tab) and every histogram control (window, log scale, expected overlay, percentile list).
+describe("Dashboard (spec 28, spec 35 F3): radio chart selector in each link's tab", () => {
   beforeEach(() => {
     api.getEmulation.mockResolvedValue(fx.emulation('running'));
     api.getStats.mockResolvedValue(twoDirections());
   });
 
-  it('every link has a radio group "Chart" with Rate, Drops and Delay histogram, in this order', async () => {
+  it('every link has a radio group "Chart" with Rate, Delay histogram and Loss, in this order', async () => {
     await openCards();
     for (const d of [0, 1]) {
       const group = within(card(d)).getByRole('radiogroup', { name: /chart/i });
       const all = within(group).getAllByRole('radio');
       expect(all).toHaveLength(3);
       expect(all[0]).toBe(radio(d, 'Rate'));
-      expect(all[1]).toBe(radio(d, 'Drops'));
-      expect(all[2]).toBe(radio(d, 'Delay histogram'));
+      expect(all[1]).toBe(radio(d, 'Delay histogram'));
+      expect(all[2]).toBe(radio(d, 'Loss'));
     }
   });
 
   it('Rate is the default and the only chart shown', async () => {
     await openCards();
     expect(radio(0, 'Rate')).toBeChecked();
-    expect(radio(0, 'Drops')).not.toBeChecked();
+    expect(radio(0, 'Loss')).not.toBeChecked();
     expect(radio(0, 'Delay histogram')).not.toBeChecked();
     const lines = within(card(0)).getAllByTestId('chart-line');
     expect(lines).toHaveLength(1);
     expect(imgName(lines[0])).toMatch(/rate/i);
     expect(within(card(0)).queryByTestId('chart-bar')).not.toBeInTheDocument();
-    const imgs = within(card(0)).getAllByRole('img');
-    expect(imgs).toHaveLength(1);
-    expect(imgs[0].getAttribute('aria-label')).toMatch(/rate chart of direction 0/i);
   });
 
-  it('choosing Drops shows only the drops chart', async () => {
+  it('choosing Loss shows only the loss chart', async () => {
     const user = userEvent.setup();
     await openCards();
-    const chart = await showChart(user, 0, 'Drops');
-    expect(radio(0, 'Drops')).toBeChecked();
+    const chart = await showChart(user, 0, 'Loss');
+    expect(radio(0, 'Loss')).toBeChecked();
     expect(radio(0, 'Rate')).not.toBeChecked();
     expect(within(card(0)).getAllByTestId('chart-line')).toHaveLength(1);
-    expect(imgName(chart)).toMatch(/drops chart of direction 0/i);
+    expect(imgName(chart)).toMatch(/loss/i);
     expect(within(card(0)).queryByTestId('chart-bar')).not.toBeInTheDocument();
-    expect(within(card(0)).getAllByRole('img')).toHaveLength(1);
   });
 
-  it('choosing Delay histogram shows only the histogram with its controls', async () => {
+  it('choosing Delay histogram shows only the histogram, without any control of its own', async () => {
     const user = userEvent.setup();
     await openCards();
-    expect(within(card(0)).queryByLabelText('Histogram window')).not.toBeInTheDocument(); // not part of the Rate view
-    expect(within(card(0)).queryByLabelText('Log scale')).not.toBeInTheDocument();
-    expect(within(card(0)).queryByTestId('percentiles')).not.toBeInTheDocument();
     const chart = await showChart(user, 0, 'Delay histogram');
-    expect(imgName(chart)).toMatch(/delay histogram of direction 0/i);
+    expect(imgName(chart)).toMatch(/delay histogram/i);
     expect(within(card(0)).queryByTestId('chart-line')).not.toBeInTheDocument();
-    expect(within(card(0)).getByLabelText('Histogram window')).toBeInTheDocument();
-    expect(within(card(0)).getByLabelText('Log scale')).toBeInTheDocument();
-    expect(within(card(0)).getByLabelText('Show expected distribution')).toBeInTheDocument();
-    expect(within(card(0)).getByTestId('percentiles')).toBeInTheDocument();
-    expect(within(card(0)).getAllByRole('img')).toHaveLength(1);
+    expect(within(card(0)).queryByLabelText('Histogram window')).not.toBeInTheDocument();
+    expect(within(card(0)).queryByLabelText('Log scale')).not.toBeInTheDocument();
+    expect(within(card(0)).queryByLabelText('Show expected distribution')).not.toBeInTheDocument();
+    expect(within(card(0)).queryByTestId('percentiles')).not.toBeInTheDocument();
+    expect(within(card(0)).queryByRole('checkbox')).not.toBeInTheDocument();
+    expect(within(card(0)).queryByRole('combobox')).not.toBeInTheDocument();
   });
 
   it('switching back to Rate removes the histogram again', async () => {
@@ -602,28 +613,17 @@ describe('Dashboard (spec 28): radio chart selector per link', () => {
     await showChart(user, 0, 'Delay histogram');
     await showChart(user, 0, 'Rate');
     expect(within(card(0)).queryByTestId('chart-bar')).not.toBeInTheDocument();
-    expect(within(card(0)).queryByLabelText('Histogram window')).not.toBeInTheDocument();
   });
 
-  it('each link has its own selection (the radios of two cards are not one group)', async () => {
-    const user = userEvent.setup();
-    await openCards();
-    await showChart(user, 0, 'Drops');
-    expect(radio(0, 'Drops')).toBeChecked();
-    expect(radio(1, 'Rate')).toBeChecked();
-    expect(radio(1, 'Drops')).not.toBeChecked();
-    expect(imgName(within(card(1)).getByTestId('chart-line'))).toMatch(/rate/i);
-  });
-
-  it('the selection survives the next polls (the card is not rebuilt)', async () => {
+  it('the selection survives the next polls (the chart area is not rebuilt)', async () => {
     vi.useFakeTimers();
     renderApp('/');
     await tick(0);
     await tick(0);
-    fireEvent.click(radio(0, 'Drops')); // fireEvent: userEvent waits on timers that are faked here
+    fireEvent.click(radio(0, 'Loss')); // fireEvent: userEvent waits on timers that are faked here
     await tick(5000);
-    expect(radio(0, 'Drops')).toBeChecked();
-    expect(imgName(within(card(0)).getByTestId('chart-line'))).toMatch(/drops/i);
+    expect(radio(0, 'Loss')).toBeChecked();
+    expect(imgName(within(card(0)).getByTestId('chart-line'))).toMatch(/loss/i);
   });
 
   it('a link with delay_stats off has no "Delay histogram" choice (and nothing is fetched for it)', async () => {
@@ -631,9 +631,9 @@ describe('Dashboard (spec 28): radio chart selector per link', () => {
       fx.stats([fx.dirStats(0), fx.dirStats(1, { delay_stats: false, delay_mean_ns: null, delay_std_ns: null })]),
     );
     await openCards();
-    expect(within(card(1)).queryByRole('radio', { name: 'Delay histogram' })).not.toBeInTheDocument();
+    expect(queryRadio(1, 'Delay histogram')).not.toBeInTheDocument();
     expect(radio(1, 'Rate')).toBeInTheDocument();
-    expect(radio(1, 'Drops')).toBeInTheDocument();
+    expect(radio(1, 'Loss')).toBeInTheDocument();
     expect(radio(0, 'Delay histogram')).toBeInTheDocument();
     await new Promise((r) => setTimeout(r, 50));
     expect(api.getDelayHistogram).not.toHaveBeenCalledWith(1);
@@ -716,7 +716,7 @@ describe('Dashboard (spec 28): rate chart in the P4TG look', () => {
   });
 });
 
-describe('Dashboard (spec 28): drops chart split into model loss and overload', () => {
+describe('Dashboard (spec 28, spec 35 F3): loss chart split into model loss and overload', () => {
   beforeEach(() => {
     api.getEmulation.mockResolvedValue(fx.emulation('running'));
     api.getStats.mockResolvedValue(twoDirections());
@@ -726,7 +726,7 @@ describe('Dashboard (spec 28): drops chart split into model loss and overload', 
   const drops = async () => {
     const user = userEvent.setup();
     await openCards();
-    return showChart(user, 0, 'Drops');
+    return showChart(user, 0, 'Loss');
   };
 
   it('has exactly two datasets: "Model loss" and "Overload drops"', async () => {
@@ -784,7 +784,7 @@ describe('Dashboard (spec 28): drops chart split into model loss and overload', 
     renderApp('/');
     await tick(0);
     await tick(0);
-    fireEvent.click(radio(0, 'Drops')); // fireEvent: userEvent waits on timers that are faked here
+    fireEvent.click(radio(0, 'Loss')); // fireEvent: userEvent waits on timers that are faked here
     await tick(3000);
     const chart = within(card(0)).getByTestId('chart-line');
     const d = dataOf(chart);
@@ -871,11 +871,10 @@ describe('Dashboard (spec 28): delay histogram chart look and percentile lines',
     );
     const user = userEvent.setup();
     await openCards();
-    const c0 = await showChart(user, 0, 'Delay histogram');
-    const c1 = await showChart(user, 1, 'Delay histogram');
-    await waitFor(() => {
-      expect(xOf(labelled(optsOf(c0), 'p50')[0])).toBeLessThan(xOf(labelled(optsOf(c1), 'p50')[0]));
-    });
+    // A link whose tab is not shown does not poll or render its histogram: read each link's chart while its tab shows.
+    const p50 = async (d: number) => xOf(labelled(optsOf(await showChart(user, d, 'Delay histogram')), 'p50')[0]);
+    const p50Of0 = await p50(0);
+    expect(p50Of0).toBeLessThan(await p50(1));
   });
 
   it('no line for a percentile without samples (null)', async () => {
@@ -894,27 +893,88 @@ describe('Dashboard (spec 28): delay histogram chart look and percentile lines',
     expect(annotations(optsOf(await hist()))).toEqual([]);
   });
 
-  it('the percentile list under the chart stays', async () => {
-    await hist();
-    expect(within(card(0)).getByTestId('percentiles')).toHaveTextContent('1.05 ms');
-  });
-
-  it('y axis titled, starts at zero (linear), x axis titled with the delay; legend on top; tooltips on', async () => {
+  // Spec 35 F4. Was: 'the percentile list under the chart stays' (p50..p99.9 as a list, with clamp markers; removed, the dashed
+  // annotation lines stay), 'y axis titled ... legend on top' (the legend assertion is dropped: with the expected overlay gone
+  // the single series needs none) and 'keeps the expected overlay in the legend and the log toggle' (overlay and log toggle gone).
+  it('y axis titled, starts at zero and linear, x axis titled with the delay; tooltips on', async () => {
     const o = optsOf(await hist());
     expect(o.scales?.y?.title?.text).toMatch(/packets|count/i);
     expect(o.scales?.y?.beginAtZero === true || o.scales?.y?.min === 0).toBe(true);
+    expect(o.scales?.y?.type ?? 'linear').toBe('linear');
     expect(o.scales?.x?.title?.text).toMatch(/delay/i);
-    expect(o.plugins?.legend?.position).toBe('top');
     expect(o.plugins?.tooltip?.enabled).not.toBe(false);
   });
 
-  it('keeps the expected overlay in the legend and the log toggle (y becomes logarithmic)', async () => {
-    const user = userEvent.setup();
+  it('has the bars only: one dataset, no expected overlay, and no percentile list under the chart', async () => {
     const chart = await hist();
-    expect(dataOf(chart).datasets).toHaveLength(2);
-    expect(optsOf(chart).plugins?.legend?.display).toBe(true);
-    await user.click(within(card(0)).getByLabelText('Log scale'));
-    expect(optsOf(within(card(0)).getByTestId('chart-bar')).scales?.y?.type).toBe('logarithmic');
+    expect(dataOf(chart).datasets).toHaveLength(1);
+    expect(dataOf(chart).datasets[0].data).toEqual([1, 10, 100, 40, 2]);
+    expect(within(card(0)).queryByTestId('percentiles')).not.toBeInTheDocument();
+    expect(within(card(0)).queryByText('p50', { selector: 'dt' })).not.toBeInTheDocument();
+  });
+
+  it('the y axis stays linear whatever happens (there is no log toggle any more)', async () => {
+    const chart = await hist();
+    expect(within(card(0)).queryByLabelText('Log scale')).not.toBeInTheDocument();
+    expect(optsOf(chart).scales?.y?.type ?? 'linear').toBe('linear');
+  });
+
+  // Spec 35 F4: mean delay and jitter in the chart's title line, "Mean <d> · Jitter (σ) <d>", units by formatDuration.
+  describe('the title line shows the mean delay and the jitter', () => {
+    const titleOf = (o: ChartOptions): string => {
+      const t = o.plugins?.title;
+      expect(t?.display, 'plugins.title.display').toBe(true);
+      const text = t?.text;
+      return Array.isArray(text) ? text.join(' ') : (text ?? '');
+    };
+
+    it('reads "Mean 1.00 ms · Jitter (σ) 50.00 µs" from delay_mean_ns 1000000 and delay_std_ns 50000', async () => {
+      expect(titleOf(optsOf(await hist()))).toMatch(/Mean 1\.00 ms · Jitter \(σ\) 50\.00 [µμ]s/);
+    });
+
+    it('each link has the numbers of its own stats', async () => {
+      api.getStats.mockResolvedValue(
+        fx.stats([fx.dirStats(0), fx.dirStats(1, { delay_mean_ns: 2_500_000_000, delay_std_ns: 800 })]),
+      );
+      const user = userEvent.setup();
+      await openCards();
+      // A link whose tab is not shown does not render its histogram: read each link's title while its tab shows.
+      const title = async (d: number) => titleOf(optsOf(await showChart(user, d, 'Delay histogram')));
+      expect(await title(0)).toMatch(/Mean 1\.00 ms/);
+      expect(await title(1)).toMatch(/Mean 2\.50 s · Jitter \(σ\) 800\.00 ns/);
+    });
+
+    it('follows the stats of the next polls', async () => {
+      vi.useFakeTimers();
+      renderApp('/');
+      await tick(0);
+      await tick(0);
+      fireEvent.click(radio(0, 'Delay histogram'));
+      await tick(1000);
+      expect(titleOf(optsOf(within(card(0)).getByTestId('chart-bar')))).toMatch(/Mean 1\.00 ms/);
+      api.getStats.mockResolvedValue(
+        fx.stats([fx.dirStats(0, { delay_mean_ns: 3_000_000, delay_std_ns: 120_000 }), fx.dirStats(1)]),
+      );
+      await tick(2500);
+      expect(titleOf(optsOf(within(card(0)).getByTestId('chart-bar')))).toMatch(
+        /Mean 3\.00 ms · Jitter \(σ\) 120\.00 [µμ]s/,
+      );
+    });
+
+    it('CHOICE: a missing mean or std reads n/a, like every other missing duration', async () => {
+      api.getStats.mockResolvedValue(
+        fx.stats([fx.dirStats(0, { delay_mean_ns: null, delay_std_ns: null }), fx.dirStats(1)]),
+      );
+      const user = userEvent.setup();
+      await openCards();
+      const chart = await showChart(user, 0, 'Delay histogram');
+      expect(titleOf(optsOf(chart))).toBe('Mean n/a · Jitter (σ) n/a');
+    });
+
+    it('is in the chart options, not in the page text around the chart', async () => {
+      await hist();
+      expect(within(card(0)).queryByText(/Jitter/)).not.toBeInTheDocument();
+    });
   });
 });
 
@@ -957,7 +1017,7 @@ describe('Dashboard (spec 28): chart text and grid colours follow dark mode', ()
     ['y grid', o.scales?.y?.grid?.color],
   ];
 
-  const VIEWS = ['Rate', 'Drops', 'Delay histogram'] as const;
+  const VIEWS = ['Rate', 'Loss', 'Delay histogram'] as const;
 
   async function optionsOf(view: (typeof VIEWS)[number]): Promise<ChartOptions> {
     const user = userEvent.setup();
@@ -965,17 +1025,21 @@ describe('Dashboard (spec 28): chart text and grid colours follow dark mode', ()
     return optsOf(await showChart(user, 0, view));
   }
 
+  // Spec 35 F4: the histogram's title line is text too (its colour must follow the theme).
+  const withTitle = (o: ChartOptions, view: (typeof VIEWS)[number]): [string, string | undefined][] =>
+    view === 'Delay histogram' ? [...textColours(o), ['title', o.plugins?.title?.color]] : textColours(o);
+
   it.each(VIEWS)('%s chart, dark: light text and light grid lines', async (view) => {
     setPrefersDark(true);
     const o = await optionsOf(view);
-    for (const [what, css] of textColours(o)) expect(brightness(css, what), what).toBeGreaterThan(0.6);
+    for (const [what, css] of withTitle(o, view)) expect(brightness(css, what), what).toBeGreaterThan(0.6);
     for (const [what, css] of gridColours(o)) expect(brightness(css, what), what).toBeGreaterThan(0.5);
   });
 
   it.each(VIEWS)('%s chart, light: dark text and dark grid lines', async (view) => {
     setPrefersDark(false);
     const o = await optionsOf(view);
-    for (const [what, css] of textColours(o)) expect(brightness(css, what), what).toBeLessThan(0.4);
+    for (const [what, css] of withTitle(o, view)) expect(brightness(css, what), what).toBeLessThan(0.4);
     for (const [what, css] of gridColours(o)) expect(brightness(css, what), what).toBeLessThan(0.5);
   });
 
@@ -999,24 +1063,5 @@ describe('Dashboard (spec 28): chart text and grid colours follow dark mode', ()
   });
 });
 
-describe('Dashboard (spec 28): PortsTable style', () => {
-  beforeEach(() => {
-    api.getEmulation.mockResolvedValue(fx.emulation('running'));
-    api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0)], { ports: [fx.portStats(0), fx.portStats(1)] }));
-  });
-
-  it('is a striped table with a dark header', async () => {
-    renderApp('/');
-    const wrap = await screen.findByTestId('ports-table');
-    const table = must(wrap.querySelector('table'), 'the table');
-    expect(table).toHaveClass('table-striped');
-    expect(must(table.querySelector('thead'), 'thead')).toHaveClass('table-dark');
-  });
-
-  it('keeps its rows and the "NIC ports" heading', async () => {
-    renderApp('/');
-    const wrap = await screen.findByTestId('ports-table');
-    expect(within(wrap).getAllByRole('row')).toHaveLength(3);
-    expect(screen.getByRole('heading', { name: /NIC ports/i })).toBeInTheDocument();
-  });
-});
+// Spec 35 F6. Removed: 'PortsTable style' (striped, dark header) and its rows/heading test; the table is on the Interfaces page and
+// interfacesPorts.test.tsx pins them there.

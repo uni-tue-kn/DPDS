@@ -1,14 +1,16 @@
 import {
+  ArcElement,
   BarElement,
   CategoryScale,
   Chart as ChartJS,
+  DoughnutController,
   Filler,
   Legend,
   LinearScale,
   LineController,
   LineElement,
-  LogarithmicScale,
   PointElement,
+  Title,
   Tooltip,
 } from 'chart.js';
 import type { ChartOptions } from 'chart.js';
@@ -18,15 +20,17 @@ import type { Theme } from '../common/theme';
 // Register once; importing this module is enough.
 ChartJS.register(
   Annotation,
+  ArcElement,
   BarElement,
   CategoryScale,
+  DoughnutController,
   Filler,
   Legend,
   LinearScale,
   LineController,
   LineElement,
-  LogarithmicScale,
   PointElement,
+  Title,
   Tooltip,
 );
 
@@ -50,7 +54,7 @@ export function chartOptions<T extends 'line' | 'bar'>(
   theme: Theme,
   xTitle: string,
   yTitle: string,
-  y: { type?: 'linear' | 'logarithmic'; showLegend?: boolean } = {},
+  showLegend = true,
 ): ChartOptions<T> {
   const { text, grid } = chartInk(theme);
   const axis = (title: string) => ({
@@ -66,8 +70,8 @@ export function chartOptions<T extends 'line' | 'bar'>(
     interaction: { mode: 'index', intersect: false },
     scales: {
       x: axis(xTitle),
-      y: { ...axis(yTitle), type: y.type ?? 'linear', beginAtZero: y.type !== 'logarithmic' },
+      y: { ...axis(yTitle), beginAtZero: true },
     },
-    plugins: { legend: { display: y.showLegend ?? true, position: 'top', labels: { color: text } } },
+    plugins: { legend: { display: showLegend, position: 'top', labels: { color: text } } },
   } as unknown as ChartOptions<T>;
 }

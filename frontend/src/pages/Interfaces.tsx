@@ -1,11 +1,16 @@
+import { useEffect, useState } from 'react';
 import { Badge, Table } from 'react-bootstrap';
 import * as api from '../api/client';
 import ErrorAlert from '../components/ErrorAlert';
 import { formatInt, formatSpeedMbps } from '../common/format';
 import { useLoad } from '../common/useLoad';
-import type { Interface } from '../api/types';
+import type { Interface, PortStats } from '../api/types';
+import { startPolling } from '../common/polling';
+import { usePortLabeler } from '../common/portLabel';
+import PortsTable from './PortsTable';
 
 const NA = 'n/a';
+const POLL_MS = 1000;
 
 function pcie(i: Interface): string {
   const l = i.pcie_link;
@@ -39,6 +44,26 @@ function Row({ i }: { i: Interface }) {
 
 export default function Interfaces() {
   const { data, error } = useLoad(api.getInterfaces);
+  const label = usePortLabeler();
+  const [ports, setPorts] = useState<PortStats[]>([]);
+
+  // The NIC counters come with the stats; a failing request keeps the last table (the poll logs it).
+  useEffect(() => {
+    let alive = true;
+    const stop = startPolling(
+      async () => {
+        const s = await api.getStats();
+        if (alive) setPorts(s.ports);
+      },
+      POLL_MS,
+      true,
+    );
+    return () => {
+      alive = false;
+      stop();
+    };
+  }, []);
+
   return (
     <>
       <h1 className="mb-3">Interfaces</h1>
@@ -73,6 +98,7 @@ export default function Interfaces() {
           </tbody>
         </Table>
       )}
+      {ports.length > 0 && <PortsTable ports={ports} label={label} />}
     </>
   );
 }

@@ -5,6 +5,7 @@ import * as fx from '../test/fixtures';
 import { ApiError, api, serveHistory } from '../test/mockApi';
 import type { HistoryServer } from '../test/mockApi';
 import { renderApp, tick } from '../test/helpers';
+import { card, hasTab, radioNames, tab, tabBadge, tabTitle, tabs } from '../test/dashboardUi';
 import { must } from '../test/must';
 
 // Spec 29b (fixes from the review of c4e3fd6 and f0c921d), frontend items 4 to 8. Item 9 (the `elapsed_ms` type) is pinned in
@@ -20,7 +21,8 @@ import { must } from '../test/must';
 //   8. A failing history request shows a warning (CHOICE: `data-testid="history-warning"`, visible text naming the history and
 //      the error message, separate from `stats-warning`) until the next success; the charts keep their data.
 
-const card = (d: number) => screen.getByTestId(`direction-card-${d}`);
+// Spec 35 F3: a card is a tab and its chart area (src/test/dashboardUi.tsx); the badge and the title are the tab's. Changed
+// below: the badge, title and "RX rate" (stat list) expectations moved from the card to the tab, "no cards" is "no tabs".
 const dataOf = (el: HTMLElement) => JSON.parse(el.getAttribute('data-chart') ?? 'null') as ChartData;
 interface ChartData {
   labels: string[];
@@ -128,14 +130,13 @@ describe('Dashboard (spec 29b item 4): a run is its run_id, not its started_at',
     api.getEmulation.mockResolvedValue(fx.emulation('stopped', { directions: [] }));
     api.getStats.mockResolvedValue(STOPPED_STATS);
     await tick(2500);
-    expect(screen.getByTestId('direction-card-0')).toBeInTheDocument(); // the stopped run's charts
+    expect(hasTab(0)).toBe(true); // the stopped run's charts
     s.runId = null;
     s.startedAt = null;
     s.samples = {};
     s.links = [];
     await tick(3000);
-    expect(screen.queryByTestId('direction-card-0')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('direction-card-1')).not.toBeInTheDocument();
+    expect(tabs()).toHaveLength(0);
   });
 
   it('with an unchanged run_id the data is never refetched in full, however long the dashboard stays open', async () => {
@@ -168,14 +169,11 @@ describe('Dashboard (spec 29b item 5): history cards for stopping, stopped and f
       await open();
       await tick(2500);
       for (const d of [0, 1]) {
-        expect(within(card(d)).getByText(BADGE[state]), `${state}: card ${d}`).toBeInTheDocument();
-        for (const other of Object.values(BADGE).filter((b) => b !== BADGE[state])) {
-          expect(within(card(d)).queryByText(other), `${state}: card ${d} is not ${other}`).not.toBeInTheDocument();
-        }
+        expect(tabBadge(d), `${state}: tab ${d}`).toBe(BADGE[state]);
       }
       expect(rxOf(0)).toEqual(Array(5).fill(1.5));
       expect(rxOf(1)).toEqual(Array(5).fill(2.5));
-      expect(within(card(0)).queryByText('RX rate')).not.toBeInTheDocument(); // the final charts only, no live numbers
+      expect(radioNames(0)).toEqual(['Rate', 'Loss']); // the final charts only, no live histogram
     },
   );
 
@@ -184,8 +182,7 @@ describe('Dashboard (spec 29b item 5): history cards for stopping, stopped and f
     settle(state);
     await open();
     await tick(2500);
-    expect(screen.queryByTestId('direction-card-0')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('direction-card-1')).not.toBeInTheDocument();
+    expect(tabs()).toHaveLength(0);
   });
 
   it.each(['stopping', 'stopped', 'failed'] as const)('"%s", the controller never ran: no cards', async (state) => {
@@ -193,21 +190,20 @@ describe('Dashboard (spec 29b item 5): history cards for stopping, stopped and f
     settle(state);
     await open();
     await tick(2500);
-    expect(screen.queryByTestId('direction-card-0')).not.toBeInTheDocument();
+    expect(tabs()).toHaveLength(0);
     expect(screen.queryByText(BADGE[state], { selector: '.badge' })).not.toBeInTheDocument();
   });
 
   it('a run that goes from running through stopping to stopped keeps its cards the whole way, the badge following the state', async () => {
     server({ '0': fx.historySamples(0, 5), '1': fx.historySamples(0, 5) });
     await open();
-    expect(within(card(0)).queryByText(/^(Stopping|Stopped|Failed)$/)).not.toBeInTheDocument(); // live: no state badge
+    expect(tabBadge(0)).toBe(''); // live: no state badge
     settle('stopping');
     await tick(2500);
-    expect(within(card(0)).getByText('Stopping')).toBeInTheDocument();
+    expect(tabBadge(0)).toBe('Stopping');
     settle('stopped');
     await tick(2500);
-    expect(within(card(0)).getByText('Stopped')).toBeInTheDocument();
-    expect(within(card(0)).queryByText('Stopping')).not.toBeInTheDocument();
+    expect(tabBadge(0)).toBe('Stopped');
     expect(rxOf(0)).toHaveLength(5);
   });
 
@@ -218,8 +214,7 @@ describe('Dashboard (spec 29b item 5): history cards for stopping, stopped and f
     await tick(2500);
     settle('failed');
     await tick(2500);
-    expect(within(card(1)).getByText('Failed')).toBeInTheDocument();
-    expect(within(card(1)).queryByText('Stopping')).not.toBeInTheDocument();
+    expect(tabBadge(1)).toBe('Failed');
     expect(rxOf(1)).toHaveLength(4);
   });
 
@@ -234,10 +229,10 @@ describe('Dashboard (spec 29b item 5): history cards for stopping, stopped and f
     ];
     await open();
     await tick(2500);
-    expect(within(card(0)).getByText('uplink: enp101s0f0 → enp101s0f1')).toBeInTheDocument();
-    expect(within(card(1)).getByText('loop: net_null0 → net_null0')).toBeInTheDocument();
-    expect(card(0)).not.toHaveTextContent('a-b');
-    expect(card(0)).not.toHaveTextContent('0000:65:00'); // no PCI address next to a netdev
+    expect(tabTitle(0)).toBe('uplink: enp101s0f0 → enp101s0f1');
+    expect(tabTitle(1)).toBe('loop: net_null0 → net_null0');
+    expect(tab(0)).not.toHaveTextContent('a-b');
+    expect(tab(0)).not.toHaveTextContent('0000:65:00'); // no PCI address next to a netdev
   });
 
   it('a freshly opened page of a stopped controller titles its cards from the links, not "Link 0"', async () => {
@@ -246,8 +241,8 @@ describe('Dashboard (spec 29b item 5): history cards for stopping, stopped and f
     api.getStats.mockResolvedValue(STOPPED_STATS);
     await open();
     await tick(2500);
-    expect(within(card(0)).getByText('a-b: enp101s0f0 → enp101s0f1')).toBeInTheDocument();
-    expect(within(card(1)).getByText('b-a: enp101s0f1 → enp101s0f0')).toBeInTheDocument();
+    expect(tabTitle(0)).toBe('a-b: enp101s0f0 → enp101s0f1');
+    expect(tabTitle(1)).toBe('b-a: enp101s0f1 → enp101s0f0');
     expect(screen.queryByText(/^Link \d+$/)).not.toBeInTheDocument();
   });
 
@@ -264,7 +259,7 @@ describe('Dashboard (spec 29b item 5): history cards for stopping, stopped and f
       ]),
     );
     await open();
-    expect(within(card(0)).getByText('alpha: net_null0 → net_null1')).toBeInTheDocument(); // live, from the stats
+    expect(tabTitle(0)).toBe('alpha: net_null0 → net_null1'); // live, from the stats
     // meanwhile another run, with other links, ran and ended (started from another browser): this page only sees it stopped
     api.getEmulation.mockResolvedValue(fx.emulation('stopped', { directions: [] }));
     api.getStats.mockResolvedValue(STOPPED_STATS);
@@ -276,8 +271,8 @@ describe('Dashboard (spec 29b item 5): history cards for stopping, stopped and f
     ];
     s.samples = { '0': fx.historySamples(0, 2), '1': fx.historySamples(0, 2) };
     await tick(3000);
-    expect(within(card(0)).getByText('gamma: net_null2 → net_null3')).toBeInTheDocument();
-    expect(within(card(1)).getByText('delta: net_null3 → net_null2')).toBeInTheDocument();
+    expect(tabTitle(0)).toBe('gamma: net_null2 → net_null3');
+    expect(tabTitle(1)).toBe('delta: net_null3 → net_null2');
     expect(document.body).not.toHaveTextContent(/alpha|beta/);
   });
 
@@ -288,9 +283,9 @@ describe('Dashboard (spec 29b item 5): history cards for stopping, stopped and f
     api.getStats.mockResolvedValue(STOPPED_STATS);
     await open();
     await tick(2500);
-    expect(within(card(0)).getByText('only: net_null0 → net_null1')).toBeInTheDocument();
-    expect(within(card(1)).getByText('Link 1')).toBeInTheDocument();
-    expect(within(card(2)).getByText('Link 2')).toBeInTheDocument();
+    expect(tabTitle(0)).toBe('only: net_null0 → net_null1');
+    expect(tabTitle(1)).toBe('Link 1');
+    expect(tabTitle(2)).toBe('Link 2');
     expect(screen.queryByText('Link 0')).not.toBeInTheDocument();
   });
 
@@ -304,8 +299,8 @@ describe('Dashboard (spec 29b item 5): history cards for stopping, stopped and f
     api.getStats.mockResolvedValue(STOPPED_STATS);
     await open();
     await tick(2500);
-    expect(within(card(0)).getByText('first: net_null0 → net_null1')).toBeInTheDocument();
-    expect(within(card(1)).getByText('second: net_null1 → net_null0')).toBeInTheDocument();
+    expect(tabTitle(0)).toBe('first: net_null0 → net_null1');
+    expect(tabTitle(1)).toBe('second: net_null1 → net_null0');
   });
 
   it('a stopped run keeps its title when the dashboard is reopened after the run was replaced', async () => {
@@ -324,7 +319,7 @@ describe('Dashboard (spec 29b item 5): history cards for stopping, stopped and f
     renderApp('/');
     await tick(0);
     await tick(1500);
-    expect(within(card(0)).getByText('again0: net_null0 → net_null1')).toBeInTheDocument();
+    expect(tabTitle(0)).toBe('again0: net_null0 → net_null1');
   });
 });
 
@@ -338,7 +333,7 @@ describe('Dashboard (spec 29b item 6): while the emulation is starting, live car
     await open();
     await tick(2500);
     for (const d of [0, 1]) {
-      expect(within(card(d)).getByText('RX rate')).toBeInTheDocument(); // a live card
+      expect(radioNames(d)).toContain('Delay histogram'); // a live card (an ended one has no histogram choice)
       expect(rxOf(d), `card ${d}`).toEqual([]);
       expect(labelsOf(d), `card ${d}`).toEqual([]);
     }
@@ -458,7 +453,7 @@ describe('Dashboard (spec 29b item 8): a failing history request shows a warning
     const w = must(warning(), 'history warning');
     expect(w).toHaveTextContent(/history/i);
     expect(w).toHaveTextContent('history read failed');
-    expect(screen.getByTestId('direction-card-0')).toBeInTheDocument();
+    expect(hasTab(0)).toBe(true);
     errors.mockRestore();
   });
 

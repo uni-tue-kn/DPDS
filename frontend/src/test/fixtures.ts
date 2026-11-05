@@ -9,6 +9,7 @@ import type {
   Hint,
   HistogramView,
   HistorySample,
+  HistoryTotals,
   HistoryView,
   Interface,
   Link,
@@ -286,6 +287,9 @@ export function counters(over: Partial<Counters> = {}): Counters {
     tx_pkts: 990,
     tx_sent: 990,
     tx_drops: 0,
+    // spec 35 (C2): cumulative counters of the receiving port
+    nic_rx_imissed: 0,
+    nic_rx_nombuf: 0,
     ...over,
   };
 }
@@ -445,7 +449,25 @@ export function historyLinks(): HistoryView['links'] {
  * start (unix seconds, as `emulation('running')` has it), its links and the samples per link index.
  */
 export function history(samples: Record<string, HistorySample[]>, over: Partial<HistoryView> = {}): HistoryView {
-  return { run_id: 1, started_at: 1762000000, links: historyLinks(), samples, ...over };
+  return { run_id: 1, started_at: 1762000000, links: historyLinks(), totals: {}, samples, ...over };
+}
+
+/**
+ * Spec 35 (C1): one link's final cumulative counters, as `totals` of `GET /api/stats/history` carries them. Distinct counts
+ * that sum to 100 drops (loss 40, limiter 30, buffer 20, NIC TX 5, imissed 4, nombuf 1) out of 10000 received packets, so the
+ * share of a cause "of all drops" is its count in percent, and differs from its share of the received packets.
+ */
+export function totals(over: Partial<HistoryTotals> = {}): HistoryTotals {
+  return {
+    rx_pkts: 10000,
+    loss_drops: 40,
+    limiter_drops: 30,
+    buffer_full_drops: 20,
+    nic_tx_drops: 5,
+    nic_rx_imissed: 4,
+    nic_rx_nombuf: 1,
+    ...over,
+  };
 }
 
 /** `count` samples one second apart, at t_ms = from * 1000, (from + 1) * 1000, ... (`from` in seconds), all with the same values. */

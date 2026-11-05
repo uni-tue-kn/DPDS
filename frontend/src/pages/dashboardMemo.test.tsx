@@ -5,8 +5,13 @@ import type { HistogramView } from '../api/types';
 import * as fx from '../test/fixtures';
 import { api, serveHistory } from '../test/mockApi';
 import { renderApp, tick } from '../test/helpers';
+import { card } from '../test/dashboardUi';
 import { must } from '../test/must';
 
+// Spec 35 (F7): the loss donut is memoised too: its data depend on the six counts only, its options on the theme only (the
+// Chart.js tooltip callback is part of the options, so a counter change must not rebuild them). The stub below records the
+// Doughnut like the other charts. The link's chart area is a tab now (`card(d)` of src/test/dashboardUi.tsx), "Drops" is "Loss".
+//
 // Spec 28b item 2: rendering cost. "Chart data/options are memoized on their inputs (history, histogram, theme, selected
 // view); DirectionCard and Histogram do not recompute charts on unrelated re-renders; the elapsed pill ticks in its own
 // component, so the 1 Hz tick re-renders only that pill." The last clause is superseded: the pill has no tick any more.
@@ -25,10 +30,10 @@ interface Seen {
   data: unknown;
   options: unknown;
 }
-const seen = vi.hoisted(() => ({ line: [] as Seen[], bar: [] as Seen[] }));
+const seen = vi.hoisted(() => ({ line: [] as Seen[], bar: [] as Seen[], doughnut: [] as Seen[] }));
 
 vi.mock('react-chartjs-2', () => {
-  const stub = (kind: 'line' | 'bar') => (props: { data?: unknown; options?: unknown }) => {
+  const stub = (kind: 'line' | 'bar' | 'doughnut') => (props: { data?: unknown; options?: unknown }) => {
     seen[kind].push({ data: props.data, options: props.options });
     return React.createElement('div', {
       'data-testid': `chart-${kind}`,
@@ -36,20 +41,20 @@ vi.mock('react-chartjs-2', () => {
       'data-options': JSON.stringify(props.options ?? null),
     });
   };
-  return { Bar: stub('bar'), Line: stub('line') };
+  return { Bar: stub('bar'), Line: stub('line'), Doughnut: stub('doughnut') };
 });
 
-const card = (d: number) => screen.getByTestId(`direction-card-${d}`);
-const last = (kind: 'line' | 'bar') => must(seen[kind].at(-1), `a rendered ${kind} chart`);
+const last = (kind: 'line' | 'bar' | 'doughnut') => must(seen[kind].at(-1), `a rendered ${kind} chart`);
 const toggleTheme = () => fireEvent.click(screen.getByRole('button', { name: 'Toggle dark mode' }));
 
 beforeEach(() => {
   seen.line.length = 0;
   seen.bar.length = 0;
+  seen.doughnut.length = 0;
   vi.useFakeTimers();
   api.getEmulation.mockResolvedValue(fx.emulation('running'));
   // one link only: every chart on the page is then the one under test (the stubs record all charts alike)
-  api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0)]));
+  api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0, { counters: fx.counters({ loss_drops: 4 }) })]));
   serveHistory({ startedAt: 1762000000, samples: { '0': fx.historySamples(0, 5) } });
 });
 
@@ -70,9 +75,9 @@ describe('Dashboard (spec 28b item 2): charts keep their data and options object
     expect(after.data).toBe(before.data);
   });
 
-  it('the Drops chart: the same', async () => {
+  it('the Loss chart: the same', async () => {
     await open();
-    fireEvent.click(within(card(0)).getByRole('radio', { name: 'Drops' }));
+    fireEvent.click(within(card(0)).getByRole('radio', { name: 'Loss' }));
     await tick(0);
     const before = last('line');
     toggleTheme();
@@ -95,11 +100,11 @@ describe('Dashboard (spec 28b item 2): charts keep their data and options object
     expect(after.options).toBe(before.options);
   });
 
-  it('the Drops chart: a new sample keeps the options object', async () => {
+  it('the Loss chart: a new sample keeps the options object', async () => {
     const samples = { '0': fx.historySamples(0, 5) };
     serveHistory({ startedAt: 1762000000, samples });
     await open();
-    fireEvent.click(within(card(0)).getByRole('radio', { name: 'Drops' }));
+    fireEvent.click(within(card(0)).getByRole('radio', { name: 'Loss' }));
     await tick(0);
     const before = last('line');
     samples['0'].push(fx.historySample(5000));
@@ -138,6 +143,61 @@ describe('Dashboard (spec 28b item 2): charts keep their data and options object
   });
 });
 
+describe('Dashboard (spec 35 F7): the loss donut keeps its data and options objects while their inputs are unchanged', () => {
+  const withCounts = (counters: Parameters<typeof fx.counters>[0]) =>
+    fx.stats([fx.dirStats(0, { counters: fx.counters(counters) })]);
+
+  it('a theme toggle renews the options and keeps the data object', async () => {
+    await open();
+    const before = last('doughnut');
+    toggleTheme();
+    await tick(0);
+    expect(last('doughnut').options).not.toBe(before.options);
+    expect(last('doughnut').data).toBe(before.data);
+  });
+
+  it('a poll with fresh stats objects but the same counters changes neither data nor options', async () => {
+    await open();
+    const before = last('doughnut');
+    api.getStats.mockResolvedValue(withCounts({ loss_drops: 4 })); // new objects, same counts
+    await tick(2500);
+    expect(last('doughnut').data).toBe(before.data);
+    expect(last('doughnut').options).toBe(before.options);
+  });
+
+  it('a changed counter renews the data and keeps the options object', async () => {
+    await open();
+    const before = last('doughnut');
+    api.getStats.mockResolvedValue(withCounts({ loss_drops: 9 }));
+    await tick(2500);
+    const after = last('doughnut');
+    expect(after.data).not.toBe(before.data);
+    expect(JSON.parse(JSON.stringify(after.data)).datasets[0].data[0]).toBe(9);
+    expect(after.options).toBe(before.options);
+  });
+
+  it('a new rate sample (a chart history poll) does not touch the donut', async () => {
+    const samples = { '0': fx.historySamples(0, 5) };
+    serveHistory({ startedAt: 1762000000, samples });
+    await open();
+    const before = last('doughnut');
+    samples['0'].push(fx.historySample(5000));
+    await tick(1000);
+    await tick(1000);
+    expect(last('doughnut').data).toBe(before.data);
+    expect(last('doughnut').options).toBe(before.options);
+  });
+
+  it('switching the chart radio does not rebuild the donut data or options', async () => {
+    await open();
+    const before = last('doughnut');
+    fireEvent.click(within(card(0)).getByRole('radio', { name: 'Loss' }));
+    await tick(0);
+    expect(last('doughnut').data).toBe(before.data);
+    expect(last('doughnut').options).toBe(before.options);
+  });
+});
+
 // Spec 29, second round: the elapsed pill no longer ticks by itself (it shows the `elapsed_ms` of the stats poll, with no
 // browser clock). Was: "the elapsed pill ticks alone", three tests that held every poll back and checked that the 1 Hz tick
 // rendered no chart. A poll is now the only thing that changes the pill, so the pinned property is: a stats poll that changes
@@ -170,10 +230,10 @@ describe('Dashboard (spec 28b item 2 / spec 29): a stats poll that changes only 
     expect(last('line').options).toBe(before.options);
   });
 
-  it('Drops chart: the same', async () => {
+  it('Loss chart: the same', async () => {
     onlyStatsKeepAnswering();
     await open();
-    fireEvent.click(within(card(0)).getByRole('radio', { name: 'Drops' }));
+    fireEvent.click(within(card(0)).getByRole('radio', { name: 'Loss' }));
     await tick(0);
     const before = last('line');
     await tick(1000);
@@ -195,5 +255,16 @@ describe('Dashboard (spec 28b item 2 / spec 29): a stats poll that changes only 
     expect(screen.getByTestId('pill-elapsed')).toHaveTextContent('0h 3m 15s');
     expect(last('bar').data).toBe(before.data);
     expect(last('bar').options).toBe(before.options);
+  });
+
+  it('loss donut: the same (spec 35)', async () => {
+    onlyStatsKeepAnswering();
+    await open();
+    expect(within(card(0)).getByTestId('chart-doughnut')).toBeInTheDocument();
+    const before = last('doughnut');
+    await tick(2000);
+    expect(screen.getByTestId('pill-elapsed')).toHaveTextContent('0h 3m 15s');
+    expect(last('doughnut').data).toBe(before.data);
+    expect(last('doughnut').options).toBe(before.options);
   });
 });

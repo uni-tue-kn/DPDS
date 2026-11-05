@@ -152,6 +152,9 @@ export interface Counters {
   tx_pkts: number;
   tx_sent: number;
   tx_drops: number;
+  /** Cumulative `imissed` and `rx_nombuf` of the receiving port (a hairpin's two links report the same port). */
+  nic_rx_imissed: number;
+  nic_rx_nombuf: number;
 }
 
 export interface DirectionStats {
@@ -230,6 +233,17 @@ export interface HistoryLink {
   egress: string;
 }
 
+/** One link's final cumulative counters of the run (counters since the dpds process start). */
+export interface HistoryTotals {
+  rx_pkts: number;
+  loss_drops: number;
+  limiter_drops: number;
+  buffer_full_drops: number;
+  nic_tx_drops: number;
+  nic_rx_imissed: number;
+  nic_rx_nombuf: number;
+}
+
 /**
  * The current run's series per link index (as a string key). `run_id` identifies the run (null while nothing ran),
  * `started_at` (unix seconds, display only) is null then too, and `links` are the run's links in link-index order.
@@ -238,6 +252,8 @@ export interface HistoryView {
   run_id: number | null;
   started_at: number | null;
   links: HistoryLink[];
+  /** The run's newest counters per link index (as a string key); `{}` before any run. */
+  totals: Record<string, HistoryTotals>;
   samples: Record<string, HistorySample[]>;
 }
 

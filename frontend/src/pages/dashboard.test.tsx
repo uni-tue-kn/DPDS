@@ -1,19 +1,21 @@
-import { fireEvent, screen, within, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { vi } from 'vitest';
 import type { EmulationState, StatsView } from '../api/types';
-import { api, ApiError } from '../test/mockApi';
+import { card, findCard, hasTab, radioNames, tab, tabs, tabTitle } from '../test/dashboardUi';
 import * as fx from '../test/fixtures';
-import { deferred, expectStartBody, field, renderApp, seedStore, storedDoc, tick } from '../test/helpers';
+import { deferred, expectStartBody, renderApp, seedStore, storedDoc, tick } from '../test/helpers';
+import { ApiError, api } from '../test/mockApi';
+import { must } from '../test/must';
 
 const STATES: EmulationState[] = ['stopped', 'starting', 'running', 'stopping', 'failed'];
 
 /**
- * Spec 28: each card shows ONE chart, chosen with a radio group (Rate is the default). Every test that needs the delay
+ * Spec 28: each link shows ONE chart, chosen with a radio group (Rate is the default). Every test that needs the delay
  * histogram first picks "Delay histogram" in the card(s) with this helper. `fireEvent` so it also works under fake timers.
  */
-function showHistogram(...cards: HTMLElement[]): void {
-  for (const c of cards) fireEvent.click(within(c).getByRole('radio', { name: 'Delay histogram' }));
+function showHistogram(...links: number[]): void {
+  for (const d of links) fireEvent.click(within(card(d)).getByRole('radio', { name: 'Delay histogram' }));
 }
 
 function twoDirections() {
@@ -211,7 +213,8 @@ describe('Dashboard: emulation state and control', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('cannot signal child');
   });
 
-  it('shows the error and the log tail when failed', async () => {
+  // Spec 35 F6. Was: the log tail was always on the page; it is now only shown for `failed`, inside a collapsed "Show log".
+  it('shows the error when failed and keeps the log tail behind a collapsed "Show log"', async () => {
     api.getEmulation.mockResolvedValue(
       fx.emulation('failed', {
         error: 'dpds exited during startup (status 1)',
@@ -220,6 +223,7 @@ describe('Dashboard: emulation state and control', () => {
     );
     renderApp('/');
     expect(await screen.findByText(/dpds exited during startup \(status 1\)/)).toBeInTheDocument();
+    expect(must(screen.getByText('Show log').closest('details'), 'details').open).toBe(false);
     const tail = screen.getByTestId('log-tail');
     expect(within(tail).getByText('EAL: Cannot allocate memory')).toBeInTheDocument();
     expect(within(tail).getByText('direction 0: cannot create mbuf pool dpds_pool_0')).toBeInTheDocument();
@@ -240,117 +244,36 @@ describe('Dashboard: emulation state and control', () => {
   });
 });
 
-describe('Dashboard: per-direction cards', () => {
+// Spec 35 F3/F6. Was: 'Dashboard: per-direction cards', one card per link with a stat list (rates, drop shares per cause, mean
+// delay +- std, lateness, buffer max). The cards are tabs now and the stat list is gone (see dashboardSpec35.test.tsx); the
+// tests of the removed list (RX/TX rate, scaled units, drop shares, delay values, n/a, zero values) are removed with it.
+describe('Dashboard: one tab per link', () => {
   beforeEach(() => {
     api.getEmulation.mockResolvedValue(fx.emulation('running'));
     api.getStats.mockResolvedValue(twoDirections());
   });
 
-  it('renders one card per link with link and interface names (netdevs, v16)', async () => {
+  it('renders one tab per link with link and interface names (netdevs, v16)', async () => {
     renderApp('/');
-    const c0 = await screen.findByTestId('direction-card-0');
-    const c1 = await screen.findByTestId('direction-card-1');
-    expect(c0).toHaveTextContent('a-b');
-    await waitFor(() => expect(c0).toHaveTextContent('enp101s0f0'));
-    expect(c0).toHaveTextContent('enp101s0f1');
-    expect(c1).toHaveTextContent('b-a');
-    expect(screen.queryByTestId('direction-card-2')).not.toBeInTheDocument();
+    await findCard(1);
+    await waitFor(() => expect(tabTitle(0)).toBe('a-b: enp101s0f0 → enp101s0f1'));
+    expect(tabTitle(1)).toBe('b-a: enp101s0f1 → enp101s0f0');
+    expect(hasTab(2)).toBe(false);
   });
 
-  it('shows rx/tx rates in pps and Gb/s', async () => {
-    renderApp('/');
-    const c0 = await screen.findByTestId('direction-card-0');
-    expect(field(c0, 'RX rate')).toHaveTextContent(/1\.23 Mpps/);
-    expect(field(c0, 'RX rate')).toHaveTextContent(/9\.50 Gb\/s/);
-    expect(field(c0, 'TX rate')).toHaveTextContent(/1\.20 Mpps/);
-    expect(field(c0, 'TX rate')).toHaveTextContent(/8\.25 Gb\/s/);
-  });
-
-  it('scales small rates to smaller units', async () => {
-    renderApp('/');
-    const c1 = await screen.findByTestId('direction-card-1');
-    expect(field(c1, 'RX rate')).toHaveTextContent(/500 pps/);
-    expect(field(c1, 'RX rate')).toHaveTextContent(/2\.50 Mb\/s/);
-    expect(field(c1, 'TX rate')).toHaveTextContent(/400 pps/);
-    expect(field(c1, 'TX rate')).toHaveTextContent(/1\.50 kb\/s/);
-  });
-
-  it('shows one drop share per cause', async () => {
-    renderApp('/');
-    const c0 = await screen.findByTestId('direction-card-0');
-    expect(field(c0, 'Loss drops')).toHaveTextContent(/0\.50\s?%/);
-    expect(field(c0, 'Limiter drops')).toHaveTextContent(/1\.25\s?%/);
-    expect(field(c0, 'Buffer full drops')).toHaveTextContent(/2\.50\s?%/);
-    expect(field(c0, 'NIC TX drops')).toHaveTextContent(/0\.10\s?%/);
-    expect(field(c0, 'NIC RX drops')).toHaveTextContent(/0\.75\s?%/);
-  });
-
-  it('shows mean delay +- std, lateness and the buffer maximum', async () => {
-    renderApp('/');
-    const c0 = await screen.findByTestId('direction-card-0');
-    expect(field(c0, 'Mean delay').textContent).toMatch(/1\.00 ms\s*±\s*50\.00 [µμ]s/);
-    expect(field(c0, 'Lateness')).toHaveTextContent(/2\.50 [µμ]s/);
-    expect(field(c0, 'Lateness')).toHaveTextContent(/12\.00 ms/);
-    expect(field(c0, 'Buffer max')).toHaveTextContent(/1234|1,234/);
-  });
-
-  it('prints n/a for missing delay values', async () => {
-    api.getStats.mockResolvedValue(
-      fx.stats([
-        fx.dirStats(0, {
-          delay_mean_ns: null,
-          delay_std_ns: null,
-          lateness_mean_ns: null,
-          lateness_max_ns: null,
-          buffer_len_max: null,
-        }),
-      ]),
-    );
-    renderApp('/');
-    const c0 = await screen.findByTestId('direction-card-0');
-    expect(field(c0, 'Mean delay')).toHaveTextContent('n/a');
-    expect(field(c0, 'Lateness')).toHaveTextContent('n/a');
-    expect(field(c0, 'Buffer max')).toHaveTextContent('n/a');
-  });
-
-  it('renders zero values as numbers, not as n/a', async () => {
-    api.getStats.mockResolvedValue(
-      fx.stats([
-        fx.dirStats(0, {
-          loss_pct: 0,
-          limiter_pct: 0,
-          buffer_full_pct: 0,
-          nic_tx_pct: 0,
-          nic_rx_pct: 0,
-          rx_pps: 0,
-          tx_pps: 0,
-          rx_bps: 0,
-          tx_bps: 0,
-          buffer_len_max: 0,
-        }),
-      ]),
-    );
-    renderApp('/');
-    const c0 = await screen.findByTestId('direction-card-0');
-    expect(field(c0, 'Loss drops')).toHaveTextContent(/0\.00\s?%/);
-    expect(field(c0, 'RX rate')).toHaveTextContent(/0 pps/);
-    expect(field(c0, 'Buffer max')).toHaveTextContent('0');
-    expect(field(c0, 'Buffer max')).not.toHaveTextContent('n/a');
-  });
-
-  it('shows no cards while the stats have no directions', async () => {
+  it('shows no tabs while the stats have no directions', async () => {
     api.getStats.mockResolvedValue(fx.stats([]));
     renderApp('/');
     await waitFor(() => expect(api.getStats).toHaveBeenCalled());
-    expect(screen.queryByTestId('direction-card-0')).not.toBeInTheDocument();
+    expect(tabs()).toHaveLength(0);
   });
 
   // Spec 28: a radio selector shows one chart per link; Rate is the default. Was: findAllByTestId('chart-line') with the
   // rate and the drops chart both on the page.
-  it('draws the rate line chart once directions exist (one chart per card, Rate by default)', async () => {
+  it('draws the rate line chart once directions exist (one chart per link, Rate by default)', async () => {
     renderApp('/');
-    const c0 = await screen.findByTestId('direction-card-0');
-    const charts = await within(c0).findAllByTestId('chart-line');
+    await findCard(0);
+    const charts = await within(card(0)).findAllByTestId('chart-line');
     expect(charts).toHaveLength(1);
     const data = JSON.parse(charts[0].getAttribute('data-chart') ?? 'null');
     expect(data.datasets.length).toBeGreaterThanOrEqual(1);
@@ -369,7 +292,7 @@ describe('Dashboard: staleness', () => {
     api.getEmulation.mockResolvedValue(fx.emulation('running'));
     api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0)], { stale: false, age_ms: 100 }));
     renderApp('/');
-    await screen.findByTestId('direction-card-0');
+    await findCard(0);
     expect(screen.queryByTestId('stale-indicator')).not.toBeInTheDocument();
   });
 
@@ -457,14 +380,14 @@ describe('Dashboard: delay histogram', () => {
 
   it('renders a bar chart from the bins of each direction', async () => {
     renderApp('/');
-    const c0 = await screen.findByTestId('direction-card-0');
-    const c1 = await screen.findByTestId('direction-card-1');
-    showHistogram(c0, c1);
-    const chart = await within(c0).findByTestId('chart-bar');
+    await findCard(0);
+    await findCard(1);
+    showHistogram(0, 1);
+    const chart = await within(card(0)).findByTestId('chart-bar');
     const data = JSON.parse(chart.getAttribute('data-chart') ?? 'null');
     expect(data.datasets[0].data).toEqual([1, 10, 100, 40, 2]);
     expect(data.labels).toHaveLength(5);
-    const chart1 = await within(c1).findByTestId('chart-bar');
+    const chart1 = await within(card(1)).findByTestId('chart-bar');
     expect(JSON.parse(chart1.getAttribute('data-chart') ?? 'null').datasets[0].data).toEqual([1, 10, 100, 40, 3]);
     expect(api.getDelayHistogram).toHaveBeenCalledWith(0);
     expect(api.getDelayHistogram).toHaveBeenCalledWith(1);
@@ -476,21 +399,21 @@ describe('Dashboard: delay histogram', () => {
       fx.histogram(dir, { bins, edges_ns: Array.from({ length: 501 }, (_, i) => i * 10) }),
     );
     renderApp('/');
-    const c0 = await screen.findByTestId('direction-card-0');
-    showHistogram(c0);
-    const chart = await within(c0).findByTestId('chart-bar');
+    await findCard(0);
+    showHistogram(0);
+    const chart = await within(card(0)).findByTestId('chart-bar');
     const data = JSON.parse(chart.getAttribute('data-chart') ?? 'null');
     expect(data.datasets[0].data).toHaveLength(500);
     expect(data.labels).toHaveLength(500);
   });
 
-  it('shows the underflow and overflow counts', async () => {
+  // Spec 35 F4. Was: 'shows the underflow and overflow counts' (under/overflow text under the histogram; removed).
+  it('shows no underflow or overflow text under the histogram', async () => {
     renderApp('/');
-    const c0 = await screen.findByTestId('direction-card-0');
-    showHistogram(c0);
-    await within(c0).findByTestId('chart-bar');
-    expect(c0).toHaveTextContent(/Underflow\D*3\b/);
-    expect(c0).toHaveTextContent(/Overflow\D*7\b/);
+    await findCard(0);
+    showHistogram(0);
+    await within(card(0)).findByTestId('chart-bar');
+    expect(card(0)).not.toHaveTextContent(/Underflow|Overflow/);
   });
 
   it('hides the chart and does not fetch it for a direction with delay_stats: false', async () => {
@@ -509,24 +432,23 @@ describe('Dashboard: delay histogram', () => {
       ]),
     );
     renderApp('/');
-    const c0 = await screen.findByTestId('direction-card-0');
-    const c1 = await screen.findByTestId('direction-card-1');
-    showHistogram(c0);
-    expect(within(c1).queryByRole('radio', { name: 'Delay histogram' })).not.toBeInTheDocument(); // spec 28: no choice
-    await within(c0).findByTestId('chart-bar');
-    expect(within(c1).queryByTestId('chart-bar')).not.toBeInTheDocument();
-    expect(field(c1, 'Mean delay')).toHaveTextContent('n/a');
+    await findCard(0);
+    await findCard(1);
+    showHistogram(0);
+    expect(within(card(1)).queryByRole('radio', { name: 'Delay histogram' })).not.toBeInTheDocument(); // spec 28: no choice
+    await within(card(0)).findByTestId('chart-bar');
+    expect(within(card(1)).queryByTestId('chart-bar')).not.toBeInTheDocument();
     expect(api.getDelayHistogram).not.toHaveBeenCalledWith(1);
   });
 
   it('survives a rejected histogram request (card stays, chart missing)', async () => {
     api.getDelayHistogram.mockRejectedValue(new ApiError(404, 'no histogram'));
     renderApp('/');
-    const c0 = await screen.findByTestId('direction-card-0');
-    showHistogram(c0);
+    await findCard(0);
+    showHistogram(0);
     await waitFor(() => expect(api.getDelayHistogram).toHaveBeenCalled());
-    expect(within(c0).queryByTestId('chart-bar')).not.toBeInTheDocument();
-    expect(field(c0, 'RX rate')).toHaveTextContent(/Mpps/);
+    expect(within(card(0)).queryByTestId('chart-bar')).not.toBeInTheDocument();
+    expect(radioNames(0)).toContain('Rate'); // the chart area is still there
   });
 });
 
@@ -541,7 +463,7 @@ describe('Dashboard: polling (fake timers)', () => {
     renderApp('/');
     await tick(0);
     await tick(0);
-    showHistogram(screen.getByTestId('direction-card-0')); // the histogram polls while its chart is the selected one
+    showHistogram(0); // the histogram polls while its chart is the selected one
     await tick(0);
     const e0 = api.getEmulation.mock.calls.length;
     const s0 = api.getStats.mock.calls.length;
@@ -581,7 +503,7 @@ describe('Dashboard: polling (fake timers)', () => {
       await tick(0);
       // (with a slow getStats the cards never appear in time, so only the histogram variant picks the chart)
       if (name === 'getDelayHistogram') {
-        showHistogram(screen.getByTestId('direction-card-0'), screen.getByTestId('direction-card-1'));
+        showHistogram(0); // only the shown tab polls its histogram, and the probe watches link 0
       }
       for (let i = 0; i < 30; i += 1) await tick(1000);
       expect(probe.max).toBe(1);
@@ -605,9 +527,9 @@ describe('Dashboard: polling (fake timers)', () => {
     const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     renderApp('/');
     await tick(0);
-    expect(screen.queryByTestId('direction-card-0')).not.toBeInTheDocument();
+    expect(hasTab(0)).toBe(false);
     await tick(4000);
-    expect(screen.getByTestId('direction-card-0')).toBeInTheDocument();
+    expect(hasTab(0)).toBe(true);
     spy.mockRestore();
   });
 
@@ -637,185 +559,9 @@ describe('Dashboard: polling (fake timers)', () => {
   });
 });
 
-describe('Dashboard: delay min/max and first loss (F2)', () => {
-  beforeEach(() => {
-    api.getEmulation.mockResolvedValue(fx.emulation('running'));
-  });
-
-  it('shows the delay minimum and maximum in their own units', async () => {
-    api.getStats.mockResolvedValue(twoDirections());
-    renderApp('/');
-    const c0 = await screen.findByTestId('direction-card-0');
-    const dd = field(c0, 'Delay min / max');
-    expect(dd.textContent).toMatch(/800\.00 [µμ]s\s*\/\s*1\.30 ms/);
-  });
-
-  it('prints n/a for the delay minimum/maximum when they are null (delay_stats: false)', async () => {
-    api.getStats.mockResolvedValue(
-      fx.stats([
-        fx.dirStats(0, {
-          delay_stats: false,
-          delay_mean_ns: null,
-          delay_std_ns: null,
-          delay_min_ns: null,
-          delay_max_ns: null,
-        }),
-      ]),
-    );
-    renderApp('/');
-    const c0 = await screen.findByTestId('direction-card-0');
-    expect(field(c0, 'Delay min / max')).toHaveTextContent('n/a');
-  });
-
-  it('shows the first loss: reason, detail and the time relative to the start', async () => {
-    api.getStats.mockResolvedValue(
-      fx.stats([
-        fx.dirStats(0, {
-          first_loss_reason: 'LimiterDrop',
-          first_loss_detail: 'rate exceeded by 17 packets',
-          first_loss_relative_ns: 2_500_000_000,
-        }),
-        fx.dirStats(1),
-      ]),
-    );
-    renderApp('/');
-    const c0 = await screen.findByTestId('direction-card-0');
-    const dd = field(c0, 'First loss');
-    expect(dd).toHaveTextContent('LimiterDrop');
-    expect(dd).toHaveTextContent('rate exceeded by 17 packets');
-    expect(dd).toHaveTextContent(/2\.50 s/);
-  });
-
-  it('a first loss without detail still shows reason and time (no "null")', async () => {
-    api.getStats.mockResolvedValue(
-      fx.stats([
-        fx.dirStats(0, { first_loss_reason: 'BufferFull', first_loss_detail: null, first_loss_relative_ns: 750_000 }),
-      ]),
-    );
-    renderApp('/');
-    const c0 = await screen.findByTestId('direction-card-0');
-    const dd = field(c0, 'First loss');
-    expect(dd).toHaveTextContent('BufferFull');
-    expect(dd).toHaveTextContent(/750\.00 [µμ]s/);
-    expect(dd).not.toHaveTextContent(/null|undefined/);
-  });
-
-  it('prints n/a as first loss while nothing was lost yet', async () => {
-    api.getStats.mockResolvedValue(twoDirections());
-    renderApp('/');
-    const c1 = await screen.findByTestId('direction-card-1');
-    expect(field(c1, 'First loss')).toHaveTextContent('n/a');
-  });
-});
-
-describe('Dashboard: NIC ports table (F2)', () => {
-  beforeEach(() => {
-    api.getEmulation.mockResolvedValue(fx.emulation('running'));
-  });
-
-  const COLUMNS = ['ipackets', 'opackets', 'ibytes', 'obytes', 'imissed', 'ierrors', 'oerrors', 'rx_nombuf'];
-
-  /** Text of the cell under `column` in the row whose first cell contains `rowText`. */
-  function cell(table: HTMLElement, rowText: string, column: string): string {
-    const headers = within(table)
-      .getAllByRole('columnheader')
-      .map((h) => h.textContent?.trim());
-    const col = headers.indexOf(column);
-    if (col < 0) throw new Error(`no column ${column} in [${headers.join(', ')}]`);
-    // The first cell (a <td> or a <th scope=row>) names the port; header cells and data cells index alike.
-    const row = within(table)
-      .getAllByRole('row')
-      .find((r) => r.children[0]?.textContent?.includes(rowText));
-    if (!row) throw new Error(`no row for ${rowText}`);
-    return (row.children[col]?.textContent ?? '').trim();
-  }
-  const digits = (t: string) => t.replace(/[\s,.  ]/g, '');
-
-  it('has one row per port with every counter in its column', async () => {
-    api.getStats.mockResolvedValue(
-      fx.stats([fx.dirStats(0)], {
-        ports: [
-          fx.portStats(0),
-          fx.portStats(1, {
-            name: '0000:65:00.1',
-            ipackets: 5,
-            opackets: 6,
-            ibytes: 7,
-            obytes: 8,
-            imissed: 9,
-            ierrors: 10,
-            oerrors: 12,
-            rx_nombuf: 13,
-          }),
-        ],
-      }),
-    );
-    renderApp('/');
-    const table = await screen.findByTestId('ports-table');
-    // the first column shows the netdev once the interface list has arrived (v16)
-    await within(table).findByRole('rowheader', { name: 'enp101s0f0' });
-    const headers = within(table)
-      .getAllByRole('columnheader')
-      .map((h) => h.textContent?.trim());
-    for (const c of COLUMNS) expect(headers).toContain(c);
-    expect(within(table).getAllByRole('row')).toHaveLength(3); // header + 2 ports
-    const expected0: Record<string, string> = {
-      ipackets: '1234567',
-      opackets: '7654321',
-      ibytes: '98765432100',
-      obytes: '12345678900',
-      imissed: '11',
-      ierrors: '22',
-      oerrors: '33',
-      rx_nombuf: '44',
-    };
-    for (const c of COLUMNS) expect(digits(cell(table, 'enp101s0f0', c))).toBe(expected0[c]);
-    const expected1: Record<string, string> = {
-      ipackets: '5',
-      opackets: '6',
-      ibytes: '7',
-      obytes: '8',
-      imissed: '9',
-      ierrors: '10',
-      oerrors: '12',
-      rx_nombuf: '13',
-    };
-    for (const c of COLUMNS) expect(digits(cell(table, 'enp101s0f1', c))).toBe(expected1[c]);
-  });
-
-  it('shows zero counters as 0, not as n/a or empty', async () => {
-    api.getStats.mockResolvedValue(
-      fx.stats([fx.dirStats(0)], { ports: [fx.portStats(0, { imissed: 0, ierrors: 0, oerrors: 0, rx_nombuf: 0 })] }),
-    );
-    renderApp('/');
-    const table = await screen.findByTestId('ports-table');
-    await within(table).findByRole('rowheader', { name: 'enp101s0f0' });
-    for (const c of ['imissed', 'ierrors', 'oerrors', 'rx_nombuf']) expect(cell(table, 'enp101s0f0', c)).toBe('0');
-  });
-
-  it('falls back to the port number when the port has no name', async () => {
-    api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0)], { ports: [fx.portStats(7, { name: null })] }));
-    renderApp('/');
-    const table = await screen.findByTestId('ports-table');
-    const rows = within(table).getAllByRole('row');
-    expect(rows).toHaveLength(2);
-    expect(rows[1].textContent).toMatch(/\b7\b/);
-  });
-
-  it('is not rendered without ports', async () => {
-    api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0)], { ports: [] }));
-    renderApp('/');
-    await screen.findByTestId('direction-card-0');
-    expect(screen.queryByTestId('ports-table')).not.toBeInTheDocument();
-  });
-
-  it('has a heading naming the table (NIC ports)', async () => {
-    api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0)], { ports: [fx.portStats(0)] }));
-    renderApp('/');
-    await screen.findByTestId('ports-table');
-    expect(screen.getByRole('heading', { name: /NIC ports/i })).toBeInTheDocument();
-  });
-});
+// Spec 35 F6. Removed: 'Dashboard: delay min/max and first loss (F2)' (delay min / max and first loss belonged to the stat list
+// of the card, which is gone) and 'Dashboard: NIC ports table (F2)' (the table moved to the Interfaces page, see
+// interfacesPorts.test.tsx).
 
 describe('Dashboard: visible errors (F3)', () => {
   const quiet = () => vi.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -853,14 +599,14 @@ describe('Dashboard: visible errors (F3)', () => {
     expect(screen.getByTestId('stats-warning')).toHaveTextContent('boom');
     await tick(2500);
     expect(screen.queryByTestId('stats-warning')).not.toBeInTheDocument();
-    expect(screen.getByTestId('direction-card-0')).toBeInTheDocument();
+    expect(hasTab(0)).toBe(true);
     spy.mockRestore();
   });
 
   it('no warning while the stats polls succeed', async () => {
     api.getStats.mockResolvedValue(twoDirections());
     renderApp('/');
-    await screen.findByTestId('direction-card-0');
+    await findCard(0);
     expect(screen.queryByTestId('stats-warning')).not.toBeInTheDocument();
   });
 
@@ -872,16 +618,16 @@ describe('Dashboard: visible errors (F3)', () => {
       return fx.histogram(dir);
     });
     renderApp('/');
-    const c0 = await screen.findByTestId('direction-card-0');
-    const c1 = await screen.findByTestId('direction-card-1');
-    showHistogram(c0, c1);
-    const note = await within(c0).findByTestId('histogram-error');
+    await findCard(0);
+    await findCard(1);
+    showHistogram(0, 1);
+    const note = await within(card(0)).findByTestId('histogram-error');
     expect(note).toHaveTextContent(/histogram/i);
     expect(note).toHaveTextContent('histogram read failed');
-    expect(within(c0).queryByTestId('chart-bar')).not.toBeInTheDocument();
+    expect(within(card(0)).queryByTestId('chart-bar')).not.toBeInTheDocument();
     // the other direction is unaffected
-    await within(c1).findByTestId('chart-bar');
-    expect(within(c1).queryByTestId('histogram-error')).not.toBeInTheDocument();
+    await within(card(1)).findByTestId('chart-bar');
+    expect(within(card(1)).queryByTestId('histogram-error')).not.toBeInTheDocument();
   });
 
   it('the histogram note disappears and the chart returns when a later fetch succeeds', async () => {
@@ -901,14 +647,14 @@ describe('Dashboard: visible errors (F3)', () => {
     renderApp('/');
     await tick(0);
     await tick(0);
-    const c0 = screen.getByTestId('direction-card-0');
+    card(0);
     chosen = true;
-    showHistogram(c0);
+    showHistogram(0);
     await tick(0);
-    expect(within(c0).getByTestId('histogram-error')).toBeInTheDocument();
+    expect(within(card(0)).getByTestId('histogram-error')).toBeInTheDocument();
     await tick(2500);
-    expect(within(c0).queryByTestId('histogram-error')).not.toBeInTheDocument();
-    expect(within(c0).getByTestId('chart-bar')).toBeInTheDocument();
+    expect(within(card(0)).queryByTestId('histogram-error')).not.toBeInTheDocument();
+    expect(within(card(0)).getByTestId('chart-bar')).toBeInTheDocument();
   });
 
   it('no histogram note for a direction with delay_stats: false (nothing was fetched)', async () => {
@@ -917,9 +663,9 @@ describe('Dashboard: visible errors (F3)', () => {
       fx.stats([fx.dirStats(0, { delay_stats: false, delay_mean_ns: null, delay_std_ns: null })]),
     );
     renderApp('/');
-    const c0 = await screen.findByTestId('direction-card-0');
+    await findCard(0);
     await waitFor(() => expect(api.getStats).toHaveBeenCalled());
-    expect(within(c0).queryByTestId('histogram-error')).not.toBeInTheDocument();
+    expect(within(card(0)).queryByTestId('histogram-error')).not.toBeInTheDocument();
   });
 });
 
@@ -930,35 +676,37 @@ describe('Dashboard: accessibility and labels (F4)', () => {
   });
 
   // Spec 28: one chart per card at a time. Was: the rate, drops and histogram charts all on the page (three images).
-  it('every chart sits in a role="img" element with an aria-label (rate, drops, histogram: one at a time)', async () => {
+  // Spec 35: "Drops" is "Loss"; the donut below the chart is not part of the check, so the chart is the first image of the
+  // chart area (the old test required exactly one image).
+  it('every chart sits in a role="img" element with an aria-label (rate, loss, histogram: one at a time)', async () => {
     renderApp('/');
-    const c0 = await screen.findByTestId('direction-card-0');
+    await findCard(0);
     for (const [choice, re, id] of [
       ['Rate', /rate/i, 'chart-line'],
-      ['Drops', /drop/i, 'chart-line'],
+      ['Loss', /loss/i, 'chart-line'],
       ['Delay histogram', /histogram/i, 'chart-bar'],
     ] as const) {
-      fireEvent.click(within(c0).getByRole('radio', { name: choice }));
-      const chart = await within(c0).findByTestId(id);
-      const imgs = within(c0).getAllByRole('img');
-      expect(imgs, choice).toHaveLength(1);
-      expect(imgs[0].getAttribute('aria-label')?.trim()).toBeTruthy();
-      expect(imgs[0].getAttribute('aria-label')).toMatch(re);
+      fireEvent.click(within(card(0)).getByRole('radio', { name: choice }));
+      const chart = await within(card(0)).findByTestId(id);
+      const img = must(within(card(0)).getAllByRole('img')[0], 'the chart image');
+      expect(within(card(0)).queryAllByTestId(/^chart-(line|bar)$/), choice).toHaveLength(1);
+      expect(img.getAttribute('aria-label')?.trim()).toBeTruthy();
+      expect(img.getAttribute('aria-label')).toMatch(re);
       // the chart canvas is the content of that image
-      expect(chart.closest('[role="img"]')).toBe(imgs[0]);
+      expect(img.contains(chart)).toBe(true);
     }
   });
 
   it('the chart labels tell the directions apart', async () => {
     renderApp('/');
-    const c0 = await screen.findByTestId('direction-card-0');
-    const c1 = await screen.findByTestId('direction-card-1');
-    const label = (c: HTMLElement, re: RegExp) =>
-      within(c)
+    await findCard(0);
+    await findCard(1);
+    const label = (d: number, re: RegExp) =>
+      within(card(d))
         .getAllByRole('img')
         .map((i) => i.getAttribute('aria-label') ?? '')
         .find((n) => re.test(n)) ?? '';
-    expect(label(c0, /rate/i)).not.toBe(label(c1, /rate/i));
+    expect(label(0, /rate/i)).not.toBe(label(1, /rate/i));
   });
 
   it('the emulation error is announced as role="alert"', async () => {
@@ -979,26 +727,28 @@ describe('Dashboard: accessibility and labels (F4)', () => {
     expect(badge.closest('[aria-live="polite"], [role="status"]')).not.toBeNull();
   });
 
-  it('cards are titled "<link>: <ingress label> -> <egress label>" (v16: the netdev only)', async () => {
+  // Spec 35 F3: the title is the tab's (it was the card header's).
+  it('tabs are titled "<link>: <ingress label> -> <egress label>" (v16: the netdev only)', async () => {
     renderApp('/');
-    const c0 = await screen.findByTestId('direction-card-0');
-    const c1 = await screen.findByTestId('direction-card-1');
-    expect(await within(c0).findByText('a-b: enp101s0f0 → enp101s0f1')).toBeInTheDocument();
-    expect(await within(c1).findByText('b-a: enp101s0f1 → enp101s0f0')).toBeInTheDocument();
+    await findCard(1);
+    await waitFor(() => expect(tabTitle(0)).toBe('a-b: enp101s0f0 → enp101s0f1'));
+    expect(tabTitle(1)).toBe('b-a: enp101s0f1 → enp101s0f0');
+    expect(within(tab(0)).getByText('a-b: enp101s0f0 → enp101s0f1')).toBeInTheDocument();
   });
 
   it('the old "Direction d: rx -> tx" title is gone', async () => {
     renderApp('/');
-    const c0 = await screen.findByTestId('direction-card-0');
-    expect(c0).not.toHaveTextContent(/Direction \d/);
+    await findCard(0);
+    expect(card(0)).not.toHaveTextContent(/Direction \d/);
+    expect(tab(0)).not.toHaveTextContent(/Direction \d/);
     expect(screen.queryByText(/Direction \d:/)).not.toBeInTheDocument();
   });
 
   it('a hairpin link reads "loop: net_null0 -> net_null0"', async () => {
     api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0, { link: 'loop', rx: 'net_null0', tx: 'net_null0' })]));
     renderApp('/');
-    const card = await screen.findByTestId('direction-card-0');
-    expect(within(card).getByText('loop: net_null0 → net_null0')).toBeInTheDocument();
+    await findCard(0);
+    expect(within(tab(0)).getByText('loop: net_null0 → net_null0')).toBeInTheDocument();
   });
 
   it('the title uses the link name of the stats entry, ingress as rx and egress as tx (ring of three links)', async () => {
@@ -1013,7 +763,7 @@ describe('Dashboard: accessibility and labels (F4)', () => {
     expect(await screen.findByText('a-to-b: net_null0 → net_null1')).toBeInTheDocument();
     expect(screen.getByText('b-to-c: net_null1 → net_null2')).toBeInTheDocument();
     expect(screen.getByText('c-to-a: net_null2 → net_null0')).toBeInTheDocument();
-    expect(screen.getByTestId('direction-card-2')).toHaveTextContent('c-to-a: net_null2 → net_null0');
+    expect(tab(2)).toHaveTextContent('c-to-a: net_null2 → net_null0');
   });
 
   it('API calls still use the direction index, not the link name', async () => {
@@ -1025,7 +775,7 @@ describe('Dashboard: accessibility and labels (F4)', () => {
     );
     renderApp('/');
     await screen.findByText('b-to-c: net_null1 → net_null2');
-    showHistogram(screen.getByTestId('direction-card-0'), screen.getByTestId('direction-card-1'));
+    showHistogram(0, 1);
     await waitFor(() => expect(api.getDelayHistogram).toHaveBeenCalledWith(1));
     expect(api.getDelayHistogram).toHaveBeenCalledWith(0);
     for (const call of api.getDelayHistogram.mock.calls) expect(typeof call[0]).toBe('number');
@@ -1036,13 +786,14 @@ describe('Dashboard: port labels are the netdev, device name as fallback (v16, r
   const AB = 'a-b: enp101s0f0 → enp101s0f1';
   const PLAIN_AB = 'a-b: 0000:65:00.0 → 0000:65:00.1';
 
-  it('the card title shows the netdev of ingress and egress and no PCI address (one element, whole label)', async () => {
+  it('the tab title shows the netdev of ingress and egress and no PCI address (one element, whole label)', async () => {
     api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0)]));
     renderApp('/');
-    const card = await screen.findByTestId('direction-card-0');
-    const title = await within(card).findByText(AB);
-    expect(title.textContent).toBe(AB);
-    expect(card.textContent).not.toMatch(/0000:65:00\.[01] \(/); // never "PCI (netdev)" any more
+    await findCard(0);
+    const title = await within(tab(0)).findByText(AB);
+    expect(title.textContent?.trim()).toBe(AB);
+    expect(tab(0).textContent).not.toMatch(/0000:65:00\.[01] \(/); // never "PCI (netdev)" any more
+    expect(card(0).textContent).not.toMatch(/0000:65:00\.[01] \(/);
   });
 
   it('a hairpin on a real NIC shows the label twice', async () => {
@@ -1092,7 +843,7 @@ describe('Dashboard: port labels are the netdev, device name as fallback (v16, r
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(screen.queryByTestId('stats-warning')).not.toBeInTheDocument();
     expect(document.body).not.toHaveTextContent(/sysfs unreadable/);
-    expect(within(screen.getByTestId('direction-card-0')).getByText('RX rate')).toBeInTheDocument();
+    expect(radioNames(0)).toContain('Rate'); // the tabs and their chart areas are unaffected
   });
 
   it('a slow interface list does not hold the cards back: plain names first, then the labels', async () => {
@@ -1134,57 +885,5 @@ describe('Dashboard: port labels are the netdev, device name as fallback (v16, r
     expect(screen.getByText(PLAIN_AB)).toBeInTheDocument();
   });
 
-  describe('NIC ports table', () => {
-    const portNames = (table: HTMLElement) =>
-      within(table)
-        .getAllByRole('rowheader')
-        .map((h) => h.textContent?.trim());
-
-    it('the first column shows the netdev only', async () => {
-      api.getStats.mockResolvedValue(
-        fx.stats([fx.dirStats(0)], { ports: [fx.portStats(0), fx.portStats(1, { name: '0000:65:00.1' })] }),
-      );
-      renderApp('/');
-      const table = await screen.findByTestId('ports-table');
-      await waitFor(() => expect(portNames(table)).toEqual(['enp101s0f0', 'enp101s0f1']));
-    });
-
-    it('a vdev port, a port without netdev and an unknown PCI address keep their plain name', async () => {
-      api.getInterfaces.mockResolvedValue([
-        fx.iface({ pci: '0000:65:00.0', netdev: null }),
-        fx.iface({ pci: '0000:65:00.1', netdev: 'enp101s0f1' }),
-      ]);
-      api.getStats.mockResolvedValue(
-        fx.stats([fx.dirStats(0)], {
-          ports: [
-            fx.portStats(0), // vfio-bound, no netdev
-            fx.portStats(1, { name: 'net_null0' }), // vdev
-            fx.portStats(2, { name: '0000:b3:00.0' }), // not in the list
-            fx.portStats(3, { name: '0000:65:00.1' }), // with a netdev, so that the labels have loaded
-          ],
-        }),
-      );
-      renderApp('/');
-      const table = await screen.findByTestId('ports-table');
-      await waitFor(() => expect(portNames(table)).toContain('enp101s0f1'));
-      expect(portNames(table)).toEqual(['0000:65:00.0', 'net_null0', '0000:b3:00.0', 'enp101s0f1']);
-    });
-
-    it('still falls back to the port number without a name and with a failing interface fetch', async () => {
-      api.getInterfaces.mockRejectedValue(new ApiError(500, 'sysfs unreadable'));
-      api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0)], { ports: [fx.portStats(7, { name: null })] }));
-      renderApp('/');
-      const table = await screen.findByTestId('ports-table');
-      expect(within(table).getAllByRole('row')[1].textContent).toMatch(/\b7\b/);
-      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
-    });
-
-    it('with a failing interface fetch the names are the plain device names', async () => {
-      api.getInterfaces.mockRejectedValue(new ApiError(500, 'sysfs unreadable'));
-      api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0)], { ports: [fx.portStats(0)] }));
-      renderApp('/');
-      const table = await screen.findByTestId('ports-table');
-      expect(portNames(table)).toEqual(['0000:65:00.0']);
-    });
-  });
+  // Spec 35 F6. Removed: the 'NIC ports table' sub-block (port names in the ports table); it moved to interfacesPorts.test.tsx.
 });

@@ -25,10 +25,27 @@ describe('chartjs-plugin-annotation (spec 28)', () => {
     expect(src).toMatch(new RegExp(`ChartJS\\.register\\([^)]*\\b${name}\\b`));
   });
 
-  it('the existing registrations stay (Tooltip for hover, Filler for the filled rate areas, LineController for the overlay)', () => {
+  // Spec 35: LineController is no longer listed (it was for the bar + line overlay of the histogram, which is gone), and
+  // LogarithmicScale neither (the log-scale toggle is gone).
+  it('the existing registrations stay (Tooltip for hover, Filler for the filled rate areas, Legend, BarElement)', () => {
     const src = read('src/components/charts.ts');
-    for (const part of ['Tooltip', 'Filler', 'Legend', 'LineController', 'BarElement', 'LogarithmicScale']) {
+    for (const part of ['Tooltip', 'Filler', 'Legend', 'BarElement']) {
       expect(src, part).toMatch(new RegExp(`\\b${part}\\b`));
+    }
+  });
+
+  // Spec 35: the Chart.js stubs of test/setup.ts never run Chart.js, so what a real browser needs for the new charts is pinned from
+  // the file, as for the annotation plugin: without ArcElement a doughnut throws '"arc" is not a registered element', and
+  // without the Title plugin the histogram's "Mean ... · Jitter (σ) ..." title line is silently not drawn.
+  it('registers ArcElement (the doughnut) and Title (the histogram title line)', () => {
+    const src = read('src/components/charts.ts');
+    const call = /ChartJS\.register\(([^)]*)\)/.exec(src);
+    expect(call, 'ChartJS.register(...)').not.toBeNull();
+    for (const part of ['ArcElement', 'Title']) {
+      expect(call?.[1], part).toMatch(new RegExp(`\\b${part}\\b`));
+      expect(src, `${part} imported from chart.js`).toMatch(
+        new RegExp(`import\\s*\\{[^}]*\\b${part}\\b[^}]*\\}\\s*from\\s*['"]chart\\.js['"]`),
+      );
     }
   });
 });
