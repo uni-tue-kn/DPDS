@@ -12,6 +12,14 @@ import LossDonut, { CAUSES } from './LossDonut';
 
 type View = 'rate' | 'histogram' | 'loss';
 
+/** The units of the rate chart's y axis, largest first; with no traffic it is Gbit/s, like P4TG. */
+const RATE_AXIS_UNITS = [
+  { label: 'Gbit/s', perGbit: 1 },
+  { label: 'Mbit/s', perGbit: 1e3 },
+  { label: 'kbit/s', perGbit: 1e6 },
+  { label: 'bit/s', perGbit: 1e9 },
+] as const;
+
 /** The cumulative count of each cause, in the order of the donut's `CAUSES`. */
 const COUNTS = [
   (s: HistorySample) => s.loss_drops,
@@ -59,27 +67,33 @@ export default function LinkCharts({
     ['loss', 'Packet loss'],
   ];
   const labels = useMemo(() => history.map((s) => formatElapsed(s.t_ms)), [history]);
+  // The y axis shows one unit, like P4TG's "Gbit/s"; a link slower than that gets the largest unit its peak reaches.
+  const rateUnit = useMemo(() => {
+    const peak = Math.max(0, ...history.map((s) => Math.max(s.rx_gbps, s.tx_gbps)));
+    if (peak === 0) return RATE_AXIS_UNITS[0];
+    return RATE_AXIS_UNITS.find((u) => peak * u.perGbit >= 1) ?? RATE_AXIS_UNITS[RATE_AXIS_UNITS.length - 1];
+  }, [history]);
   const rateData = useMemo(
     () => ({
       labels,
       datasets: [
         {
           label: 'RX',
-          data: history.map((s) => s.rx_gbps),
+          data: history.map((s) => s.rx_gbps * rateUnit.perGbit),
           borderColor: RX_COLOR,
           backgroundColor: RX_FILL,
           fill: true,
         },
         {
           label: 'TX',
-          data: history.map((s) => s.tx_gbps),
+          data: history.map((s) => s.tx_gbps * rateUnit.perGbit),
           borderColor: TX_COLOR,
           backgroundColor: TX_FILL,
           fill: true,
         },
       ],
     }),
-    [history, labels],
+    [history, labels, rateUnit],
   );
   const lossData = useMemo(
     () => ({
@@ -93,7 +107,7 @@ export default function LinkCharts({
     }),
     [history, labels],
   );
-  const rateOptions = useMemo(() => chartOptions<'line'>(theme, 'Time', 'Rate (Gbit/s)'), [theme]);
+  const rateOptions = useMemo(() => chartOptions<'line'>(theme, 'Time', rateUnit.label), [theme, rateUnit]);
   const lossOptions = useMemo(() => chartOptions<'line'>(theme, 'Time', 'Dropped packets'), [theme]);
 
   return (

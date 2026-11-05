@@ -161,7 +161,7 @@ describe('Dashboard before any run (spec 39): the empty diagrams', () => {
     for (const s of data.datasets) expect(s.data).toEqual([]);
     const options = JSON.parse(within(panel).getByTestId('chart-line').getAttribute('data-options') ?? 'null');
     expect(options.scales.x.title.text).toBe('Time');
-    expect(options.scales.y.title.text).toBe('Rate (Gbit/s)');
+    expect(options.scales.y.title.text).toBe('Gbit/s');
     expect(options.plugins.legend.display).not.toBe(false);
   });
 
