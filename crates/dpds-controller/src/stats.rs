@@ -91,24 +91,9 @@ pub struct DirectionStats {
     pub counters: Counters,
 }
 
-#[derive(Debug, Clone, Serialize, ToSchema)]
-pub struct PortStats {
-    pub port: u32,
-    pub name: Option<String>,
-    pub ipackets: u64,
-    pub opackets: u64,
-    pub ibytes: u64,
-    pub obytes: u64,
-    pub imissed: u64,
-    pub ierrors: u64,
-    pub oerrors: u64,
-    pub rx_nombuf: u64,
-}
-
 #[derive(Debug, Clone, Default, Serialize, ToSchema)]
 pub struct StatsView {
     pub directions: Vec<DirectionStats>,
-    pub ports: Vec<PortStats>,
     /// Milliseconds since the last successful poll; absent without any data.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub age_ms: Option<u64>,
@@ -120,8 +105,8 @@ pub struct StatsView {
     pub elapsed_ms: Option<u64>,
 }
 
-/// One point of a link's chart history: the rates and drop shares `/api/stats` reports for
-/// the poll window ending at `t_ms`, in the units of the charts.
+/// One point of a link's chart history: the rates `/api/stats` reports for the poll window ending
+/// at `t_ms`, in the units of the charts, and the link's cumulative drop counters at that poll.
 #[derive(Debug, Clone, Copy, Serialize, ToSchema)]
 pub struct HistorySample {
     /// Milliseconds since the run started.
@@ -130,27 +115,30 @@ pub struct HistorySample {
     pub tx_gbps: f64,
     pub rx_mpps: f64,
     pub tx_mpps: f64,
-    /// Drop shares in percent of the packets received in the window, one per cause.
-    pub loss_pct: f64,
-    pub limiter_pct: f64,
-    pub buffer_full_pct: f64,
-    pub nic_tx_pct: f64,
-    pub nic_rx_pct: f64,
+    pub loss_drops: u64,
+    pub limiter_drops: u64,
+    pub buffer_full_drops: u64,
+    /// `tx_drops` of the NIC.
+    pub nic_tx_drops: u64,
+    pub nic_rx_imissed: u64,
+    pub nic_rx_nombuf: u64,
 }
 
 impl HistorySample {
     pub fn new(t_ms: u64, d: &DirectionStats) -> HistorySample {
+        let c = &d.counters;
         HistorySample {
             t_ms,
             rx_gbps: d.rx_bps / 1e9,
             tx_gbps: d.tx_bps / 1e9,
             rx_mpps: d.rx_pps / 1e6,
             tx_mpps: d.tx_pps / 1e6,
-            loss_pct: d.loss_pct,
-            limiter_pct: d.limiter_pct,
-            buffer_full_pct: d.buffer_full_pct,
-            nic_tx_pct: d.nic_tx_pct,
-            nic_rx_pct: d.nic_rx_pct,
+            loss_drops: c.loss_drops,
+            limiter_drops: c.limiter_drops,
+            buffer_full_drops: c.buffer_full_drops,
+            nic_tx_drops: c.tx_drops,
+            nic_rx_imissed: c.nic_rx_imissed,
+            nic_rx_nombuf: c.nic_rx_nombuf,
         }
     }
 }
@@ -401,7 +389,6 @@ pub fn delay_stats_on(ports: &Value, d: usize) -> bool {
 /// or when a counter went backwards.
 pub fn compute_stats(prev: Option<&Snapshot>, cur: &Snapshot) -> StatsView {
     let n_dirs = uint(&cur.ports, "num_directions").unwrap_or(0) as usize;
-    let n_ports = uint(&cur.ports, "num_ports").unwrap_or(0) as usize;
 
     let directions = (0..n_dirs.min(cur.dirs.len()))
         .map(|d| {
@@ -478,27 +465,8 @@ pub fn compute_stats(prev: Option<&Snapshot>, cur: &Snapshot) -> StatsView {
         })
         .collect();
 
-    let ports = (0..n_ports.min(cur.eth.len()))
-        .map(|p| {
-            let e = &cur.eth[p];
-            PortStats {
-                port: p as u32,
-                name: text(&cur.ports, &format!("port{p}_name")),
-                ipackets: u(e, "ipackets"),
-                opackets: u(e, "opackets"),
-                ibytes: u(e, "ibytes"),
-                obytes: u(e, "obytes"),
-                imissed: u(e, "imissed"),
-                ierrors: u(e, "ierrors"),
-                oerrors: u(e, "oerrors"),
-                rx_nombuf: u(e, "rx_nombuf"),
-            }
-        })
-        .collect();
-
     StatsView {
         directions,
-        ports,
         age_ms: None,
         stale: false,
         elapsed_ms: None,

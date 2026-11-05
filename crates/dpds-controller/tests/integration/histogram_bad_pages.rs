@@ -604,7 +604,7 @@ async fn a_bad_page_in_a_running_poller(page: usize, edit: Edit) {
         v["directions"][0]["counters"]["rx_pkts"], base.dirs[0]["rx_pkts"],
         "{v}"
     );
-    assert_eq!(v["ports"].as_array().unwrap().len(), 2, "{v}");
+    assert!(v.get("ports").is_none(), "{v}");
     // no failure counted, no reconnect
     let latest = r.poller.latest().expect("a published poll");
     assert!(!latest.stale, "a bad page counted as a failed poll");

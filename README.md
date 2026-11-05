@@ -736,7 +736,7 @@ without internet access, means no notice.
   pool and one core per link. The setup must fit `dpds`' 256-entry telemetry dict,
   `3 + 5 * distinct ports + 10 * links <= 256` (for example 16 links over 16 ports, but not 17):
   start and validate refuse a setup above it with 400 naming 256.
-- **Telemetry poll**: the controller polls `dpds` every 500 ms, a fixed interval that no request
+- **Telemetry poll**: the controller polls `dpds` every 1000 ms, a fixed interval that no request
   changes; the chart history keeps 1 sample per link per second.
 - **Config**: every link carries the full `dpds-core` config (see
   [Configuration](#configuration)). The stages `delayer`, `limiter` and `loss_model` are optional:
@@ -745,7 +745,7 @@ without internet access, means no notice.
   active. A present stage needs all its fields, including `delayer.initialization_rate_pps`, which
   has no default (400 naming the field when missing, not finite or below 1). Set it to the
   expected packet rate of the link.
-- **Stats** (`GET /api/stats`): the rates and drop shares of the last poll per link and per port,
+- **Stats** (`GET /api/stats`): the rates and drop shares of the last poll per link,
   with `age_ms` and `stale`. `elapsed_ms` is the time since the run started in whole milliseconds,
   read from the controller's monotonic clock, so a client never compares its own clock with the
   controller's. It keeps counting while the run goes on, is frozen at the stop and is absent before
@@ -755,10 +755,10 @@ without internet access, means no notice.
   port's counters, unsplit.
 - **Chart history** (`GET /api/stats/history`, optionally with `?since_ms=<t>`): the answer is `{started_at, run_id,
   links, samples}`. `samples` has, per link index (the order of the start body), the series of the
-  run, oldest first. Each sample is `{t_ms, rx_gbps, tx_gbps, rx_mpps, tx_mpps, loss_pct,
-  limiter_pct, buffer_full_pct, nic_tx_pct, nic_rx_pct}`: the rates and drop shares of `GET
-  /api/stats` for the poll window ending at `t_ms`, whole milliseconds since the run started on
-  the same monotonic clock as `elapsed_ms`. The controller takes one sample per link per second
+  run, oldest first. Each sample is `{t_ms, rx_gbps, tx_gbps, rx_mpps, tx_mpps, loss_drops,
+  limiter_drops, buffer_full_drops, nic_tx_drops, nic_rx_imissed, nic_rx_nombuf}`: the rates of `GET
+  /api/stats` for the poll window ending at `t_ms` (whole milliseconds since the run started on
+  the same monotonic clock as `elapsed_ms`) and the link's cumulative drop counters at that poll. The controller takes one sample per link per second
   (all links at the same `t_ms`) and keeps at most 86400 per link (24 hours), dropping the oldest.
   `since_ms` returns only the samples with `t_ms` above it; it takes digits only (a whole number
   of milliseconds), and a bad value or any other query parameter is a 400. `run_id` is one more

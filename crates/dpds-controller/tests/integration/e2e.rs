@@ -529,8 +529,8 @@ fn a_three_link_ring_over_three_vdevs_runs_one_worker_per_link() {
         let (s, h) = c.call("GET", &format!("/api/stats/{d}/delay_histogram"), None);
         assert_eq!(s, 200, "{h}");
     }
-    // three ports, each listed once in the NIC counters
-    assert_eq!(v["ports"].as_array().unwrap().len(), 3, "{v}");
+    // spec 43: /api/stats lists no ports
+    assert!(v.get("ports").is_none(), "{v}");
 
     // the links file carries the ring literally
     let file: Value =

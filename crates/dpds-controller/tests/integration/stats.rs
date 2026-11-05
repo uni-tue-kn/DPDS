@@ -11,8 +11,8 @@
 //!   delay_min_ns, delay_max_ns, lateness_mean_ns, lateness_max_ns, buffer_len_max,
 //!   first_loss_reason, first_loss_detail, first_loss_relative_ns,
 //!   counters:{rx_pkts, dpds_rejects, loss_drops, limiter_drops, buffer_full_drops, pops,
-//!             tx_pkts, tx_sent, tx_drops}}],
-//!   "ports":[{port, name, ipackets, opackets, ibytes, obytes, imissed, ierrors, oerrors, rx_nombuf}]}`
+//!             tx_pkts, tx_sent, tx_drops}}]}`
+//! (spec 43: no `ports` key; the controller still polls the NIC stats for `counters.nic_rx_*`.)
 //! Rates and percentages are computed over the window between the two snapshots
 //! (dt = delta of the direction's own `uptime_ns`); they are 0.0 (never null/NaN/inf)
 //! without `prev`, with dt == 0, with zero rx delta, or when a counter went backwards
@@ -172,19 +172,15 @@ fn numeric_delay_fields_are_accepted_too() {
 }
 
 #[test]
-fn per_port_nic_stats_are_listed() {
-    let v = view(Some(&prev()), &cur());
-    let ports = v["ports"].as_array().unwrap();
-    assert_eq!(ports.len(), 2);
-    assert_eq!(ports[0]["port"], 0);
-    assert_eq!(ports[0]["name"], NIC0);
-    assert_eq!(ports[0]["ibytes"], 2_250_000_000u64);
-    assert_eq!(ports[0]["imissed"], 30_100);
-    assert_eq!(ports[0]["rx_nombuf"], 10_000);
-    assert_eq!(ports[1]["name"], NIC1);
-    for k in ["ipackets", "opackets", "obytes", "ierrors", "oerrors"] {
-        assert!(ports[1].get(k).is_some(), "port stats lack {k}");
+fn the_stats_view_has_no_ports_key() {
+    // spec 43 (B3): the per-port NIC table is gone from /api/stats
+    for v in [view(Some(&prev()), &cur()), view(None, &cur())] {
+        assert!(v.get("ports").is_none(), "{v}");
+        assert!(v["directions"].is_array(), "{v}");
     }
+    // the NIC numbers the dashboard needs are still there, per direction
+    let v = view(Some(&prev()), &cur());
+    assert_eq!(nic_rx(&v, 0), (30_100, 10_000), "{v}");
 }
 
 #[test]
@@ -362,12 +358,10 @@ fn ring_links_map_rx_to_the_ingress_port_and_tx_to_the_egress_port() {
 }
 
 #[test]
-fn ring_ports_are_listed_once_each() {
+fn a_ring_has_no_ports_key_either() {
     let v = view(Some(&ring_snapshot(1)), &ring_snapshot(2));
-    let ports = v["ports"].as_array().unwrap();
-    assert_eq!(ports.len(), 4);
-    assert_eq!(ports[3]["name"], "net_null0");
-    assert_eq!(ports[2]["name"], "0000:b3:00.0");
+    assert!(v.get("ports").is_none(), "{v}");
+    assert_eq!(v["directions"].as_array().unwrap().len(), 4, "{v}");
 }
 
 #[test]
@@ -493,13 +487,9 @@ fn links_that_share_a_receiving_port_both_report_its_counters() {
     let v = view(Some(&ring_with_nic_drops(1)), &s);
     assert_eq!(nic_rx(&v, 0), (44, 8), "a-to-b receives on port 3: {v}");
     assert_eq!(nic_rx(&v, 3), (44, 8), "loop receives on port 3: {v}");
-    // the others are untouched, and the port itself is listed once with its own numbers
+    // the others are untouched
     assert_eq!(nic_rx(&v, 1), (22, 6), "{v}");
     assert_eq!(nic_rx(&v, 2), (33, 7), "{v}");
-    let ports = v["ports"].as_array().unwrap();
-    assert_eq!(ports.len(), 4, "{v}");
-    assert_eq!(ports[3]["imissed"], 44, "{v}");
-    assert_eq!(ports[3]["rx_nombuf"], 8, "{v}");
 }
 
 #[test]

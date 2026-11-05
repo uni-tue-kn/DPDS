@@ -290,7 +290,7 @@ pub struct Poller {
 }
 
 /// The poll interval: fixed.
-const POLL_INTERVAL_MS: u64 = 500;
+const POLL_INTERVAL_MS: u64 = 1000;
 
 impl Poller {
     pub fn spawn(runtime_dir: PathBuf, supervisor: Arc<dyn Supervisor>) -> Arc<Poller> {
@@ -442,12 +442,24 @@ impl Poller {
         }
     }
 
+    /// Sleeps one poll interval, in short slices so that a changed interval applies at once.
+    fn wait_for_next_poll(&self) {
+        const SLICE: Duration = Duration::from_millis(20);
+        let start = Instant::now();
+        loop {
+            let interval = Duration::from_millis(self.interval_ms.load(Ordering::Relaxed));
+            let Some(left) = interval.checked_sub(start.elapsed()) else {
+                return;
+            };
+            thread::sleep(left.min(SLICE));
+        }
+    }
+
     fn run(&self, runtime_dir: &Path) {
         let mut conn: Option<Client> = None;
         let mut conn_pid: Option<u32> = None;
         loop {
-            let interval = self.interval_ms.load(Ordering::Relaxed);
-            thread::sleep(Duration::from_millis(interval));
+            self.wait_for_next_poll();
             let status = self.synced().1;
             let pid = match (status.state, status.pid) {
                 (State::Running, Some(pid)) => pid,
@@ -478,7 +490,11 @@ impl Poller {
                 continue;
             };
             match poll_once(client) {
-                Ok(cur) => self.succeeded(cur, ring_capacity(interval), pid),
+                Ok(cur) => self.succeeded(
+                    cur,
+                    ring_capacity(self.interval_ms.load(Ordering::Relaxed)),
+                    pid,
+                ),
                 Err(_) => {
                     conn = None;
                     self.failed();

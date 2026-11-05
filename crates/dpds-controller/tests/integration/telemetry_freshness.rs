@@ -4,7 +4,7 @@
 //! `GET /api/stats` carries `age_ms` (milliseconds since the last successful poll,
 //! a number) and `stale` (bool): fresh data is `stale: false`; after 5 consecutive poll
 //! failures the cache is cleared and the endpoint answers `directions: []`,
-//! `ports: []`, `stale: true` (and the histogram endpoint 404). A poll that works again
+//! no `ports` key (spec 43), `stale: true` (and the histogram endpoint 404). A poll that works again
 //! makes the data fresh again. Fewer than 5 failures keep the last data (with a growing
 //! `age_ms`).
 //!
@@ -30,7 +30,7 @@ struct Rig {
     _dir: tempfile::TempDir,
 }
 
-/// Spec 41: the poll interval is a fixed 500 ms; `Poller::spawn(runtime_dir, supervisor)` uses
+/// Spec 41/43: the poll interval is a fixed 1000 ms; `Poller::spawn(runtime_dir, supervisor)` uses
 /// it. The tests keep `Poller::set_poll_interval` as a speed hook (ASSUMPTION of the tester: it
 /// stays, as an inherent method, for the tests that must not wait whole seconds).
 fn rig(interval_ms: u64) -> Rig {
@@ -165,7 +165,7 @@ async fn the_age_grows_while_polls_fail_and_five_failures_clear_the_cache() {
     let v = wait_for(&r, "the cache to be cleared", 8, |v| !has_data(v)).await;
     assert_eq!(v["stale"], true, "{v}");
     assert_eq!(v["directions"], json!([]));
-    assert_eq!(v["ports"], json!([]));
+    assert!(v.get("ports").is_none(), "{v}");
     assert_eq!(
         router_get(&r.router, "/api/stats/0/delay_histogram")
             .await
@@ -220,7 +220,7 @@ fn one_port() -> PortSample {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_poller_polls_every_500_ms_by_default() {
+async fn the_poller_polls_every_1000_ms_by_default() {
     // a real poller with its default interval, a fake dpds socket and a fake supervisor
     let rt = short_tempdir();
     let runtime_dir: PathBuf = rt.path().to_path_buf();
@@ -245,10 +245,10 @@ async fn the_poller_polls_every_500_ms_by_default() {
             .count()
     };
     let before = count();
-    tokio::time::sleep(Duration::from_millis(2000)).await;
+    tokio::time::sleep(Duration::from_millis(3000)).await;
     let polls = count() - before;
     assert!(
-        (3..=5).contains(&polls),
-        "500 ms must give 3 to 5 polls in 2 s, got {polls}"
+        (2..=4).contains(&polls),
+        "1000 ms must give 2 to 4 polls in 3 s (500 ms would give 6), got {polls}"
     );
 }

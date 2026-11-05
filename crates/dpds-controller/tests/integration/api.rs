@@ -745,7 +745,7 @@ async fn stats_without_telemetry_data_are_empty() {
     assert_eq!(r.status, 200);
     let v = r.json();
     assert_eq!(v["directions"], json!([]));
-    assert_eq!(v["ports"], json!([]));
+    assert!(v.get("ports").is_none(), "{v}");
     // no data is stale data (C4); there is no age without a poll
     assert_eq!(v["stale"], true);
     assert!(absent(&v, "age_ms"), "{v}");
@@ -803,7 +803,7 @@ async fn stats_serve_the_computed_view_of_the_cached_snapshots() {
     assert_eq!(v["directions"].as_array().unwrap().len(), 2);
     assert_close(f(&v["directions"][0], "rx_pps"), 4000.0);
     assert_close(f(&v["directions"][0], "rx_bps"), 4000.0 * 100.0 * 8.0);
-    assert_eq!(v["ports"].as_array().unwrap().len(), 2);
+    assert!(v.get("ports").is_none(), "{v}");
     assert_eq!(v["directions"][0]["link"], "a-to-b");
     assert_eq!(v["directions"][1]["link"], "b-to-a");
 }

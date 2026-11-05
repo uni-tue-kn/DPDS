@@ -36,8 +36,7 @@ use crate::model::{Link, RunConfig, StartLink, StartRequest, MAX_NAME_CHARS};
 use crate::nic_hints::FirmwareCache;
 use crate::stats::{
     compute_stats, delay_histogram, delay_stats_on, uptime_ms, Clamped, Counters, DirectionStats,
-    ExpectedModel, HistogramView, HistoryLink, HistorySample, HistoryView, Percentiles, PortStats,
-    StatsView,
+    ExpectedModel, HistogramView, HistoryLink, HistorySample, HistoryView, Percentiles, StatsView,
 };
 use crate::supervisor::{LaunchPlan, State as RunState, Supervisor};
 use crate::telemetry::TelemetrySource;
@@ -825,7 +824,6 @@ async fn histogram(
         HistoryLink,
         DirectionStats,
         Counters,
-        PortStats,
         HistogramView,
         Percentiles,
         Clamped,

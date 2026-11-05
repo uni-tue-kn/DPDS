@@ -10,11 +10,13 @@
 //!   ("0", "1", ...), like `{dir}` of the histogram route. `started_at` is the run's start as
 //!   `/api/emulation` reports it. Nothing ran since the controller started: `started_at` null (or
 //!   absent) and `samples` `{}`.
-//! - A sample is `{t_ms, rx_gbps, tx_gbps, rx_mpps, tx_mpps, loss_pct, limiter_pct,
-//!   buffer_full_pct, nic_tx_pct, nic_rx_pct}`, all numbers. `t_ms` is a whole number of
+//! - A sample is `{t_ms, rx_gbps, tx_gbps, rx_mpps, tx_mpps, loss_drops, limiter_drops,
+//!   buffer_full_drops, nic_tx_drops, nic_rx_imissed, nic_rx_nombuf}`, all numbers (spec 43: the
+//!   five `*_pct` shares are gone; the six counters are the link's cumulative drops, u64). `t_ms` is a whole number of
 //!   milliseconds since the start of the run, strictly increasing (u64, never a fraction). The rates are `/api/stats`' `rx_bps / 1e9`, `tx_bps / 1e9`,
-//!   `rx_pps / 1e6`, `tx_pps / 1e6`; the five shares are `/api/stats`' drop shares of the same
-//!   names, in percent, one per cause (the frontend sums the overload causes).
+//!   `rx_pps / 1e6`, `tx_pps / 1e6`; the counters are `/api/stats`' `counters.loss_drops`,
+//!   `limiter_drops`, `buffer_full_drops`, `tx_drops` (as `nic_tx_drops`), `nic_rx_imissed`,
+//!   `nic_rx_nombuf` of the same poll.
 //! - At most one sample per link per second, taken from the poller's snapshots with no extra
 //!   telemetry query; every link gets a sample at the same `t_ms`.
 //! - `since_ms` (a u64: digits only, no sign, fraction, exponent or hex) returns only samples with
@@ -70,12 +72,34 @@ use dpds_controller::supervisor::{LaunchPlan, State, Supervisor, SupervisorStatu
 use dpds_controller::telemetry::{socket_path, Poller, TelemetrySource, HISTORY_MAX_SAMPLES};
 use serde_json::{json, Value};
 
-const SAMPLE_FIELDS: [&str; 10] = [
+/// Spec 43 (B1): a sample has the rates and, instead of the five per-cause shares, the link's
+/// cumulative drop counters (named like `HistoryTotals`; all u64).
+const SAMPLE_FIELDS: [&str; 11] = [
     "t_ms",
     "rx_gbps",
     "tx_gbps",
     "rx_mpps",
     "tx_mpps",
+    "loss_drops",
+    "limiter_drops",
+    "buffer_full_drops",
+    "nic_tx_drops",
+    "nic_rx_imissed",
+    "nic_rx_nombuf",
+];
+
+/// The cumulative counters of a sample.
+const COUNTER_FIELDS: [&str; 6] = [
+    "loss_drops",
+    "limiter_drops",
+    "buffer_full_drops",
+    "nic_tx_drops",
+    "nic_rx_imissed",
+    "nic_rx_nombuf",
+];
+
+/// The old per-cause shares, gone from the samples.
+const GONE_FIELDS: [&str; 5] = [
     "loss_pct",
     "limiter_pct",
     "buffer_full_pct",
@@ -99,7 +123,6 @@ struct Expect {
     limiter_pct: f64,
     buffer_full_pct: f64,
     nic_tx_pct: f64,
-    nic_rx_pct: f64,
 }
 
 const EXPECT: [Expect; 2] = [
@@ -112,7 +135,6 @@ const EXPECT: [Expect; 2] = [
         limiter_pct: 1.0,
         buffer_full_pct: 0.5,
         nic_tx_pct: 0.25,
-        nic_rx_pct: 0.15,
     },
     Expect {
         rx_gbps: 4.0,
@@ -123,7 +145,6 @@ const EXPECT: [Expect; 2] = [
         limiter_pct: 0.0,
         buffer_full_pct: 4.0,
         nic_tx_pct: 0.0,
-        nic_rx_pct: 0.0,
     },
 ];
 
@@ -291,7 +312,7 @@ impl Rig {
         self.speed_up_poller();
     }
 
-    /// The start body has no poll interval (spec 41: a fixed 500 ms); this test hook speeds the
+    /// The start body has no poll interval (spec 41/43: a fixed 1000 ms); this test hook speeds the
     /// poller up after a start so that the tests need not wait whole seconds.
     fn speed_up_poller(&self) {
         self._poller.set_poll_interval(POLL_MS);
@@ -450,6 +471,12 @@ async fn one_sample_per_link_per_second_at_the_same_times() {
             for key in SAMPLE_FIELDS {
                 assert!(s[key].is_number(), "{key} must be a number in {s}");
             }
+            for key in COUNTER_FIELDS {
+                assert!(s[key].is_u64(), "{key} must be a whole number in {s}");
+            }
+            for key in GONE_FIELDS {
+                assert!(s.get(key).is_none(), "{key} is gone (spec 43): {s}");
+            }
             assert!(s["t_ms"].is_u64(), "t_ms is a whole number of ms in {s}");
             assert!(s.get("t_s").is_none(), "the old t_s is gone: {s}");
         }
@@ -457,7 +484,7 @@ async fn one_sample_per_link_per_second_at_the_same_times() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_samples_equal_the_rates_and_shares_of_api_stats() {
+async fn the_samples_equal_the_rates_of_api_stats() {
     let mut r = rig();
     r.start_run(4242, 1_700_000_000).await;
     let v = r
@@ -481,21 +508,6 @@ async fn the_samples_equal_the_rates_and_shares_of_api_stats() {
             near(field(&s, "tx_gbps"), want.tx_gbps, "tx_gbps", &s);
             near(field(&s, "rx_mpps"), want.rx_mpps, "rx_mpps", &s);
             near(field(&s, "tx_mpps"), want.tx_mpps, "tx_mpps", &s);
-            near(field(&s, "loss_pct"), want.loss_pct, "loss_pct", &s);
-            near(
-                field(&s, "limiter_pct"),
-                want.limiter_pct,
-                "limiter_pct",
-                &s,
-            );
-            near(
-                field(&s, "buffer_full_pct"),
-                want.buffer_full_pct,
-                "buffer_full_pct",
-                &s,
-            );
-            near(field(&s, "nic_tx_pct"), want.nic_tx_pct, "nic_tx_pct", &s);
-            near(field(&s, "nic_rx_pct"), want.nic_rx_pct, "nic_rx_pct", &s);
             // and what /api/stats reports now (constant rates: the same at every instant)
             near(
                 field(&s, "rx_gbps"),
@@ -521,20 +533,91 @@ async fn the_samples_equal_the_rates_and_shares_of_api_stats() {
                 "tx_mpps vs stats",
                 &s,
             );
-            for (key, stat) in [
-                ("loss_pct", "loss_pct"),
-                ("limiter_pct", "limiter_pct"),
-                ("buffer_full_pct", "buffer_full_pct"),
-                ("nic_tx_pct", "nic_tx_pct"),
-                ("nic_rx_pct", "nic_rx_pct"),
-            ] {
-                near(field(&s, key), field(d, stat), key, &s);
-            }
         }
         assert!(
             checked >= 2,
             "link {link}: only {checked} samples at t >= 1 s: {v}"
         );
+    }
+}
+
+/// Spec 43 (B1): per second the fake `dpds` adds this many drops to link 0 and link 1:
+/// loss, limiter, buffer full, tx_drops, imissed, rx_nombuf (= `EXPECT`'s shares of its rx rate).
+const DROPS_PER_S: [[f64; 6]; 2] = [
+    [40_000.0, 20_000.0, 10_000.0, 5_000.0, 2_000.0, 1_000.0],
+    [5_000.0, 0.0, 40_000.0, 0.0, 0.0, 0.0],
+];
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_samples_carry_the_cumulative_drop_counters_of_the_link() {
+    let mut r = rig();
+    r.start_run(4242, 1_700_000_000).await;
+    let v = r
+        .wait_history("a sample at 3 s", 15, |v| newest_t(v) >= 3.0)
+        .await;
+    for (i, link) in ["0", "1"].iter().enumerate() {
+        let all = samples(&v, link);
+        let counts = |s: &Value| COUNTER_FIELDS.map(|k| s[k].as_u64().unwrap_or(u64::MAX));
+        let mut checked = 0;
+        for w in all.windows(2) {
+            let (a, b) = (counts(&w[0]), counts(&w[1]));
+            let dt = t_secs(&w[1]) - t_secs(&w[0]);
+            for k in 0..6 {
+                assert!(
+                    a[k] <= b[k],
+                    "{} never decreases: {} -> {}",
+                    COUNTER_FIELDS[k],
+                    w[0],
+                    w[1]
+                );
+                // a cumulative count grows by the rate over the sample spacing (not a per-second
+                // share of the window, not a rate)
+                let want = DROPS_PER_S[i][k] * dt;
+                let got = (b[k] - a[k]) as f64;
+                assert!(
+                    (got - want).abs() <= want * 0.35 + 3.0,
+                    "link {link} {}: grew by {got}, expected about {want} over {dt} s: {} -> {}",
+                    COUNTER_FIELDS[k],
+                    w[0],
+                    w[1]
+                );
+            }
+            checked += 1;
+        }
+        assert!(
+            checked >= 2,
+            "link {link}: {checked} consecutive pairs: {v}"
+        );
+        // causes that never happen stay 0, the others are well above 0 after 2 s
+        let last = counts(all.last().unwrap());
+        for k in 0..6 {
+            if DROPS_PER_S[i][k] == 0.0 {
+                assert_eq!(last[k], 0, "link {link} {}", COUNTER_FIELDS[k]);
+            } else {
+                assert!(
+                    last[k] as f64 >= DROPS_PER_S[i][k],
+                    "link {link} {}: {last:?}",
+                    COUNTER_FIELDS[k]
+                );
+            }
+        }
+    }
+    // the newest sample is never above what /api/stats reports afterwards (same counters)
+    let stats = r.stats().await;
+    for (i, link) in ["0", "1"].iter().enumerate() {
+        let c = &stats["directions"][i]["counters"];
+        let s = samples(&v, link).pop().unwrap();
+        for (key, stat) in [
+            ("loss_drops", "loss_drops"),
+            ("limiter_drops", "limiter_drops"),
+            ("buffer_full_drops", "buffer_full_drops"),
+            ("nic_tx_drops", "tx_drops"),
+            ("nic_rx_imissed", "nic_rx_imissed"),
+            ("nic_rx_nombuf", "nic_rx_nombuf"),
+        ] {
+            let (a, b) = (s[key].as_u64().unwrap(), c[stat].as_u64().unwrap());
+            assert!(a <= b, "link {link} {key}: sample {a} > stats {stat} {b}");
+        }
     }
 }
 
@@ -1009,6 +1092,13 @@ async fn openapi_documents_the_history_route() {
         "no schema with all of {SAMPLE_FIELDS:?}: {:?}",
         schemas.keys().collect::<Vec<_>>()
     );
+    let props = sample.unwrap()["properties"].as_object().unwrap();
+    for key in GONE_FIELDS {
+        assert!(
+            !props.contains_key(key),
+            "{key} is gone from the schema: {props:?}"
+        );
+    }
 }
 
 // ---- second round: elapsed_ms on /api/stats, one clock for stats and history ----------------------------
