@@ -1,6 +1,6 @@
 // Spec 27b item 1: a link is valid only if the link editor would accept it unchanged (name rule, non-empty ports, a config that
-// survives the form round trip, optional worker and frame size). These tables are shared by the stored-document tests
-// (localStore.test.tsx) and the import tests (settingsSetup.test.tsx). Each entry is a whole link, built on `fx.link()`.
+// survives the form round trip, optional frame size; a `worker` member is NOT checked since spec 41: it is ignored). These tables are shared
+// by the stored-document tests (localStore.test.tsx) and the import tests (linksImportExport.test.tsx). Each entry is a whole link, built on `fx.link()`.
 import * as fx from './fixtures';
 
 type Loose = Record<string, unknown>;
@@ -61,18 +61,12 @@ export const INVALID_LINKS: InvalidLink[] = [
   { label: 'a name with a non-ASCII letter', link: link({ name: 'ä-b' }), problem: /name/i },
   { label: 'an empty ingress', link: link({ ingress: '' }), problem: /ingress/i },
   { label: 'an empty egress', link: link({ egress: '' }), problem: /egress/i },
-  { label: 'a negative worker', link: link({ worker: -1 }), problem: /worker/i },
-  { label: 'a fractional worker', link: link({ worker: 1.5 }), problem: /worker/i },
-  { label: 'a worker that is a string', link: link({ worker: '3' }), problem: /worker/i },
   { label: 'a frame size below 64', link: link({ avg_frame_size_byte: 63 }), problem: /frame/i },
   { label: 'a frame size that is a string', link: link({ avg_frame_size_byte: '1518' }), problem: /frame/i },
 ];
 
 /** Links at the edge of validity: all of them are accepted. */
 export const EDGE_LINKS: [string, Loose][] = [
-  ['worker 0', link({ worker: 0 })],
-  ['worker null', link({ worker: null })],
-  ['no worker member', link({ worker: undefined })],
   ['frame size 64', link({ avg_frame_size_byte: 64 })],
   ['frame size null', link({ avg_frame_size_byte: null })],
   ['a name of 32 characters', link({ name: 'x'.repeat(32) })],

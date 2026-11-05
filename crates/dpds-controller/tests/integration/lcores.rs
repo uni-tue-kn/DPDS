@@ -15,7 +15,7 @@ fn ok(host: &FakeHost, st: &Setup) -> Assignment {
 #[test]
 fn hairpin_link_prefers_the_nic_numa_node() {
     let h = FakeHost::bare_metal();
-    let a = ok(&h, &setup(vec![link("l0", NIC0, NIC0, None)]));
+    let a = ok(&h, &setup(vec![link("l0", NIC0, NIC0)]));
     assert_eq!(a.main_lcore, 0);
     assert_eq!(a.directions.len(), 1);
     let d = &a.directions[0];
@@ -25,14 +25,14 @@ fn hairpin_link_prefers_the_nic_numa_node() {
     );
     assert!(NODE0.contains(&d.lcore), "{d:?}");
 
-    let a = ok(&h, &setup(vec![link("l1", NIC1, NIC1, None)]));
+    let a = ok(&h, &setup(vec![link("l1", NIC1, NIC1)]));
     assert!(NODE1.contains(&a.directions[0].lcore), "{:?}", a.directions);
 }
 
 #[test]
 fn one_direction_per_link_rx_is_ingress_tx_is_egress() {
     let h = FakeHost::bare_metal();
-    let a = ok(&h, &setup(vec![link("a-to-b", NIC0, NIC1, None)]));
+    let a = ok(&h, &setup(vec![link("a-to-b", NIC0, NIC1)]));
     assert_eq!(a.directions.len(), 1);
     let d = &a.directions[0];
     assert_eq!((d.dir, d.rx.as_str(), d.tx.as_str()), (0, NIC0, NIC1));
@@ -44,14 +44,14 @@ fn one_direction_per_link_rx_is_ingress_tx_is_egress() {
 fn the_lcore_follows_the_numa_node_of_the_ingress_nic_not_of_the_egress() {
     let h = FakeHost::bare_metal();
     // ingress NIC0 (node 0), egress NIC1 (node 1): node 0
-    let a = ok(&h, &setup(vec![link("x", NIC0, NIC1, None)]));
+    let a = ok(&h, &setup(vec![link("x", NIC0, NIC1)]));
     assert!(NODE0.contains(&a.directions[0].lcore), "{:?}", a.directions);
     // ingress NIC1 (node 1), egress NIC0 (node 0): node 1
-    let a = ok(&h, &setup(vec![link("y", NIC1, NIC0, None)]));
+    let a = ok(&h, &setup(vec![link("y", NIC1, NIC0)]));
     assert!(NODE1.contains(&a.directions[0].lcore), "{:?}", a.directions);
     // a vdev as ingress has no node; an egress on node 1 must not drag the pick there
     // (lowest free isolated core wins)
-    let a = ok(&h, &setup(vec![link("v", "net_null0", NIC1, None)]));
+    let a = ok(&h, &setup(vec![link("v", "net_null0", NIC1)]));
     assert_eq!(a.directions[0].lcore, 2, "{:?}", a.directions);
 }
 
@@ -60,10 +60,7 @@ fn bidirectional_pair_is_two_links_each_on_its_own_ingress_node() {
     let h = FakeHost::bare_metal();
     let a = ok(
         &h,
-        &setup(vec![
-            link("a-to-b", NIC0, NIC1, None),
-            link("b-to-a", NIC1, NIC0, None),
-        ]),
+        &setup(vec![link("a-to-b", NIC0, NIC1), link("b-to-a", NIC1, NIC0)]),
     );
     assert_eq!(a.directions.len(), 2);
     let (d0, d1) = (&a.directions[0], &a.directions[1]);
@@ -81,9 +78,9 @@ fn three_link_ring_gets_numa_local_lcores_by_ingress_nic() {
     let a = ok(
         &h,
         &setup(vec![
-            link("a-to-b", NIC0, NIC1, None),
-            link("b-to-c", NIC1, INTEL, None),
-            link("c-to-a", INTEL, NIC0, None),
+            link("a-to-b", NIC0, NIC1),
+            link("b-to-c", NIC1, INTEL),
+            link("c-to-a", INTEL, NIC0),
         ]),
     );
     let d = &a.directions;
@@ -113,10 +110,7 @@ fn three_link_ring_gets_numa_local_lcores_by_ingress_nic() {
 fn reversed_numa_order_is_honoured_literally_not_re_sorted() {
     // link 0 receives on NIC1 (node 1), link 1 on NIC0 (node 0): link 0's lcore is the LARGER one
     let h = FakeHost::bare_metal();
-    let st = setup(vec![
-        link("b-to-a", NIC1, NIC0, None),
-        link("a-to-b", NIC0, NIC1, None),
-    ]);
+    let st = setup(vec![link("b-to-a", NIC1, NIC0), link("a-to-b", NIC0, NIC1)]);
     let a = ok(&h, &st);
     assert_eq!(a.directions.len(), 2);
     assert!(NODE1.contains(&a.directions[0].lcore), "{:?}", a.directions);
@@ -128,9 +122,9 @@ fn reversed_numa_order_is_honoured_literally_not_re_sorted() {
 fn directions_are_numbered_in_link_order() {
     let h = FakeHost::bare_metal();
     let st = setup(vec![
-        link("a-to-b", NIC0, NIC1, None),
-        link("b-to-a", NIC1, NIC0, None),
-        link("loop", "net_null0", "net_null0", None),
+        link("a-to-b", NIC0, NIC1),
+        link("b-to-a", NIC1, NIC0),
+        link("loop", "net_null0", "net_null0"),
     ]);
     let a = ok(&h, &st);
     let names: Vec<(u32, &str)> = a
@@ -164,142 +158,17 @@ fn main_lcore_default_is_the_lowest_non_isolated_online_core() {
     let h = FakeHost::bare_metal();
     h.write("sys/devices/system/cpu/isolated", "0-3\n");
     h.cmdline("ro isolcpus=0-3 nohz_full=0-3 rcu_nocbs=0-3");
-    let a = ok(&h, &setup(vec![link("l", NIC0, NIC0, None)]));
+    let a = ok(&h, &setup(vec![link("l", NIC0, NIC0)]));
     assert_eq!(a.main_lcore, 4);
-}
-
-#[test]
-fn main_lcore_setting_overrides_and_is_not_used_for_a_worker() {
-    let h = FakeHost::bare_metal();
-    let a = ok(&h, &setup_main(vec![link("l", NIC0, NIC0, None)], 1));
-    assert_eq!(a.main_lcore, 1);
-    // main on isolated core 2: the only other node-0 isolated core is left for the worker
-    let a = ok(&h, &setup_main(vec![link("l", NIC0, NIC0, None)], 2));
-    assert_eq!(a.main_lcore, 2);
-    assert_eq!(a.directions[0].lcore, 3);
 }
 
 #[test]
 fn cmdline_is_the_fallback_when_the_isolated_file_is_missing() {
     let h = FakeHost::bare_metal();
     h.remove("sys/devices/system/cpu/isolated");
-    let a = ok(&h, &setup(vec![link("l", NIC1, NIC1, None)]));
+    let a = ok(&h, &setup(vec![link("l", NIC1, NIC1)]));
     assert_eq!(a.main_lcore, 0);
     assert!(NODE1.contains(&a.directions[0].lcore), "{:?}", a.directions);
-}
-
-#[test]
-fn per_link_override_is_used() {
-    let h = FakeHost::bare_metal();
-    let a = ok(&h, &setup(vec![link("l", NIC0, NIC0, Some(3))]));
-    assert_eq!(a.directions[0].lcore, 3);
-    // an override on a link whose ingress sits on the other node is still used literally
-    let a = ok(&h, &setup(vec![link("ab", NIC0, NIC1, Some(7))]));
-    assert_eq!(a.directions[0].lcore, 7);
-    let a = ok(
-        &h,
-        &setup(vec![
-            link("ab", NIC0, NIC1, Some(2)),
-            link("ba", NIC1, NIC0, Some(7)),
-        ]),
-    );
-    assert_eq!(
-        a.directions.iter().map(|d| d.lcore).collect::<Vec<_>>(),
-        [2, 7]
-    );
-}
-
-#[test]
-fn override_may_name_a_non_isolated_core() {
-    // the hints warn about it; the assignment itself honours the operator
-    let a = ok(
-        &FakeHost::bare_metal(),
-        &setup(vec![link("l", NIC0, NIC0, Some(4))]),
-    );
-    assert_eq!(a.directions[0].lcore, 4);
-}
-
-#[test]
-fn override_is_mixed_with_auto_assignment_without_reusing_cores() {
-    let h = FakeHost::bare_metal();
-    let st = setup(vec![
-        link("pinned", NIC1, NIC1, Some(6)),
-        link("auto", INTEL, NIC0, None),
-    ]);
-    let a = ok(&h, &st);
-    assert_eq!(a.directions[0].lcore, 6);
-    assert_eq!(a.directions[1].lcore, 7);
-}
-
-#[test]
-fn invalid_overrides_are_errors() {
-    let h = FakeHost::bare_metal();
-    let bad = [
-        (
-            "same core in two links",
-            setup(vec![
-                link("a", NIC0, NIC0, Some(2)),
-                link("b", NIC1, NIC1, Some(2)),
-            ]),
-        ),
-        (
-            "same core in the two links of a pair",
-            setup(vec![
-                link("a", NIC0, NIC1, Some(2)),
-                link("b", NIC1, NIC0, Some(2)),
-            ]),
-        ),
-        (
-            "equals main lcore",
-            setup_main(vec![link("l", NIC0, NIC0, Some(2))], 2),
-        ),
-        (
-            "core does not exist",
-            setup(vec![link("l", NIC0, NIC0, Some(99))]),
-        ),
-    ];
-    for (what, st) in bad {
-        let r = plan_for(&h, &st);
-        match r {
-            Ok(a) => panic!("{what}: expected an error, got {:?}", a.directions),
-            Err(e) => assert!(!e.to_string().is_empty(), "{what}"),
-        }
-    }
-}
-
-#[test]
-fn invalid_override_error_names_the_link() {
-    let h = FakeHost::bare_metal();
-    let err = plan_for(
-        &h,
-        &setup(vec![
-            link("fine", NIC0, NIC0, Some(2)),
-            link("broken", NIC1, NIC1, Some(99)),
-        ]),
-    )
-    .expect_err("core 99 does not exist")
-    .to_string();
-    assert!(err.contains("broken"), "{err}");
-}
-
-#[test]
-fn override_in_descending_order_is_honoured_literally() {
-    let h = FakeHost::bare_metal();
-    let a = ok(
-        &h,
-        &setup(vec![
-            link("ab", NIC0, NIC1, Some(7)),
-            link("ba", NIC1, NIC0, Some(2)),
-        ]),
-    );
-    assert_eq!(
-        a.directions.iter().map(|d| d.lcore).collect::<Vec<_>>(),
-        [7, 2]
-    );
-    assert_eq!(
-        (a.directions[0].rx.as_str(), a.directions[1].rx.as_str()),
-        (NIC0, NIC1)
-    );
 }
 
 #[test]
@@ -308,7 +177,7 @@ fn not_enough_isolated_cores_is_a_clear_error() {
     let links: Vec<_> = (0..5)
         .map(|i| {
             let p = format!("net_null{i}");
-            link(&format!("l{i}"), &p, &p, None)
+            link(&format!("l{i}"), &p, &p)
         })
         .collect();
     let err = plan_for(&h, &setup(links))
@@ -327,7 +196,7 @@ fn exactly_enough_isolated_cores_works() {
     let links: Vec<_> = (0..4)
         .map(|i| {
             let p = format!("net_null{i}");
-            link(&format!("l{i}"), &p, &p, None)
+            link(&format!("l{i}"), &p, &p)
         })
         .collect();
     let a = ok(&h, &setup(links));
@@ -337,15 +206,12 @@ fn exactly_enough_isolated_cores_works() {
 }
 
 #[test]
-fn host_without_isolation_fails_unless_overridden() {
+fn host_without_isolation_fails() {
     let h = FakeHost::bare();
-    let err = plan_for(&h, &setup(vec![link("l", NIC0, NIC0, None)]))
+    let err = plan_for(&h, &setup(vec![link("l", NIC0, NIC0)]))
         .expect_err("no isolated cores")
         .to_string();
     assert!(err.contains("isolated"), "{err}");
-    let a = ok(&h, &setup(vec![link("l", NIC0, NIC0, Some(2))]));
-    assert_eq!(a.directions[0].lcore, 2);
-    assert_eq!(a.main_lcore, 0);
 }
 
 #[test]
@@ -357,7 +223,7 @@ fn preferred_node_exhausted_spills_to_the_other_node() {
     let links: Vec<_> = [NIC1, INTEL, extra]
         .iter()
         .enumerate()
-        .map(|(i, p)| link(&format!("l{i}"), p, p, None))
+        .map(|(i, p)| link(&format!("l{i}"), p, p))
         .collect();
     let a = ok(&h, &setup(links));
     let l: Vec<u32> = a.directions.iter().map(|d| d.lcore).collect();
@@ -374,10 +240,7 @@ fn preferred_node_exhausted_spills_to_the_other_node() {
 #[test]
 fn vm_without_numa_information_still_assigns_isolated_cores() {
     let h = FakeHost::vm();
-    let a = ok(
-        &h,
-        &setup(vec![link("l", "0000:00:05.0", "0000:00:05.0", None)]),
-    );
+    let a = ok(&h, &setup(vec![link("l", "0000:00:05.0", "0000:00:05.0")]));
     assert_eq!(a.main_lcore, 0);
     assert!([2, 3].contains(&a.directions[0].lcore));
 }

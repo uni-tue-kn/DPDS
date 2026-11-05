@@ -1,11 +1,9 @@
-//! `POST /api/emulation/start` validates the body it carries (ports, port reuse, link names,
-//! `eal_extra_args`) with the rules that used to guard the stored links: the start is refused
+//! `POST /api/emulation/start` validates the body it carries (ports, port reuse, link names) with the rules that used to guard the stored links: the start is refused
 //! (400, or 409) with a `{"message"}` that names the offending value; nothing is spawned and
 //! the emulation stays stopped. Spec 22: there is no stored state to re-validate any more, so
 //! the body is the only input, and `POST /api/emulation/validate` answers the same errors.
 
 use crate::common::*;
-use serde_json::json;
 
 fn app() -> TestApp {
     TestApp::new(FakeHost::bare_metal())
@@ -31,7 +29,7 @@ async fn a_valid_body_starts() {
     // control: the refusals below are about the values, not about this setup
     let a = app();
     let r = a
-        .start_links(vec![link("ok", "net_null0", "net_null1", None)])
+        .start_links(vec![link("ok", "net_null0", "net_null1")])
         .await;
     assert_eq!(r.status, 202, "{}", r.text());
     assert_eq!(a.supervisor.plans().len(), 1);
@@ -53,9 +51,9 @@ async fn ports_that_the_rules_forbid_refuse_the_start() {
         // the bad name as the ingress and as the egress of a link: both are validated
         for as_ingress in [true, false] {
             let l = if as_ingress {
-                link("old", bad, "net_null1", None)
+                link("old", bad, "net_null1")
             } else {
-                link("old", "net_null1", bad, None)
+                link("old", "net_null1", bad)
             };
             let a = app();
             for r in [
@@ -83,8 +81,8 @@ async fn a_bad_egress_or_a_bad_second_link_refuses_the_start() {
     assert_refused(
         &a,
         &setup(vec![
-            link("fine", "net_null0", "net_null0", None),
-            link("mixed", "net_null1", "net_pcap2,iface=eth0", None),
+            link("fine", "net_null0", "net_null0"),
+            link("mixed", "net_null1", "net_pcap2,iface=eth0"),
         ]),
         "net_pcap2",
     )
@@ -92,8 +90,8 @@ async fn a_bad_egress_or_a_bad_second_link_refuses_the_start() {
     assert_refused(
         &a,
         &setup(vec![
-            link("fine", "net_null0", "net_null0", None),
-            link("bad-in", "net_pcap3,iface=eth0", "net_null1", None),
+            link("fine", "net_null0", "net_null0"),
+            link("bad-in", "net_pcap3,iface=eth0", "net_null1"),
         ]),
         "net_pcap3",
     )
@@ -104,12 +102,12 @@ async fn a_bad_egress_or_a_bad_second_link_refuses_the_start() {
 async fn reusing_a_port_as_ingress_or_egress_refuses_the_start_naming_a_link() {
     for links in [
         vec![
-            link("first", "net_null0", "net_null1", None),
-            link("second", "net_null0", "net_null2", None),
+            link("first", "net_null0", "net_null1"),
+            link("second", "net_null0", "net_null2"),
         ],
         vec![
-            link("first", "net_null0", "net_null1", None),
-            link("second", "net_null2", "net_null1", None),
+            link("first", "net_null0", "net_null1"),
+            link("second", "net_null2", "net_null1"),
         ],
     ] {
         let a = app();
@@ -122,26 +120,12 @@ async fn reusing_a_port_as_ingress_or_egress_refuses_the_start_naming_a_link() {
 }
 
 #[tokio::test]
-async fn eal_extra_args_outside_the_allowlist_refuse_the_start() {
-    for (args, named) in [
-        (vec!["-d", "/tmp/evil.so"], "-d"),
-        (vec!["--file-prefix=x"], "--file-prefix"),
-        (vec!["--vdev", "net_pcap0,tx_pcap=/etc/x"], "--vdev"),
-        (vec!["--no-huge", "-m", "abc"], "abc"),
-    ] {
-        let s = setup_eal(vec![link("l", "net_null0", "net_null0", None)], json!(args));
-        let a = app();
-        assert_refused(&a, &s, named).await;
-    }
-}
-
-#[tokio::test]
 async fn a_refusal_does_not_block_a_later_start_with_a_fixed_body() {
     let a = app();
-    let bad = setup(vec![link("old", "net_null0", "net_pcap0,iface=eth0", None)]);
+    let bad = setup(vec![link("old", "net_null0", "net_pcap0,iface=eth0")]);
     assert!(a.start(&bad).await.status >= 400);
     let r = a
-        .start_links(vec![link("old", "net_null0", "net_null0", None)])
+        .start_links(vec![link("old", "net_null0", "net_null0")])
         .await;
     assert_eq!(r.status, 202, "{}", r.text());
     assert_eq!(a.supervisor.plans().len(), 1);
@@ -150,11 +134,11 @@ async fn a_refusal_does_not_block_a_later_start_with_a_fixed_body() {
 #[tokio::test]
 async fn a_refused_start_keeps_a_running_emulation_and_its_configuration() {
     let a = app();
-    a.start_ok(vec![link("run", "net_null0", "net_null0", None)])
+    a.start_ok(vec![link("run", "net_null0", "net_null0")])
         .await;
     let before = a.get("/api/emulation").await.json();
     let r = a
-        .start_links(vec![link("x", "net_pcap0", "net_null1", None)])
+        .start_links(vec![link("x", "net_pcap0", "net_null1")])
         .await;
     assert!(r.status == 400 || r.status == 409, "{}", r.text());
     assert_eq!(a.get("/api/emulation").await.json(), before);

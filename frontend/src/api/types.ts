@@ -59,8 +59,6 @@ export interface Link {
   ingress: string;
   egress: string;
   config: ConfigDto;
-  /** Worker lcore; null/absent = automatic. */
-  worker?: number | null;
   /** UI only, never sent to the controller: L2 frame size incl. FCS (bytes) that converts pps to bit/s. Absent = unset. */
   avg_frame_size_byte?: number | null;
 }
@@ -106,12 +104,6 @@ export interface Hint {
   suggestion: string;
   /** Shell commands an administrator runs as root to enable this tuning. DPDS never runs them. */
   commands?: string[];
-}
-
-export interface Settings {
-  main_lcore?: number | null;
-  eal_extra_args: string[];
-  poll_interval_ms: number;
 }
 
 export interface OnlineView {
@@ -299,7 +291,6 @@ export interface HistogramView {
 /** Body of `POST /api/emulation/start` and `POST /api/host/hints`: the whole configuration, no ids. */
 export interface StartRequest {
   links: StartLink[];
-  settings: Settings;
 }
 
 /**
@@ -308,14 +299,12 @@ export interface StartRequest {
  */
 export interface RunningConfig {
   links: StartLink[];
-  settings: Settings;
 }
 
 /** The document kept in localStorage (key `dpds.config.v1`). */
 export interface LocalConfig {
   version: 1;
   links: Link[];
-  settings: Settings;
 }
 
 export interface ErrorBody {

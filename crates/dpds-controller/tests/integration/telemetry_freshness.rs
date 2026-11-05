@@ -30,10 +30,9 @@ struct Rig {
     _dir: tempfile::TempDir,
 }
 
-/// Spec 22: the poll interval is no stored setting any more; it comes with the start body
-/// (`settings.poll_interval_ms`) and reaches the poller through `TelemetrySource::set_poll_interval`
-/// (ASSUMPTION of the tester: a trait method with a default no-op body, so fakes need not
-/// implement it; `Poller::spawn(runtime_dir, supervisor)` polls every 500 ms until told).
+/// Spec 41: the poll interval is a fixed 500 ms; `Poller::spawn(runtime_dir, supervisor)` uses
+/// it. The tests keep `Poller::set_poll_interval` as a speed hook (ASSUMPTION of the tester: it
+/// stays, as an inherent method, for the tests that must not wait whole seconds).
 fn rig(interval_ms: u64) -> Rig {
     let rt = short_tempdir();
     let supervisor = FakeSupervisor::new();
@@ -199,84 +198,57 @@ async fn transport_errors_count_as_failures_too() {
     assert_eq!(v["stale"], true, "{v}");
 }
 
+fn one_dir() -> DirSample {
+    DirSample {
+        uptime_ns: 1,
+        rx_pkts: 1,
+        tx_sent: 1,
+        loss: 0,
+        limiter: 0,
+        full: 0,
+        tx_drops: 0,
+    }
+}
+
+fn one_port() -> PortSample {
+    PortSample {
+        ibytes: 1,
+        obytes: 1,
+        imissed: 0,
+        rx_nombuf: 0,
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_poll_interval_of_the_start_body_reaches_the_poller() {
-    // a real poller, a fake dpds socket and a fake supervisor behind the real router: the
-    // controller keeps no settings, so `poll_interval_ms` of the start body is the only way the
-    // poller can learn it. At 100 ms about 10 polls fit in a second, at the default 500 only 2.
+async fn the_poller_polls_every_500_ms_by_default() {
+    // a real poller with its default interval, a fake dpds socket and a fake supervisor
     let rt = short_tempdir();
     let runtime_dir: PathBuf = rt.path().to_path_buf();
     let server = FakeTelemetryServer::serving(
         &socket_path(&runtime_dir),
         4242,
-        snapshot(
-            [
-                DirSample {
-                    uptime_ns: 1,
-                    rx_pkts: 1,
-                    tx_sent: 1,
-                    loss: 0,
-                    limiter: 0,
-                    full: 0,
-                    tx_drops: 0,
-                },
-                DirSample {
-                    uptime_ns: 1,
-                    rx_pkts: 1,
-                    tx_sent: 1,
-                    loss: 0,
-                    limiter: 0,
-                    full: 0,
-                    tx_drops: 0,
-                },
-            ],
-            [
-                PortSample {
-                    ibytes: 1,
-                    obytes: 1,
-                    imissed: 0,
-                    rx_nombuf: 0,
-                },
-                PortSample {
-                    ibytes: 1,
-                    obytes: 1,
-                    imissed: 0,
-                    rx_nombuf: 0,
-                },
-            ],
-        ),
+        snapshot([one_dir(), one_dir()], [one_port(), one_port()]),
     );
     let supervisor = FakeSupervisor::new();
-    let poller = Poller::spawn(runtime_dir.clone(), supervisor.clone());
-    let host = FakeHost::bare_metal();
-    let router = api::router(Deps {
-        roots: host.roots(),
-        supervisor,
-        telemetry: poller.clone(),
-        dpds_bin: PathBuf::from("/usr/local/bin/dpds"),
-        runtime_dir,
-        dpds_has_telemetry: true,
-        is_root: false,
+    supervisor.force_status(SupervisorStatus {
+        pid: Some(4242),
+        started_at: Some(1_700_000_000),
+        ..status(State::Running)
     });
-    let mut s = setup(vec![link("l", "net_null0", "net_null0", None)]);
-    s.settings["poll_interval_ms"] = json!(100);
-    let r = call(&router, "POST", "/api/emulation/start", Some(s.body())).await;
-    assert_eq!(r.status, 202, "{}", r.text());
-    tokio::time::sleep(Duration::from_millis(500)).await; // a pending default-length sleep ends
-    let before = server
-        .queries()
-        .iter()
-        .filter(|q| q.starts_with("/dpds/ports"))
-        .count();
-    tokio::time::sleep(Duration::from_millis(1500)).await;
-    let after = server
-        .queries()
-        .iter()
-        .filter(|q| q.starts_with("/dpds/ports"))
-        .count();
+    let _poller = Poller::spawn(runtime_dir, supervisor);
+    tokio::time::sleep(Duration::from_millis(600)).await; // the first poll has happened
+    let count = || {
+        server
+            .queries()
+            .iter()
+            .filter(|q| q.starts_with("/dpds/ports"))
+            .count()
+    };
+    let before = count();
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+    let polls = count() - before;
     assert!(
-        after - before >= 8,
-        "poll_interval_ms = 100 must give >= 8 polls in 1.5 s, got {}",
-        after - before
+        (3..=5).contains(&polls),
+        "500 ms must give 3 to 5 polls in 2 s, got {polls}"
     );
 }

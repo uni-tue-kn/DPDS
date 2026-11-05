@@ -5,12 +5,12 @@ import type { EmulationState, Link } from '../api/types';
 import { api } from '../test/mockApi';
 import { EDGE_LINKS, INVALID_LINKS } from '../test/invalidLinks';
 import * as fx from '../test/fixtures';
-import { DEFAULT_SETTINGS, rawStore, renderApp, seedRaw, seedStore, storedDoc } from '../test/helpers';
+import { rawStore, renderApp, seedRaw, seedStore, storedDoc } from '../test/helpers';
 import type { StoredDoc } from '../test/helpers';
 
-// Contract: the "v27" block of src/test/helpers.tsx. Import and Export of the LINKS happen in the browser on the local document
-// (key dpds.config.v1) without any REST call; they live in a toolbar at the top of the Settings page (P4TG style). The file is
-// { version: 1, links }: settings are neither exported nor imported. jsdom has no URL.createObjectURL and no Blob.text(); the
+// Contract: the "v27" and "spec41" blocks of src/test/helpers.tsx. Import and Export of the LINKS happen in the browser on the
+// local document (key dpds.config.v1) without any REST call to import or export; since spec 41 they live in a toolbar at the top,
+// right-aligned, of the Links page (the Settings page is gone). The file is { version: 1, links }: a `settings` member is ignored. jsdom has no URL.createObjectURL and no Blob.text(); the
 // tests stub the former and the implementation must read the chosen file with FileReader. Downloads are observed through
 // HTMLAnchorElement.prototype.click.
 const BLOB_URL = 'blob:http://localhost/dpds-links-test';
@@ -61,7 +61,7 @@ afterEach(() => {
 async function open() {
   const user = userEvent.setup();
   renderApp('/settings');
-  await screen.findByLabelText('Poll interval (ms)');
+  await screen.findByRole('heading', { level: 1, name: 'Settings' });
   return user;
 }
 
@@ -77,19 +77,17 @@ const alertTexts = () =>
     .join(' | ');
 
 const LINKS = (): Link[] => [{ ...fx.link(), avg_frame_size_byte: 512 }, fx.linkRev({ id: 3 })];
-/** A stored document that differs from everything the app could produce by default. */
-const SETTINGS = () => fx.settings({ main_lcore: 2, eal_extra_args: ['--no-huge'], poll_interval_ms: 250 });
+/** A stored document with links (spec 41: nothing but `version` and `links`). */
 const stored = (over: Partial<StoredDoc> = {}) => ({
   version: 1 as const,
   links: LINKS(),
-  settings: SETTINGS(),
   ...over,
 });
 /** The file of an export: version 1 and links, nothing else. */
 const linksFile = (links: Link[] = LINKS()) => ({ version: 1, links });
 const onlyKeys = (o: object) => Object.keys(o).sort();
 
-describe('Settings: the Import / Export toolbar (spec27)', () => {
+describe('Links: the Import / Export toolbar (spec27, moved by spec41)', () => {
   it('shows buttons "Import" and "Export" and no Backup card, no "Export setup", no "Import setup file"', async () => {
     await open();
     expect(importBtn()).toBeInTheDocument();
@@ -106,14 +104,20 @@ describe('Settings: the Import / Export toolbar (spec27)', () => {
     expect(exportBtn().querySelector('i.bi.bi-cloud-arrow-up-fill')).not.toBeNull();
   });
 
-  it('the toolbar is at the TOP: both buttons come before the settings form fields and the h1 is not after them', async () => {
+  it('the toolbar is at the TOP: both buttons come before the links table (or the empty-list text)', async () => {
+    seedStore(stored());
     await open();
     const precedes = (a: Node, b: Node) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
-    expect(precedes(importBtn(), screen.getByLabelText('Main lcore'))).toBe(true);
-    expect(precedes(exportBtn(), screen.getByLabelText('Poll interval (ms)'))).toBe(true);
-    expect(
-      precedes(screen.getByRole('heading', { level: 1, name: 'Settings' }), screen.getByLabelText('Main lcore')),
-    ).toBe(true);
+    const table = await screen.findByRole('table');
+    expect(precedes(importBtn(), table)).toBe(true);
+    expect(precedes(exportBtn(), table)).toBe(true);
+  });
+
+  it('the toolbar is also there, above the text, while no link is configured', async () => {
+    await open();
+    const empty = await screen.findByText('No links configured yet.');
+    expect(importBtn().compareDocumentPosition(empty) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(exportBtn().compareDocumentPosition(empty) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('the order is [Import] [Export] and they sit in one right-aligned container', async () => {
@@ -155,15 +159,13 @@ describe('Settings: the Import / Export toolbar (spec27)', () => {
     expect(spy.mock.contexts.some((el) => (el as HTMLInputElement).type === 'file')).toBe(true);
   });
 
-  it('the settings form is still there and still saves', async () => {
-    const user = await open();
-    await user.type(screen.getByLabelText('Main lcore'), '3');
-    await user.click(screen.getByRole('button', { name: /^save$/i }));
-    expect(storedDoc().settings.main_lcore).toBe(3);
+  it('the New link button is still on the page', async () => {
+    await open();
+    expect(screen.getByRole('link', { name: /new link/i })).toBeInTheDocument();
   });
 });
 
-describe('Settings: export links', () => {
+describe('Links: export links', () => {
   it('downloads { version: 1, links } as dpds-links-<date>.json, links exactly as stored (ids, frame size)', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date('2026-11-04T12:00:00Z'));
@@ -186,13 +188,13 @@ describe('Settings: export links', () => {
     expect(await readBlob(created[0])).toBe(JSON.stringify(linksFile(), null, 2));
   });
 
-  it('holds links only: no settings, no presets, even if the stored document carries a presets member', async () => {
+  it('holds links only: no settings, no presets, even if the stored document carries presets and settings members', async () => {
     seedRaw(
       JSON.stringify({
         version: 1,
         links: LINKS(),
         presets: [{ id: 4, name: 'wan', config: fx.config3() }],
-        settings: SETTINGS(),
+        settings: { main_lcore: 2, eal_extra_args: ['--no-huge'], poll_interval_ms: 250 },
       }),
     );
     const user = await open();
@@ -211,7 +213,6 @@ describe('Settings: export links', () => {
     const user = await open();
     await user.click(exportBtn());
     await waitFor(() => expect(clicks).toHaveLength(1));
-    expect(api.getEmulation).not.toHaveBeenCalled();
     // the sidebar's release check (spec18) may fetch GitHub; only the controller API is excluded here
     expect(vi.mocked(fetch).mock.calls.filter((c) => String(c[0]).includes('/api/'))).toEqual([]);
   });
@@ -247,7 +248,7 @@ describe('Settings: export links', () => {
   });
 });
 
-describe('Settings: import links', () => {
+describe('Links: import links', () => {
   async function upload(user: Awaited<ReturnType<typeof open>>, content: unknown = linksFile()) {
     await user.upload(fileInput(), jsonFile(content));
   }
@@ -263,18 +264,17 @@ describe('Settings: import links', () => {
     expect(dialog).toHaveTextContent(/Importing will replace all existing links/i);
     expect(within(dialog).getByRole('button', { name: 'Confirm import' })).toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
-    expect(storedDoc()).toMatchObject({ links: before.links, settings: before.settings });
+    expect(storedDoc()).toEqual(before);
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
   });
 
-  it('Confirm replaces the links with the file (ids kept, verbatim) and keeps the settings', async () => {
-    seedRaw(JSON.stringify({ version: 1, links: [fx.loopLink({ id: 5 })], settings: SETTINGS() }));
+  it('Confirm replaces the links with the file (ids kept, verbatim)', async () => {
+    seedStore({ links: [fx.loopLink({ id: 5 })] });
     const user = await open();
     await upload(user, linksFile(newLinks()));
     await user.click(await confirmButton());
     await waitFor(() => expect(storedDoc().links).toEqual(newLinks()));
-    expect(storedDoc().settings).toEqual(SETTINGS());
-    expect(onlyKeys(storedDoc())).toEqual(['links', 'settings', 'version']);
+    expect(onlyKeys(storedDoc())).toEqual(['links', 'version']);
     // the sidebar's release check (spec18) may fetch GitHub; only the controller API is excluded here
     expect(vi.mocked(fetch).mock.calls.filter((c) => String(c[0]).includes('/api/'))).toEqual([]);
   });
@@ -287,58 +287,78 @@ describe('Settings: import links', () => {
     expect(storedDoc().links[0].avg_frame_size_byte).toBe(512);
   });
 
-  it('with nothing stored the import creates the document: the links of the file and the default settings', async () => {
+  it('with nothing stored the import creates the document: the links of the file, nothing else', async () => {
     const user = await open();
     await upload(user, linksFile(newLinks()));
     await user.click(await confirmButton());
     await waitFor(() => expect(storedDoc().links).toEqual(newLinks()));
-    expect(storedDoc().settings).toEqual(DEFAULT_SETTINGS);
-    expect(onlyKeys(storedDoc())).toEqual(['links', 'settings', 'version']);
-  });
-
-  it('the settings form keeps showing the stored settings after the import', async () => {
-    seedStore(stored());
-    const user = await open();
-    await upload(user, linksFile(newLinks()));
-    await user.click(await confirmButton());
-    await screen.findByRole('status');
-    expect(screen.getByLabelText('Poll interval (ms)')).toHaveValue(250);
-    expect(screen.getByLabelText('Main lcore')).toHaveValue(2);
-    expect(screen.getByLabelText('EAL argument 1')).toHaveValue('--no-huge');
-  });
-
-  it('an extra `settings` member of the file is ignored: the stored settings stay', async () => {
-    seedStore(stored());
-    const user = await open();
-    await upload(user, { ...linksFile(newLinks()), settings: fx.settings({ poll_interval_ms: 999, main_lcore: 7 }) });
-    await user.click(await confirmButton());
-    await waitFor(() => expect(storedDoc().links).toEqual(newLinks()));
-    expect(storedDoc().settings).toEqual(SETTINGS());
+    expect(onlyKeys(storedDoc())).toEqual(['links', 'version']);
   });
 
   it('an extra `presets` member (an old setup file) is accepted and ignored: no presets member is written', async () => {
-    seedRaw(JSON.stringify({ version: 1, links: [], settings: SETTINGS() }));
+    seedStore({ links: [] });
     const user = await open();
     await upload(user, { ...linksFile(newLinks()), presets: [{ id: 4, name: 'wan', config: fx.config3() }] });
     const dialog = await screen.findByRole('dialog');
     expect(dialog).not.toHaveTextContent(/preset/i);
     await user.click(within(dialog).getByRole('button', { name: 'Confirm import' }));
     await waitFor(() => expect(storedDoc().links).toEqual(newLinks()));
-    expect(onlyKeys(storedDoc())).toEqual(['links', 'settings', 'version']);
+    expect(onlyKeys(storedDoc())).toEqual(['links', 'version']);
   });
 
-  it('an old full setup file (links, presets and settings) imports its links only', async () => {
+  it('an old full setup file (links, presets and settings) imports its links only: settings are not an error and not stored', async () => {
     seedStore(stored({ links: [fx.loopLink({ id: 5 })] }));
     const user = await open();
     await upload(user, {
       version: 1,
       links: newLinks(),
       presets: [{ id: 4, name: 'wan', config: fx.config3() }],
-      settings: fx.settings({ poll_interval_ms: 999 }),
+      settings: { main_lcore: 7, eal_extra_args: ['--no-huge'], poll_interval_ms: 999 },
     });
     await user.click(await confirmButton());
     await waitFor(() => expect(storedDoc().links).toEqual(newLinks()));
-    expect(storedDoc().settings).toEqual(SETTINGS());
+    expect(onlyKeys(storedDoc())).toEqual(['links', 'version']);
+  });
+
+  // spec 41 F3: a `worker` member of an imported link is ignored whatever its value, and never written back
+  it.each([
+    ['worker 5', 5],
+    ['worker 0', 0],
+    ['worker null', null],
+    ['a negative worker', -1],
+    ['a worker that is a string', '3'],
+  ])('a link with %s is accepted and stored without a worker', async (_what, worker) => {
+    const user = await open();
+    await upload(user, linksFile([{ ...fx.link(), worker } as unknown as Link, fx.loopLink({ id: 9 })]));
+    await user.click(await confirmButton());
+    await waitFor(() => expect(storedDoc().links).toHaveLength(2));
+    expect(storedDoc().links[0]).toEqual(fx.link());
+    expect(storedDoc().links.some((l) => 'worker' in l)).toBe(false);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('a settings member of any shape is ignored, not an error: nothing but version and links is stored', async () => {
+    const user = await open();
+    await upload(user, { ...linksFile(newLinks()), settings: 'fast' });
+    await user.click(await confirmButton());
+    await waitFor(() => expect(storedDoc().links).toEqual(newLinks()));
+    expect(onlyKeys(storedDoc())).toEqual(['links', 'version']);
+  });
+
+  it('Export of a stored document that still carries settings and workers holds neither', async () => {
+    seedRaw(
+      JSON.stringify({
+        version: 1,
+        links: [{ ...fx.link(), worker: 5 }, fx.linkRev()],
+        settings: { main_lcore: 2, eal_extra_args: [], poll_interval_ms: 250 },
+      }),
+    );
+    const user = await open();
+    await user.click(exportBtn());
+    await waitFor(() => expect(created).toHaveLength(1));
+    const parsed = JSON.parse(await readBlob(created[0])) as { links: object[] };
+    expect(onlyKeys(parsed)).toEqual(['links', 'version']);
+    expect(parsed.links.some((l) => 'worker' in l)).toBe(false);
   });
 
   it('Cancel writes nothing and closes the dialog', async () => {
@@ -369,7 +389,6 @@ describe('Settings: import links', () => {
     await user.click(await confirmButton());
     await waitFor(() => expect(storedDoc().links).toEqual([]));
     expect(await screen.findByRole('status')).toHaveTextContent('Imported 0 links');
-    expect(storedDoc().settings).toEqual(SETTINGS());
   });
 
   it('a file that is not JSON: inline alert mentioning JSON, no dialog, nothing written', async () => {
@@ -456,13 +475,13 @@ describe('Settings: import links', () => {
     expect(storedDoc().links).toEqual(LINKS());
   });
 
-  it('nothing on the Settings page (sidebar included) mentions presets', async () => {
+  it('nothing on the Links page (sidebar included) mentions presets', async () => {
     await open();
     expect(document.body).not.toHaveTextContent(/preset/i);
   });
 });
 
-describe('Settings: import is possible whatever the emulation does (nothing is stored on the controller)', () => {
+describe('Links: import is possible whatever the emulation does (nothing is stored on the controller)', () => {
   it.each(['stopped', 'starting', 'running', 'stopping', 'failed'] as EmulationState[])(
     '%s: Import and the file input are enabled, no stop hint',
     async (state) => {
@@ -474,24 +493,24 @@ describe('Settings: import is possible whatever the emulation does (nothing is s
     },
   );
 
-  it('a running emulation does not block the import; the page does not even ask for the state', async () => {
+  it('a running emulation does not block the import', async () => {
     api.getEmulation.mockResolvedValue(fx.emulation('running'));
     const user = await open();
     await user.upload(fileInput(), jsonFile(linksFile()));
     await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Confirm import' }));
     await waitFor(() => expect(storedDoc().links).toEqual(LINKS()));
-    expect(api.getEmulation).not.toHaveBeenCalled();
+    expect(api.startEmulation).not.toHaveBeenCalled();
+    expect(api.stopEmulation).not.toHaveBeenCalled();
   });
 
-  it('while running, an import only raises the pending-restart marker on the Links page', async () => {
+  it('while running, an import only raises the pending-restart marker', async () => {
     const running = [fx.link(), fx.linkRev()];
     seedStore({ links: running });
-    api.getEmulation.mockResolvedValue(fx.emulation('running', { config: fx.runningConfig(running, fx.settings()) }));
+    api.getEmulation.mockResolvedValue(fx.emulation('running', { config: fx.runningConfig(running) }));
     const user = await open();
     await user.upload(fileInput(), jsonFile(linksFile([fx.link({ name: 'other' })])));
     await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Confirm import' }));
     await waitFor(() => expect(storedDoc().links.map((l) => l.name)).toEqual(['other']));
-    await user.click(within(screen.getByRole('navigation')).getByRole('link', { name: 'Links' }));
     expect(await screen.findByTestId('pending-restart')).toBeInTheDocument();
     expect(api.startEmulation).not.toHaveBeenCalled();
     expect(api.stopEmulation).not.toHaveBeenCalled();
@@ -633,13 +652,10 @@ describe('spec27b: Export on a corrupt store downloads the stored text', () => {
     ['text that is not JSON', '{not json'],
     ['an empty string', ''],
     ['JSON of another shape', '[1, 2]'],
-    [
-      'a document of a newer version',
-      JSON.stringify({ version: 7, links: [fx.link()], settings: fx.settings() }, null, 4),
-    ],
+    ['a document of a newer version', JSON.stringify({ version: 7, links: [fx.link()] }, null, 4)],
     [
       'a document with an invalid link, with its own spacing',
-      JSON.stringify({ version: 1, links: [brokenLink], settings: fx.settings() }, null, 4),
+      JSON.stringify({ version: 1, links: [brokenLink] }, null, 4),
     ],
   ];
 
@@ -649,7 +665,7 @@ describe('spec27b: Export on a corrupt store downloads the stored text', () => {
     seedRaw(raw);
     const user = userEvent.setup();
     renderApp('/settings');
-    await screen.findByLabelText('Poll interval (ms)');
+    await screen.findByRole('heading', { level: 1, name: 'Settings' });
     await user.click(exportBtn());
     await waitFor(() => expect(clicks).toHaveLength(1));
     expect(clicks[0].download).toBe('dpds-links-2026-11-04.json');
@@ -662,7 +678,7 @@ describe('spec27b: Export on a corrupt store downloads the stored text', () => {
     seedRaw(raw);
     const user = userEvent.setup();
     renderApp('/settings');
-    await screen.findByLabelText('Poll interval (ms)');
+    await screen.findByRole('heading', { level: 1, name: 'Settings' });
     expect(exportBtn()).toBeEnabled();
     await user.click(exportBtn());
     await waitFor(() => expect(clicks).toHaveLength(1));
@@ -674,7 +690,7 @@ describe('spec27b: Export on a corrupt store downloads the stored text', () => {
   });
 
   it('a readable store is still exported as { version: 1, links }, not as its raw text', async () => {
-    seedRaw(JSON.stringify({ version: 1, links: LINKS(), settings: SETTINGS(), future: 1 }, null, 4));
+    seedRaw(JSON.stringify({ version: 1, links: LINKS(), settings: { poll_interval_ms: 250 }, future: 1 }, null, 4));
     const user = await open();
     await user.click(exportBtn());
     await waitFor(() => expect(created).toHaveLength(1));

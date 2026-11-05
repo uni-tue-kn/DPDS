@@ -6,9 +6,6 @@ export const HELP = {
   // dpds-controller/src/api.rs:232-237 (valid_name), model.rs:10-11 (MAX_NAME_CHARS = 32)
   'Link name':
     'Name of this link. 1 to 32 characters: letters, digits and _ . - (the controller refuses anything else at start). Must be unique among your links.',
-  // dpds-controller/src/lcores.rs:65-67 (override), 83-106 (online, not main, not shared), 108-136 (automatic pick); model.rs worker is Option<u32>
-  'Worker lcore':
-    'CPU core that runs this link\u2019s forwarding loop (receive, delay, send). A whole number of at least 0: an online core that is not the main lcore and not used by another link. Empty: automatic, the lowest free isolated core, preferring the NUMA node of the ingress NIC.',
   // dpds-controller/src/model.rs:12-15 (one ingress and one egress per port, hairpin allowed), api.rs:295-305 (409 on reuse), dpds/src/main.rs:3-6
   Ingress:
     'Port this link receives packets on. A port can be the ingress of at most one link. The same port may also be the egress (hairpin).',
@@ -73,15 +70,6 @@ export const HELP = {
   // dpds/src/delay_stats.rs:131-152 (automatic window incl. the Spacer allowance, 1 us minimum), 206-221, 229-231; dpds-controller/src/dto.rs:130-143
   'Histogram hi':
     'Upper edge of the histogram range (excluded); delays from it on are counted as overflow. Stored in ns; finite and above Histogram lo. Empty: the mean + 6 std (plus the queueing allowance of an active Spacer), but at least 1 \u00b5s above lo. A value you enter is used as given.',
-  // dpds-controller/src/lcores.rs:72-79 (online core or lowest non-isolated), 92-97 (no link on it); dpds/src/main.rs:5-6; model.rs:34
-  'Main lcore':
-    'CPU core of the EAL main lcore, which handles signals and polls the NIC counters; it forwards no packets, so no link may use it. A whole number of at least 0 that is an online core. Empty: the lowest online core that is not isolated. Applies at the next start.',
-  // dpds-controller/src/validate.rs:46-81 (allow-list), eal.rs:69 (appended after the fixed arguments), model.rs:36
-  'EAL extra arguments':
-    'Extra DPDK EAL arguments, added after the fixed ones, one per row. Only these are allowed: --no-huge, --no-pci, -m <MB>, -n <channels>, --socket-mem=<MB>[,<MB>...] and --log-level=<spec> (an option and its value, like -m and 256, take two rows). Applies at the next start.',
-  // dpds-controller/src/api.rs:312-316 (>= 1), telemetry.rs:147 (waits interval_ms between polls), 154 (default 500), 215; model.rs:38-39
-  'Poll interval (ms)':
-    'How long, in milliseconds, the controller waits between two polls of the running dpds for its statistics. A whole number of at least 1; the default is 500. Applies at the next start.',
 } as const;
 
 export type HelpKey = keyof typeof HELP;

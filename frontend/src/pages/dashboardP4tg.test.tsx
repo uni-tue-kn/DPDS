@@ -119,7 +119,7 @@ describe('Dashboard (spec 28, spec 35 F1): one contextual Start/Stop button next
 
 describe('Dashboard (spec 28): Restart = stop, then start with the current local document', () => {
   beforeEach(() => {
-    seedStore({ links: [fx.link(), fx.linkRev()], settings: fx.settings({ poll_interval_ms: 250 }) });
+    seedStore({ links: [fx.link(), fx.linkRev()] });
   });
 
   // Spec 28b item 1: the real controller answers a stop with `stopping` and refuses a start (409) until a later poll reports
@@ -150,7 +150,7 @@ describe('Dashboard (spec 28): Restart = stop, then start with the current local
 
   it('uses the document as it is stored now: an edit made before the click is included', async () => {
     const c = await openRunning();
-    seedStore({ links: [fx.loopLink({ id: 9 })], settings: fx.settings({ poll_interval_ms: 100 }) });
+    seedStore({ links: [fx.loopLink({ id: 9 })] });
     fireEvent.click(must(restartBtn()));
     await tick(0);
     c.state = 'stopped';
@@ -158,7 +158,6 @@ describe('Dashboard (spec 28): Restart = stop, then start with the current local
     expect(api.startEmulation).toHaveBeenCalledTimes(1);
     const body = api.startEmulation.mock.calls[0][0];
     expect(body.links.map((l) => l.name)).toEqual(['loop']);
-    expect(body.settings.poll_interval_ms).toBe(100);
   });
 
   it('does not write the stored document', async () => {

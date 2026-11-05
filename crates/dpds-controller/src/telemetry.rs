@@ -112,7 +112,8 @@ pub trait TelemetrySource: Send + Sync + 'static {
     /// The links of the run being started; the next run the source sees carries them.
     fn set_run_links(&self, _links: Vec<HistoryLink>) {}
 
-    /// The poll interval of the run being started (a no-op for sources that do not poll).
+    /// Test hook that speeds up a source that polls; the controller keeps the fixed
+    /// `POLL_INTERVAL_MS` and never calls it.
     fn set_poll_interval(&self, _ms: u64) {}
 }
 
@@ -288,8 +289,8 @@ pub struct Poller {
     max_samples: usize,
 }
 
-/// Poll interval until a start sets one.
-const DEFAULT_POLL_INTERVAL_MS: u64 = 500;
+/// The poll interval: fixed.
+const POLL_INTERVAL_MS: u64 = 500;
 
 impl Poller {
     pub fn spawn(runtime_dir: PathBuf, supervisor: Arc<dyn Supervisor>) -> Arc<Poller> {
@@ -304,7 +305,7 @@ impl Poller {
     ) -> Arc<Poller> {
         let poller = Arc::new(Poller {
             cell: Mutex::new(None),
-            interval_ms: AtomicU64::new(DEFAULT_POLL_INTERVAL_MS),
+            interval_ms: AtomicU64::new(POLL_INTERVAL_MS),
             supervisor,
             run: Mutex::new(None),
             last_run_id: AtomicU64::new(0),

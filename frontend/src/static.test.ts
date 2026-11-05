@@ -477,7 +477,7 @@ describe('frontend lint and format tooling: Biome (spec v23)', () => {
   });
 });
 
-// Spec 27 (user 2026-11-04): presets are gone, replaced by Import/Export on Settings and Duplicate in the Links list.
+// Spec 27 (user 2026-11-04): presets are gone, replaced by Import/Export on the links page and Duplicate in its list (the page is called Settings since spec 41).
 describe('presets are removed from the source and the README (spec27)', () => {
   const src = (f: string) => read('src', f);
 
@@ -489,15 +489,18 @@ describe('presets are removed from the source and the README (spec27)', () => {
     expect(existsSync(resolve(frontendDir, 'src', file)), file).toBe(false);
   });
 
-  it.each([
-    'App.tsx',
-    'pages/ConfigFieldset.tsx',
-    'pages/LinkEditor.tsx',
-    'pages/Links.tsx',
-    'pages/Settings.tsx',
-    'pages/fieldHelp.ts',
-    'pages/LoadRunning.tsx',
-  ])('%s does not mention presets', (file) => {
+  // spec 41: the Links page is the Settings page now (its file may keep either name); the old settings form is gone
+  it.each(
+    [
+      'App.tsx',
+      'pages/ConfigFieldset.tsx',
+      'pages/LinkEditor.tsx',
+      'pages/Links.tsx',
+      'pages/Settings.tsx',
+      'pages/fieldHelp.ts',
+      'pages/LoadRunning.tsx',
+    ].filter((f) => existsSync(resolve(frontendDir, 'src', f))),
+  )('%s does not mention presets', (file) => {
     expect(src(file)).not.toMatch(/preset/i);
   });
 

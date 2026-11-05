@@ -57,7 +57,7 @@ async function openNew(others: Link[] = [], stages = true): Promise<UserEvent> {
   if (others.length > 0) seedLinks(others); // an empty store stays absent
   seeded = others.length;
   const user = userEvent.setup();
-  renderApp('/links/new');
+  renderApp('/settings/new');
   await screen.findByRole('heading', { level: 1, name: 'New link' });
   await waitFor(() => expect(option('Ingress', /enp101s0f0/)).toBeInTheDocument());
   if (stages) await addStages(user);
@@ -166,7 +166,7 @@ describe('Link editor: interface pickers', () => {
       fx.iface({ pci: '0000:65:00.0', netdev: null }),
       fx.iface({ pci: '0000:65:00.1', netdev: 'enp101s0f1' }),
     ]);
-    renderApp('/links/new');
+    renderApp('/settings/new');
     await screen.findByRole('heading', { level: 1, name: 'New link' });
     expect(await within(select('Ingress')).findByRole('option', { name: '0000:65:00.0' })).toBeInTheDocument();
     expect(within(select('Egress')).getByRole('option', { name: 'enp101s0f1' })).toBeInTheDocument();
@@ -233,7 +233,7 @@ describe('Link editor: interface pickers', () => {
 
   it('shows an alert if the interfaces cannot be loaded', async () => {
     api.getInterfaces.mockRejectedValue(new ApiError(500, 'sysfs unreadable'));
-    renderApp('/links/new');
+    renderApp('/settings/new');
     expect(await screen.findByRole('alert')).toHaveTextContent('sysfs unreadable');
   });
 });
@@ -316,7 +316,7 @@ describe('Link editor: ports already used by other links', () => {
     const mine = fx.link(); // id 1: .0 -> .1
     const rev = fx.linkRev(); // id 3: .1 -> .0
     seedLinks([mine, rev]);
-    renderApp('/links/1');
+    renderApp('/settings/1');
     await screen.findByRole('heading', { level: 1, name: 'Edit link' });
     await waitFor(() => expect(select('Ingress').value).toBe('0000:65:00.0'));
     expect(select('Egress').value).toBe('0000:65:00.1');
@@ -364,10 +364,10 @@ describe('Link editor: create', () => {
     expect(sent.config.delay_stats).toBe(true);
     expect(sent.config.reordering).toBe(false);
     expect(must(sent.config.loss_model).type).toBe('Random');
-    expect(sent.worker ?? null).toBeNull();
+    expect(sent).not.toHaveProperty('worker');
     expect(sent.config.seed ?? null).toBeNull();
     expect(sent.config.histogram?.bins ?? null).toBeNull();
-    expect(await screen.findByRole('heading', { level: 1, name: 'Links' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Settings' })).toBeInTheDocument();
   });
 
   it('a hairpin link (same port as ingress and egress) can be saved', async () => {
@@ -380,7 +380,7 @@ describe('Link editor: create', () => {
     const sent = lastCreate();
     expect(sent.ingress).toBe('0000:65:00.0');
     expect(sent.egress).toBe('0000:65:00.0');
-    expect(await screen.findByRole('heading', { level: 1, name: 'Links' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Settings' })).toBeInTheDocument();
   });
 
   it('sends every config field as typed (each time/rate/size field in its own unit)', async () => {
@@ -479,44 +479,14 @@ describe('Link editor: create', () => {
     expect(h?.hi_ns ?? null).toBeNull();
   });
 
-  it('worker override: one optional lcore number', async () => {
+  it('has no worker field and sends no worker member (spec 41: cores are assigned automatically)', async () => {
     const user = await openNew();
-    expect(screen.getByLabelText('Worker lcore')).toHaveValue(null);
-    await fillValid(user, 'w');
-    await user.type(screen.getByLabelText('Worker lcore'), '7');
-    await user.click(save());
-    expect(lastCreate().worker).toBe(7);
-  });
-
-  it('an empty worker override means automatic (null/absent)', async () => {
-    const user = await openNew();
+    expect(screen.queryByLabelText(/worker/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/lcore/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /About Worker/i })).not.toBeInTheDocument();
     await fillValid(user, 'w');
     await user.click(save());
-    expect(lastCreate().worker ?? null).toBeNull();
-  });
-
-  // The worker field is <input type="number">: the browser/jsdom drop non-numeric characters while typing
-  // ("7, 2" arrives as "72", "abc" as ""), so only values a number input can deliver are refused here.
-  it.each(['-1', '-7', '1.5', '0.5'])(
-    'refuses the worker value "%s": alert mentioning the worker, no request',
-    async (v) => {
-      const user = await openNew();
-      await fillValid(user, 'w');
-      await user.type(screen.getByLabelText('Worker lcore'), v);
-      await user.click(save());
-      expectNoWrite();
-      expect(await screen.findByRole('alert')).toHaveTextContent(/worker/i);
-      expect(screen.getByRole('heading', { level: 1, name: 'New link' })).toBeInTheDocument();
-    },
-  );
-
-  it('non-numeric text cannot be entered into the worker field: it stays empty and means automatic', async () => {
-    const user = await openNew();
-    await fillValid(user, 'w');
-    await user.type(screen.getByLabelText('Worker lcore'), 'abc');
-    expect(screen.getByLabelText('Worker lcore')).toHaveValue(null);
-    await user.click(save());
-    expect(lastCreate().worker ?? null).toBeNull();
+    expect(lastCreate()).not.toHaveProperty('worker');
   });
 
   it('does not call the API without a name', async () => {
@@ -559,7 +529,7 @@ describe('Link editor: create', () => {
     await typeInto(user, group(), 'Delay std', '5', '\u00b5s');
     await user.click(save());
     expect(lastCreate().config.buffer_capacity).toBe(777);
-    expect(await screen.findByRole('heading', { level: 1, name: 'Links' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Settings' })).toBeInTheDocument();
   });
 
   it('a name another link already has is refused: alert "already exists", nothing written, the form stays', async () => {
@@ -582,18 +552,17 @@ describe('Link editor: create', () => {
     await fillValid(user, 'first');
     await user.click(save());
     expect(storedDoc()).toMatchObject({ version: 1 });
-    expect(Object.keys(storedDoc()).sort()).toEqual(['links', 'settings', 'version']); // spec27: no presets member
+    expect(Object.keys(storedDoc()).sort()).toEqual(['links', 'version']); // spec27: no presets member; spec41: no settings member
     expect(storedDoc().links.map((l) => [l.id, l.name])).toEqual([[1, 'first']]);
-    expect(storedDoc().settings).toEqual({ main_lcore: null, eal_extra_args: [], poll_interval_ms: 500 });
   });
 
-  it('a new link next to links 3 and 10 gets id 11; the stored links and settings are unchanged', async () => {
+  it('a new link next to links 3 and 10 gets id 11; the stored links are unchanged', async () => {
     const a = fx.link({ id: 3, name: 'c', ingress: 'net_null1', egress: 'net_null1' });
     const b = fx.link({ id: 10, name: 'd', ingress: 'net_null2', egress: 'net_null2' });
-    seedStore({ links: [a, b], settings: fx.settings({ poll_interval_ms: 250 }) });
+    seedStore({ links: [a, b] });
     seeded = 2;
     const user = userEvent.setup();
-    renderApp('/links/new');
+    renderApp('/settings/new');
     await screen.findByRole('heading', { level: 1, name: 'New link' });
     await waitFor(() => expect(option('Ingress', /enp101s0f0/)).toBeInTheDocument());
     await addStages(user);
@@ -604,13 +573,12 @@ describe('Link editor: create', () => {
     expect(doc.links.map((l) => l.id)).toEqual([3, 10, 11]);
     expect(doc.links[0]).toEqual(a);
     expect(doc.links[1]).toEqual(b);
-    expect(doc.settings.poll_interval_ms).toBe(250);
   });
 
   it('Cancel returns to the list without saving', async () => {
     const user = await openNew();
     await user.click(screen.getByRole('link', { name: /^cancel$/i }));
-    expect(await screen.findByRole('heading', { level: 1, name: 'Links' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Settings' })).toBeInTheDocument();
     expectNoWrite();
   });
 
@@ -633,7 +601,7 @@ describe('Link editor: create', () => {
     expect(c.limiter ?? null).toBeNull();
     expect(c.loss_model ?? null).toBeNull();
     expect(c.buffer_capacity).toBe(100000);
-    expect(await screen.findByRole('heading', { level: 1, name: 'Links' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Settings' })).toBeInTheDocument();
   });
 });
 
@@ -642,23 +610,18 @@ describe('Link editor: edit', () => {
     seedLinks([link, ...others]);
     editedId = link.id;
     const user = userEvent.setup();
-    renderApp(`/links/${link.id}`);
+    renderApp(`/settings/${link.id}`);
     await screen.findByRole('heading', { level: 1, name: 'Edit link' });
     await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue(link.name));
     watchWrites();
     return user;
   }
 
-  it('populates name, ingress, egress and the worker override', async () => {
-    await openEdit(fx.link({ worker: 7 }));
+  it('populates name, ingress and egress', async () => {
+    await openEdit(fx.link());
     await waitFor(() => expect(select('Ingress').value).toBe('0000:65:00.0'));
     expect(select('Egress').value).toBe('0000:65:00.1');
-    expect(screen.getByLabelText('Worker lcore')).toHaveValue(7);
-  });
-
-  it('an unset worker shows an empty field', async () => {
-    await openEdit();
-    expect(screen.getByLabelText('Worker lcore')).toHaveValue(null);
+    expect(screen.queryByLabelText('Worker lcore')).not.toBeInTheDocument();
   });
 
   it('populates every field of the config (default-ish fixture) with display units', async () => {
@@ -727,7 +690,7 @@ describe('Link editor: edit', () => {
   });
 
   it('saving without changes stores the same values under the same id', async () => {
-    const link = fx.linkRev({ worker: 4 });
+    const link = fx.linkRev();
     const user = await openEdit(link);
     await waitFor(() => expect(select('Ingress').value).toBe('0000:65:00.1'));
     await user.click(save());
@@ -739,7 +702,7 @@ describe('Link editor: edit', () => {
     expect(sent.name).toBe('b-a');
     expect(sent.ingress).toBe(link.ingress);
     expect(sent.egress).toBe(link.egress);
-    expect(sent.worker).toBe(4);
+    expect(sent).not.toHaveProperty('worker');
     expect(sent.config.delayer).toEqual(link.config.delayer);
     expect(sent.config.limiter).toEqual(link.config.limiter);
     expect(sent.config.loss_model).toEqual(link.config.loss_model);
@@ -748,14 +711,7 @@ describe('Link editor: edit', () => {
     expect(sent.config.histogram).toEqual({ bins: 64, lo_ns: 100, hi_ns: 9000 });
     expect(sent.config.delay_stats).toBe(false);
     expect(sent.config.reordering).toBe(true);
-    expect(await screen.findByRole('heading', { level: 1, name: 'Links' })).toBeInTheDocument();
-  });
-
-  it('clearing the worker sends null/absent', async () => {
-    const user = await openEdit(fx.link({ worker: 7 }));
-    await user.clear(screen.getByLabelText('Worker lcore'));
-    await user.click(save());
-    expect(lastUpdate().worker ?? null).toBeNull();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Settings' })).toBeInTheDocument();
   });
 
   it('changing ingress and egress is sent', async () => {
@@ -807,14 +763,11 @@ describe('Link editor: edit', () => {
     expect(lastUpdate().name).toBe('a-b');
   });
 
-  it('editing leaves the other links and the settings of the document alone', async () => {
-    seedStore({
-      links: [fx.link(), fx.linkRev()],
-      settings: fx.settings({ main_lcore: 2 }),
-    });
+  it('editing leaves the other links of the document alone', async () => {
+    seedStore({ links: [fx.link(), fx.linkRev()] });
     editedId = 1;
     const user = userEvent.setup();
-    renderApp('/links/1');
+    renderApp('/settings/1');
     await screen.findByRole('heading', { level: 1, name: 'Edit link' });
     await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue('a-b'));
     await fillName(user, 'a-b2');
@@ -825,12 +778,11 @@ describe('Link editor: edit', () => {
       [3, 'b-a'],
     ]);
     expect(doc.links[1]).toEqual(fx.linkRev());
-    expect(doc.settings.main_lcore).toBe(2);
   });
 
   it('an id that is not in the local document shows "not found" and no editor', async () => {
     seedLinks([fx.link()]);
-    renderApp('/links/9');
+    renderApp('/settings/9');
     expect(await screen.findByRole('alert')).toHaveTextContent(/not found/i);
     expect(screen.queryByLabelText('Name')).not.toBeInTheDocument();
   });
@@ -843,7 +795,7 @@ describe('Link editor: ports come only from the pickers (v16)', () => {
     seedLinks([link]);
     editedId = link.id;
     const user = userEvent.setup();
-    renderApp(`/links/${link.id}`);
+    renderApp(`/settings/${link.id}`);
     await screen.findByRole('heading', { level: 1, name: 'Edit link' });
     await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue(link.name));
     watchWrites();
@@ -904,7 +856,7 @@ describe('Link editor: ports come only from the pickers (v16)', () => {
     await user.click(save());
     const sent = lastUpdate();
     expect([sent.ingress, sent.egress]).toEqual(['net_null0', 'net_ring1']);
-    expect(await screen.findByRole('heading', { level: 1, name: 'Links' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Settings' })).toBeInTheDocument();
   });
 
   it('a port that is a discovered interface is not duplicated as an extra option (4 interfaces + placeholder)', async () => {
@@ -1031,7 +983,7 @@ describe('Link editor: labels (v10)', () => {
     await openNew();
     const ids = Array.from(document.querySelectorAll('[id]')).map((e) => e.id);
     expect(new Set(ids).size).toBe(ids.length);
-    for (const l of ['Ingress', 'Egress', 'Worker lcore', 'Mean delay unit', 'Delay std unit', 'Rate unit']) {
+    for (const l of ['Ingress', 'Egress', 'Mean delay unit', 'Delay std unit', 'Rate unit']) {
       expect(screen.getByLabelText(l)).toBeInTheDocument();
     }
   });
@@ -1046,7 +998,7 @@ describe('Link editor: initialization rate (v12)', () => {
     seedLinks([link]);
     editedId = link.id;
     const user = userEvent.setup();
-    renderApp(`/links/${link.id}`);
+    renderApp(`/settings/${link.id}`);
     await screen.findByRole('heading', { level: 1, name: 'Edit link' });
     await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue(link.name));
     watchWrites();

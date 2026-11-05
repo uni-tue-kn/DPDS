@@ -63,13 +63,12 @@ describe('api client (real module)', () => {
   });
 
   // v22: whole configuration in the request body
-  it('startEmulation POSTs the start request (links without ids, settings) as JSON to /api/emulation/start, untouched', async () => {
+  it('startEmulation POSTs the start request (`{links}` without ids, no settings, no worker) as JSON to /api/emulation/start, untouched', async () => {
     const body = {
       links: [
-        { name: 'a-b', ingress: '0000:65:00.0', egress: '0000:65:00.1', config: fx.config(), worker: null },
-        { name: 'b-a', ingress: '0000:65:00.1', egress: '0000:65:00.0', config: fx.config2(), worker: 5 },
+        { name: 'a-b', ingress: '0000:65:00.0', egress: '0000:65:00.1', config: fx.config() },
+        { name: 'b-a', ingress: '0000:65:00.1', egress: '0000:65:00.0', config: fx.config2() },
       ],
-      settings: { main_lcore: null, eal_extra_args: ['--no-huge'], poll_interval_ms: 500 },
     };
     reply(202, fx.emulation('starting'));
     await expect(client.startEmulation(body)).resolves.toMatchObject({ state: 'starting' });
@@ -82,8 +81,7 @@ describe('api client (real module)', () => {
 
   it('getHostHintsFor POSTs the start request as JSON to /api/host/hints and returns the hints', async () => {
     const body = {
-      links: [{ name: 'a-b', ingress: '0000:65:00.0', egress: '0000:65:00.1', config: fx.config(), worker: null }],
-      settings: fx.settings(),
+      links: [{ name: 'a-b', ingress: '0000:65:00.0', egress: '0000:65:00.1', config: fx.config() }],
     };
     reply(200, fx.hints());
     await expect(client.getHostHintsFor(body)).resolves.toEqual(fx.hints());
@@ -97,8 +95,7 @@ describe('api client (real module)', () => {
   // Spec 34: `getHostHintsFor(req, { recheck: true })` makes the controller read the NIC firmware again; the body is unchanged.
   describe('getHostHintsFor recheck (spec 34)', () => {
     const body = () => ({
-      links: [{ name: 'a-b', ingress: '0000:65:00.0', egress: '0000:65:00.1', config: fx.config(), worker: null }],
-      settings: fx.settings(),
+      links: [{ name: 'a-b', ingress: '0000:65:00.0', egress: '0000:65:00.1', config: fx.config() }],
     });
 
     it('{ recheck: true } POSTs /api/host/hints?recheck=true with the same JSON body and returns the hints', async () => {
@@ -199,7 +196,7 @@ describe('api client (real module)', () => {
 
   it('rejects with ApiError carrying status and the message of the error body', async () => {
     reply(400, { message: 'delayer.std_ns must be >= 0' });
-    const err = await client.startEmulation({ links: [], settings: fx.settings() }).catch((e: unknown) => e);
+    const err = await client.startEmulation({ links: [] }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(client.ApiError);
     expect(err).toBeInstanceOf(Error);
     expect((err as InstanceType<Client['ApiError']>).status).toBe(400);

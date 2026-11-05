@@ -3,15 +3,13 @@ import userEvent from '@testing-library/user-event';
 import type { UserEvent } from '@testing-library/user-event';
 import { linkPage } from '../test/configPages';
 import type { ConfigPage } from '../test/configPages';
-import { allRequiredMarkers, rawStore, renderApp, typeInto } from '../test/helpers';
+import { allRequiredMarkers, rawStore, typeInto } from '../test/helpers';
 
-// Spec 25 (user 2026-11-04): an info-icon tooltip after EVERY field label in the link editor and the Settings page (spec27
-// removed the preset editor). Mechanics (spec): react-bootstrap OverlayTrigger + Tooltip, hover or keyboard focus;
+// Spec 25 (user 2026-11-04): an info-icon tooltip after EVERY field label in the link editor (spec27 removed the preset editor,
+// spec41 the settings form). Mechanics (spec): react-bootstrap OverlayTrigger + Tooltip, hover or keyboard focus;
 // the trigger is a `<button type="button">` with the Bootstrap icon `bi-info-circle` and the accessible name "About <label>",
 // placed after the label (and after a required marker); it must not change the field's accessible name and must not count as a
 // required marker. The prose is not pinned except for the few facts that are certain from the backend: the base units.
-// Tester's choice: "EAL extra arguments" (a fieldset legend, not a <label>) also gets "About EAL extra arguments", and the
-// per-row "EAL argument N" inputs get none.
 
 const MIN_TEXT = 10;
 
@@ -58,7 +56,6 @@ async function focusText(label: string): Promise<string> {
 
 const LINK_LABELS = [
   'Name',
-  'Worker lcore',
   'Ingress',
   'Egress',
   'Buffer capacity',
@@ -223,98 +220,5 @@ describe.each([linkPage])('$name: tooltips after every field label', (page: Conf
     const user = await page.openFull();
     await typeInto(user, document.body, 'Seed', '42');
     expect(screen.getByLabelText('Seed')).toHaveValue(42);
-  });
-});
-
-describe('Settings: tooltips', () => {
-  const open = async () => {
-    const user = userEvent.setup();
-    renderApp('/settings');
-    await screen.findByRole('heading', { level: 1, name: 'Settings' });
-    return user;
-  };
-
-  it.each(['Main lcore', 'Poll interval (ms)', 'EAL extra arguments'])('has a button "About %s"', async (label) => {
-    await open();
-    expect(aboutButton(label)).toBeInTheDocument();
-  });
-
-  it('EVERY <label> of the page has exactly one button right after it, outside the label', async () => {
-    await open();
-    const labels = fieldLabels();
-    expect(labels.length).toBeGreaterThanOrEqual(2); // Main lcore, Poll interval (ms)
-    for (const l of labels) {
-      const name = `About ${textOf(l)}`;
-      const buttons = screen.getAllByRole('button', { name });
-      expect(buttons, name).toHaveLength(1);
-      expect(l.contains(buttons[0])).toBe(false);
-      expect(l.compareDocumentPosition(buttons[0]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-      expect(buttons[0]).toHaveAttribute('type', 'button');
-    }
-  });
-
-  it('every tooltip has real text', async () => {
-    const user = await open();
-    for (const label of [...fieldLabels().map(textOf), 'EAL extra arguments']) {
-      const text = await hoverText(user, label);
-      expect(text.length, `tooltip of ${label}`).toBeGreaterThanOrEqual(MIN_TEXT);
-    }
-  });
-
-  it('keyboard focus shows a tooltip too', async () => {
-    await open();
-    expect((await focusText('Poll interval (ms)')).length).toBeGreaterThanOrEqual(MIN_TEXT);
-  });
-
-  it('the inputs keep their plain labels', async () => {
-    await open();
-    expect(screen.getByLabelText('Main lcore').tagName).toBe('INPUT');
-    expect(screen.getByLabelText('Poll interval (ms)').tagName).toBe('INPUT');
-    expect(screen.getByLabelText('Import links file').tagName).toBe('INPUT');
-  });
-
-  it('the toolbar has no tooltip for the hidden file input (neither the old nor the new name)', async () => {
-    await open();
-    expect(queryAbout('Import setup file')).not.toBeInTheDocument();
-    expect(queryAbout('Import links file')).not.toBeInTheDocument();
-  });
-
-  it('the Poll interval tooltip names milliseconds', async () => {
-    const user = await open();
-    expect(await hoverText(user, 'Poll interval (ms)')).toMatch(/ms|millisecond/i);
-  });
-
-  // Review follow-up: the button sat INSIDE the <legend>, so a browser computes the group name from the legend content
-  // ("EAL extra arguments About EAL extra arguments"). jsdom's name computation ignores that button, so the exact name
-  // alone cannot go red here; the structural checks below pin the cause: no button inside a legend or inside whatever
-  // names the group.
-  it('the group is named exactly "EAL extra arguments"', async () => {
-    await open();
-    expect(screen.getByRole('group', { name: 'EAL extra arguments' })).toBeInTheDocument();
-  });
-
-  it('the "About EAL extra arguments" button exists but is not part of the group name', async () => {
-    await open();
-    const group = screen.getByRole('group', { name: 'EAL extra arguments' });
-    const btn = aboutButton('EAL extra arguments');
-    const legend = group.querySelector(':scope > legend');
-    if (legend) expect(legend.contains(btn)).toBe(false);
-    const ids = (group.getAttribute('aria-labelledby') ?? '').split(/\s+/).filter(Boolean);
-    for (const id of ids) expect(document.getElementById(id)?.contains(btn)).toBe(false);
-    // the button is still next to the heading of the list: inside the same form card, after the group's name
-    expect(btn.closest('form')).not.toBeNull();
-  });
-
-  it('no button sits inside a <legend> on any page of the spec (a legend names its group)', async () => {
-    await open();
-    expect(document.querySelectorAll('legend button')).toHaveLength(0);
-  });
-
-  it('clicking a button does not save the settings', async () => {
-    const user = await open();
-    await user.click(aboutButton('Main lcore'));
-    await user.click(aboutButton('Poll interval (ms)'));
-    expect(screen.queryByText(/Settings saved/)).not.toBeInTheDocument();
-    expect(rawStore()).toBeNull();
   });
 });

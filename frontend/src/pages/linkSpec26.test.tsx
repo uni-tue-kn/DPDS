@@ -162,7 +162,7 @@ describe('link editor: the name follows the controller rule (1 to 32 of A-Z a-z 
     const user = await linkPage.openNew();
     await fillLink(user, name);
     await save(user);
-    expect(await screen.findByRole('heading', { level: 1, name: 'Links' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Settings' })).toBeInTheDocument();
     expect(storedLinks()).toHaveLength(1);
     expect(storedLinks()[0].name).toBe(name);
   });
@@ -189,7 +189,7 @@ describe('link editor: the name follows the controller rule (1 to 32 of A-Z a-z 
     await user.clear(name);
     await user.type(name, 'good-name');
     await save(user);
-    await screen.findByRole('heading', { level: 1, name: 'Links' });
+    await screen.findByRole('heading', { level: 1, name: 'Settings' });
     expect(storedLinks()[0].name).toBe('good-name');
     expect(storedLinks()[0].config.buffer_capacity).toBe(777);
   });
@@ -197,7 +197,7 @@ describe('link editor: the name follows the controller rule (1 to 32 of A-Z a-z 
   it('the duplicate-name refusal stays (checked with a name that follows the rule)', async () => {
     seedLinks([fx.link({ name: 'taken' })]);
     const user = userEvent.setup();
-    renderApp('/links/new');
+    renderApp('/settings/new');
     await screen.findByRole('heading', { level: 1, name: 'New link' });
     await waitFor(() => expect(screen.getAllByRole('option', { name: /enp101s0f0/ })).not.toHaveLength(0));
     await addStages(user);
@@ -228,7 +228,7 @@ describe('link editor: the name follows the controller rule (1 to 32 of A-Z a-z 
     seedLinks([fx.link({ name: 'old name' })]);
     const before = rawStore();
     const writes = watchStoreWrites();
-    renderApp('/links/1');
+    renderApp('/settings/1');
     expect(await screen.findByRole('alert')).toHaveTextContent(/local configuration/i);
     expect(screen.getByRole('button', { name: /^reset/i })).toBeInTheDocument();
     expect(screen.queryByLabelText('Name')).not.toBeInTheDocument();
@@ -239,7 +239,7 @@ describe('link editor: the name follows the controller rule (1 to 32 of A-Z a-z 
   it('editing: a stored link with a valid name still saves', async () => {
     const user = await linkPage.openStored(fx.config());
     await save(user);
-    await screen.findByRole('heading', { level: 1, name: 'Links' });
+    await screen.findByRole('heading', { level: 1, name: 'Settings' });
     expect(storedLinks()[0].name).toBe('a-b');
   });
 });

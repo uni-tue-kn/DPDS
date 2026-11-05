@@ -1,34 +1,29 @@
 // The configuration lives only in this browser: one JSON document in localStorage (key `dpds.config.v1`),
-// `{version: 1, links, settings}`. The controller stores nothing; Start sends the document's links and settings.
+// `{version: 1, links}`. The controller stores nothing; Start sends the document's links.
 //
 // Reading never writes. Writes always start from a fresh read of the store, so two pages never overwrite each other.
 // A value that cannot be read is reported (`corrupt`) and left untouched until the user resets it.
 import { useMemo, useSyncExternalStore } from 'react';
 import { linkProblem } from '../pages/linkForm';
-import type { Link, LinkInput, LocalConfig, Settings, StartRequest } from '../api/types';
+import type { Link, LinkInput, LocalConfig, StartRequest } from '../api/types';
 
 export const STORAGE_KEY = 'dpds.config.v1';
 
-export const DEFAULT_SETTINGS: Settings = { main_lcore: null, eal_extra_args: [], poll_interval_ms: 500 };
-
-export const emptyConfig = (): LocalConfig => ({
-  version: 1,
-  links: [],
-  settings: { ...DEFAULT_SETTINGS, eal_extra_args: [] },
-});
+export const emptyConfig = (): LocalConfig => ({ version: 1, links: [] });
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
-const isString = (v: unknown) => typeof v === 'string';
-
-function isSettings(v: unknown): boolean {
-  return (
-    isObject(v) &&
-    Array.isArray(v.eal_extra_args) &&
-    v.eal_extra_args.every(isString) &&
-    typeof v.poll_interval_ms === 'number' &&
-    (v.main_lcore == null || typeof v.main_lcore === 'number')
-  );
-}
+/**
+ * The members of a stored or imported link that are kept; any other member (such as an old per-link core) is dropped
+ * and never written back.
+ */
+const cleanLink = (l: Link): Link => ({
+  id: l.id,
+  name: l.name,
+  ingress: l.ingress,
+  egress: l.egress,
+  config: l.config,
+  ...(l.avg_frame_size_byte === undefined ? {} : { avg_frame_size_byte: l.avg_frame_size_byte }),
+});
 
 /**
  * What is wrong with a list of links, or null when it is fine: the first link the editor would not accept unchanged
@@ -51,11 +46,9 @@ export function linksProblem(links: unknown[]): string | null {
   return null;
 }
 
-/** True for a version 1 document with valid links and well-formed settings (unknown extra members are fine). */
+/** True for a version 1 document with valid links (unknown extra members, such as old settings, are fine). */
 export function isLocalConfig(v: unknown): v is LocalConfig {
-  return (
-    isObject(v) && v.version === 1 && Array.isArray(v.links) && linksProblem(v.links) === null && isSettings(v.settings)
-  );
+  return isObject(v) && v.version === 1 && Array.isArray(v.links) && linksProblem(v.links) === null;
 }
 
 export interface Stored {
@@ -73,7 +66,11 @@ export function parseStored(raw: string | null): Stored {
   if (raw === null) return { corrupt: false, doc: emptyConfig() };
   try {
     const v: unknown = JSON.parse(raw);
-    if (isLocalConfig(v)) return { corrupt: false, doc: v };
+    if (isLocalConfig(v))
+      return {
+        corrupt: false,
+        doc: { version: 1, links: v.links.map(cleanLink) },
+      };
   } catch {
     // not JSON: corrupt below
   }
@@ -103,9 +100,9 @@ export function useLocalConfig(): Stored {
   return useMemo(() => parseStored(raw), [raw]);
 }
 
-/** Replaces the stored document; only `version`, `links` and `settings` are written. */
-export function writeConfig({ version, links, settings }: LocalConfig): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify({ version, links, settings }));
+/** Replaces the stored document; only `version` and `links` are written. */
+export function writeConfig({ version, links }: LocalConfig): void {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify({ version, links: links.map(cleanLink) }));
   notify();
 }
 
@@ -139,15 +136,18 @@ export function saveLink(input: LinkInput, id?: number): void {
 }
 
 export function deleteLink(id: number): void {
-  updateConfig((doc) => ({ ...doc, links: doc.links.filter((l) => l.id !== id) }));
+  updateConfig((doc) => ({
+    ...doc,
+    links: doc.links.filter((l) => l.id !== id),
+  }));
 }
 
-/** Replaces all links with `links` (ids as given); the settings stay. */
+/** Replaces all links with `links` (ids as given). */
 export function replaceLinks(links: Link[]): void {
   updateConfig((doc) => ({ ...doc, links }));
 }
 
-/** The body of Start (and of the link-dependent hints): links without ids, the settings, nothing else. */
+/** The body of Start (and of the link-dependent hints): links without ids, nothing else. */
 export function startRequestOf(doc: LocalConfig): StartRequest {
   return {
     links: doc.links.map((l) => ({
@@ -155,14 +155,6 @@ export function startRequestOf(doc: LocalConfig): StartRequest {
       ingress: l.ingress,
       egress: l.egress,
       config: l.config,
-      worker: l.worker ?? null,
     })),
-    settings: settingsOf(doc.settings),
   };
 }
-
-export const settingsOf = (s: Settings): Settings => ({
-  main_lcore: s.main_lcore ?? null,
-  eal_extra_args: s.eal_extra_args,
-  poll_interval_ms: s.poll_interval_ms,
-});

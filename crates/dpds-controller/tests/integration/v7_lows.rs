@@ -48,7 +48,7 @@ fn absurd_meminfo_hugepage_figures_saturate_instead_of_overflowing() {
         (max.as_str(), max.as_str(), max.as_str()),
     ] {
         let h = meminfo_only_host(total, free, size_kb);
-        let state = setup(vec![link("a", "net_null0", "net_null0", None)]);
+        let state = setup(vec![link("a", "net_null0", "net_null0")]);
         // in a debug build an unchecked multiplication panics here
         let hints = hints_json(&h, &state);
         let hp = hint(&hints, "hugepages");
@@ -220,7 +220,7 @@ fn typos() -> Vec<Typo> {
 async fn a_typo_in_a_config_is_a_400_naming_the_field() {
     for (what, edit) in typos() {
         let a = app();
-        let mut body = link("x", "net_null0", "net_null0", None);
+        let mut body = link("x", "net_null0", "net_null0");
         edit(&mut body["config"]);
         let s = setup(vec![body]);
         let r = a.start(&s).await;
@@ -237,7 +237,7 @@ async fn a_typo_in_a_config_is_a_400_naming_the_field() {
 #[tokio::test]
 async fn the_message_names_a_typo_in_the_seed() {
     let a = app();
-    let mut body = link("x", "net_null0", "net_null0", None);
+    let mut body = link("x", "net_null0", "net_null0");
     body["config"]["seeed"] = json!(7);
     let r = a.start_links(vec![body]).await;
     assert_eq!(r.status, 400);
@@ -302,7 +302,7 @@ async fn an_empty_or_invalid_json_body_is_a_400_with_a_message() {
 #[tokio::test]
 async fn a_link_with_limit_bit_is_a_400_naming_the_field() {
     let a = app();
-    let mut body = link("x", "net_null0", "net_null0", None);
+    let mut body = link("x", "net_null0", "net_null0");
     body["config"]["limiter"] = json!({"mode": "Spacer", "rate_bps": 1.0e9, "limit_bit": 1.0e6});
     let r = a.start_links(vec![body]).await;
     assert_eq!(r.status, 400, "{}", r.text());
@@ -313,7 +313,7 @@ async fn a_link_with_limit_bit_is_a_400_naming_the_field() {
 #[tokio::test]
 async fn a_running_links_limiter_has_no_limit_bit_and_no_activate() {
     let a = app();
-    let mut l = link("plain", "net_null0", "net_null0", None);
+    let mut l = link("plain", "net_null0", "net_null0");
     l["config"]["limiter"] = json!({"mode": "Spacer", "rate_bps": 1.0e9});
     a.start_ok(vec![l]).await;
     let v = a.get("/api/emulation").await.json();

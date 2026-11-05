@@ -23,7 +23,7 @@ async fn start_ok(a: &TestApp, links: Vec<Value>) -> Value {
 }
 
 fn one(name: &str, ingress: &str, egress: &str) -> Value {
-    link(name, ingress, egress, None)
+    link(name, ingress, egress)
 }
 
 // ---- online / interfaces / hints ----------------------------------------
@@ -229,27 +229,21 @@ async fn a_link_in_the_body_has_no_id_and_no_other_extras() {
 }
 
 #[tokio::test]
-async fn the_body_denies_unknown_fields_at_the_top_level_and_in_the_settings() {
+async fn the_body_denies_unknown_fields_at_the_top_level() {
     let a = app();
     let base = || setup(vec![one("x", "net_null0", "net_null0")]).body();
-    for (path, key) in [
-        (vec![], "presets"),
-        (vec![], "version"),
-        (vec![], "format"),
-        (vec![], "pending_restart"),
-        (vec!["settings"], "mlx5_devargs"),
-        (vec!["settings"], "state_dir"),
-        (vec!["settings"], "poll_interval"),
+    for key in [
+        "presets",
+        "version",
+        "format",
+        "pending_restart",
+        "settings",
     ] {
         let mut b = base();
-        let mut node = &mut b;
-        for p in &path {
-            node = &mut node[*p];
-        }
-        node[key] = json!(1);
+        b[key] = json!(1);
         let r = a.post("/api/emulation/start", b).await;
-        assert_eq!(r.status, 400, "{path:?}.{key}: {}", r.text());
-        assert!(r.message().contains(key), "{path:?}.{key}: {}", r.text());
+        assert_eq!(r.status, 400, "{key}: {}", r.text());
+        assert!(r.message().contains(key), "{key}: {}", r.text());
     }
     assert!(a.supervisor.plans().is_empty());
 }
@@ -282,10 +276,7 @@ async fn malformed_bodies_get_a_json_message() {
     assert_eq!(r.status, 400, "{}", r.status);
     r.message();
     let r = a
-        .post(
-            "/api/emulation/start",
-            json!({"links": "none", "settings": settings_json()}),
-        )
+        .post("/api/emulation/start", json!({"links": "none"}))
         .await;
     assert_eq!(r.status, 400, "{}", r.status);
     r.message();
@@ -294,18 +285,6 @@ async fn malformed_bodies_get_a_json_message() {
     let r = a.start_links(vec![l]).await;
     assert_eq!(r.status, 400, "{}", r.status);
     r.message();
-    assert!(a.supervisor.plans().is_empty());
-}
-
-#[tokio::test]
-async fn settings_validation() {
-    let a = app();
-    let mut zero = setup(vec![one("x", "net_null0", "net_null0")]);
-    zero.settings["poll_interval_ms"] = json!(0);
-    let r = a.start(&zero).await;
-    assert_eq!(r.status, 400, "{}", r.text());
-    assert!(r.message().contains("poll_interval_ms"), "{}", r.text());
-    assert_eq!(a.validate(&zero).await.status, 400);
     assert!(a.supervisor.plans().is_empty());
 }
 
@@ -550,7 +529,6 @@ async fn start_hands_the_supervisor_a_complete_launch_plan() {
                 driver: None,
             },
         ],
-        eal_extra_args: vec![],
         links_file: a.runtime_dir.join("links.json"),
     });
     // `-l` is a set: the order of its members is not significant, everything else is exact
@@ -640,35 +618,13 @@ async fn a_hairpin_is_one_port_one_worker() {
 }
 
 #[tokio::test]
-async fn the_worker_override_of_a_link_reaches_plan_and_links_file() {
+async fn the_devargs_stay_fixed_and_the_main_lcore_is_automatic() {
     let a = app();
-    let mut l = one("a-to-b", NIC0, NIC1);
-    l["worker"] = json!(7);
-    start_ok(&a, vec![l, one("b-to-a", NIC1, NIC0)]).await;
-    let plan = &a.supervisor.plans()[0];
-    assert_eq!(plan.directions[0].lcore, 7);
-    assert_eq!(plan.links_json["links"][0]["lcore"], 7);
-    // the other link is placed automatically on a different isolated core
-    assert_ne!(plan.directions[1].lcore, 7);
-    assert!([2, 3, 6].contains(&plan.directions[1].lcore));
-    // `worker` is controller-only
-    assert!(plan.links_json["links"][0].get("worker").is_none());
-}
-
-#[tokio::test]
-async fn settings_extra_args_and_main_lcore_reach_the_argv_and_the_devargs_stay_fixed() {
-    let a = app();
-    let mut s = setup_main(vec![one("l", NIC0, NIC0)], 1);
-    s.settings["eal_extra_args"] = json!(["--no-huge", "-m", "256"]);
-    let r = a.start(&s).await;
+    let r = a.start(&setup(vec![one("l", NIC0, NIC0)])).await;
     assert_eq!(r.status, 202, "{}", r.text());
     let plan = &a.supervisor.plans()[0];
-    assert_eq!(plan.main_lcore, 1);
+    assert_eq!(plan.main_lcore, 0);
     assert!(plan.argv.contains(&format!("{NIC0},txq_mpw_en=1")));
-    assert!(plan
-        .argv
-        .windows(3)
-        .any(|w| w == ["--no-huge", "-m", "256"]));
     assert!(!plan.argv.join(" ").contains("mprq"));
 }
 

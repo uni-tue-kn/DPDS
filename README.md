@@ -697,18 +697,18 @@ request) and, when a newer release exists, shows a red arrow next to the version
 available" notice. Update with `./dpds.sh update --stable`. Any failure of the check, for example
 without internet access, means no notice.
 
-- **Configuration lives in the browser.** The frontend keeps links and settings only in the
+- **Configuration lives in the browser.** The frontend keeps the links only in the
   browser's localStorage, as P4TG does, so another or a cleared browser starts empty. The
-  Settings page has Import and Export buttons for the links: Export downloads them as
-  `dpds-links-<date>.json`, Import replaces all links with those of such a file and keeps the
-  settings. The "Duplicate" button of a link in the Links list opens the new-link form pre-filled
-  with a copy; you pick its ports. The controller reads and writes no configuration file, so an update can never leave it with a file it
+  Settings page, which lists and edits the links, has Import and Export buttons: Export downloads
+  them as `dpds-links-<date>.json`, Import replaces all links with those of such a file. The
+  "Duplicate" button of a link on the Settings page opens the new-link form pre-filled with a
+  copy; you pick its ports. The controller reads and writes no configuration file, so an update can never leave it with a file it
   cannot load. While the emulation runs, `GET /api/emulation` reports the configuration it was
   started with in `config`, as the client sent it. The frontend compares it with its own to show
   "pending restart" and offers "Load running configuration" to a browser without links.
-- **Start**: `POST /api/emulation/start` takes the whole configuration as its JSON body,
-  `{"links": [{name, ingress, egress, config, worker?}], "settings": {main_lcore, eal_extra_args,
-  poll_interval_ms}}`; unknown fields are a 400 (`deny_unknown_fields`). It answers 202 and starts
+- **Start**: `POST /api/emulation/start` takes the links as its JSON body,
+  `{"links": [{name, ingress, egress, config}]}`; unknown fields (such as a `settings` member or a
+  link's core) are a 400 (`deny_unknown_fields`). It answers 202 and starts
   `dpds`, 400 when a rule is broken or `links` is empty (`nothing to start`), and 409 while the
   emulation is starting, running or stopping. Nothing is spawned on an error.
   `POST /api/emulation/validate` takes the same body, applies the same rules and answers 200
@@ -716,19 +716,23 @@ without internet access, means no notice.
   400/409 errors. It starts nothing and ignores the state of the emulation; the frontend uses it
   to show problems before Start.
 - **Links**: a link is one direction, `ingress` port to `egress` port, with one config
-  (`{name, ingress, egress, config, worker?}` in the start body): packets received on the ingress
+  (`{name, ingress, egress, config}` in the start body): packets received on the ingress
   leave on the egress with the config applied. `ingress` and `egress` may be the same port
   (hairpin). A port is the ingress of at most one link and the egress of at most one link (409
   naming the other link and the port), but its ingress and egress links need not share a partner:
   A to B, B to C and C to A are three links, and the classic bidirectional pair is two links (A to
-  B and B to A). Each link gets one worker lcore: `worker` if set, else a free isolated core,
-  preferring the NUMA node of the ingress NIC. The links file handed to `dpds` always carries
+  B and B to A). The cores are assigned automatically: the main lcore is the lowest online core that is
+  not isolated, and each link gets its own isolated core as worker lcore, the lowest id first,
+  preferring the NUMA node of the ingress NIC. Start fails when fewer isolated cores than links
+  exist (set `isolcpus`) or when every online core is isolated. The links file handed to `dpds` always carries
   explicit lcores. The link index (the order of the start body) is the direction number of the
   telemetry and of `/api/stats/{dir}/delay_histogram`; per link, rx statistics come from the
   ingress port and tx statistics from the egress port. Hugepage and isolated-core hints count one
   pool and one core per link. The setup must fit `dpds`' 256-entry telemetry dict,
   `3 + 5 * distinct ports + 10 * links <= 256` (for example 16 links over 16 ports, but not 17):
   start and validate refuse a setup above it with 400 naming 256.
+- **Telemetry poll**: the controller polls `dpds` every 500 ms, a fixed interval that no request
+  changes; the chart history keeps 1 sample per link per second.
 - **Config**: every link carries the full `dpds-core` config (see
   [Configuration](#configuration)). The stages `delayer`, `limiter` and `loss_model` are optional:
   `null` or absent means the stage is not added, and the link runs with a stage that does nothing
@@ -765,14 +769,14 @@ without internet access, means no notice.
   the controller restarts, as it lives in memory only.
 - **Frontend**: `http://<host>:<controller port>/`, served by the controller itself. Pages for the
   dashboard (start/stop, per-link rates, drop shares per cause, delay statistics and histogram),
-  links, interfaces, host hints and settings.
+  interfaces, host hints and settings (the links, with import and export).
 - **REST API**: served by the controller on port 8100 (`/api/...`), the same port as the frontend.
   The interactive OpenAPI documentation is at `http://<host>:8100/api/docs`.
 - **Delay histogram extras** (`GET /api/stats/{dir}/delay_histogram`): `?window_s=10|60|300` returns
   only the samples of the last n seconds (difference to the poll that is at least n seconds old;
   `window_s` absent or 0 and runs younger than n seconds give the counts since start; `span_ms` is
   the time the counts cover). The controller keeps the polls of the last 300 s for this (at most
-  6000, so a poll interval below 50 ms shortens the window) and drops them when the emulation
+  6000) and drops them when the emulation
   stops. The reply also has `count` (samples including under- and overflow) and `percentiles`
   `p50`, `p90`, `p99`, `p999` in ns (linear interpolation inside the bin; a percentile in the
   under- or overflow is the range edge and its `p..._clamped` says `underflow` or `overflow`;
@@ -793,9 +797,8 @@ without internet access, means no notice.
   link of the configuration needs more than 590 s (delay mean + 6 std + limiter queue `buffer_capacity * 12336 bit / rate_bps`); shorten
   the delay, the buffer or the limiter queue for such a link.
 - **Input allowlists**: the controller starts `dpds` as root, so it only accepts values it can
-  vet. Ports are a PCI address or `net_null<N>` / `net_ring<N>` (no devargs, no `net_pcap`). Extra
-  EAL arguments are limited to `--no-huge`, `--no-pci`, `-m <n>`, `-n <n>`, `--socket-mem=<list>`
-  and `--log-level=<spec>`. The mlx5 devargs are fixed to `txq_mpw_en=1` and not configurable. The
+  vet. Ports are a PCI address or `net_null<N>` / `net_ring<N>` (no devargs, no `net_pcap`). The
+  controller passes no extra EAL arguments. The mlx5 devargs are fixed to `txq_mpw_en=1` and not configurable. The
   uplink guard refuses to start a link on an interface the host uses (409, naming the link, the
   port and the reason). An interface is an uplink when it, or a bond, VLAN or bridge above it,
   (1) carries a route in `/proc/net/route` or `/proc/net/ipv6_route`, (2) has an IP address

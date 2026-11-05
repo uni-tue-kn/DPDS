@@ -272,12 +272,8 @@ fn rig() -> Rig {
 impl Rig {
     /// A fake `dpds` with `pid` goes up and the REST start is called: a new run.
     async fn start_run(&mut self, pid: u32, started_at: u64) {
-        self.start_run_links(
-            pid,
-            started_at,
-            vec![link("l", "net_null0", "net_null0", None)],
-        )
-        .await;
+        self.start_run_links(pid, started_at, vec![link("l", "net_null0", "net_null0")])
+            .await;
     }
 
     /// Like `start_run`, with the links of the start body (the fake `dpds` always reports two
@@ -286,14 +282,19 @@ impl Rig {
         self.live = None; // the old socket goes first
         self.live = Some(live(&self.runtime_dir, pid));
         self.supervisor.set_next_run(pid, started_at);
-        let s = setup(links);
-        let mut body = s.body();
-        body["settings"]["poll_interval_ms"] = json!(POLL_MS);
+        let body = setup(links).body();
         let r = call(&self.router, "POST", "/api/emulation/start", Some(body)).await;
         assert_eq!(r.status, 202, "{}", r.text());
         if let Some(l) = &self.live {
             l.restart_clock();
         }
+        self.speed_up_poller();
+    }
+
+    /// The start body has no poll interval (spec 41: a fixed 500 ms); this test hook speeds the
+    /// poller up after a start so that the tests need not wait whole seconds.
+    fn speed_up_poller(&self) {
+        self._poller.set_poll_interval(POLL_MS);
     }
 
     async fn stop_run(&self) {
@@ -1203,16 +1204,16 @@ async fn openapi_lists_elapsed_ms_on_the_stats_view() {
 /// mixed-up run or link order shows.
 fn links_a() -> Vec<Value> {
     vec![
-        link("alpha", "net_null0", "net_null1", None),
-        link("beta", "net_null1", "net_null0", None),
+        link("alpha", "net_null0", "net_null1"),
+        link("beta", "net_null1", "net_null0"),
     ]
 }
 
 fn links_b() -> Vec<Value> {
     vec![
-        link("gamma", "net_null2", "net_null3", None),
-        link("delta", "net_null3", "net_null2", None),
-        link("epsilon", "net_null4", "net_null4", None),
+        link("gamma", "net_null2", "net_null3"),
+        link("delta", "net_null3", "net_null2"),
+        link("epsilon", "net_null4", "net_null4"),
     ]
 }
 
@@ -1381,7 +1382,7 @@ async fn a_refused_start_changes_neither_run_id_nor_links() {
     // 400: no links at all; 400: a port name the start refuses
     for body in [
         setup(vec![]).body(),
-        setup(vec![link("zeta", "bad port!", "net_null0", None)]).body(),
+        setup(vec![link("zeta", "bad port!", "net_null0")]).body(),
     ] {
         let resp = call(&r.router, "POST", "/api/emulation/start", Some(body)).await;
         assert_eq!(resp.status, 400, "{}", resp.text());
@@ -1772,11 +1773,10 @@ impl Rig {
         self.live = None;
         self.live = Some(counting(&self.runtime_dir, pid));
         self.supervisor.set_next_run(pid, started_at);
-        let s = setup(vec![link("l", "net_null0", "net_null0", None)]);
-        let mut body = s.body();
-        body["settings"]["poll_interval_ms"] = json!(POLL_MS);
+        let body = setup(vec![link("l", "net_null0", "net_null0")]).body();
         let r = call(&self.router, "POST", "/api/emulation/start", Some(body)).await;
         assert_eq!(r.status, 202, "{}", r.text());
+        self.speed_up_poller();
     }
 
     /// Number of polls the counting fake has served.
@@ -1977,7 +1977,7 @@ async fn totals_are_kept_after_the_stop_with_the_last_poll() {
     // a refused start changes nothing
     for body in [
         setup(vec![]).body(),
-        setup(vec![link("zeta", "bad port!", "net_null0", None)]).body(),
+        setup(vec![link("zeta", "bad port!", "net_null0")]).body(),
     ] {
         let resp = call(&r.router, "POST", "/api/emulation/start", Some(body)).await;
         assert_eq!(resp.status, 400, "{}", resp.text());

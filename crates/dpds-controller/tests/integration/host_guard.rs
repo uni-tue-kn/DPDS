@@ -43,7 +43,7 @@ fn machine_hostname() -> String {
 
 /// `(method, path, body)` of every `/api` route, the POSTs included.
 fn all_routes() -> Vec<(&'static str, &'static str, Option<Value>)> {
-    let body = setup(vec![link("evil", "net_null0", "net_null0", None)]).body();
+    let body = setup(vec![link("evil", "net_null0", "net_null0")]).body();
     vec![
         ("GET", "/api/online", None),
         ("GET", "/api/interfaces", None),
@@ -105,7 +105,7 @@ fn a_foreign_host_is_rejected_on_every_api_route() {
 fn a_rejected_start_changes_nothing() {
     let c = ControllerProcess::start(&["serve", "--bind", "{addr}"], &[]);
     let good = c.addr.clone();
-    let body = setup(vec![link("evil", "net_null0", "net_null0", None)]).body();
+    let body = setup(vec![link("evil", "net_null0", "net_null0")]).body();
     for path in [
         "/api/emulation/start",
         "/api/emulation/validate",
@@ -161,7 +161,7 @@ fn ip_literals_localhost_and_the_machine_hostname_are_accepted() {
         "POST",
         "/api/host/hints",
         "localhost:8100",
-        Some(&setup(vec![link("ok", "net_null0", "net_null0", None)]).body()),
+        Some(&setup(vec![link("ok", "net_null0", "net_null0")]).body()),
     );
     assert_eq!(st, 200, "{text}");
 }

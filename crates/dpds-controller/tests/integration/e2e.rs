@@ -17,8 +17,8 @@
 //!
 //! The controller runs with a fake sysfs/procfs (online CPUs 0..=n, CPUs 1..=n isolated => main
 //! lcore 0, one worker lcore per link) so the assignment does not depend on the test host's
-//! boot parameters; the EAL flags `--no-huge -m 256 --no-pci` come from `settings.eal_extra_args`
-//! of the start body. Spec 22: the controller stores nothing, so every start carries the whole
+//! boot parameters. Spec 41: the start body is `{links}` only and the controller passes no extra EAL
+//! flags (the host needs hugepages, as in production). Spec 22: the controller stores nothing, so every start carries the whole
 //! configuration (`Controller::start_run`) and the running configuration is read back from
 //! `GET /api/emulation`.
 //!
@@ -180,13 +180,9 @@ impl Controller {
         }
     }
 
-    /// `POST /api/emulation/start` with `links` and these EAL arguments (poll interval 250 ms).
-    fn start_run(&self, eal_extra: &[&str], links: Vec<Value>) -> (u16, Value) {
-        let body = json!({
-            "links": links,
-            "settings": {"main_lcore": null, "eal_extra_args": eal_extra,
-                         "poll_interval_ms": 250}
-        });
+    /// `POST /api/emulation/start` with `links`.
+    fn start_run(&self, links: Vec<Value>) -> (u16, Value) {
+        let body = json!({ "links": links });
         self.call("POST", "/api/emulation/start", Some(body))
     }
 
@@ -241,8 +237,6 @@ fn process_gone(pid: i32) -> bool {
     }
 }
 
-const EAL: [&str; 4] = ["--no-huge", "-m", "256", "--no-pci"];
-
 /// The hairpin link `loop` on `net_null0` with `config`.
 fn loop_link(config: Value) -> Value {
     json!({"name": "loop", "ingress": "net_null0", "egress": "net_null0", "config": config})
@@ -266,7 +260,7 @@ fn full_rest_flow_create_start_stats_stop_drain() {
     assert_eq!(idle["state"], "stopped", "{idle}");
     assert!(absent(&idle, "config"), "{idle}");
 
-    let (s, v) = c.start_run(&EAL, vec![loop_link(loop_config())]);
+    let (s, v) = c.start_run(vec![loop_link(loop_config())]);
     assert_eq!(s, 202, "{v}");
     let run = c.wait_state(&["running"], START_TIMEOUT);
     let pid = run["pid"].as_i64().expect("running state has a pid") as i32;
@@ -281,11 +275,7 @@ fn full_rest_flow_create_start_stats_stop_drain() {
     // the running configuration is the one the start carried
     assert_eq!(run["config"]["links"][0]["name"], "loop", "{run}");
     assert_eq!(run["config"]["links"][0]["ingress"], "net_null0", "{run}");
-    assert_eq!(
-        run["config"]["settings"]["eal_extra_args"],
-        json!(EAL),
-        "{run}"
-    );
+    assert!(absent(&run["config"], "settings"), "{run}");
 
     // counters move
     let first_rx = {
@@ -353,7 +343,7 @@ fn full_rest_flow_create_start_stats_stop_drain() {
     );
 
     // and it can be started again, with a body again: the controller kept nothing
-    let (s, v) = c.start_run(&EAL, vec![loop_link(loop_config())]);
+    let (s, v) = c.start_run(vec![loop_link(loop_config())]);
     assert_eq!(s, 202, "{v}");
     c.wait_state(&["running"], START_TIMEOUT);
 }
@@ -363,12 +353,9 @@ fn full_rest_flow_create_start_stats_stop_drain() {
 fn failed_start_is_reported_with_the_stderr_tail() {
     let _g = serial();
     let c = Controller::start();
-    // an argument that passes the controller's allowlist but that EAL rejects
-    // (`-n 0`: "invalid memory channel parameter")
-    let (s, v) = c.start_run(
-        &["--no-huge", "-m", "256", "--no-pci", "-n", "0"],
-        vec![loop_link(loop_config())],
-    );
+    // a PCI address no device answers to: the controller accepts it, `dpds` cannot open the port
+    let (s, v) = c.start_run(vec![json!({"name": "ghost", "ingress": "0000:ff:00.0",
+                                         "egress": "0000:ff:00.0", "config": loop_config()})]);
     assert_eq!(s, 202, "{v}");
     let v = c.wait_state(&["failed"], START_TIMEOUT);
     assert!(v["error"].as_str().is_some_and(|e| !e.is_empty()), "{v}");
@@ -387,7 +374,7 @@ fn failed_start_is_reported_with_the_stderr_tail() {
 fn controller_sigterm_stops_the_child_before_exiting() {
     let _g = serial();
     let mut c = Controller::start();
-    c.start_run(&EAL, vec![loop_link(loop_config())]);
+    c.start_run(vec![loop_link(loop_config())]);
     let run = c.wait_state(&["running"], START_TIMEOUT);
     let pid = run["pid"].as_i64().unwrap() as i32;
 
@@ -434,15 +421,12 @@ fn assert_mean_delay(d: &Value, ms: f64) {
 fn two_hairpin_links_run_with_their_own_config_and_the_v2_links_file() {
     let _g = serial();
     let c = Controller::start_with_workers(2);
-    let (s, v) = c.start_run(
-        &EAL,
-        vec![
-            json!({"name": "fast", "ingress": "net_null0", "egress": "net_null0",
+    let (s, v) = c.start_run(vec![
+        json!({"name": "fast", "ingress": "net_null0", "egress": "net_null0",
                    "config": delay_config(1.0)}),
-            json!({"name": "slow", "ingress": "net_null1", "egress": "net_null1",
+        json!({"name": "slow", "ingress": "net_null1", "egress": "net_null1",
                    "config": delay_config(3.0)}),
-        ],
-    );
+    ]);
     assert_eq!(s, 202, "{v}");
     let run = c.wait_state(&["running"], START_TIMEOUT);
     let dirs = run["directions"].as_array().unwrap();
@@ -512,14 +496,11 @@ fn a_three_link_ring_over_three_vdevs_runs_one_worker_per_link() {
     let c = Controller::start_with_workers(3);
     // A -> B, B -> C, C -> A: each port is ingress once and egress once
     let ring = |n: &str, i: &str, e: &str, ms: f64| json!({"name": n, "ingress": i, "egress": e, "config": delay_config(ms)});
-    let (s, v) = c.start_run(
-        &EAL,
-        vec![
-            ring("a-to-b", "net_null0", "net_null1", 1.0),
-            ring("b-to-c", "net_null1", "net_null2", 2.0),
-            ring("c-to-a", "net_null2", "net_null0", 3.0),
-        ],
-    );
+    let (s, v) = c.start_run(vec![
+        ring("a-to-b", "net_null0", "net_null1", 1.0),
+        ring("b-to-c", "net_null1", "net_null2", 2.0),
+        ring("c-to-a", "net_null2", "net_null0", 3.0),
+    ]);
     assert_eq!(s, 202, "{v}");
     let run = c.wait_state(&["running"], START_TIMEOUT);
     let dirs = run["directions"].as_array().unwrap();
@@ -576,7 +557,7 @@ fn a_link_without_any_stage_runs_with_zero_delay() {
     let _g = serial();
     let c = Controller::start();
     let bare = json!({"buffer_capacity": 4096, "reordering": false});
-    let (s, v) = c.start_run(&EAL, vec![loop_link(bare.clone())]);
+    let (s, v) = c.start_run(vec![loop_link(bare.clone())]);
     assert_eq!(s, 202, "{v}");
     let run = c.wait_state(&["running"], START_TIMEOUT);
     // the running configuration is the request as accepted: no stage appears

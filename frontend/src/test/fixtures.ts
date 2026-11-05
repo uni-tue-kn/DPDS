@@ -17,7 +17,6 @@ import type {
   OnlineView,
   PortStats,
   RunningConfig,
-  Settings,
   StatsView,
 } from '../api/types';
 
@@ -114,7 +113,6 @@ export function link(over: Partial<Link> = {}): Link {
     ingress: '0000:65:00.0',
     egress: '0000:65:00.1',
     config: config(),
-    worker: null,
     ...over,
   };
 }
@@ -127,14 +125,13 @@ export function linkRev(over: Partial<Link> = {}): Link {
     ingress: '0000:65:00.1',
     egress: '0000:65:00.0',
     config: config2(),
-    worker: null,
     ...over,
   };
 }
 
 /** Hairpin: ingress == egress. */
 export function loopLink(over: Partial<Link> = {}): Link {
-  return { id: 2, name: 'loop', ingress: 'net_null0', egress: 'net_null0', config: config(), worker: null, ...over };
+  return { id: 2, name: 'loop', ingress: 'net_null0', egress: 'net_null0', config: config(), ...over };
 }
 
 export function iface(over: Partial<Interface> = {}): Interface {
@@ -242,15 +239,6 @@ export function commandsHint(over: Partial<Hint> = {}): Hint {
     detail: 'Current value 60, target 0.',
     suggestion: 'Set vm.swappiness to 0.',
     commands: ['sysctl -w vm.swappiness=0'],
-    ...over,
-  };
-}
-
-export function settings(over: Partial<Settings> = {}): Settings {
-  return {
-    main_lcore: null,
-    eal_extra_args: [],
-    poll_interval_ms: 500,
     ...over,
   };
 }
@@ -383,12 +371,9 @@ export function histogram(dir: number, over: Partial<HistogramView> = {}): Histo
 /**
  * What `GET /api/emulation` reports as `config` while an emulation is starting/running: the accepted start request
  * (links in start-body shape) plus the controller's own extras (assigned id/dir, planned lcore), which the frontend must
- * ignore. Defaults to `fx.link()` / `fx.linkRev()` (named a-b and b-a) and `fx.settings()`.
+ * ignore. Defaults to `fx.link()` / `fx.linkRev()` (named a-b and b-a).
  */
-export function runningConfig(
-  links: LinkInput[] = [link(), linkRev()],
-  settings: Settings = settingsDefault(),
-): RunningConfig {
+export function runningConfig(links: LinkInput[] = [link(), linkRev()]): RunningConfig {
   return {
     links: links.map((l, i) => ({
       id: 100 + i,
@@ -398,12 +383,9 @@ export function runningConfig(
       ingress: l.ingress,
       egress: l.egress,
       config: l.config,
-      worker: l.worker ?? null,
     })),
-    settings,
   };
 }
-const settingsDefault = () => settings();
 
 /** `fx.emulation('running')` that reports `config` (default: `runningConfig()`). */
 export function runningEmulation(

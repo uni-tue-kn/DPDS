@@ -26,10 +26,7 @@ function twoDirections() {
 // control block start with one stored link; pending restart and "Load running configuration" are in pendingRestart.test.tsx.
 describe('Dashboard: emulation state and control', () => {
   beforeEach(() => {
-    seedStore({
-      links: [fx.link(), fx.linkRev()],
-      settings: fx.settings({ main_lcore: 2, eal_extra_args: ['--no-huge'], poll_interval_ms: 250 }),
-    });
+    seedStore({ links: [fx.link(), fx.linkRev()] });
   });
 
   it.each(STATES)('shows a state badge for "%s"', async (state) => {
@@ -82,7 +79,7 @@ describe('Dashboard: emulation state and control', () => {
     await waitFor(() => expect(screen.getByTestId('state-badge')).toHaveAttribute('data-state', 'starting'));
   });
 
-  it('Start sends the whole local configuration: links without ids, the settings, no presets, nothing else', async () => {
+  it('Start sends the whole local configuration: `{links}` without ids, no settings, no presets, nothing else', async () => {
     const user = userEvent.setup();
     renderApp('/');
     const btn = await screen.findByRole('button', { name: /^start$/i });
@@ -91,8 +88,8 @@ describe('Dashboard: emulation state and control', () => {
     expect(api.startEmulation).toHaveBeenCalledTimes(1);
     expectStartBody(api.startEmulation.mock.calls[0][0], storedDoc());
     const body = api.startEmulation.mock.calls[0][0] as unknown as Record<string, unknown>;
-    expect(Object.keys(body).sort()).toEqual(['links', 'settings']);
-    expect(JSON.stringify(body)).not.toMatch(/"id"|presets|"version"|pending/);
+    expect(Object.keys(body).sort()).toEqual(['links']);
+    expect(JSON.stringify(body)).not.toMatch(/"id"|presets|"version"|pending|settings|worker|lcore|eal/);
   });
 
   it('the start body follows the stored document as it is NOW (an edit made before Start is included)', async () => {
@@ -100,11 +97,10 @@ describe('Dashboard: emulation state and control', () => {
     renderApp('/');
     const btn = await screen.findByRole('button', { name: /^start$/i });
     await waitFor(() => expect(btn).toBeEnabled());
-    seedStore({ links: [fx.loopLink({ id: 7 })], settings: fx.settings({ poll_interval_ms: 100 }) });
+    seedStore({ links: [fx.loopLink({ id: 7 })] });
     await user.click(btn);
     const body = api.startEmulation.mock.calls[0][0];
     expect(body.links.map((l) => l.name)).toEqual(['loop']);
-    expect(body.settings.poll_interval_ms).toBe(100);
   });
 
   it('a link with stages left out is sent without them (null or absent), not with defaults', async () => {

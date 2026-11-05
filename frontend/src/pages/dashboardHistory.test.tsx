@@ -317,7 +317,7 @@ describe('Dashboard (spec 29): leaving the dashboard and coming back, and reload
     renderApp('/');
     await tick(0);
     await tick(0);
-    fireEvent.click(screen.getByRole('link', { name: 'Links' }));
+    fireEvent.click(screen.getByRole('link', { name: 'Settings' }));
     await tick(0);
     expect(hasTab(0)).toBe(false);
     s.samples['0'].push(...fx.historySamples(4, 3));

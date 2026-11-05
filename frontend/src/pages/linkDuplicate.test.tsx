@@ -9,18 +9,17 @@ import * as fx from '../test/fixtures';
 import { rawStore, renderApp, sameConfig, seedLinks, storedDoc, storedLinks, watchStoreWrites } from '../test/helpers';
 
 // Spec 27 (user 2026-11-04): a button "Duplicate <link name>" (icon bi-files, P4TG's "Clone") sits in each Links-list row
-// between Edit and Delete. It opens the NEW-link editor pre-filled with a copy: same config, worker and frame size, and
+// between Edit and Delete. It opens the NEW-link editor pre-filled with a copy: same config and frame size, and
 // the name `<name>_copy` (taken: `<name>_copy2`, `_copy3` ...; the base is shortened so the whole name has at most 32
 // characters). Ingress and Egress are left UNSET (both are required, so the user must pick ports before saving; a copy on the
-// source's ports would collide with it at start). Spec27b item 3: the worker lcore is cleared too (automatic): an explicit core
-// would collide with the source at start as well. The seed and the frame size are still copied. Nothing is stored until the
+// source's ports would collide with it at start). Spec 41: there is no worker field any more. The seed and the frame size are still copied. Nothing is stored until the
 // user saves; saving goes through the normal checks. Item 6: the router state of Duplicate is consumed once (see the last block).
 // Tester's choices where the spec is silent: the shortened base is `name.slice(0, 32 - suffix.length)`; the names that count as
 // taken are those of ALL stored links (exact match); the URL of the editor is not pinned (only its heading "New link").
 
 const framed = (l: Link, frame: number | null): Link => ({ ...l, avg_frame_size_byte: frame });
-const ab = () => framed(fx.link({ worker: 5 }), 512); // a-b, id 1, config(), worker 5, frame size 512
-const ba = () => fx.linkRev(); // b-a, id 3, config2(), no worker, no frame size
+const ab = () => framed(fx.link(), 512); // a-b, id 1, config(), frame size 512
+const ba = () => fx.linkRev(); // b-a, id 3, config2(), no frame size
 
 const rowOf = async (name: string) => (await screen.findByText(name)).closest('tr') as HTMLElement;
 const dupButton = (name: string) => screen.getByRole('button', { name: `Duplicate ${name}` });
@@ -43,7 +42,7 @@ async function duplicate(user: UserEvent, name: string) {
 async function listPage(links: Link[] = [ab(), ba()]) {
   seedLinks(links);
   const user = userEvent.setup();
-  renderApp('/links');
+  renderApp('/settings');
   await screen.findByText(links[0].name);
   return user;
 }
@@ -87,22 +86,21 @@ describe('Links list: the Duplicate button', () => {
 });
 
 describe('Duplicate: the editor opens pre-filled with the copy', () => {
-  it('name <name>_copy, same frame size, and NO ports and NO worker (Ingress, Egress and Worker lcore are unset)', async () => {
+  it('name <name>_copy, same frame size, and NO ports (Ingress and Egress are unset); there is no Worker lcore field', async () => {
     const user = await listPage();
     await duplicate(user, 'a-b');
     expect(nameField()).toHaveValue('a-b_copy');
     expect(screen.getByLabelText('Ingress')).toHaveValue('');
     expect(screen.getByLabelText('Egress')).toHaveValue('');
-    expect(screen.getByLabelText('Worker lcore')).toHaveValue(null); // a-b has worker 5: not copied (automatic)
+    expect(screen.queryByLabelText('Worker lcore')).not.toBeInTheDocument();
     expect(screen.getByLabelText('Average frame size')).toHaveValue(512);
   });
 
-  it('the seed is still copied (a link with seed 99 and worker 5)', async () => {
-    const seeded = framed(fx.link({ worker: 5, config: fx.config({ seed: 99 }) }), 512);
+  it('the seed is still copied (a link with seed 99)', async () => {
+    const seeded = framed(fx.link({ config: fx.config({ seed: 99 }) }), 512);
     const user = await listPage([seeded]);
     await duplicate(user, 'a-b');
     expect(screen.getByLabelText('Seed')).toHaveValue(99);
-    expect(screen.getByLabelText('Worker lcore')).toHaveValue(null);
     expect(screen.getByLabelText('Average frame size')).toHaveValue(512);
   });
 
@@ -119,8 +117,7 @@ describe('Duplicate: the editor opens pre-filled with the copy', () => {
     expect(screen.getByLabelText('Loss model')).toHaveValue('GilbertElliot');
     expect(screen.getByLabelText('Histogram bins')).toHaveValue(64);
     expect(screen.getByLabelText('Delay statistics')).not.toBeChecked();
-    // b-a has neither a worker nor a frame size
-    expect(screen.getByLabelText('Worker lcore')).toHaveValue(null);
+    // b-a has no frame size
     expect(screen.getByLabelText('Average frame size')).toHaveValue(null);
     expect(screen.getByLabelText('Ingress')).toHaveValue(''); // b-a's ports (.1 -> .0) are not copied either
     expect(screen.getByLabelText('Egress')).toHaveValue('');
@@ -155,7 +152,7 @@ describe('Duplicate: the editor opens pre-filled with the copy', () => {
     const dupValues = configValues();
     expect(dupValues.length).toBeGreaterThan(10);
     cleanup();
-    renderApp('/links/3');
+    renderApp('/settings/3');
     await screen.findByRole('heading', { level: 1, name: 'Edit link' });
     await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue('b-a'));
     await waitFor(() => expect(configValues()).toHaveLength(dupValues.length));
@@ -202,7 +199,7 @@ describe('Duplicate: nothing is stored until Save', () => {
     const writes = watchStoreWrites();
     await duplicate(user, 'a-b');
     await user.click(screen.getByRole('link', { name: /^cancel$/i }));
-    await screen.findByRole('heading', { level: 1, name: 'Links' });
+    await screen.findByRole('heading', { level: 1, name: 'Settings' });
     expect(writes()).toBe(0);
     expect(rawStore()).toBe(before);
     expect(screen.queryByText('a-b_copy')).not.toBeInTheDocument();
@@ -242,7 +239,7 @@ describe('Duplicate: nothing is stored until Save', () => {
     await duplicate(user, 'a-b');
     await pickPorts(user);
     await save(user);
-    await screen.findByRole('heading', { level: 1, name: 'Links' });
+    await screen.findByRole('heading', { level: 1, name: 'Settings' });
     const links = storedLinks();
     expect(links.map((l) => [l.id, l.name])).toEqual([
       [1, 'a-b'],
@@ -254,18 +251,17 @@ describe('Duplicate: nothing is stored until Save', () => {
     expect(await rowOf('a-b_copy')).toBeInTheDocument();
   });
 
-  it('the stored copy has the same config and frame size as the source, the ports that were chosen and NO worker', async () => {
+  it('the stored copy has the same config and frame size as the source, the ports that were chosen and no worker member', async () => {
     const user = await listPage(abAndLoop());
     await duplicate(user, 'a-b');
     await pickPorts(user);
     await save(user);
-    await screen.findByRole('heading', { level: 1, name: 'Links' });
+    await screen.findByRole('heading', { level: 1, name: 'Settings' });
     const [src, copy] = [storedLinks()[0], storedLinks()[2]];
     expect(copy.ingress).toBe('0000:65:00.1');
     expect(copy.egress).toBe('0000:65:00.0');
     expect([copy.ingress, copy.egress]).not.toEqual([src.ingress, src.egress]);
-    expect(copy.worker ?? null).toBeNull(); // automatic, although a-b has worker 5
-    expect(src.worker).toBe(5); // the source keeps its own
+    expect(copy).not.toHaveProperty('worker');
     expect(copy.avg_frame_size_byte).toBe(512);
     sameConfig(copy.config, src.config);
   });
@@ -275,27 +271,30 @@ describe('Duplicate: nothing is stored until Save', () => {
     await duplicate(user, 'b-a');
     await pickPorts(user, '0000:65:00.0', '0000:65:00.1');
     await save(user);
-    await screen.findByRole('heading', { level: 1, name: 'Links' });
+    await screen.findByRole('heading', { level: 1, name: 'Settings' });
     const copy = storedLinks().find((l) => l.name === 'b-a_copy');
     expect(copy).toBeDefined();
     sameConfig(copy?.config ?? fx.configBare(), fx.config2());
-    expect(copy?.worker ?? null).toBeNull();
+    expect(copy).not.toHaveProperty('worker');
     expect(copy?.avg_frame_size_byte ?? null).toBeNull();
   });
 
-  it('the settings and the rest of the document are untouched, and no presets member appears', async () => {
+  it('the document keeps nothing but version and links (a stored settings member is dropped), and no presets member appears', async () => {
     localStorage.setItem(
       'dpds.config.v1',
-      JSON.stringify({ version: 1, links: [ab()], settings: fx.settings({ main_lcore: 2 }) }),
+      JSON.stringify({
+        version: 1,
+        links: [ab()],
+        settings: { main_lcore: 2, eal_extra_args: [], poll_interval_ms: 250 },
+      }),
     );
     const user = userEvent.setup();
-    renderApp('/links');
+    renderApp('/settings');
     await duplicate(user, 'a-b');
     await pickPorts(user);
     await save(user);
-    await screen.findByRole('heading', { level: 1, name: 'Links' });
-    expect(Object.keys(storedDoc()).sort()).toEqual(['links', 'settings', 'version']);
-    expect(storedDoc().settings).toEqual(fx.settings({ main_lcore: 2 }));
+    await screen.findByRole('heading', { level: 1, name: 'Settings' });
+    expect(Object.keys(storedDoc()).sort()).toEqual(['links', 'version']);
     expect(storedDoc().links).toHaveLength(2);
   });
 });
@@ -445,13 +444,10 @@ describe('Duplicate: saving goes through the normal checks', () => {
     await user.type(nameField(), 'edited');
     await user.clear(screen.getByLabelText('Buffer capacity'));
     await user.type(screen.getByLabelText('Buffer capacity'), '777');
-    await user.clear(screen.getByLabelText('Worker lcore'));
-    await user.type(screen.getByLabelText('Worker lcore'), '7');
     await save(user);
-    await screen.findByRole('heading', { level: 1, name: 'Links' });
+    await screen.findByRole('heading', { level: 1, name: 'Settings' });
     const copy = storedLinks().find((l) => l.name === 'edited');
     expect(copy?.config.buffer_capacity).toBe(777);
-    expect(copy?.worker).toBe(7);
     expect(copy?.egress).toBe('0000:65:00.0'); // the port that was chosen
     expect(storedLinks()[0]).toEqual(ab()); // the source is not changed by editing the copy
   });
@@ -493,7 +489,7 @@ describe('Duplicate: the router state is consumed once', () => {
     seedLinks(links);
     const spy: Partial<Spy> = {};
     render(
-      <MemoryRouter initialEntries={['/links']}>
+      <MemoryRouter initialEntries={['/settings']}>
         <RouterSpy spy={spy} />
         <App />
       </MemoryRouter>,
@@ -512,7 +508,7 @@ describe('Duplicate: the router state is consumed once', () => {
     await duplicate(user, 'b-a');
     expect(nameField()).toHaveValue('b-a_copy');
     await waitFor(() => expect(copyOfOf(spy)).toBeUndefined());
-    expect(spy.location?.pathname).toBe('/links/new');
+    expect(spy.location?.pathname).toBe('/settings/new');
   });
 
   it('the form keeps its pre-filled values and stays editable after the state is gone', async () => {
@@ -533,8 +529,8 @@ describe('Duplicate: the router state is consumed once', () => {
     await duplicate(user, 'b-a');
     await waitFor(() => expect(copyOfOf(spy)).toBeUndefined());
     await go(spy, -1);
-    expect(await screen.findByRole('heading', { level: 1, name: 'Links' })).toBeInTheDocument();
-    expect(spy.location?.pathname).toBe('/links');
+    expect(await screen.findByRole('heading', { level: 1, name: 'Settings' })).toBeInTheDocument();
+    expect(spy.location?.pathname).toBe('/settings');
   });
 
   it('Forward to the form again shows an EMPTY new-link form, not the copy', async () => {
@@ -542,7 +538,7 @@ describe('Duplicate: the router state is consumed once', () => {
     await duplicate(user, 'b-a');
     await waitFor(() => expect(copyOfOf(spy)).toBeUndefined());
     await go(spy, -1);
-    await screen.findByRole('heading', { level: 1, name: 'Links' });
+    await screen.findByRole('heading', { level: 1, name: 'Settings' });
     await go(spy, 1);
     await screen.findByRole('heading', { level: 1, name: 'New link' });
     await waitFor(() => expect(screen.getAllByRole('option', { name: /enp101s0f0/ })).not.toHaveLength(0));

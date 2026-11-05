@@ -188,7 +188,7 @@ fn the_controller_section_says_the_configuration_lives_in_the_browser() {
     });
     assert!(
         says,
-        "a paragraph of the controller section must say that links, presets and settings are kept \
+        "a paragraph of the controller section must say that the links are kept \
          in the browser's localStorage (the controller stores nothing)"
     );
     // the start carries the whole configuration
@@ -1149,5 +1149,67 @@ fn the_readme_says_a_cached_result_is_used_while_an_emulation_runs_and_that_chec
                 .any(|s| s.contains("`dpds-controller check`")
                     && s.to_lowercase().contains("no cache")),
         "a sentence names `dpds-controller check` and says it has no cache"
+    );
+}
+
+// ---- spec 41: no settings, automatic lcores, fixed 500 ms poll ----------------------------------
+
+#[test]
+fn the_readme_no_longer_documents_settings_worker_or_extra_eal_arguments() {
+    let text = readme();
+    for gone in [
+        "eal_extra_args",
+        "poll_interval_ms",
+        "\"settings\"",
+        "worker?",
+        "`worker`",
+        "main_lcore, eal",
+    ] {
+        assert!(
+            !text.contains(gone),
+            "the README still mentions `{gone}` (spec 41: the start body is `{{links}}` only)"
+        );
+    }
+    assert!(
+        !text.to_lowercase().contains("settings form"),
+        "the settings form is gone (main lcore, EAL arguments and poll interval are not settings)"
+    );
+    let start = route_item("`POST /api/emulation/start`").to_lowercase();
+    assert!(
+        start.contains("{\"links\": [{name, ingress, egress, config}]}"),
+        "the start body is documented as {{\"links\": [{{name, ingress, egress, config}}]}}: {start}"
+    );
+}
+
+#[test]
+fn the_readme_says_import_and_export_live_on_the_settings_page() {
+    let items = controller_items_with("dpds-links-<date>.json");
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert!(items[0].contains("Settings page"), "{}", items[0]);
+}
+
+#[test]
+fn the_readme_states_the_automatic_core_assignment() {
+    let ok = controller_items_with("").into_iter().any(|i| {
+        let l = i.to_lowercase();
+        ["automatic", "isolated", "main lcore", "numa"]
+            .iter()
+            .all(|w| l.contains(w))
+    });
+    assert!(
+        ok,
+        "one controller item states the automatic assignment: the main lcore is the lowest \
+         non-isolated core, each link gets an isolated core, the NIC's NUMA node first"
+    );
+}
+
+#[test]
+fn the_readme_states_the_fixed_500_ms_poll() {
+    let ok = controller_items_with("500 ms")
+        .into_iter()
+        .any(|i| i.to_lowercase().contains("poll"));
+    assert!(
+        ok,
+        "a controller item says the telemetry poll interval is a fixed 500 ms"
     );
 }

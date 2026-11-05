@@ -248,7 +248,7 @@ describe.each(PAGES)('$name: display unit of a stored value, and the exact round
 
   it('a stored limiter rate of 0 bit/s is an invalid link: the document is corrupt, the editor shows the alert (spec27b)', async () => {
     seedLinks([fx.link({ config: cfg({}, { rate_bps: 0 }) })]);
-    renderApp('/links/1');
+    renderApp('/settings/1');
     expect(await screen.findByRole('alert')).toHaveTextContent(/local configuration/i);
     expect(screen.queryByLabelText('Rate')).not.toBeInTheDocument();
   });

@@ -236,7 +236,7 @@ describe('a stored link with an out-of-range value makes the document corrupt (s
     seedLinks([fx.link({ config })]);
     const before = rawStore();
     const writes = watchStoreWrites();
-    renderApp('/links/1');
+    renderApp('/settings/1');
     expect(await screen.findByRole('alert')).toHaveTextContent(/local configuration/i);
     expect(screen.getByRole('button', { name: /^reset/i })).toBeInTheDocument();
     expect(screen.queryByLabelText('Name')).not.toBeInTheDocument();

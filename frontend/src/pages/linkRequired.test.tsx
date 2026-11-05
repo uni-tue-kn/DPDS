@@ -34,7 +34,6 @@ function pristineRequired(page: ConfigPage): string[] {
 /** Controls that are never required. */
 function neverRequired(): string[] {
   return [
-    'Worker lcore',
     'Seed',
     'Histogram bins',
     'Histogram lo',

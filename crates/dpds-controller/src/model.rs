@@ -1,4 +1,4 @@
-//! The configuration of a run: the links and settings of a start body. The controller
+//! The configuration of a run: the links of a start body. The controller
 //! keeps it only while the emulation runs (it reports it in `GET /api/emulation`).
 
 use serde::{Deserialize, Serialize};
@@ -23,20 +23,6 @@ pub struct Link {
     /// DPDK device name the link sends on.
     pub egress: String,
     pub config: ConfigDto,
-    /// Optional worker lcore; automatic when absent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worker: Option<u32>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct Settings {
-    /// Main lcore; the lowest non-isolated online core when absent.
-    pub main_lcore: Option<u32>,
-    /// Extra EAL arguments, passed before the `--` separator.
-    pub eal_extra_args: Vec<String>,
-    /// Telemetry poll interval.
-    pub poll_interval_ms: u64,
 }
 
 /// A link of a start body: a [`Link`] without an id.
@@ -47,24 +33,20 @@ pub struct StartLink {
     pub ingress: String,
     pub egress: String,
     pub config: ConfigDto,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worker: Option<u32>,
 }
 
 /// Body of `POST /api/emulation/start`, `/api/emulation/validate` and `/api/host/hints`:
-/// the whole configuration.
+/// the links.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StartRequest {
     pub links: Vec<StartLink>,
-    pub settings: Settings,
 }
 
 /// What the planners (lcores, hints) read, and what `GET /api/emulation` reports as `config`.
 #[derive(Debug, Clone, Default, Serialize, ToSchema)]
 pub struct RunConfig {
     pub links: Vec<Link>,
-    pub settings: Settings,
 }
 
 impl StartRequest {
@@ -82,12 +64,8 @@ impl StartRequest {
                 ingress: normal(l.ingress),
                 egress: normal(l.egress),
                 config: l.config,
-                worker: l.worker,
             })
             .collect();
-        RunConfig {
-            links,
-            settings: self.settings,
-        }
+        RunConfig { links }
     }
 }

@@ -429,8 +429,8 @@ describe('the update modal (spec 18, as P4TG)', () => {
     await user.click(within(modal() as HTMLElement).getAllByRole('button', { name: 'Close' })[0]);
     await waitFor(() => expect(modal()).toBeNull());
     const nav = screen.getByRole('navigation', { name: 'Main navigation' });
-    await user.click(within(nav).getByRole('link', { name: 'Links' }));
-    await screen.findByRole('heading', { level: 1, name: 'Links' });
+    await user.click(within(nav).getByRole('link', { name: 'Settings' }));
+    await screen.findByRole('heading', { level: 1, name: 'Settings' });
     await user.click(within(nav).getByRole('link', { name: 'Interfaces' }));
     await screen.findByRole('heading', { level: 1, name: 'Interfaces' });
     await settle();

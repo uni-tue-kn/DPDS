@@ -76,7 +76,7 @@ async function openStored(
 ): Promise<UserEvent> {
   const user = userEvent.setup();
   seedLinks([withFrame(fx.link({ config }), frame)]);
-  renderApp('/links/1');
+  renderApp('/settings/1');
   await screen.findByRole('heading', { level: 1, name: 'Edit link' });
   await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue('a-b'));
   return user;
@@ -542,11 +542,10 @@ describe('the frame size never reaches the controller and never marks a restart'
     const doc: StoredDoc = {
       version: 1,
       links: [frameLink(), withFrame(fx.linkRev(), 9000)],
-      settings: fx.settings(),
     };
     const req = startRequestOf(doc);
     expect(JSON.stringify(req)).not.toMatch(/frame/i);
-    for (const l of req.links) expect(Object.keys(l).sort()).toEqual(['config', 'egress', 'ingress', 'name', 'worker']);
+    for (const l of req.links) expect(Object.keys(l).sort()).toEqual(['config', 'egress', 'ingress', 'name']);
   });
 
   it('Start sends the document without the frame size', async () => {
@@ -570,22 +569,22 @@ describe('the frame size never reaches the controller and never marks a restart'
   });
 
   it('a local link with a frame size equals the running link without one: no pending restart (pure)', () => {
-    const local: StoredDoc = { version: 1, links: [frameLink()], settings: fx.settings() };
-    const running = fx.runningEmulation(fx.runningConfig([fx.link()], fx.settings()));
+    const local: StoredDoc = { version: 1, links: [frameLink()] };
+    const running = fx.runningEmulation(fx.runningConfig([fx.link()]));
     expect(pendingRestart(local, running).any).toBe(false);
   });
 
   it('a different frame size alone does not mark a restart (pure)', () => {
-    const running = fx.runningEmulation(fx.runningConfig([withFrame(fx.link(), 9000)], fx.settings()));
-    const local: StoredDoc = { version: 1, links: [frameLink()], settings: fx.settings() };
+    const running = fx.runningEmulation(fx.runningConfig([withFrame(fx.link(), 9000)]));
+    const local: StoredDoc = { version: 1, links: [frameLink()] };
     expect(pendingRestart(local, running).any).toBe(false);
   });
 
   it('the Links page shows no pending-restart marker for it, but still for a real difference', async () => {
-    const running = fx.runningEmulation(fx.runningConfig([fx.link()], fx.settings()));
+    const running = fx.runningEmulation(fx.runningConfig([fx.link()]));
     api.getEmulation.mockResolvedValue(running);
-    seedStore({ links: [frameLink()], settings: fx.settings() });
-    renderApp('/links');
+    seedStore({ links: [frameLink()] });
+    renderApp('/settings');
     await screen.findByText('a-b');
     await waitFor(() => expect(api.getEmulation).toHaveBeenCalled());
     await new Promise((r) => setTimeout(r, 30));
@@ -596,22 +595,22 @@ describe('the frame size never reaches the controller and never marks a restart'
   it('a real difference next to a frame size is still flagged (guards the two tests above)', async () => {
     const l = frameLink();
     const changed = { ...l, config: { ...l.config, buffer_capacity: l.config.buffer_capacity + 1 } };
-    api.getEmulation.mockResolvedValue(fx.runningEmulation(fx.runningConfig([fx.link()], fx.settings())));
-    seedStore({ links: [changed], settings: fx.settings() });
-    renderApp('/links');
+    api.getEmulation.mockResolvedValue(fx.runningEmulation(fx.runningConfig([fx.link()])));
+    seedStore({ links: [changed] });
+    renderApp('/settings');
     expect(await screen.findByTestId('pending-restart')).toBeInTheDocument();
   });
 
   it('saving a link through the editor does not make the dashboard report a pending restart', async () => {
-    api.getEmulation.mockResolvedValue(fx.runningEmulation(fx.runningConfig([fx.link()], fx.settings())));
-    seedStore({ links: [frameLink()], settings: fx.settings() });
+    api.getEmulation.mockResolvedValue(fx.runningEmulation(fx.runningConfig([fx.link()])));
+    seedStore({ links: [frameLink()] });
     const user = userEvent.setup();
-    renderApp('/links/1');
+    renderApp('/settings/1');
     await screen.findByRole('heading', { level: 1, name: 'Edit link' });
     await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue('a-b'));
     await typeFrame(user, '9000');
     await user.click(screen.getByRole('button', { name: /^save$/i }));
-    await screen.findByRole('heading', { level: 1, name: /links/i });
+    await screen.findByRole('heading', { level: 1, name: /settings/i });
     await new Promise((r) => setTimeout(r, 30));
     expect((storedLinks()[0] as FramedLink).avg_frame_size_byte).toBe(9000);
     expect(screen.queryByTestId('pending-restart')).not.toBeInTheDocument();
@@ -622,7 +621,7 @@ describe('Links: the inspect panel shows the frame size', () => {
   async function inspect(link: Link) {
     seedLinks([link]);
     const user = userEvent.setup();
-    renderApp('/links');
+    renderApp('/settings');
     await screen.findByText(link.name);
     await user.click(screen.getByRole('button', { name: `Inspect ${link.name}` }));
     return screen.findByRole('dialog', { name: link.name });
@@ -655,7 +654,7 @@ describe('Links: the inspect panel shows the frame size', () => {
 
   it('the Links list columns do not change (no frame size column)', async () => {
     seedLinks([withFrame(fx.link(), 1518)]);
-    renderApp('/links');
+    renderApp('/settings');
     await screen.findByText('a-b');
     expect(screen.queryByRole('columnheader', { name: /frame/i })).not.toBeInTheDocument();
     expect(screen.getAllByRole('columnheader')).toHaveLength(

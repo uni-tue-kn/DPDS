@@ -329,7 +329,7 @@ export default function Dashboard() {
           <div className="d-flex flex-wrap gap-3 mb-3">
             {restartNeeded && (
               <Badge pill bg="warning" text="dark" data-testid="pending-restart">
-                Restart needed: links or settings changed
+                Restart needed: links changed
               </Badge>
             )}
             {showStale && (

@@ -13,7 +13,6 @@ import Dashboard from './pages/Dashboard';
 import Hints from './pages/Hints';
 import Interfaces from './pages/Interfaces';
 import LinkEditor from './pages/LinkEditor';
-import Links from './pages/Links';
 import Settings from './pages/Settings';
 
 const ONLINE_POLL_MS = 5000;
@@ -25,11 +24,15 @@ function initialTheme(): Theme {
 }
 
 const NAV = [
-  { to: '/', label: 'Dashboard', icon: 'bi-speedometer2', end: true },
-  { to: '/links', label: 'Links', icon: 'bi-diagram-2', end: false },
+  { to: '/', label: 'Dashboard', icon: 'bi-speedometer', end: true },
   { to: '/interfaces', label: 'Interfaces', icon: 'bi-ethernet', end: false },
   { to: '/hints', label: 'Host hints', icon: 'bi-lightbulb', end: false },
-  { to: '/settings', label: 'Settings', icon: 'bi-gear-wide-connected', end: false },
+  {
+    to: '/settings',
+    label: 'Settings',
+    icon: 'bi-gear-wide-connected',
+    end: false,
+  },
 ];
 
 function Sidebar({ theme, onToggle }: { theme: Theme; onToggle: () => void }) {
@@ -75,15 +78,9 @@ function Sidebar({ theme, onToggle }: { theme: Theme; onToggle: () => void }) {
       </div>
       <nav aria-label="Main navigation" className="nav flex-column">
         {NAV.map((n) => (
-          <OverlayTrigger
-            key={n.to}
-            placement="right"
-            overlay={<Tooltip id={`nav-tooltip-${n.to}`}>{n.label}</Tooltip>}
-          >
-            <NavLink to={n.to} end={n.end} className="nav-link" aria-label={n.label}>
-              <i className={`bi ${n.icon}`} aria-hidden="true" />
-            </NavLink>
-          </OverlayTrigger>
+          <NavLink key={n.to} to={n.to} end={n.end} className="nav-link" aria-label={n.label}>
+            <i className={`bi ${n.icon}`} aria-hidden="true" />
+          </NavLink>
         ))}
       </nav>
       <div className="sidebar-footer">
@@ -182,12 +179,11 @@ export default function App() {
           <CorruptConfigAlert />
           <Routes>
             <Route path="/" element={<Dashboard />} />
-            <Route path="/links" element={<Links />} />
-            <Route path="/links/new" element={<LinkEditor />} />
-            <Route path="/links/:id" element={<LinkEditor />} />
             <Route path="/interfaces" element={<Interfaces />} />
             <Route path="/hints" element={<Hints />} />
             <Route path="/settings" element={<Settings />} />
+            <Route path="/settings/new" element={<LinkEditor />} />
+            <Route path="/settings/:id" element={<LinkEditor />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </main>

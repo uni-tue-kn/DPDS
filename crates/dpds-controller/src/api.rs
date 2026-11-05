@@ -32,7 +32,7 @@ use crate::frontend::Frontend;
 use crate::hints::{compute_hints_cached, Hint, Level};
 use crate::host::HostRoots;
 use crate::lcores::{assign_lcores, DirectionPlan};
-use crate::model::{Link, RunConfig, Settings, StartLink, StartRequest, MAX_NAME_CHARS};
+use crate::model::{Link, RunConfig, StartLink, StartRequest, MAX_NAME_CHARS};
 use crate::nic_hints::FirmwareCache;
 use crate::stats::{
     compute_stats, delay_histogram, delay_stats_on, uptime_ms, Clamped, Counters, DirectionStats,
@@ -313,13 +313,6 @@ fn check_ports_free(l: &Link, others: &[Link]) -> Result<(), ApiError> {
     Ok(())
 }
 
-fn validate_settings(settings: &Settings) -> Result<(), ApiError> {
-    if settings.poll_interval_ms == 0 {
-        return Err(ApiError::bad("poll_interval_ms must be at least 1"));
-    }
-    validate::eal_extra_args(&settings.eal_extra_args).map_err(ApiError::bad)
-}
-
 /// The value of `key` in a raw query string (an empty one for `key` without `=`).
 fn query_param<'a>(query: Option<&'a str>, key: &str) -> Option<&'a str> {
     query?
@@ -350,10 +343,8 @@ fn validate_config(config: &RunConfig) -> Result<(), ApiError> {
     validate_body(config)
 }
 
-/// The checks of a start body that do not need a link: the settings, every link and the
-/// telemetry limit.
+/// The checks of a start body that do not need a link: every link and the telemetry limit.
 fn validate_body(config: &RunConfig) -> Result<(), ApiError> {
-    validate_settings(&config.settings)?;
     for (i, l) in config.links.iter().enumerate() {
         validate_link(l, &config.links[..i])?;
     }
@@ -431,7 +422,6 @@ impl App {
             main_lcore: assignment.main_lcore,
             worker_lcores: workers,
             ports,
-            eal_extra_args: config.settings.eal_extra_args.clone(),
             links_file: links_file.clone(),
         });
         let plan = LaunchPlan {
@@ -593,9 +583,6 @@ async fn start(
     }
     let a = app.clone();
     let (plan, config) = blocking(move || a.launch_plan(req)).await??;
-    app.deps
-        .telemetry
-        .set_poll_interval(config.settings.poll_interval_ms);
     app.deps.telemetry.set_run_links(
         config
             .links
@@ -823,7 +810,6 @@ async fn histogram(
         StartLink,
         StartRequest,
         RunConfig,
-        Settings,
         PlanView,
         Interface,
         Hint,

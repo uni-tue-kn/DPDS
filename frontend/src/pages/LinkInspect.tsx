@@ -54,7 +54,7 @@ export default function LinkInspect({
           </Offcanvas.Header>
           <Offcanvas.Body>
             <RouterLink
-              to={`/links/${link.id}`}
+              to={`/settings/${link.id}`}
               className="btn btn-sm btn-outline-secondary mb-3"
               aria-label={`Edit ${link.name}`}
             >
@@ -63,7 +63,6 @@ export default function LinkInspect({
             <dl className="inspect-fields">
               <Item name="Ingress">{port(link.ingress, label)}</Item>
               <Item name="Egress">{port(link.egress, label)}</Item>
-              <Item name="Worker lcore">{link.worker == null ? 'auto' : link.worker}</Item>
             </dl>
             <Section title="Buffer">
               <Item name="Buffer capacity">{c.buffer_capacity}</Item>

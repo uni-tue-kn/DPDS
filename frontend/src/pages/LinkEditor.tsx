@@ -9,15 +9,7 @@ import { useLoad } from '../common/useLoad';
 import { saveLink, useLocalConfig } from '../common/localConfig';
 import ConfigFieldset from './ConfigFieldset';
 import { FieldLabel, RequiredNote } from './FieldLabel';
-import {
-  LINK_NAME,
-  LINK_NAME_RULE,
-  configToForm,
-  defaultConfigForm,
-  formToDto,
-  parseWorker,
-  portError,
-} from './linkForm';
+import { LINK_NAME, LINK_NAME_RULE, configToForm, defaultConfigForm, formToDto, portError } from './linkForm';
 import type { ConfigForm } from './linkForm';
 import type { Interface, Link, LinkInput } from '../api/types';
 
@@ -87,7 +79,6 @@ function Editor({
   const [config, setConfig] = useState<ConfigForm>(() =>
     link ? configToForm(link.config, link.avg_frame_size_byte) : defaultConfigForm(),
   );
-  const [worker, setWorker] = useState(link?.worker == null ? '' : String(link.worker));
   const [error, setError] = useState<string>();
 
   // Every port is ingress of at most one link and egress of at most one link (the controller enforces it, 409).
@@ -122,7 +113,6 @@ function Editor({
         ingress: ports[0][1],
         egress: ports[1][1],
         ...formToDto(config),
-        worker: parseWorker(worker),
       };
     } catch (e) {
       setError(errorMessage(e));
@@ -130,7 +120,7 @@ function Editor({
     }
     try {
       saveLink(input, id);
-      navigate('/links');
+      navigate('/settings');
     } catch (e) {
       setError(errorMessage(e));
     }
@@ -152,11 +142,6 @@ function Editor({
                 required
                 aria-required="true"
               />
-            </Form.Group>
-            <Form.Group as={Col} md={6} className="mb-3" controlId="link-worker">
-              <FieldLabel help="Worker lcore" />
-              <Form.Control type="number" min={0} step={1} value={worker} onChange={(e) => setWorker(e.target.value)} />
-              <Form.Text>Empty: automatic.</Form.Text>
             </Form.Group>
           </Row>
           <Row>
@@ -183,7 +168,7 @@ function Editor({
       <Button type="submit" variant="primary" className="me-2">
         Save
       </Button>
-      <RouterLink to="/links" className="btn btn-outline-secondary">
+      <RouterLink to="/settings" className="btn btn-outline-secondary">
         Cancel
       </RouterLink>
     </Form>
@@ -211,7 +196,12 @@ export default function LinkEditor() {
   const { doc, corrupt } = useLocalConfig();
   const link = linkId === undefined ? undefined : doc.links.find((l) => l.id === linkId);
   const source = linkId === undefined ? doc.links.find((l) => l.id === copyOf) : undefined;
-  const copy = source && { ...source, name: copyName(source.name, doc.links), ingress: '', egress: '', worker: null };
+  const copy = source && {
+    ...source,
+    name: copyName(source.name, doc.links),
+    ingress: '',
+    egress: '',
+  };
   const missing = linkId !== undefined && link === undefined && !corrupt;
   const ready = interfaces.data !== undefined && !missing && (linkId === undefined || link !== undefined);
 

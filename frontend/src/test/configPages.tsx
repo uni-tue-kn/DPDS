@@ -50,7 +50,7 @@ export const linkPage: ConfigPage = {
   outerName: 'Link configuration',
   async openNew() {
     const user = userEvent.setup();
-    renderApp('/links/new');
+    renderApp('/settings/new');
     await screen.findByRole('heading', { level: 1, name: 'New link' });
     await waitFor(() => expect(screen.getAllByRole('option', { name: /enp101s0f0/ })).not.toHaveLength(0));
     watchWrites();
@@ -65,7 +65,7 @@ export const linkPage: ConfigPage = {
     const link = fx.link({ config });
     seedLinks([link]);
     const user = userEvent.setup();
-    renderApp(`/links/${link.id}`);
+    renderApp(`/settings/${link.id}`);
     await screen.findByRole('heading', { level: 1, name: 'Edit link' });
     await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue(link.name));
     watchWrites();

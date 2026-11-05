@@ -164,7 +164,7 @@ const PAGE: u64 = 2 * 1024 * 1024;
 const T30: Duration = Duration::from_secs(30);
 
 fn link_on(pci: &str) -> Setup {
-    setup(vec![link("l", pci, pci, None)])
+    setup(vec![link("l", pci, pci)])
 }
 
 fn text(hints: &Value, id: &str) -> String {
@@ -356,7 +356,7 @@ fn only_the_irqs_of_the_used_nics_count() {
     let h = hints_json(&host, &link_on(NIC1));
     assert_level(&h, "irq_affinity", "warn", "warn");
     // the egress NIC counts as well
-    let h = hints_json(&host, &setup(vec![link("l", NIC0, NIC1, None)]));
+    let h = hints_json(&host, &setup(vec![link("l", NIC0, NIC1)]));
     assert_level(&h, "irq_affinity", "warn", "warn");
 }
 
@@ -442,7 +442,7 @@ fn each_nic_gets_the_housekeeping_cores_of_its_own_node() {
     host.irq_effective(101, "3"); // NIC0, node 0
     host.irq_effective(110, "6"); // NIC1, node 1
     host.irq_effective(111, "7");
-    let h = hints_json(&host, &setup(vec![link("l", NIC0, NIC1, None)]));
+    let h = hints_json(&host, &setup(vec![link("l", NIC0, NIC1)]));
     let parsed: Vec<(u32, Vec<u32>)> = commands_of(&h, "irq_affinity")
         .iter()
         .map(|c| irq_command(c))
@@ -496,10 +496,7 @@ fn nics_that_are_uplinks_or_not_usable_are_skipped_and_named() {
     host.irq_effective(120, "2");
     let h = hints_json(
         &host,
-        &setup(vec![
-            link("a", NIC0, NIC1, None),
-            link("b", INTEL, NIC0, None),
-        ]),
+        &setup(vec![link("a", NIC0, NIC1), link("b", INTEL, NIC0)]),
     );
     let cmds = commands_of(&h, "irq_affinity");
     assert_eq!(
@@ -661,7 +658,7 @@ fn maxreadreq_is_one_hint_per_used_nic_with_current_target_and_the_setpci_comman
             .join(format!("sys/bus/pci/devices/{NIC0}/config")),
     )
     .unwrap();
-    let h = hints_json(&host, &setup(vec![link("l", NIC0, NIC1, None)]));
+    let h = hints_json(&host, &setup(vec![link("l", NIC0, NIC1)]));
     let (a, b) = (
         nic_id("pcie_maxreadreq", NIC0),
         nic_id("pcie_maxreadreq", NIC1),
@@ -924,20 +921,16 @@ fn governor_not_performance_names_the_command_where_performance_is_available() {
 }
 
 #[test]
-fn the_governor_commands_cover_the_worker_and_isolated_cores_that_offer_performance() {
+fn the_governor_commands_cover_the_isolated_cores_that_offer_performance() {
     let host = FakeHost::bare_metal(); // isolated 2-3,6-7
     host.governor_all(8, "powersave");
     host.write(
         "sys/devices/system/cpu/cpu3/cpufreq/scaling_available_governors",
         "powersave\n",
     );
-    // the worker runs on the non-isolated core 4
-    let h = hints_json(&host, &setup(vec![link("l", NIC1, NIC1, Some(4))]));
-    assert_commands(
-        &h,
-        "governor",
-        &[&gov_cmd(2), &gov_cmd(4), &gov_cmd(6), &gov_cmd(7)],
-    );
+    // the worker runs on the isolated core 6; core 3 offers no performance governor
+    let h = hints_json(&host, &setup(vec![link("l", NIC1, NIC1)]));
+    assert_commands(&h, "governor", &[&gov_cmd(2), &gov_cmd(6), &gov_cmd(7)]);
     assert_eq!(host.read(&gov_path(4)), "powersave");
 }
 
@@ -999,14 +992,6 @@ fn hugepages_that_cover_the_need_suggest_nothing_even_with_little_headroom() {
     let pages = (need_bytes() as f64 * 1.2 / PAGE as f64).ceil() as u64;
     let h = hints_json(&node0_host(pages, pages), &link_on(NIC0));
     assert_level(&h, "hugepages", "warn", "warn");
-    assert_no_commands(&h, "hugepages");
-}
-
-#[test]
-fn no_hugepages_are_used_with_no_huge_so_nothing_is_suggested() {
-    let st = setup_eal(vec![link("l", NIC0, NIC0, None)], json!(["--no-huge"]));
-    let h = hints_json(&FakeHost::bare(), &st);
-    assert_level(&h, "hugepages", "info", "info");
     assert_no_commands(&h, "hugepages");
 }
 
@@ -1590,42 +1575,31 @@ fn a_port_that_is_no_nic_of_the_host_has_no_per_nic_hint_and_runs_no_tool() {
 #[tokio::test]
 async fn a_hints_body_with_an_invalid_field_is_a_400_naming_it_like_start() {
     let a = TestApp::new(FakeHost::bare_metal());
-    let mut bad_cfg = link("c", "net_null0", "net_null1", None);
+    let mut bad_cfg = link("c", "net_null0", "net_null1");
     bad_cfg["config"]["delayer"]["std_ns"] = json!(-1.0);
-    let mut no_rate = link("r", "net_null0", "net_null1", None);
+    let mut no_rate = link("r", "net_null0", "net_null1");
     no_rate["config"]["delayer"]
         .as_object_mut()
         .unwrap()
         .remove("initialization_rate_pps");
-    let mut poll0 = setup(vec![link("x", "net_null0", "net_null0", None)]);
-    poll0.settings["poll_interval_ms"] = json!(0);
     let cases: Vec<(&str, Setup, &str)> = vec![
         (
             "bad name",
-            setup(vec![link("a b", "net_null0", "net_null0", None)]),
+            setup(vec![link("a b", "net_null0", "net_null0")]),
             "link name",
         ),
         (
             "bad port",
-            setup(vec![link("x", "eth0", "net_null0", None)]),
+            setup(vec![link("x", "eth0", "net_null0")]),
             "port",
         ),
         (
             "a port that is shell syntax",
-            setup(vec![link("x", "0000:17:00.0;reboot", "net_null0", None)]),
+            setup(vec![link("x", "0000:17:00.0;reboot", "net_null0")]),
             "port",
         ),
         ("bad config", setup(vec![bad_cfg]), "std_ns"),
         ("no rate", setup(vec![no_rate]), "initialization_rate_pps"),
-        ("poll interval 0", poll0, "poll_interval_ms"),
-        (
-            "eal arg",
-            setup_eal(
-                vec![link("x", "net_null0", "net_null0", None)],
-                json!(["-d", "x.so"]),
-            ),
-            "-d",
-        ),
     ];
     for (what, s, named) in cases {
         let r = a.post("/api/host/hints", s.body()).await;
@@ -1666,7 +1640,7 @@ fn all_tools(host: &FakeHost) {
 fn every_tool_call_passes_a_30_second_timeout_and_is_a_read_only_query() {
     let host = FakeHost::bare_metal();
     all_tools(&host);
-    let h = hints_json(&host, &setup(vec![link("l", NIC0, NIC1, None)]));
+    let h = hints_json(&host, &setup(vec![link("l", NIC0, NIC1)]));
     let calls = host.exec().calls();
     assert!(
         calls.len() >= 6,
@@ -1741,10 +1715,7 @@ async fn no_tool_runs_while_an_emulation_is_starting_running_or_stopping() {
         let a = TestApp::new(host);
         a.supervisor.force_status(status(state));
         let r = a
-            .post(
-                "/api/host/hints",
-                setup(vec![link("l", NIC0, NIC1, None)]).body(),
-            )
+            .post("/api/host/hints", setup(vec![link("l", NIC0, NIC1)]).body())
             .await;
         assert_eq!(r.status, 200, "{state:?}: {}", r.text());
         let h = r.json();
@@ -1796,7 +1767,7 @@ async fn the_tools_run_again_once_the_emulation_has_stopped() {
     let exec = host.exec();
     let a = TestApp::new(host);
     let body = link_on(NIC0).body();
-    a.start_ok(vec![link("l", NIC1, NIC1, None)]).await; // a real start through the route
+    a.start_ok(vec![link("l", NIC1, NIC1)]).await; // a real start through the route
     let h = a.post("/api/host/hints", body.clone()).await.json();
     assert!(exec.calls().is_empty(), "{:?}", exec.calls());
     assert_no_commands(&h, &nic_id("flow_control", NIC0));
@@ -1832,7 +1803,7 @@ fn get_has_no_per_nic_hint_and_a_vdev_link_adds_none() {
 fn per_nic_hints_exist_for_the_nics_of_the_links_only_and_ids_and_titles_are_unique() {
     let host = FakeHost::bare_metal();
     all_tools(&host);
-    let h = hints_json(&host, &setup(vec![link("l", NIC0, NIC1, None)]));
+    let h = hints_json(&host, &setup(vec![link("l", NIC0, NIC1)]));
     let ids = hint_ids(&h);
     for kind in ["flow_control", "pcie_maxreadreq", "port_buffer", "firmware"] {
         for pci in [NIC0, NIC1] {
@@ -1875,7 +1846,7 @@ fn the_hints_that_have_commands_are_exactly_the_ones_that_can_be_fixed() {
     host.governor_all(8, "powersave");
     host.irq_effective(101, "3");
     set_mrr(&host, NIC0, 512);
-    let h = hints_json(&host, &setup(vec![link("l", NIC0, NIC1, None)]));
+    let h = hints_json(&host, &setup(vec![link("l", NIC0, NIC1)]));
     assert_no_action_members(&h);
     let mut with: Vec<String> = hint_ids(&h)
         .into_iter()
@@ -2594,26 +2565,17 @@ async fn the_hints_post_answers_409_for_a_duplicate_name_or_a_reused_port_like_s
     let cases = [
         (
             "a duplicate name",
-            setup(vec![
-                link("x", NIC0, NIC1, None),
-                link("x", INTEL, MGMT, None),
-            ]),
+            setup(vec![link("x", NIC0, NIC1), link("x", INTEL, MGMT)]),
             "x",
         ),
         (
             "a reused ingress",
-            setup(vec![
-                link("a", NIC0, NIC1, None),
-                link("b", NIC0, INTEL, None),
-            ]),
+            setup(vec![link("a", NIC0, NIC1), link("b", NIC0, INTEL)]),
             NIC0,
         ),
         (
             "a reused egress",
-            setup(vec![
-                link("a", NIC0, NIC1, None),
-                link("b", INTEL, NIC1, None),
-            ]),
+            setup(vec![link("a", NIC0, NIC1), link("b", INTEL, NIC1)]),
             NIC1,
         ),
     ];
@@ -2761,7 +2723,7 @@ fn tool_ids() -> Vec<String> {
 }
 
 fn two_nic_link() -> Setup {
-    setup(vec![link("l", NIC0, NIC1, None)])
+    setup(vec![link("l", NIC0, NIC1)])
 }
 
 fn assert_used_up(h: &Value, id: &str) {
@@ -2978,7 +2940,7 @@ async fn until(what: &str, mut cond: impl FnMut() -> bool) {
 }
 
 fn start_body() -> Value {
-    setup(vec![link("s", NIC1, NIC1, None)]).body()
+    setup(vec![link("s", NIC1, NIC1)]).body()
 }
 
 /// Starts a hints request for NIC0 whose `ethtool` waits for `gate`.
@@ -3537,7 +3499,7 @@ async fn recheck_false_behaves_like_no_parameter() {
 #[tokio::test]
 async fn a_recheck_drops_only_the_nics_of_the_posted_links() {
     let (a, exec, _) = fw_app();
-    let both = setup(vec![link("l", NIC0, NIC1, None)]);
+    let both = setup(vec![link("l", NIC0, NIC1)]);
     hints_at(&a, "", &both).await;
     assert_eq!(fw_queries(&exec, BDF0), 1);
     assert_eq!(fw_queries(&exec, NIC1), 1);
@@ -3647,7 +3609,7 @@ async fn while_an_emulation_is_busy_a_cached_result_is_used_and_no_tool_runs() {
     for state in [State::Starting, State::Running, State::Stopping] {
         let (a, exec, _) = fw_app();
         let (id0, id1) = (fw_id(), nic_id("firmware", NIC1));
-        let s = setup(vec![link("l", NIC0, NIC1, None)]);
+        let s = setup(vec![link("l", NIC0, NIC1)]);
         let first = hints_at(&a, "", &link_on(NIC0)).await; // only NIC0 is cached
         a.supervisor.force_status(status(state));
         let calls = exec.calls().len();
@@ -3698,7 +3660,7 @@ async fn a_result_read_before_a_real_start_is_used_during_the_run() {
     let (a, exec, _) = fw_app();
     let s = link_on(NIC0);
     let first = hints_at(&a, "", &s).await;
-    a.start_ok(vec![link("r", NIC1, NIC1, None)]).await;
+    a.start_ok(vec![link("r", NIC1, NIC1)]).await;
     let calls = exec.calls().len();
     let h = hints_at(&a, "?recheck=true", &s).await;
     assert_eq!(exec.calls().len(), calls);
@@ -3733,7 +3695,7 @@ async fn both_functions_of_a_card_in_one_request_make_one_query() {
     let (a, exec, _) = fw_app();
     const FN1: &str = "0000:17:00.1";
     a.host.add_nic(&Nic::mlx5(FN1, "ens1f1", Some(0)));
-    let h = hints_at(&a, "", &setup(vec![link("l", NIC0, FN1, None)])).await;
+    let h = hints_at(&a, "", &setup(vec![link("l", NIC0, FN1)])).await;
     assert_eq!(fw_queries(&exec, BDF0), 1, "{:?}", exec.calls_with("q"));
     let (a0, a1) = (fw_id(), nic_id("firmware", FN1));
     assert_eq!(commands_of(&h, &a0), fw_untuned_commands());

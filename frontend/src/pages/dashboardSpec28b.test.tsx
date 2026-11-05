@@ -40,7 +40,7 @@ const clickRestart = async () => {
 
 describe('Dashboard (spec 28b item 1): Restart waits until the stop has finished', () => {
   beforeEach(() => {
-    seedStore({ links: [fx.link(), fx.linkRev()], settings: fx.settings({ poll_interval_ms: 250 }) });
+    seedStore({ links: [fx.link(), fx.linkRev()] });
   });
 
   it('the stop request is sent at once and the button area shows a disabled "Restarting…" with a spinner', async () => {
@@ -128,7 +128,7 @@ describe('Dashboard (spec 28b item 1): Restart waits until the stop has finished
   it('the start carries the local document as it is stored when the start happens, not when Restart was clicked', async () => {
     const { c } = await openRunning();
     await clickRestart();
-    seedStore({ links: [fx.loopLink({ id: 9 })], settings: fx.settings({ poll_interval_ms: 100 }) });
+    seedStore({ links: [fx.loopLink({ id: 9 })] });
     await tick(2000);
     expect(api.startEmulation).not.toHaveBeenCalled();
     c.state = 'stopped';

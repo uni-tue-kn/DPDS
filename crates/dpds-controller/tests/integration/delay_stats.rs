@@ -47,11 +47,9 @@ fn delay_stats_default_to_true_and_roundtrip_when_false() {
 #[tokio::test]
 async fn the_api_keeps_delay_stats_per_direction() {
     let a = TestApp::new(FakeHost::bare_metal());
-    let mut off = link("a-to-b", NIC0, NIC1, None);
+    let mut off = link("a-to-b", NIC0, NIC1);
     off["config"]["delay_stats"] = json!(false);
-    let r = a
-        .start_links(vec![off, link("b-to-a", NIC1, NIC0, None)])
-        .await;
+    let r = a.start_links(vec![off, link("b-to-a", NIC1, NIC0)]).await;
     assert_eq!(r.status, 202, "{}", r.text());
     // the links file dpds receives carries the switch of the link that has it off
     let plan = &a.supervisor.plans()[0];
@@ -85,8 +83,8 @@ fn the_links_file_carries_the_switch_per_link() {
     let mut off = cfg_json(1.0e6, 0.0);
     off["delay_stats"] = json!(false);
     let a = model_link(1, &link_cfg("a-to-b", "net_null0", "net_null1", off));
-    let b = model_link(2, &link("b-to-a", "net_null1", "net_null0", None));
-    let c = model_link(3, &link("loop", "net_null2", "net_null2", None));
+    let b = model_link(2, &link("b-to-a", "net_null1", "net_null0"));
+    let c = model_link(3, &link("loop", "net_null2", "net_null2"));
     let p = vec![
         plan(0, "a-to-b", "net_null0", "net_null1", 2),
         plan(1, "b-to-a", "net_null1", "net_null0", 3),
@@ -100,7 +98,7 @@ fn the_links_file_carries_the_switch_per_link() {
 
 #[test]
 fn an_all_on_link_writes_no_false() {
-    let l = model_link(1, &link("a-to-b", "net_null0", "net_null1", None));
+    let l = model_link(1, &link("a-to-b", "net_null0", "net_null1"));
     let v = links_file_json(&[l], &[plan(0, "a-to-b", "net_null0", "net_null1", 2)]).unwrap();
     assert!(is_on(&v["links"][0]["delay_stats"]), "{v}");
 }

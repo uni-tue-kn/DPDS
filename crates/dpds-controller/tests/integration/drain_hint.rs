@@ -52,7 +52,7 @@ fn a_slow_limiter_link_gets_a_warning_naming_the_link_and_the_systemd_limit() {
     let host = FakeHost::bare_metal();
     let state = setup(vec![
         with_config("crawler", "net_null0", limited(1.0e6, 1.0e3, 1000, true)),
-        link("quick", "net_null1", "net_null1", None),
+        link("quick", "net_null1", "net_null1"),
     ]);
     let (found, text) = drain_hints(&hints_json(&host, &state));
     assert!(!found.is_empty(), "no drain_timeout hint");
@@ -71,7 +71,7 @@ fn a_slow_link_is_judged_on_its_own_config_not_its_partner_in_a_pair() {
     let host = FakeHost::bare_metal();
     let state = setup(vec![
         link_cfg("slow-dir", NIC0, NIC1, limited(1.0e6, 1.0e3, 1000, true)),
-        link("fast-dir", NIC1, NIC0, None),
+        link("fast-dir", NIC1, NIC0),
     ]);
     let (found, text) = drain_hints(&hints_json(&host, &state));
     assert!(!found.is_empty());
@@ -85,7 +85,7 @@ fn a_long_delay_alone_triggers_it_and_each_slow_link_is_named() {
     let state = setup(vec![
         with_config("slow-a", "net_null0", cfg_json(700.0e9, 0.0)),
         with_config("slow-b", "net_null1", limited(1.0e6, 1.0e3, 1000, true)),
-        link("quick", "net_null2", "net_null2", None),
+        link("quick", "net_null2", "net_null2"),
     ]);
     let (found, text) = drain_hints(&hints_json(&host, &state));
     assert!(!found.is_empty());
@@ -108,11 +108,8 @@ fn normal_links_and_an_inactive_limiter_give_no_hint() {
     let host = FakeHost::bare_metal();
     for state in [
         Setup::default(),
-        setup(vec![link("a", "net_null0", "net_null0", None)]),
-        setup(vec![
-            link("a-to-b", NIC0, NIC1, None),
-            link("b-to-a", NIC1, NIC0, None),
-        ]),
+        setup(vec![link("a", "net_null0", "net_null0")]),
+        setup(vec![link("a-to-b", NIC0, NIC1), link("b-to-a", NIC1, NIC0)]),
         // the limiter is off: its limit / rate does not count (like in drain_timeout)
         setup(vec![with_config(
             "off",
@@ -196,7 +193,7 @@ fn the_hint_text_no_longer_mentions_limit_bit() {
 #[tokio::test]
 async fn the_hint_is_served_by_the_api() {
     let a = TestApp::new(FakeHost::bare_metal());
-    let mut slow = link("crawler", "net_null0", "net_null1", None);
+    let mut slow = link("crawler", "net_null0", "net_null1");
     slow["config"]["limiter"] = json!({"mode": "Spacer", "rate_bps": 1.0e3});
     slow["config"]["buffer_capacity"] = json!(1000);
     let r = a.post("/api/host/hints", setup(vec![slow]).body()).await;
@@ -216,7 +213,7 @@ async fn the_hint_is_served_by_the_api() {
     let r = b
         .post(
             "/api/host/hints",
-            setup(vec![link("quick", "net_null0", "net_null1", None)]).body(),
+            setup(vec![link("quick", "net_null0", "net_null1")]).body(),
         )
         .await;
     assert!(drain_hints(&r.json()).0.is_empty());

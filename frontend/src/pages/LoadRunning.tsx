@@ -1,5 +1,5 @@
 import { Button } from 'react-bootstrap';
-import { settingsOf, useLocalConfig, writeConfig } from '../common/localConfig';
+import { useLocalConfig, writeConfig } from '../common/localConfig';
 import type { EmulationView } from '../api/types';
 
 /**
@@ -19,9 +19,7 @@ export default function LoadRunning({ emulation }: { emulation?: EmulationView }
         ingress: l.ingress,
         egress: l.egress,
         config: l.config,
-        worker: l.worker ?? null,
       })),
-      settings: settingsOf(running.settings),
     });
   return (
     <div className="alert alert-info d-flex align-items-center gap-3">

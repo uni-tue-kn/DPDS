@@ -15,8 +15,7 @@
 //!     pub fn router(deps: Deps) -> axum::Router;                 // infallible: nothing is loaded
 //!     pub fn router_with(deps: Deps, f: Frontend) -> axum::Router;
 //! }
-//! pub mod model { pub struct Link {id,name,ingress,egress,config,worker}   // as in the running config
-//!                 pub struct Settings {main_lcore, eal_extra_args, poll_interval_ms}
+//! pub mod model { pub struct Link {id,name,ingress,egress,config}   // as in the running config; no Settings (spec 41)
 //!                 pub const MAX_NAME_CHARS: usize; }
 //! // gone: `store`, `model::StoredState`, `model::Preset`, `STATE_FILE_NAME`
 //! pub mod eal { eal_argv, EalInput, EalPort, links_file_json(&[Link], &[DirectionPlan]), drain_timeout(&[Config]) }
@@ -38,17 +37,17 @@
 //! ## HTTP contract
 //!
 //! - `POST /api/emulation/start` body (`StartRequest`, `deny_unknown_fields` at every level):
-//!   `{"links": [{name, ingress, egress, config, worker?}], "settings": {main_lcore,
-//!   eal_extra_args, poll_interval_ms}}`. A `link` has no `id`. 202 with the `/api/emulation`
+//!   `{"links": [{name, ingress, egress, config}]}` (spec 41: no `settings`, no `worker`;
+//!   both are a 400 naming the field). A `link` has no `id`. 202 with the `/api/emulation`
 //!   body; non-JSON content type 415 (checked first); malformed or unknown fields 400; empty
 //!   `links` 400 "nothing to start"; while starting/running/stopping 409; every validation
 //!   rule of the old links and settings routes applies to the body (names, ports, port reuse
-//!   409, uplink 409, dict limit 400 naming 256, lcore plan 400, eal args, poll
-//!   interval 0, `initialization_rate_pps`). Nothing is spawned on an error.
+//!   409, uplink 409, dict limit 400 naming 256, lcore plan 400,
+//!   `initialization_rate_pps`). Nothing is spawned on an error.
 //! - `GET /api/emulation`: `{state, pid, started_at, directions, main_lcore, error, log_tail,
 //!   config}`; there is no `pending_restart`. While stopped: `config` null/absent,
 //!   `directions` `[]`, `main_lcore` null/absent. While starting/running/stopping/failed:
-//!   `config` = `{links: [{id, name, ingress, egress, config, worker?}], settings: {...}}`, the
+//!   `config` = `{links: [{id, name, ingress, egress, config}]}`, the
 //!   start body as accepted (PCI addresses in lower case, ids unique, the order kept) and
 //!   `directions`/`main_lcore` = the planned lcores.
 //! - `POST /api/emulation/validate`: same body and same errors as start (but no state check,
@@ -683,20 +682,16 @@ pub fn dto_from(v: Value) -> ConfigDto {
     serde_json::from_value(v).expect("config JSON must deserialize")
 }
 
-/// A link of a start body: `ingress` -> `egress`, the default config (Normal 1 ms / 0.1 ms)
-/// and an optional worker lcore. A link in a start body has no `id`.
-pub fn link(name: &str, ingress: &str, egress: &str, worker: Option<u32>) -> Value {
-    let mut v = json!({
+/// A link of a start body: `ingress` -> `egress` with the default config (Normal 1 ms /
+/// 0.1 ms). A link in a start body has no `id` and no `worker` (spec 41: cores are automatic).
+pub fn link(name: &str, ingress: &str, egress: &str) -> Value {
+    json!({
         "name": name, "ingress": ingress, "egress": egress,
         "config": cfg_json(1.0e6, 1.0e5),
-    });
-    if let Some(w) = worker {
-        v["worker"] = json!(w);
-    }
-    v
+    })
 }
 
-/// Like [`link`] with an explicit config JSON and no worker override.
+/// Like [`link`] with an explicit config JSON.
 pub fn link_cfg(name: &str, ingress: &str, egress: &str, config: Value) -> Value {
     json!({ "name": name, "ingress": ingress, "egress": egress, "config": config })
 }
@@ -709,16 +704,10 @@ pub fn model_link(id: u32, body: &Value) -> Link {
     serde_json::from_value(v).expect("a link must deserialize into `Link`")
 }
 
-/// The default settings of a start body.
-pub fn settings_json() -> Value {
-    json!({"main_lcore": null, "eal_extra_args": [], "poll_interval_ms": 500})
-}
-
-/// What a test starts (or validates, or asks hints for): links and settings of a start body.
+/// What a test starts (or validates, or asks hints for): the links of a start body.
 #[derive(Clone)]
 pub struct Setup {
     pub links: Vec<Value>,
-    pub settings: Value,
 }
 
 impl Default for Setup {
@@ -728,35 +717,19 @@ impl Default for Setup {
 }
 
 impl Setup {
-    /// The JSON body of `POST /api/emulation/start`.
+    /// The JSON body of `POST /api/emulation/start`: `{links}` only.
     pub fn body(&self) -> Value {
-        json!({ "links": self.links, "settings": self.settings })
+        json!({ "links": self.links })
     }
 }
 
 pub fn setup(links: Vec<Value>) -> Setup {
-    Setup {
-        links,
-        settings: settings_json(),
-    }
-}
-
-pub fn setup_main(links: Vec<Value>, main_lcore: u32) -> Setup {
-    let mut s = setup(links);
-    s.settings["main_lcore"] = json!(main_lcore);
-    s
-}
-
-/// A start body with the given `eal_extra_args`.
-pub fn setup_eal(links: Vec<Value>, eal: Value) -> Setup {
-    let mut s = setup(links);
-    s.settings["eal_extra_args"] = eal;
-    s
+    Setup { links }
 }
 
 /// One harmless vdev hairpin, for hint tests that need "some link" without caring which.
 pub fn filler() -> Setup {
-    setup(vec![link("filler", "net_null9", "net_null9", None)])
+    setup(vec![link("filler", "net_null9", "net_null9")])
 }
 
 pub const NIC0: &str = "0000:17:00.0"; // mlx5, NUMA 0
@@ -1730,7 +1703,7 @@ impl TestApp {
         self.post("/api/emulation/start", setup.body()).await
     }
 
-    /// `POST /api/emulation/start` with these links and the default settings.
+    /// `POST /api/emulation/start` with these links.
     pub async fn start_links(&self, links: Vec<Value>) -> Reply {
         self.start(&setup(links)).await
     }

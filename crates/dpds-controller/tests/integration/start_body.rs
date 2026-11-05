@@ -22,7 +22,7 @@ fn app() -> TestApp {
 }
 
 fn one(name: &str, ingress: &str, egress: &str) -> Value {
-    link(name, ingress, egress, None)
+    link(name, ingress, egress)
 }
 
 fn config_of(v: &Value) -> &Value {
@@ -64,22 +64,24 @@ async fn the_start_response_already_carries_the_configuration() {
 #[tokio::test]
 async fn the_running_configuration_is_the_start_body_as_accepted() {
     let a = app();
-    let mut l0 = link("a-to-b", "0000:17:00.0", "0000:65:00.0", Some(3));
+    let mut l0 = link("a-to-b", "0000:17:00.0", "0000:65:00.0");
     l0["config"] = cfg_full(2.0e6, 1.0e5, 4.0e9);
     l0["config"]["seed"] = json!(9);
     l0["config"]["delay_stats"] = json!(false);
     l0["config"]["histogram"] = json!({"bins": 64});
     let l1 = link_cfg("loop", "net_null0", "net_null0", cfg_bare());
-    let mut s = setup(vec![l0.clone(), l1.clone()]);
-    s.settings = json!({"main_lcore": 1, "eal_extra_args": ["--no-huge", "-m", "256"],
-                        "poll_interval_ms": 250});
+    let s = setup(vec![l0.clone(), l1.clone()]);
     let r = a.start(&s).await;
     assert_eq!(r.status, 202, "{}", r.text());
     let v = a.get("/api/emulation").await.json();
     assert_eq!(v["state"], "running");
     let cfg = strip_nulls(config_of(&v));
-    // settings echoed as sent
-    assert_eq!(cfg["settings"], s.settings, "{v}");
+    // the echo is `{links}` only
+    assert_eq!(
+        cfg.as_object().unwrap().keys().collect::<Vec<_>>(),
+        ["links"],
+        "{v}"
+    );
     // links: same order, same fields, plus an id; null/absent stages stay out
     let links = cfg["links"].as_array().unwrap();
     assert_eq!(links.len(), 2, "{v}");
@@ -110,33 +112,12 @@ async fn pci_ports_are_reported_in_lower_case() {
 }
 
 #[tokio::test]
-async fn the_worker_is_reported_only_when_it_was_sent() {
-    let a = app();
-    a.start_ok(vec![
-        link("pinned", NIC0, NIC1, Some(3)),
-        one("auto", NIC1, NIC0),
-    ])
-    .await;
-    let v = a.get("/api/emulation").await.json();
-    let links = &config_of(&v)["links"];
-    assert_eq!(links[0]["worker"], 3, "{v}");
-    assert!(
-        absent(&links[1], "worker"),
-        "the planned lcore is in `directions`: {v}"
-    );
-}
-
-#[tokio::test]
 async fn directions_and_main_lcore_are_the_planned_lcores_of_the_running_config() {
     let a = app();
-    let mut s = setup_main(
-        vec![one("a-to-b", NIC0, NIC1), one("b-to-a", NIC1, NIC0)],
-        1,
-    );
-    s.settings["poll_interval_ms"] = json!(100);
+    let s = setup(vec![one("a-to-b", NIC0, NIC1), one("b-to-a", NIC1, NIC0)]);
     assert_eq!(a.start(&s).await.status, 202);
     let v = a.get("/api/emulation").await.json();
-    assert_eq!(v["main_lcore"], 1);
+    assert_eq!(v["main_lcore"], 0);
     let d = v["directions"].as_array().unwrap();
     assert_eq!(d.len(), 2);
     for (i, (link, rx, tx)) in [("a-to-b", NIC0, NIC1), ("b-to-a", NIC1, NIC0)]
@@ -355,9 +336,7 @@ async fn validate_answers_the_plan_without_starting_anything() {
 #[tokio::test]
 async fn validate_plans_what_start_launches() {
     let a = app();
-    let mut l = one("a-to-b", NIC0, NIC1);
-    l["worker"] = json!(7);
-    let s = setup_main(vec![l, one("b-to-a", NIC1, NIC0)], 1);
+    let s = setup(vec![one("a-to-b", NIC0, NIC1), one("b-to-a", NIC1, NIC0)]);
     let planned = parse_plan(&a.validate(&s).await.json());
     assert_eq!(a.start(&s).await.status, 202);
     let plan = &a.supervisor.plans()[0];
@@ -418,31 +397,6 @@ async fn validate_gives_the_same_errors_as_start() {
             setup(vec![one("m", MGMT, NIC1)]),
             409,
             MGMT,
-        ),
-        (
-            "poll interval 0",
-            {
-                let mut s = setup(vec![one("x", "net_null0", "net_null0")]);
-                s.settings["poll_interval_ms"] = json!(0);
-                s
-            },
-            400,
-            "poll_interval_ms",
-        ),
-        (
-            "eal arg",
-            setup_eal(
-                vec![one("x", "net_null0", "net_null0")],
-                json!(["-d", "x.so"]),
-            ),
-            400,
-            "-d",
-        ),
-        (
-            "worker out of range",
-            setup(vec![link("x", NIC0, NIC0, Some(99))]),
-            400,
-            "x",
         ),
         ("nothing", setup(vec![]), 400, "nothing to start"),
     ];

@@ -89,8 +89,8 @@ fn isolated_cores_that_are_offline_are_never_assigned() {
     let a = plan_for(
         &h,
         &setup(vec![
-            link("a", "net_null0", "net_null0", None),
-            link("b", "net_null1", "net_null1", None),
+            link("a", "net_null0", "net_null0"),
+            link("b", "net_null1", "net_null1"),
         ]),
     )
     .unwrap();
@@ -101,9 +101,9 @@ fn isolated_cores_that_are_offline_are_never_assigned() {
     let e = plan_for(
         &h,
         &setup(vec![
-            link("a", "net_null0", "net_null0", None),
-            link("b", "net_null1", "net_null1", None),
-            link("c", "net_null2", "net_null2", None),
+            link("a", "net_null0", "net_null0"),
+            link("b", "net_null1", "net_null1"),
+            link("c", "net_null2", "net_null2"),
         ]),
     )
     .unwrap_err()
@@ -119,8 +119,8 @@ fn an_isolated_core_in_a_hole_of_the_online_list_is_skipped() {
     let a = plan_for(
         &h,
         &setup(vec![
-            link("a", "net_null0", "net_null0", None),
-            link("b", "net_null1", "net_null1", None),
+            link("a", "net_null0", "net_null0"),
+            link("b", "net_null1", "net_null1"),
         ]),
     )
     .unwrap();
@@ -224,7 +224,7 @@ async fn handlers_that_read_sysfs_do_not_block_the_async_workers() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_concurrent_starts_launch_exactly_once() {
     let a = TestApp::new(FakeHost::bare_metal());
-    let body = setup(vec![link("l", "net_null0", "net_null0", None)]).body();
+    let body = setup(vec![link("l", "net_null0", "net_null0")]).body();
     // the supervisor needs 300 ms to take the plan: the window in which a second
     // start could pass the state check
     a.supervisor.set_start_delay(Duration::from_millis(300));

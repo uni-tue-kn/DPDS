@@ -31,7 +31,6 @@ pub struct EalInput {
     pub main_lcore: u32,
     pub worker_lcores: Vec<u32>,
     pub ports: Vec<EalPort>,
-    pub eal_extra_args: Vec<String>,
     pub links_file: PathBuf,
 }
 
@@ -66,7 +65,6 @@ pub fn eal_argv(i: &EalInput) -> Vec<String> {
             });
         }
     }
-    argv.extend(i.eal_extra_args.iter().cloned());
     argv.push("--".into());
     argv.push("--links".into());
     argv.push(i.links_file.to_string_lossy().into_owned());

@@ -6,26 +6,25 @@ import * as fx from './test/fixtures';
 import { renderApp, tick } from './test/helpers';
 import { setPrefersDark } from './test/matchMedia';
 
-const NAV = ['Dashboard', 'Links', 'Interfaces', 'Host hints', 'Settings'];
+const NAV = ['Dashboard', 'Interfaces', 'Host hints', 'Settings'];
 const PAGES: [string, string, string][] = [
   ['Dashboard', '/', 'Dashboard'],
-  ['Links', '/links', 'Links'],
   ['Interfaces', '/interfaces', 'Interfaces'],
   ['Host hints', '/hints', 'Host hints'],
   ['Settings', '/settings', 'Settings'],
 ];
 
 describe('sidebar navigation', () => {
-  it('has a main navigation with the five pages in order', () => {
+  it('has a main navigation with the four pages in order (spec 41: Dashboard, Interfaces, Host hints, Settings)', () => {
     renderApp('/');
     const nav = screen.getByRole('navigation', { name: 'Main navigation' });
     const names = within(nav)
       .getAllByRole('link')
       .map((a) => a.getAttribute('aria-label') ?? a.textContent?.trim());
-    expect(names.slice(0, 5)).toEqual(NAV);
+    expect(names.slice(0, 4)).toEqual(NAV);
   });
 
-  it('has no Presets item: the navigation holds exactly the five pages (spec27)', () => {
+  it('has no Presets item: the navigation holds exactly the four pages (spec27)', () => {
     renderApp('/');
     const nav = screen.getByRole('navigation', { name: 'Main navigation' });
     const names = within(nav)
@@ -170,7 +169,7 @@ describe('sidebar API documentation link (v16)', () => {
     const names = within(nav)
       .getAllByRole('link')
       .map((a) => a.getAttribute('aria-label') ?? a.textContent?.trim());
-    expect(names.slice(0, 5)).toEqual(NAV);
+    expect(names.slice(0, 4)).toEqual(NAV);
     expect(names).not.toContain('API documentation');
   });
 

@@ -1,4 +1,4 @@
-//! Input validation (C3): port names and the EAL argument allowlist.
+//! Input validation (C3): port names.
 //! Everything the controller puts on the `dpds` command line
 //! comes from here or from its own code, never from a free-form string.
 
@@ -37,45 +37,4 @@ fn is_vdev(s: &str) -> bool {
             .and_then(|r| r.strip_prefix(k))
             .is_some_and(|d| !d.is_empty() && d.bytes().all(|c| c.is_ascii_digit()))
     })
-}
-
-fn digits(s: &str) -> bool {
-    !s.is_empty() && s.len() <= 12 && s.bytes().all(|c| c.is_ascii_digit())
-}
-
-/// Allowed `settings.eal_extra_args`: `--no-huge`, `--no-pci`, `-m <n>`, `-n <n>`,
-/// `--socket-mem=<n>[,<n>...]` and `--log-level=<spec>`. DPDK takes the value of a
-/// long option after `=`, so those are single tokens.
-pub fn eal_extra_args(args: &[String]) -> Result<(), String> {
-    let allowed = "allowed: --no-huge, --no-pci, -m <MB>, -n <channels>, --socket-mem=<MB>[,<MB>...], --log-level=<spec>";
-    let mut it = args.iter();
-    while let Some(a) = it.next() {
-        match a.as_str() {
-            "--no-huge" | "--no-pci" => {}
-            "-m" | "-n" => match it.next() {
-                Some(v) if digits(v) => {}
-                Some(v) => return Err(format!("eal_extra_args: {a} needs a number, got {v:?}")),
-                None => return Err(format!("eal_extra_args: {a} needs a number")),
-            },
-            _ => {
-                let ok = match a.split_once('=') {
-                    Some(("--socket-mem", v)) => v.split(',').all(digits),
-                    Some(("--log-level", v)) => log_spec(v),
-                    _ => false,
-                };
-                if !ok {
-                    return Err(format!("eal_extra_args: {a:?} is not allowed ({allowed})"));
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-/// `7`, `lib.eal:debug`, `pmd.net.mlx5:8`: no whitespace, no leading `-`.
-fn log_spec(s: &str) -> bool {
-    !s.is_empty()
-        && !s.starts_with('-')
-        && s.bytes()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'*' | b':' | b'-'))
 }

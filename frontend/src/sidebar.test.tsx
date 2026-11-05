@@ -12,10 +12,9 @@ import { must } from './test/must';
 //   - the footer toggle shows bi-moon-fill in light mode and bi-brightness-high-fill in dark mode (P4TG's FooterButtons)
 // The existing layout.test.tsx keeps pinning names, order, aria-current, the docs link and "no localStorage write".
 
-const LABELS = ['Dashboard', 'Links', 'Interfaces', 'Host hints', 'Settings'];
+const LABELS = ['Dashboard', 'Interfaces', 'Host hints', 'Settings'];
 const ICONS: Record<string, string> = {
-  Dashboard: 'bi-speedometer2',
-  Links: 'bi-diagram-2',
+  Dashboard: 'bi-speedometer',
   Interfaces: 'bi-ethernet',
   'Host hints': 'bi-lightbulb',
   Settings: 'bi-gear-wide-connected',
@@ -48,23 +47,26 @@ describe('sidebar (spec 28): icon only', () => {
     }
   });
 
-  it.each(LABELS)('hovering "%s" shows a tooltip with its name; leaving hides it', async (name) => {
+  // spec 41 (user 2026-11-05): "don't show the page name when hovering above the icons": no tooltip, no visible text
+  it.each(LABELS)('hovering "%s" shows nothing: no tooltip, no text; the aria-label stays', async (name) => {
     const user = userEvent.setup();
     renderApp('/');
     await user.hover(navLink(name));
-    expect(await screen.findByRole('tooltip')).toHaveTextContent(new RegExp(`^${name}$`));
-    await user.unhover(navLink(name));
-    await waitFor(() => expect(screen.queryByRole('tooltip')).not.toBeInTheDocument());
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+    expect(navLink(name)).toHaveAttribute('aria-label', name);
+    expect(nav().textContent?.trim()).toBe('');
+    expect(navLink(name)).not.toHaveAttribute('aria-describedby');
   });
 
-  it('keyboard focus shows the tooltip too', async () => {
+  it('keyboard focus shows no tooltip either, but still lands on a named link', async () => {
     const user = userEvent.setup();
     renderApp('/');
     await user.tab();
     const focused = must(document.activeElement as HTMLElement | null, 'focused element');
-    const name = focused.getAttribute('aria-label') ?? '';
-    expect(LABELS).toContain(name);
-    expect(await screen.findByRole('tooltip')).toHaveTextContent(name);
+    expect(LABELS).toContain(focused.getAttribute('aria-label') ?? '');
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
   });
 
   it('navigating still works from the icons', async () => {
@@ -75,10 +77,10 @@ describe('sidebar (spec 28): icon only', () => {
   });
 
   it('exactly the current page link is marked: aria-current and the active class', () => {
-    renderApp('/links');
+    renderApp('/settings');
     for (const name of LABELS) {
       const a = navLink(name);
-      if (name === 'Links') {
+      if (name === 'Settings') {
         expect(a).toHaveAttribute('aria-current', 'page');
         expect(a).toHaveClass('active');
       } else {
@@ -94,6 +96,7 @@ describe('sidebar (spec 28): icon only', () => {
     expect(navLink('Dashboard')).toHaveClass('active');
     await user.click(navLink('Settings'));
     await waitFor(() => expect(navLink('Settings')).toHaveClass('active'));
+    expect(navLink('Settings')).toHaveAttribute('aria-current', 'page');
     expect(navLink('Dashboard')).not.toHaveClass('active');
   });
 });

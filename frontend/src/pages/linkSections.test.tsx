@@ -365,9 +365,9 @@ describe('link editor: what stays outside the subsections', () => {
     expect(screen.queryByText(/preset/i)).not.toBeInTheDocument();
   });
 
-  it('Name, Worker lcore, Ingress and Egress are outside the config fieldset', async () => {
+  it('Name, Ingress and Egress are outside the config fieldset', async () => {
     await link.openFull();
-    for (const l of ['Name', 'Worker lcore', 'Ingress', 'Egress']) {
+    for (const l of ['Name', 'Ingress', 'Egress']) {
       expect(outer(link)).not.toContainElement(ctl(l));
     }
   });

@@ -168,8 +168,8 @@ async fn a_link_name_the_rules_forbid_refuses_the_start() {
     ] {
         let a = TestApp::new(big_host());
         let s = setup(vec![
-            link("fine", "net_null0", "net_null0", None),
-            link(bad, "net_null1", "net_null1", None),
+            link("fine", "net_null0", "net_null0"),
+            link(bad, "net_null1", "net_null1"),
         ]);
         let r = a.start(&s).await;
         assert!(
@@ -194,9 +194,7 @@ async fn names_of_one_to_32_valid_characters_start() {
     assert_eq!(name.len(), 32);
     for n in [name.as_str(), "a", "a_b.c-D9"] {
         let a = TestApp::new(big_host());
-        let r = a
-            .start_links(vec![link(n, "net_null0", "net_null1", None)])
-            .await;
+        let r = a.start_links(vec![link(n, "net_null0", "net_null1")]).await;
         assert_eq!(r.status, 202, "{n}: {}", r.text());
     }
 }
@@ -205,8 +203,8 @@ async fn names_of_one_to_32_valid_characters_start() {
 async fn duplicate_link_names_are_a_409_naming_the_name() {
     let a = TestApp::new(big_host());
     let s = setup(vec![
-        link("twin", "net_null0", "net_null1", None),
-        link("twin", "net_null2", "net_null3", None),
+        link("twin", "net_null0", "net_null1"),
+        link("twin", "net_null2", "net_null3"),
     ]);
     let r = a.start(&s).await;
     assert_eq!(r.status, 409, "{}", r.text());
@@ -224,7 +222,7 @@ fn nul(i: usize) -> String {
 }
 
 fn bodies(links: &[Triple]) -> Vec<Value> {
-    links.iter().map(|(n, i, o)| link(n, i, o, None)).collect()
+    links.iter().map(|(n, i, o)| link(n, i, o)).collect()
 }
 
 /// `n` links `r0..` closing a ring over `n` ports.
@@ -329,46 +327,6 @@ async fn validate_applies_the_limit_too() {
 }
 
 // ---- OpenAPI -----------------------------------------------------------------------------
-
-/// The `minimum` found anywhere inside `v` (the property may be wrapped in `oneOf`/`anyOf`/
-/// `allOf` or have a type array, depending on how the schema is generated).
-fn minimums(v: &Value, out: &mut Vec<Value>) {
-    match v {
-        Value::Object(m) => {
-            for (k, x) in m {
-                if k == "minimum" {
-                    out.push(x.clone());
-                } else {
-                    minimums(x, out);
-                }
-            }
-        }
-        Value::Array(a) => a.iter().for_each(|x| minimums(x, out)),
-        _ => {}
-    }
-}
-
-#[tokio::test]
-async fn openapi_worker_has_minimum_zero_wherever_a_schema_has_one() {
-    let a = app();
-    let v = a.get("/api/openapi.json").await.json();
-    let schemas = v["components"]["schemas"].as_object().unwrap();
-    let mut seen = 0;
-    for (name, schema) in schemas {
-        let worker = &schema["properties"]["worker"];
-        if !worker.is_object() {
-            continue;
-        }
-        seen += 1;
-        let mut found = Vec::new();
-        minimums(worker, &mut found);
-        assert!(
-            found.len() == 1 && found[0].as_f64() == Some(0.0),
-            "{name}.worker must have exactly one `minimum`, 0: {found:?} in {worker}"
-        );
-    }
-    assert!(seen >= 1, "no schema documents a link `worker`");
-}
 
 #[tokio::test]
 async fn openapi_documents_the_required_initialization_rate() {

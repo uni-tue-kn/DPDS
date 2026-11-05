@@ -1,3 +1,11 @@
+// ## spec41 (user 2026-11-05): no settings, no worker. Supersedes every older statement below about `settings`, `worker`, the
+// Settings page and `main_lcore` / `eal_extra_args` / `poll_interval_ms`.
+//   - The Settings page, its route and its sidebar entry are gone; Import / Export is the toolbar of the LINKS page (same texts).
+//   - The local document is { "version": 1, "links": Link[] }. A `settings` member of a stored or imported document and a
+//     `worker` member of a link are ignored (no error) and never written back.
+//   - Start, validate and hints send exactly { links: [{name, ingress, egress, config}] }: no `settings`, no `worker`.
+//     `EmulationView.config` is { links }. The pending-restart marker compares links only.
+//   - The editor, the Links list, the inspect panel and Duplicate have no worker / core field.
 // ## v27 (spec27, user 2026-11-04): presets are gone, replaced by Import/Export on the Settings page and Duplicate in the
 //    Links list (supersedes EVERY statement below about presets, "Apply preset", "Save as preset", `/presets`, "Export setup",
 //    "Import setup file" and the "Backup" card)
@@ -446,7 +454,7 @@ import type { UserEvent } from '@testing-library/user-event';
 import { vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
 import App from '../App';
-import type { ConfigDto, Link, Settings } from '../api/types';
+import type { ConfigDto, Link } from '../api/types';
 
 export function renderApp(path = '/') {
   return render(
@@ -602,18 +610,14 @@ export function allRequiredMarkers(): HTMLElement[] {
 
 /** THE storage key of the local document (v22 contract). */
 export const STORAGE_KEY = 'dpds.config.v1';
-/** What the Settings page shows (and Start sends) while nothing is stored. */
-export const DEFAULT_SETTINGS: Settings = { main_lcore: null, eal_extra_args: [], poll_interval_ms: 500 };
-
-/** The document shape of the v22 contract. */
+/** The document shape (spec 41: `{version, links}`; there is no `settings` member any more). */
 export interface StoredDoc {
   version: 1;
   links: Link[];
-  settings: Settings;
 }
 
 export function emptyDoc(): StoredDoc {
-  return { version: 1, links: [], settings: { ...DEFAULT_SETTINGS } };
+  return { version: 1, links: [] };
 }
 
 /** Writes a document (missing parts empty) to the store, as an earlier session of the app would have. */
@@ -623,7 +627,6 @@ export function seedStore(over: Partial<StoredDoc> = {}): StoredDoc {
   return doc;
 }
 export const seedLinks = (links: Link[]) => seedStore({ links });
-export const seedSettings = (settings: Settings) => seedStore({ settings });
 /** Writes an arbitrary string (corruption tests). */
 export function seedRaw(value: string): void {
   localStorage.setItem(STORAGE_KEY, value);
@@ -661,33 +664,29 @@ export const stageOf = <K extends 'delayer' | 'limiter' | 'loss_model'>(
   k: K,
 ): NonNullable<ConfigDto[K]> | null => (c[k] ?? null) as NonNullable<ConfigDto[K]> | null;
 
-const START_LINK_KEYS = ['name', 'ingress', 'egress', 'config', 'worker'];
-const START_SETTINGS_KEYS = ['main_lcore', 'eal_extra_args', 'poll_interval_ms'];
+const START_LINK_KEYS = ['name', 'ingress', 'egress', 'config'];
 
-/** The start body the document must produce: links without ids, settings, nothing else. */
-export function startBodyOf(doc: StoredDoc): { links: unknown[]; settings: unknown } {
+/** The start body the document must produce (spec 41): links without ids and without worker, nothing else. */
+export function startBodyOf(doc: StoredDoc): { links: unknown[] } {
   return {
     links: doc.links.map((l) => ({
       name: l.name,
       ingress: l.ingress,
       egress: l.egress,
       config: l.config,
-      worker: l.worker,
     })),
-    settings: doc.settings,
   };
 }
 
 /** `actual` (the argument of startEmulation / getHostHintsFor) has exactly the contracted shape and the content of `doc`. */
 export function expectStartBody(actual: unknown, doc: StoredDoc): void {
-  const body = actual as { links: Record<string, unknown>[]; settings: Record<string, unknown> };
-  expect(Object.keys(body).sort()).toEqual(['links', 'settings']);
+  const body = actual as { links: Record<string, unknown>[] };
+  expect(Object.keys(body)).toEqual(['links']);
   expect(body.links).toHaveLength(doc.links.length);
   for (const l of body.links) {
     expect(Object.keys(l).filter((k) => !START_LINK_KEYS.includes(k))).toEqual([]);
     expect(l).not.toHaveProperty('id');
   }
-  expect(Object.keys(body.settings).filter((k) => !START_SETTINGS_KEYS.includes(k))).toEqual([]);
   expect(dropNulls(JSON.parse(JSON.stringify(body)))).toEqual(dropNulls(JSON.parse(JSON.stringify(startBodyOf(doc)))));
 }
 

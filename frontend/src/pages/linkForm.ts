@@ -331,15 +331,6 @@ export function formToDto(f: ConfigForm): FormDto {
   return frame === null ? { config } : { config, avg_frame_size_byte: frame };
 }
 
-/** "7" -> 7; empty -> null (automatic). */
-export function parseWorker(s: string): number | null {
-  const t = s.trim();
-  if (t === '') return null;
-  const n = Number(t);
-  if (!/^\d+$/.test(t) || !Number.isSafeInteger(n)) throw new Error(`Worker lcore: "${t}" is not a core number`);
-  return n;
-}
-
 /** The controller's link-name rule (`valid_name` in `api.rs`). */
 export const LINK_NAME = /^[A-Za-z0-9_.-]{1,32}$/;
 export const LINK_NAME_RULE = 'Name must be 1 to 32 characters: letters A-Z a-z, digits, underscore, dot or dash';
@@ -348,7 +339,7 @@ const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'obj
 
 /**
  * What is wrong with a stored or imported link, or null when the link editor would accept it unchanged: the name rule,
- * non-empty ports, an optional worker and frame size, and a config that survives the editor's own round trip
+ * non-empty ports, an optional frame size, and a config that survives the editor's own round trip
  * (`configToForm` then `formToDto`).
  */
 export function linkProblem(v: unknown): string | null {
@@ -360,10 +351,6 @@ export function linkProblem(v: unknown): string | null {
     if (typeof v.name !== 'string' || !LINK_NAME.test(v.name)) throw new Error(LINK_NAME_RULE);
     if (typeof v.ingress !== 'string' || v.ingress === '') throw new Error('Ingress port is required');
     if (typeof v.egress !== 'string' || v.egress === '') throw new Error('Egress port is required');
-    if (v.worker != null) {
-      if (typeof v.worker !== 'number') throw new Error('Worker lcore must be a number');
-      parseWorker(String(v.worker));
-    }
     const frame = v.avg_frame_size_byte ?? null;
     if (frame !== null && typeof frame !== 'number') throw new Error('Average frame size must be a number');
     if (!isObject(v.config)) throw new Error('Link config is missing');

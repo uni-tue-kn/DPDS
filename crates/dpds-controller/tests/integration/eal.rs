@@ -34,7 +34,6 @@ fn input(ports: Vec<EalPort>) -> EalInput {
         main_lcore: 0,
         worker_lcores: vec![2, 3],
         ports,
-        eal_extra_args: vec![],
         links_file: PathBuf::from("/run/dpds-controller/links.json"),
     }
 }
@@ -135,34 +134,6 @@ fn no_devargs_other_than_txq_mpw_en_1_are_ever_generated() {
 }
 
 #[test]
-fn extra_args_come_after_the_ports_and_before_the_separator() {
-    let mut i = input(vec![port("net_null0", None)]);
-    i.worker_lcores = vec![1];
-    i.eal_extra_args = strs(&["--no-huge", "-m", "256", "--no-pci"]);
-    assert_eq!(
-        eal_argv(&i),
-        strs(&[
-            "-l",
-            "0,1",
-            "--main-lcore",
-            "0",
-            "--in-memory",
-            "--file-prefix",
-            "dpds-ctl",
-            "--vdev",
-            "net_null0",
-            "--no-huge",
-            "-m",
-            "256",
-            "--no-pci",
-            "--",
-            "--links",
-            "/run/dpds-controller/links.json",
-        ])
-    );
-}
-
-#[test]
 fn links_file_path_is_the_last_argument() {
     let mut i = input(vec![port("net_null0", None)]);
     i.links_file = PathBuf::from("/tmp/x/links.json");
@@ -209,8 +180,8 @@ fn special_core() -> Config {
 #[test]
 fn links_file_json_is_v2_one_entry_per_directed_link() {
     let links = vec![
-        model_link(1, &link("a-to-b", NIC0, NIC1, Some(2))),
-        model_link(2, &link("b-to-a", NIC1, NIC0, None)),
+        model_link(1, &link("a-to-b", NIC0, NIC1)),
+        model_link(2, &link("b-to-a", NIC1, NIC0)),
         model_link(
             3,
             &link_cfg("loop", "net_null0", "net_null0", special_cfg()),
@@ -275,7 +246,7 @@ fn links_file_json_carries_each_links_initialization_rate_in_its_config() {
 
 #[test]
 fn links_file_json_has_none_of_the_v1_keys() {
-    let l = vec![model_link(1, &link("a-to-b", NIC0, NIC1, Some(2)))];
+    let l = vec![model_link(1, &link("a-to-b", NIC0, NIC1))];
     let d = [plan_dir(0, "a-to-b", NIC0, NIC1, 2)];
     let v = links_file_json(&l, &d).unwrap();
     for k in [
@@ -298,8 +269,8 @@ fn links_file_json_has_none_of_the_v1_keys() {
 fn lcores_are_taken_by_link_name_from_the_direction_plan_in_any_order() {
     // links in one order, plans in another: the lcore is looked up by link name
     let links = vec![
-        model_link(1, &link("first", NIC0, NIC1, None)),
-        model_link(2, &link("second", NIC1, NIC0, None)),
+        model_link(1, &link("first", NIC0, NIC1)),
+        model_link(2, &link("second", NIC1, NIC0)),
     ];
     let dirs = vec![
         plan_dir(1, "second", NIC1, NIC0, 2),
@@ -320,7 +291,7 @@ fn links_file_json_histogram_and_delay_stats_only_when_set() {
     let mut bins_only = cfg_json(1.0e6, 1.0e5);
     bins_only["histogram"] = json!({"bins": 100});
     let links = vec![
-        model_link(1, &link("plain", NIC0, NIC1, None)),
+        model_link(1, &link("plain", NIC0, NIC1)),
         model_link(2, &link_cfg("off", NIC1, NIC0, off)),
         model_link(3, &link_cfg("bins", INTEL, INTEL, bins_only)),
     ];

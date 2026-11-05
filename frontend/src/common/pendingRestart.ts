@@ -1,6 +1,5 @@
 // "Pending restart": the local configuration differs from the one the running emulation was started with.
-import { settingsOf } from './localConfig';
-import type { EmulationView, LocalConfig, Settings, StartLink } from '../api/types';
+import type { EmulationView, LocalConfig, StartLink } from '../api/types';
 
 /** Canonical JSON: keys sorted, null and undefined members dropped (null and absent are the same optional value). */
 function canon(v: unknown): string {
@@ -25,11 +24,10 @@ const linkKey = (l: StartLink) =>
     ingress: l.ingress,
     egress: l.egress,
     config: l.config,
-    worker: l.worker,
   });
 
 export interface Pending {
-  /** Anything differs: a link changed, was added or removed, or the settings changed. */
+  /** Anything differs: a link changed, was added or removed. */
   any: boolean;
   /** Names of the local links that differ from the running one or are new. */
   links: Set<string>;
@@ -48,6 +46,5 @@ export function pendingRestart(local: LocalConfig, emulation: EmulationView | un
   const byName = new Map(running.links.map((l) => [l.name, linkKey(l)]));
   const links = new Set(local.links.filter((l) => byName.get(l.name) !== linkKey(l)).map((l) => l.name));
   const removed = running.links.some((r) => !local.links.some((l) => l.name === r.name));
-  const settings = canon(settingsOf(local.settings)) !== canon(settingsOf(running.settings as Settings));
-  return { any: links.size > 0 || removed || settings, links };
+  return { any: links.size > 0 || removed, links };
 }

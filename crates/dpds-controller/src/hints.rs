@@ -324,20 +324,20 @@ fn isolated_cores(ctx: &Ctx) -> Hint {
         };
     }
     match &ctx.assignment {
-        Err(e) => hint("isolated_cores", Level::Error, title, e.to_string(), "Isolate more cores (isolcpus), or reduce the number of links, or pin worker cores per link."),
-        Ok(a) => {
-            let outside: Vec<u32> = a
-                .directions
-                .iter()
-                .map(|d| d.lcore)
-                .filter(|c| !isolated.contains(c))
-                .collect();
-            if outside.is_empty() {
-                hint("isolated_cores", Level::Ok, title, format!("{dirs} link(s) run on isolated cores"), "")
-            } else {
-                hint("isolated_cores", Level::Warn, title, format!("worker core(s) {} are not isolated", fmt_cpus(&outside)), "Pin only isolated cores as workers.")
-            }
-        }
+        Err(e) => hint(
+            "isolated_cores",
+            Level::Error,
+            title,
+            e.to_string(),
+            "Isolate more cores (isolcpus) or reduce the number of links.",
+        ),
+        Ok(_) => hint(
+            "isolated_cores",
+            Level::Ok,
+            title,
+            format!("{dirs} link(s) run on isolated cores"),
+            "",
+        ),
     }
 }
 
@@ -396,21 +396,6 @@ fn hugepages(ctx: &Ctx) -> Hint {
         .map(link_need)
         .fold(0u64, u64::saturating_add);
     let (total, free) = hugepage_bytes(ctx.roots);
-    let no_huge = ctx
-        .config
-        .settings
-        .eal_extra_args
-        .iter()
-        .any(|a| a == "--no-huge");
-    if no_huge {
-        return hint(
-            "hugepages",
-            Level::Info,
-            title,
-            "the settings pass --no-huge, so no hugepages are used".into(),
-            "Use hugepages for real traffic.",
-        );
-    }
     let fix = "Reserve hugepages at boot, which is the reliable way (default_hugepagesz=1G hugepagesz=1G hugepages=<n>, or hugepagesz=2M hugepages=<n>), or at run time via sysctl vm.nr_hugepages.";
     // Commands need the links (the need depends on them) and free < need
     let with_commands = |mut h: Hint| -> Hint {

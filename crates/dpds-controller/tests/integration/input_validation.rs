@@ -18,7 +18,7 @@
 
 use crate::common::*;
 use dpds_controller::dto::ConfigDto;
-use serde_json::{json, Value};
+use serde_json::json;
 
 fn app() -> TestApp {
     TestApp::new(FakeHost::bare_metal())
@@ -26,11 +26,7 @@ fn app() -> TestApp {
 
 /// A one-link start body.
 fn one(name: &str, ingress: &str, egress: &str) -> Setup {
-    setup(vec![link(name, ingress, egress, None)])
-}
-
-fn with_eal(eal: Value) -> Setup {
-    setup_eal(vec![link("l", "net_null0", "net_null0", None)], eal)
+    setup(vec![link(name, ingress, egress)])
 }
 
 // ---- port names ------------------------------------------------------------
@@ -75,7 +71,7 @@ async fn vdev_ports_start() {
 #[tokio::test]
 async fn pci_addresses_are_reported_in_lower_case_and_conflict_across_case() {
     let a = app();
-    a.start_ok(vec![link("up", "0000:B3:00.0", "0000:B3:00.1", None)])
+    a.start_ok(vec![link("up", "0000:B3:00.0", "0000:B3:00.1")])
         .await;
     let v = a.get("/api/emulation").await.json();
     assert_eq!(v["config"]["links"][0]["ingress"], "0000:b3:00.0", "{v}");
@@ -84,16 +80,16 @@ async fn pci_addresses_are_reported_in_lower_case_and_conflict_across_case() {
     let b = app();
     let r = b
         .start_links(vec![
-            link("up", "0000:B3:00.0", "0000:B3:00.1", None),
-            link("again", "0000:b3:00.0", "0000:b3:00.2", None),
+            link("up", "0000:B3:00.0", "0000:B3:00.1"),
+            link("again", "0000:b3:00.0", "0000:b3:00.2"),
         ])
         .await;
     assert_eq!(r.status, 409, "{}", r.text());
     assert!(r.message().contains("up"), "{}", r.text());
     let r = b
         .start_links(vec![
-            link("up", "0000:B3:00.0", "0000:B3:00.1", None),
-            link("again2", "0000:b3:00.3", "0000:B3:00.1", None),
+            link("up", "0000:B3:00.0", "0000:B3:00.1"),
+            link("again2", "0000:b3:00.3", "0000:B3:00.1"),
         ])
         .await;
     assert_eq!(r.status, 409, "{}", r.text());
@@ -109,29 +105,29 @@ async fn ports_that_differ_only_in_case_are_a_reused_port_on_start_validate_and_
         (
             "ingress",
             [
-                link("first", "0000:AB:00.0", "0000:17:00.0", None),
-                link("second", "0000:ab:00.0", "0000:65:00.0", None),
+                link("first", "0000:AB:00.0", "0000:17:00.0"),
+                link("second", "0000:ab:00.0", "0000:65:00.0"),
             ],
         ),
         (
             "ingress, the lower-case link first",
             [
-                link("first", "0000:ab:00.0", "0000:17:00.0", None),
-                link("second", "0000:AB:00.0", "0000:65:00.0", None),
+                link("first", "0000:ab:00.0", "0000:17:00.0"),
+                link("second", "0000:AB:00.0", "0000:65:00.0"),
             ],
         ),
         (
             "egress",
             [
-                link("first", "0000:17:00.0", "0000:Af:00.1", None),
-                link("second", "0000:65:00.0", "0000:aF:00.1", None),
+                link("first", "0000:17:00.0", "0000:Af:00.1"),
+                link("second", "0000:65:00.0", "0000:aF:00.1"),
             ],
         ),
         (
             "ingress in mixed case",
             [
-                link("first", "0000:Ab:Cd.0", "0000:17:00.0", None),
-                link("second", "0000:aB:cD.0", "0000:65:00.0", None),
+                link("first", "0000:Ab:Cd.0", "0000:17:00.0"),
+                link("second", "0000:aB:cD.0", "0000:65:00.0"),
             ],
         ),
     ];
@@ -162,8 +158,8 @@ async fn ports_that_differ_only_in_case_are_a_reused_port_on_start_validate_and_
 #[tokio::test]
 async fn ports_that_differ_in_case_and_in_the_digits_are_two_ports() {
     let s = setup(vec![
-        link("first", "0000:AB:00.0", "0000:17:00.0", None),
-        link("second", "0000:ab:00.1", "0000:65:00.0", None),
+        link("first", "0000:AB:00.0", "0000:17:00.0"),
+        link("second", "0000:ab:00.1", "0000:65:00.0"),
     ]);
     for path in [
         "/api/emulation/validate",
@@ -266,106 +262,10 @@ async fn invalid_port_names_are_a_400_naming_the_value() {
     }
 }
 
-// ---- eal_extra_args ----------------------------------------------------------
-
-#[tokio::test]
-async fn allowed_eal_arguments_are_accepted() {
-    for (args, what) in [
-        (json!([]), "empty"),
-        (json!(["--no-huge"]), "--no-huge"),
-        (json!(["--no-pci"]), "--no-pci"),
-        (json!(["-m", "256"]), "-m 256"),
-        (json!(["-n", "4"]), "-n 4"),
-        (json!(["--no-huge", "-m", "256", "--no-pci"]), "the e2e set"),
-        (json!(["--socket-mem=1024,1024"]), "--socket-mem="),
-        (
-            json!(["--log-level=lib.eal:debug"]),
-            "--log-level= type:level",
-        ),
-        (json!(["--log-level=7"]), "--log-level= number"),
-        (json!(["-m", "1024", "-n", "2", "--no-huge"]), "mixed order"),
-    ] {
-        let a = app();
-        let r = a.start(&with_eal(args.clone())).await;
-        assert_eq!(r.status, 202, "{what}: {}", r.text());
-        // the argv carries them, the running configuration reports them
-        let v = a.get("/api/emulation").await.json();
-        assert_eq!(v["config"]["settings"]["eal_extra_args"], args, "{what}");
-        let argv = &a.supervisor.plans()[0].argv;
-        let wanted: Vec<String> = args
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|x| x.as_str().unwrap().to_string())
-            .collect();
-        assert!(
-            wanted.is_empty() || argv.windows(wanted.len()).any(|w| w == wanted.as_slice()),
-            "{what}: {argv:?}"
-        );
-    }
-}
-
-#[tokio::test]
-async fn other_eal_arguments_are_a_400_naming_the_token() {
-    // (arguments, a token the message must name)
-    for (args, named) in [
-        (json!(["-d", "lib.so"]), "-d"),
-        (json!(["-d"]), "-d"),
-        (json!(["--file-prefix", "x"]), "--file-prefix"),
-        (json!(["--file-prefix=x"]), "--file-prefix"),
-        (json!(["-l", "0-3"]), "-l"),
-        (json!(["-c", "0xf"]), "-c"),
-        (json!(["--vdev", "net_null0"]), "--vdev"),
-        (json!(["-a", "0000:00:00.0"]), "-a"),
-        (json!(["--proc-type", "secondary"]), "--proc-type"),
-        (json!(["--in-memory"]), "--in-memory"),
-        (json!(["--main-lcore", "3"]), "--main-lcore"),
-        (json!(["--huge-dir", "/x"]), "--huge-dir"),
-        (
-            json!(["--definitely-not-an-eal-option"]),
-            "--definitely-not-an-eal-option",
-        ),
-        (json!(["foo"]), "foo"),
-        (json!([""]), ""),
-        (json!(["--no-huge", "extra"]), "extra"),
-        (json!(["-m"]), "-m"),
-        (json!(["-m", "abc"]), "abc"),
-        (json!(["-m", "-1"]), "-1"),
-        (json!(["-m", "256", "-d", "evil.so"]), "-d"),
-        (json!(["-n", "0x"]), "0x"),
-        (json!(["--socket-mem=1024;rm"]), "--socket-mem"),
-        (json!(["--log-level=lib.eal:debug --x"]), "--log-level"),
-        (json!(["--log-level=-d"]), "--log-level"),
-    ] {
-        let a = app();
-        let r = a.start(&with_eal(args.clone())).await;
-        assert_eq!(r.status, 400, "{args}: {}", r.text());
-        assert!(r.message().contains(named), "{args}: {}", r.text());
-        assert!(a.supervisor.plans().is_empty(), "{args} was spawned");
-        let r = a.validate(&with_eal(args.clone())).await;
-        assert_eq!(r.status, 400, "validate {args}: {}", r.text());
-    }
-}
-
-#[tokio::test]
-async fn a_token_with_whitespace_is_not_an_exact_token() {
-    for args in [
-        json!(["-m 256"]),
-        json!(["--no-huge --no-pci"]),
-        json!(["-d lib.so"]),
-        json!(["--no-huge\n-d"]),
-    ] {
-        let a = app();
-        let r = a.start(&with_eal(args.clone())).await;
-        assert_eq!(r.status, 400, "{args}: {}", r.text());
-        r.message();
-    }
-}
-
 // ---- mlx5_devargs (gone) ------------------------------------------------------------------
 
 #[tokio::test]
-async fn any_settings_with_mlx5_devargs_are_a_400_naming_the_field_whatever_the_value() {
+async fn a_settings_member_with_mlx5_devargs_is_a_400_naming_settings_whatever_the_value() {
     for d in [
         json!(""),
         json!("txq_mpw_en=1"),
@@ -381,11 +281,11 @@ async fn any_settings_with_mlx5_devargs_are_a_400_naming_the_field_whatever_the_
         json!(["txq_mpw_en=1"]),
     ] {
         let a = app();
-        let mut s = one("l", "net_null0", "net_null0");
-        s.settings["mlx5_devargs"] = d.clone();
-        let r = a.start(&s).await;
+        let mut body = one("l", "net_null0", "net_null0").body();
+        body["settings"] = json!({ "mlx5_devargs": d });
+        let r = a.post("/api/emulation/start", body).await;
         assert_eq!(r.status, 400, "{d}: {}", r.text());
-        assert!(r.message().contains("mlx5_devargs"), "{d}: {}", r.text());
+        assert!(r.message().contains("settings"), "{d}: {}", r.text());
         assert!(a.supervisor.plans().is_empty(), "{d} was spawned");
     }
 }
@@ -395,11 +295,11 @@ async fn any_settings_with_mlx5_devargs_are_a_400_naming_the_field_whatever_the_
 #[tokio::test]
 async fn buffer_capacity_up_to_two_to_the_31_is_valid_above_it_is_a_400() {
     let a = app();
-    let mut l = link("big", "net_null0", "net_null0", None);
+    let mut l = link("big", "net_null0", "net_null0");
     l["config"]["buffer_capacity"] = json!(2_147_483_648u64);
     assert_eq!(a.validate(&setup(vec![l])).await.status, 200);
     for over in [2_147_483_649u64, 4_294_967_296, u64::MAX] {
-        let mut l = link("bigger", "net_null1", "net_null1", None);
+        let mut l = link("bigger", "net_null1", "net_null1");
         l["config"]["buffer_capacity"] = json!(over);
         let r = a.start_links(vec![l]).await;
         assert_eq!(r.status, 400, "{over}: {}", r.text());

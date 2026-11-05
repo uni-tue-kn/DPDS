@@ -149,7 +149,7 @@ describe('Host hints page: the Recheck button (spec 34)', () => {
 
   it('the first load sends no recheck; a click sends getHostHintsFor(start body, { recheck: true }) next to the GET', async () => {
     const user = userEvent.setup();
-    const doc = seedStore({ links: [fx.link(), fx.linkRev()], settings: fx.settings({ poll_interval_ms: 250 }) });
+    const doc = seedStore({ links: [fx.link(), fx.linkRev()] });
     api.getHostHintsFor.mockResolvedValue([FROM_LINKS]);
     renderApp('/hints');
     await screen.findByRole('region', { name: /^Warnings/ });

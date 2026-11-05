@@ -40,107 +40,47 @@ fn err<T>(m: String) -> Result<T, LcoreError> {
     Err(LcoreError(m))
 }
 
-/// Directions numbered in link order: the link is the direction.
-fn directions(config: &RunConfig) -> Vec<Pending> {
-    config
-        .links
-        .iter()
-        .map(|l| Pending {
-            link: l.name.clone(),
-            rx: l.ingress.clone(),
-            tx: l.egress.clone(),
-            pinned: l.worker,
-        })
-        .collect()
-}
-
-/// One link before its lcore is known.
-struct Pending {
-    link: String,
-    rx: String,
-    tx: String,
-    pinned: Option<u32>,
-}
-
-/// Plans lcores for the links. Per-link `worker` overrides are used
-/// literally (any online core except the main lcore); the other links get free
-/// isolated cores, the lowest id first, preferring the NUMA node of the ingress NIC.
+/// Plans lcores for the links: the main lcore is the lowest online core that is not
+/// isolated; each link gets its own free isolated core, the lowest id first, preferring the NUMA
+/// node of the ingress NIC.
 pub fn assign_lcores(roots: &HostRoots, config: &RunConfig) -> Result<Assignment, LcoreError> {
     let online = roots.online_cpus();
     let isolated = roots.isolated_cpus();
 
-    let main_lcore = match config.settings.main_lcore {
-        Some(m) if online.contains(&m) => m,
-        Some(m) => return err(format!("main lcore {m} is not an online CPU")),
-        None => match online.iter().find(|c| !isolated.contains(c)) {
-            Some(m) => *m,
-            None => return err("every online CPU is isolated, so there is no core for the main lcore (set settings.main_lcore)".into()),
-        },
+    let Some(main_lcore) = online.iter().copied().find(|c| !isolated.contains(c)) else {
+        return err(
+            "every online CPU is isolated, so there is no core left for the main lcore".into(),
+        );
     };
 
-    let mut dirs = directions(config);
-
-    let mut used = vec![main_lcore];
-    for d in &dirs {
-        if let Some(c) = d.pinned {
-            if !online.contains(&c) {
-                return err(format!(
-                    "link {}: worker core {c} is not an online CPU",
-                    d.link
-                ));
-            }
-            if c == main_lcore {
-                return err(format!(
-                    "link {}: worker core {c} is the main lcore",
-                    d.link
-                ));
-            }
-            if used.contains(&c) {
-                return err(format!(
-                    "link {}: worker core {c} is used more than once",
-                    d.link
-                ));
-            }
-            used.push(c);
-        }
-    }
-
-    let free: Vec<u32> = isolated
+    let mut free: Vec<u32> = isolated
         .iter()
         .copied()
-        .filter(|c| online.contains(c) && !used.contains(c))
+        .filter(|c| online.contains(c))
         .collect();
-    let needed = dirs.iter().filter(|d| d.pinned.is_none()).count();
+    let needed = config.links.len();
     if needed > free.len() {
         return err(format!(
-            "{needed} link(s) need an isolated core but only {} are available (isolated cores: {}; set isolcpus, or pin cores with the worker override)",
+            "{needed} link(s) need an isolated core but only {} are available (isolated cores: {}; set isolcpus)",
             free.len(),
             if isolated.is_empty() { "none".to_string() } else { fmt_cpus(&isolated) },
         ));
     }
 
-    let mut free = free;
-    let mut plans = Vec::with_capacity(dirs.len());
-    for (i, d) in dirs.drain(..).enumerate() {
-        let lcore = match d.pinned {
-            Some(c) => c,
-            None => {
-                let node = if is_vdev(&d.rx) {
-                    None
-                } else {
-                    roots.pci_numa_node(&d.rx)
-                };
-                let local =
-                    node.and_then(|n| free.iter().position(|c| roots.node_of_cpu(*c) == Some(n)));
-                free.remove(local.unwrap_or(0))
-            }
+    let mut plans = Vec::with_capacity(needed);
+    for (i, l) in config.links.iter().enumerate() {
+        let node = if is_vdev(&l.ingress) {
+            None
+        } else {
+            roots.pci_numa_node(&l.ingress)
         };
+        let local = node.and_then(|n| free.iter().position(|c| roots.node_of_cpu(*c) == Some(n)));
         plans.push(DirectionPlan {
             dir: i as u32,
-            link: d.link,
-            rx: d.rx,
-            tx: d.tx,
-            lcore,
+            link: l.name.clone(),
+            rx: l.ingress.clone(),
+            tx: l.egress.clone(),
+            lcore: free.remove(local.unwrap_or(0)),
         });
     }
     Ok(Assignment {

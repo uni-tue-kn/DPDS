@@ -4,7 +4,7 @@ import * as fx from '../test/fixtures';
 import { expectStartBody, renderApp, seedStore, seedLinks } from '../test/helpers';
 
 // v22: the page lists the host-only hints (`getHostHints`, GET /api/host/hints) plus, when the LOCAL document has links, the
-// link-dependent ones from `getHostHintsFor({links, settings})` (POST /api/host/hints with the start body); merged by hint id,
+// link-dependent ones from `getHostHintsFor({links})` (POST /api/host/hints with the start body); merged by hint id,
 // the POST answer wins. No local links -> no POST.
 // Groups are <section> regions named by an <h2> starting with Errors / Warnings / Info / OK (an optional
 // count may follow), in this order, empty groups omitted. Each group has `data-level` (error|warn|info|ok);
@@ -122,11 +122,8 @@ describe('Host hints page: hints for the local configuration (v22)', () => {
     expect(api.getHostHintsFor).not.toHaveBeenCalled();
   });
 
-  it('with local links it POSTs the start body (links without ids, settings) and lists the host and the link hints together', async () => {
-    const doc = seedStore({
-      links: [fx.link(), fx.linkRev()],
-      settings: fx.settings({ main_lcore: 2, poll_interval_ms: 250 }),
-    });
+  it('with local links it POSTs the start body (`{links}` without ids) and lists the host and the link hints together', async () => {
+    const doc = seedStore({ links: [fx.link(), fx.linkRev()] });
     api.getHostHintsFor.mockResolvedValue([linkHint]);
     renderApp('/hints');
     const warns = await screen.findByRole('region', { name: /^Warnings/ });
