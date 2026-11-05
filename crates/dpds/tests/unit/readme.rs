@@ -729,7 +729,7 @@ fn the_readme_documents_the_port_counters_of_a_direction_on_the_stats() {
         );
     }
     assert!(
-        lower.contains("receiving port"),
+        lower.contains("receiving port") || lower.contains("receiving (ingress) port"),
         "they are the receiving port's counters: {item}"
     );
     assert!(
@@ -1213,12 +1213,12 @@ fn the_readme_states_the_automatic_core_assignment() {
 }
 
 #[test]
-fn the_readme_states_the_fixed_500_ms_poll() {
-    let ok = controller_items_with("500 ms")
+fn the_readme_states_the_fixed_1000_ms_poll() {
+    let ok = controller_items_with("1000 ms")
         .into_iter()
         .any(|i| i.to_lowercase().contains("poll"));
     assert!(
         ok,
-        "a controller item says the telemetry poll interval is a fixed 500 ms"
+        "a controller item says the telemetry poll interval is a fixed 1000 ms (spec 43 B2)"
     );
 }
