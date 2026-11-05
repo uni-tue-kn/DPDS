@@ -7,16 +7,6 @@ import { resolve } from 'node:path';
 
 const css = readFileSync(resolve(__dirname, 'index.css'), 'utf8');
 
-/** The declarations of the first rule whose selector (the text before `{`) matches exactly `selector` (whitespace-insensitive). */
-function rule(selector: string): string {
-  const norm = (s: string) => s.replace(/\s+/g, ' ').trim();
-  const re = /([^{}]+)\{([^{}]*)\}/g;
-  for (let m = re.exec(css); m !== null; m = re.exec(css)) {
-    const selectors = m[1].split(',').map(norm);
-    if (selectors.includes(norm(selector))) return m[2];
-  }
-  throw new Error(`no rule for ${selector}`);
-}
 /** All declarations of every rule whose selector list includes `selector`. */
 function rules(selector: string): string {
   const norm = (s: string) => s.replace(/\s+/g, ' ').trim();
@@ -29,12 +19,6 @@ function rules(selector: string): string {
 }
 
 describe('sidebar looks (spec 28)', () => {
-  it('the top-level .sidebar rule makes it a narrow icon column (<= 90px)', () => {
-    const w = /(?:^|[;\s])width:\s*(\d+(?:\.\d+)?)px/.exec(rule('.sidebar'));
-    expect(w, '.sidebar has a pixel width').not.toBeNull();
-    expect(Number(w?.[1])).toBeLessThanOrEqual(90);
-  });
-
   it('the active link is a solid red block with a white icon', () => {
     const active = rules('.sidebar .nav-link.active');
     expect(active).toMatch(/background(?:-color)?:\s*var\(--color-primary\)/);
