@@ -4,12 +4,17 @@
 //
 // ## Layout, top to bottom
 //   top row    data-testid="top-row", two columns like P4TG's Home.tsx:
-//                data-testid="top-pills"   `col-8 text-start`: state-badge, pill-rx, pill-tx, pill-elapsed, pill-dropped (DOM order)
+//                data-testid="top-pills"   `col-8 text-start`: state-badge, pill-rx, pill-tx, pill-elapsed, pill-lost (DOM order)
 //                                          Spec 37 (user 2026-11-05), like P4TG: the pills are live statistics. While stopped, stopping
-//                                          or failed after a run, RX/TX read `RX|TX ${formatRatePill(0, 0)}`, dropped reads
-//                                          "dropped 0.00 %" and pill-elapsed keeps the frozen elapsed_ms. Before any run: "–" for
-//                                          RX/TX/dropped, no elapsed pill. Running: the live sums. The charts (all tabs, Summary too)
-//                                          and the donuts keep the ended run's history and totals; the pills never read those.
+//                                          or failed after a run, RX/TX read `RX|TX ${formatRatePill(0, 0)}` and pill-elapsed keeps
+//                                          the frozen elapsed_ms. Before any run: "–" for RX/TX, no elapsed pill. Running: the live
+//                                          sums. The charts (all tabs, Summary too) and the donuts keep the ended run's history and
+//                                          totals; the pills never read those.
+//                                          Spec 38: pill-lost (was pill-dropped, which is gone) reads "lost <x.xx> %" and exists only
+//                                          while the live share is > 0: absent before a run, after a stop and while running without NIC
+//                                          drops. The share is sum(rx_pps x (nic_tx_pct + nic_rx_pct)) / sum(rx_pps) over the links;
+//                                          emulated causes (loss model, limiter, buffer full) are excluded. First child: the icon
+//                                          `<i class="bi bi-exclamation-circle-fill text-danger">`, before the text.
 //                data-testid="run-buttons" the ButtonGroup (role "group") inside a `col-4 text-end` column: exactly two buttons,
 //                                          always [Restart] [Start | Stop | Stopping… | Restarting…]
 //   notices    data-testid="notices", a row after the top row: "Restart needed" (pending-restart), stale-indicator, stats-warning,

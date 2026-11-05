@@ -35,7 +35,7 @@ const STATE_BG: Record<EmulationState, string> = {
 
 const DASH = '–';
 
-const ZERO_PILLS = { rxBps: 0, rxPps: 0, txBps: 0, txPps: 0, droppedPct: 0 };
+const ZERO_PILLS = { rxBps: 0, rxPps: 0, txBps: 0, txPps: 0, lostPct: 0 };
 
 const addDrops = (a: DropCounts, b: DropCounts): DropCounts => ({
   loss: a.loss + b.loss,
@@ -64,21 +64,21 @@ function storedRequest() {
   return startRequestOf(stored.doc);
 }
 
-/** Total RX and TX rate over all links, and the share of dropped packets weighted by each link's received rate. */
+/** Total RX and TX rate over all links, and the share of packets lost to the NIC (not the emulation) weighted by each link's received rate. */
 function totalsOf(directions: StatsView['directions']) {
   let rxBps = 0;
   let rxPps = 0;
   let txBps = 0;
   let txPps = 0;
-  let dropped = 0;
+  let lost = 0;
   for (const d of directions) {
     rxBps += d.rx_bps;
     rxPps += d.rx_pps;
     txBps += d.tx_bps;
     txPps += d.tx_pps;
-    dropped += d.rx_pps * (d.loss_pct + d.limiter_pct + d.buffer_full_pct + d.nic_tx_pct + d.nic_rx_pct);
+    lost += d.rx_pps * (d.nic_tx_pct + d.nic_rx_pct);
   }
-  return { rxBps, rxPps, txBps, txPps, droppedPct: rxPps > 0 ? dropped / rxPps : 0 };
+  return { rxBps, rxPps, txBps, txPps, lostPct: rxPps > 0 ? lost / rxPps : 0 };
 }
 
 export default function Dashboard() {
@@ -256,9 +256,12 @@ export default function Dashboard() {
               {formatElapsed(stats.elapsed_ms)}
             </span>
           )}
-          <span className="status-pill" data-testid="pill-dropped">
-            dropped {pills ? formatPct(pills.droppedPct) : DASH}
-          </span>
+          {pills && pills.lostPct > 0 && (
+            <span className="status-pill" data-testid="pill-lost">
+              <i className="bi bi-exclamation-circle-fill text-danger" aria-hidden="true" />
+              lost {formatPct(pills.lostPct)}
+            </span>
+          )}
         </Col>
         <Col xs={4} className="text-end">
           <ButtonGroup data-testid="run-buttons">

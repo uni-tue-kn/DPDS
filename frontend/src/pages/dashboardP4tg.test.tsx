@@ -13,7 +13,7 @@ import { must } from '../test/must';
 
 // Spec 28 (user 2026-11-04): the P4TG-like dashboard. Spec: items 1-3 of scratchpad/spec28.md (item 4, server-side history, is
 // spec 29 and not tested here). The tester's choices where the spec is silent are marked "CHOICE" and listed in the report:
-//   - test ids: pill-rx, pill-tx, pill-elapsed, pill-dropped (state keeps `state-badge`)
+//   - test ids: pill-rx, pill-tx, pill-elapsed, pill-lost (spec 38; was pill-dropped; state keeps `state-badge`)
 //   - the rate pills read "<n> Gbit/s (<m> Mpps)" with two decimals, e.g. "9.25 Gbit/s (7.31 Mpps)"
 //   - "dropped" = rx_pps-weighted mean over the directions of the sum of the five drop shares, two decimals
 //   - radio group named "Chart", radios named "Rate", "Drops", "Delay histogram"; the last one only with delay_stats on
@@ -24,7 +24,7 @@ import { must } from '../test/must';
 // The chart stubs in test/setup.ts expose the chart data as `data-chart` and the options as `data-options`.
 //
 // Spec 35 (2026-11-05) reworked this file; each changed or removed block says what it was. In short: the button group always
-// holds [Restart] [Start|Stop|...] (Restart is disabled, not absent, unless running); the "dropped" pill is always there; the
+// holds [Restart] [Start|Stop|...] (Restart is disabled, not absent, unless running); the "dropped" pill is always there (spec 38: now the "lost" pill, only while NIC drops > 0); the
 // per-card radio group is per-tab ("Drops" is "Loss", "Delay histogram" is second); the histogram has no controls, no percentile
 // list and no expected overlay (F4); the NIC ports table moved to the Interfaces page (interfacesPorts.test.tsx).
 
@@ -417,7 +417,9 @@ describe('Dashboard (spec 28): status pills', () => {
     });
   });
 
-  describe('the "dropped" pill: neutral', () => {
+  // Spec 38. Was: the "dropped" pill (all five shares, neutral, always there). Now: "lost", NIC drops only, only while > 0, with
+  // the danger icon. Full contract: dashboardSpec35.test.tsx; here the P4TG-style cases on the stats poll.
+  describe('the "lost" pill: real (NIC) loss only, shown only while > 0', () => {
     const shares = (m: number, rx_pps: number) =>
       ({
         rx_pps,
@@ -427,60 +429,58 @@ describe('Dashboard (spec 28): status pills', () => {
         nic_tx_pct: 0.5 * m,
         nic_rx_pct: 0.5 * m,
       }) as const;
+    const none = { loss_pct: 0, limiter_pct: 0, buffer_full_pct: 0, nic_tx_pct: 0, nic_rx_pct: 0 };
 
-    it('shows the sum of the five drop shares of a single direction: "dropped 5.10 %"', async () => {
-      api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0)])); // 0.5 + 1.25 + 2.5 + 0.1 + 0.75
+    it('shows the NIC shares only, of a single direction: "lost 0.85 %"', async () => {
+      api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0)])); // 0.1 + 0.75; loss 0.5, limiter 1.25, buffer 2.5 excluded
       renderApp('/');
-      const pill = await screen.findByTestId('pill-dropped');
-      expect(pill).toHaveTextContent(/dropped\s+5\.10\s?%/i);
+      const pill = await screen.findByTestId('pill-lost');
+      expect(pill).toHaveTextContent(/lost\s+0\.85\s?%/i);
+      expect(screen.queryByTestId('pill-dropped')).not.toBeInTheDocument();
     });
 
-    it('over several directions it is the mean weighted by the received packet rate', async () => {
-      // dir 0: 4 % of 3 Mpps, dir 1: 8 % of 1 Mpps -> (3 x 4 + 1 x 8) / 4 = 5.00 (the unweighted mean would be 6.00)
+    it('over several directions it is the NIC share weighted by the received packet rate', async () => {
+      // dir 0: 1 % of 3 Mpps, dir 1: 2 % of 1 Mpps -> (3 x 1 + 1 x 2) / 4 = 1.25 (the unweighted mean would be 1.50)
       api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0, shares(1, 3e6)), fx.dirStats(1, shares(2, 1e6))]));
       renderApp('/');
-      expect(await screen.findByTestId('pill-dropped')).toHaveTextContent(/dropped\s+5\.00\s?%/i);
+      expect(await screen.findByTestId('pill-lost')).toHaveTextContent(/lost\s+1\.25\s?%/i);
     });
 
-    it('is not red: neither the pill nor anything inside it carries a danger/red class, and it is no alert', async () => {
+    it('carries the danger icon', async () => {
       api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0)]));
       renderApp('/');
-      const pill = await screen.findByTestId('pill-dropped');
-      for (const el of [pill, ...Array.from(pill.querySelectorAll('*'))]) {
-        expect(el.getAttribute('class') ?? '', el.outerHTML).not.toMatch(/danger|red|error/i);
-      }
-      expect(pill.closest('[role="alert"]')).toBeNull();
-      expect(pill.getAttribute('role')).not.toBe('alert');
+      const pill = await screen.findByTestId('pill-lost');
+      expect(must(pill.querySelector('i'), 'icon')).toHaveClass('bi-exclamation-circle-fill', 'text-danger');
     });
 
-    // Spec 35 F1/F2. Was: 'is absent when every drop share is zero' and 'appears and disappears with the polls': the pill is
-    // always there now (CHOICE: "dropped 0.00 %" while nothing is dropped, like the other pills).
-    it('CHOICE: reads "dropped 0.00 %" when every drop share is zero', async () => {
-      api.getStats.mockResolvedValue(
-        fx.stats([
-          fx.dirStats(0, { loss_pct: 0, limiter_pct: 0, buffer_full_pct: 0, nic_tx_pct: 0, nic_rx_pct: 0 }),
-          fx.dirStats(1, { loss_pct: 0, limiter_pct: 0, buffer_full_pct: 0, nic_tx_pct: 0, nic_rx_pct: 0 }),
-        ]),
-      );
+    it('is absent when every drop share is zero', async () => {
+      api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0, none), fx.dirStats(1, none)]));
       renderApp('/');
       await findCard(1);
-      await waitFor(() => expect(screen.getByTestId('pill-dropped')).toHaveTextContent(/^dropped\s+0\.00\s?%$/i));
+      expect(screen.queryByTestId('pill-lost')).not.toBeInTheDocument();
     });
 
-    it('follows the polls: 0.00 %, then 2.00 %, then 0.00 % again', async () => {
+    it('is absent when only emulated causes drop', async () => {
+      const emulated = { ...none, loss_pct: 3, limiter_pct: 4, buffer_full_pct: 5 };
+      api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0, emulated), fx.dirStats(1, emulated)]));
+      renderApp('/');
+      await findCard(1);
+      expect(screen.queryByTestId('pill-lost')).not.toBeInTheDocument();
+    });
+
+    it('follows the polls: absent, then 2.00 %, then absent again', async () => {
       vi.useFakeTimers();
-      const none = { loss_pct: 0, limiter_pct: 0, buffer_full_pct: 0, nic_tx_pct: 0, nic_rx_pct: 0 };
       api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0, none)]));
       renderApp('/');
       await tick(0);
       await tick(0);
-      expect(screen.getByTestId('pill-dropped')).toHaveTextContent(/dropped\s+0\.00\s?%/i);
-      api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0, { ...none, loss_pct: 2 })]));
+      expect(screen.queryByTestId('pill-lost')).not.toBeInTheDocument();
+      api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0, { ...none, nic_rx_pct: 2 })]));
       await tick(2500);
-      expect(screen.getByTestId('pill-dropped')).toHaveTextContent(/dropped\s+2\.00\s?%/i);
+      expect(screen.getByTestId('pill-lost')).toHaveTextContent(/lost\s+2\.00\s?%/i);
       api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0, none)]));
       await tick(2500);
-      expect(screen.getByTestId('pill-dropped')).toHaveTextContent(/dropped\s+0\.00\s?%/i);
+      expect(screen.queryByTestId('pill-lost')).not.toBeInTheDocument();
     });
   });
 });

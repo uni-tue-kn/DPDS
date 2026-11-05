@@ -89,13 +89,13 @@ describe('Dashboard (spec 35 F1): the top row, pills left and buttons right like
     expect(pills.compareDocumentPosition(group) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it('the pills come in this order: state, RX, TX, elapsed, dropped', async () => {
+  it('the pills come in this order: state, RX, TX, elapsed, lost (default stats carry NIC drops)', async () => {
     api.getEmulation.mockResolvedValue(fx.emulation('running'));
     api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0), fx.dirStats(1)], { elapsed_ms: 192_000 }));
     renderApp('/');
     const pills = await screen.findByTestId('top-pills');
     await within(pills).findByTestId('pill-elapsed');
-    const ids = ['state-badge', 'pill-rx', 'pill-tx', 'pill-elapsed', 'pill-dropped'];
+    const ids = ['state-badge', 'pill-rx', 'pill-tx', 'pill-elapsed', 'pill-lost'];
     const found = ids.map((id) => within(pills).getByTestId(id));
     for (let i = 1; i < found.length; i += 1) {
       expect(found[i - 1].compareDocumentPosition(found[i]) & Node.DOCUMENT_POSITION_FOLLOWING, ids[i]).toBeTruthy();
@@ -104,7 +104,7 @@ describe('Dashboard (spec 35 F1): the top row, pills left and buttons right like
     expect(within(screen.getByTestId('run-buttons')).queryByTestId('pill-rx')).not.toBeInTheDocument();
   });
 
-  it('the live pills read "RX <Gbit/s> (<Mpps>)", "TX ...", the elapsed time and "dropped <x.xx> %"', async () => {
+  it('the live pills read "RX <Gbit/s> (<Mpps>)", "TX ...", the elapsed time and "lost <x.xx> %"', async () => {
     api.getEmulation.mockResolvedValue(fx.emulation('running'));
     api.getStats.mockResolvedValue(
       fx.stats(
@@ -119,7 +119,8 @@ describe('Dashboard (spec 35 F1): the top row, pills left and buttons right like
     await waitFor(() => expect(pillText('pill-rx')).toBe('RX 9.25 Gbit/s (7.31 Mpps)'));
     expect(pillText('pill-tx')).toBe('TX 7.25 Gbit/s (6.31 Mpps)');
     expect(pillText('pill-elapsed')).toBe('0h 3m 12s');
-    expect(pillText('pill-dropped')).toMatch(/^dropped \d+\.\d\d %$/);
+    // spec 38: the default stats carry nic_tx_pct 0.1 + nic_rx_pct 0.75 on both links
+    expect(pillText('pill-lost')).toBe('lost 0.85 %');
   });
 
   it.each(STATES)('"%s": the group holds exactly [Restart] and [%s]', async (state) => {
@@ -360,7 +361,7 @@ describe('Dashboard (spec 37, was spec 35 F2): the pills show 0 once the run has
   }
 
   it.each(['stopped', 'stopping', 'failed'] as const)(
-    '"%s": RX and TX read the 0 of formatRatePill(0, 0), dropped is 0.00 percent, elapsed is the frozen time',
+    '"%s": RX and TX read the 0 of formatRatePill(0, 0), there is no lost pill, elapsed is the frozen time',
     async (state) => {
       twoLinkRun();
       ended(state, 305_400);
@@ -368,7 +369,7 @@ describe('Dashboard (spec 37, was spec 35 F2): the pills show 0 once the run has
       await tick(1000);
       expect(pillText('pill-rx')).toBe(ZERO_RX);
       expect(pillText('pill-tx')).toBe(ZERO_TX);
-      expect(pillText('pill-dropped')).toBe('dropped 0.00 %');
+      expect(screen.queryByTestId('pill-lost')).not.toBeInTheDocument();
       expect(pillText('pill-elapsed')).toBe('0h 5m 5s');
     },
   );
@@ -382,10 +383,11 @@ describe('Dashboard (spec 37, was spec 35 F2): the pills show 0 once the run has
     ended('stopped');
     await open();
     await tick(1000);
-    const before = ['pill-rx', 'pill-tx', 'pill-dropped', 'pill-elapsed'].map(pillText);
+    const before = ['pill-rx', 'pill-tx', 'pill-elapsed'].map(pillText);
     await tick(30_000);
-    expect(['pill-rx', 'pill-tx', 'pill-dropped', 'pill-elapsed'].map(pillText)).toEqual(before);
-    expect(before.slice(0, 3)).toEqual([ZERO_RX, ZERO_TX, 'dropped 0.00 %']);
+    expect(['pill-rx', 'pill-tx', 'pill-elapsed'].map(pillText)).toEqual(before);
+    expect(before.slice(0, 2)).toEqual([ZERO_RX, ZERO_TX]);
+    expect(screen.queryByTestId('pill-lost')).not.toBeInTheDocument();
   });
 
   it('after a live run stops the pills turn from the live numbers to 0, the elapsed time stays', async () => {
@@ -398,20 +400,21 @@ describe('Dashboard (spec 37, was spec 35 F2): the pills show 0 once the run has
     );
     await open();
     expect(pillText('pill-rx')).toBe('RX 2.00 Gbit/s (200.00 kpps)');
+    expect(pillText('pill-lost')).toBe('lost 0.85 %');
     ended('stopped', 9000);
     await tick(2500);
     expect(pillText('pill-rx')).toBe(ZERO_RX);
     expect(pillText('pill-tx')).toBe(ZERO_TX);
-    expect(pillText('pill-dropped')).toBe('dropped 0.00 %');
+    expect(screen.queryByTestId('pill-lost')).not.toBeInTheDocument();
     expect(pillText('pill-elapsed')).toBe('0h 0m 9s');
   });
 
-  it('the totals of the history no longer reach the dropped pill, whatever they say', async () => {
+  it('the totals of the history (with NIC drops) do not reach the lost pill: it stays absent', async () => {
     twoLinkRun();
     ended('stopping');
     await open();
     await tick(2500);
-    expect(pillText('pill-dropped')).toBe('dropped 0.00 %');
+    expect(screen.queryByTestId('pill-lost')).not.toBeInTheDocument();
   });
 
   it('the charts keep the ended run: every link tab and the Summary still plot the history, the donuts show the totals', async () => {
@@ -439,14 +442,14 @@ describe('Dashboard (spec 37, was spec 35 F2): the pills show 0 once the run has
     expect(pillText('pill-rx')).toBe(ZERO_RX);
   });
 
-  it('before any run the RX, TX and dropped pills are there and say "–"', async () => {
+  it('before any run the RX and TX pills say "–" and there is no lost pill', async () => {
     api.getEmulation.mockResolvedValue(fx.emulation('stopped'));
     api.getStats.mockResolvedValue(fx.stats([], { stale: true, age_ms: undefined }));
     await open();
     await tick(2500);
     expect(pillText('pill-rx')).toBe('RX –');
     expect(pillText('pill-tx')).toBe('TX –');
-    expect(pillText('pill-dropped')).toBe('dropped –');
+    expect(screen.queryByTestId('pill-lost')).not.toBeInTheDocument();
     expect(screen.queryByText(/\d+(\.\d+)? (Gbit|Mbit|kbit|bit)/)).not.toBeInTheDocument();
   });
 
@@ -463,7 +466,7 @@ describe('Dashboard (spec 37, was spec 35 F2): the pills show 0 once the run has
     await open();
     expect(pillText('pill-rx')).toBe('RX –');
     expect(pillText('pill-tx')).toBe('TX –');
-    expect(pillText('pill-dropped')).toBe('dropped –');
+    expect(screen.queryByTestId('pill-lost')).not.toBeInTheDocument();
   });
 
   it('CHOICE: once a new run is "starting" the pills go back from 0 to "–"', async () => {
@@ -476,41 +479,88 @@ describe('Dashboard (spec 37, was spec 35 F2): the pills show 0 once the run has
     await tick(2500);
     expect(pillText('pill-rx')).toBe('RX –');
     expect(pillText('pill-tx')).toBe('TX –');
-    expect(pillText('pill-dropped')).toBe('dropped –');
+    expect(screen.queryByTestId('pill-lost')).not.toBeInTheDocument();
   });
 
-  it('the dropped pill is neutral also after the run: no danger class, no alert', async () => {
-    twoLinkRun();
-    ended('failed');
-    await open();
-    const pill = screen.getByTestId('pill-dropped');
-    for (const el of [pill, ...Array.from(pill.querySelectorAll('*'))]) {
-      expect(el.getAttribute('class') ?? '', el.outerHTML).not.toMatch(/danger|red|error/i);
-    }
-    expect(pill.closest('[role="alert"]')).toBeNull();
-  });
+  // ---- spec 38: the "lost" pill, real (NIC) loss only, only while > 0 ----
 
-  it('live, nothing dropped: "dropped 0.00 %" (CHOICE: the pill is always there, like the other four)', async () => {
-    const none = { loss_pct: 0, limiter_pct: 0, buffer_full_pct: 0, nic_tx_pct: 0, nic_rx_pct: 0 };
+  const NO_NIC = { nic_tx_pct: 0, nic_rx_pct: 0 };
+  const EMULATED = { loss_pct: 5, limiter_pct: 7, buffer_full_pct: 9 };
+  const runningWith = (...dirs: ReturnType<typeof fx.dirStats>[]) => {
     api.getEmulation.mockResolvedValue(fx.emulation('running'));
-    api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0, none)]));
+    api.getStats.mockResolvedValue(fx.stats(dirs));
     renderApp('/');
-    await waitFor(() => expect(pillText('pill-dropped')).toBe('dropped 0.00 %'));
+  };
+
+  it('spec 38: there is no pill-dropped any more', async () => {
+    runningWith(fx.dirStats(0), fx.dirStats(1));
+    await screen.findByTestId('pill-lost');
+    expect(screen.queryByTestId('pill-dropped')).not.toBeInTheDocument();
   });
 
-  it('live, the dropped share is still the mean weighted by the received packet rate', async () => {
-    const shares = (m: number, rx_pps: number) => ({
-      rx_pps,
-      loss_pct: m,
-      limiter_pct: m,
-      buffer_full_pct: m,
-      nic_tx_pct: 0.5 * m,
-      nic_rx_pct: 0.5 * m,
-    });
+  it('spec 38: running with every drop share 0 shows no lost pill', async () => {
+    runningWith(
+      fx.dirStats(0, { ...NO_NIC, loss_pct: 0, limiter_pct: 0, buffer_full_pct: 0 }),
+      fx.dirStats(1, { ...NO_NIC, loss_pct: 0, limiter_pct: 0, buffer_full_pct: 0 }),
+    );
+    await waitFor(() => expect(pillText('pill-rx')).not.toBe('RX –'));
+    expect(screen.queryByTestId('pill-lost')).not.toBeInTheDocument();
+  });
+
+  it('spec 38: emulated causes alone (loss model, rate limiter, buffer full) show no lost pill', async () => {
+    runningWith(fx.dirStats(0, { ...NO_NIC, ...EMULATED }), fx.dirStats(1, { ...NO_NIC, ...EMULATED }));
+    await waitFor(() => expect(pillText('pill-rx')).not.toBe('RX –'));
+    expect(screen.queryByTestId('pill-lost')).not.toBeInTheDocument();
+  });
+
+  it('spec 38: emulated causes are not added to the NIC drops', async () => {
+    runningWith(
+      fx.dirStats(0, { ...EMULATED, nic_tx_pct: 1, nic_rx_pct: 0.5 }),
+      fx.dirStats(1, { ...EMULATED, nic_tx_pct: 1, nic_rx_pct: 0.5 }),
+    );
+    await waitFor(() => expect(pillText('pill-lost')).toBe('lost 1.50 %'));
+  });
+
+  it.each([
+    ['nic_tx_pct', { nic_tx_pct: 2.5, nic_rx_pct: 0 }, 'lost 2.50 %'],
+    ['nic_rx_pct', { nic_tx_pct: 0, nic_rx_pct: 1.25 }, 'lost 1.25 %'],
+  ])('spec 38: %s alone makes the pill show', async (_name, nic, text) => {
+    runningWith(fx.dirStats(0, nic), fx.dirStats(1, nic));
+    await waitFor(() => expect(pillText('pill-lost')).toBe(text));
+  });
+
+  it('spec 38: over 2 links the NIC share is weighted by rx_pps: (3e6 x 4 + 1e6 x 8) / 4e6 = 5.00', async () => {
+    // link 0: tx 3 + rx 1 = 4 %; link 1: tx 5 + rx 3 = 8 %; the unweighted mean would be 6.00
+    runningWith(
+      fx.dirStats(0, { rx_pps: 3e6, ...EMULATED, nic_tx_pct: 3, nic_rx_pct: 1 }),
+      fx.dirStats(1, { rx_pps: 1e6, ...EMULATED, nic_tx_pct: 5, nic_rx_pct: 3 }),
+    );
+    await waitFor(() => expect(pillText('pill-lost')).toBe('lost 5.00 %'));
+  });
+
+  it('spec 38: the pill carries the danger icon before the text', async () => {
+    runningWith(fx.dirStats(0), fx.dirStats(1));
+    const pill = await screen.findByTestId('pill-lost');
+    const icon = must(pill.querySelector('i'), 'the icon in the lost pill');
+    expect(icon).toHaveClass('bi', 'bi-exclamation-circle-fill', 'text-danger');
+    expect(pill.firstElementChild).toBe(icon);
+    expect(pill.textContent?.trim().startsWith('lost')).toBe(true);
+  });
+
+  it('spec 38: the pill appears and disappears with the live NIC drops', async () => {
+    vi.useFakeTimers();
     api.getEmulation.mockResolvedValue(fx.emulation('running'));
-    api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0, shares(1, 3e6)), fx.dirStats(1, shares(2, 1e6))]));
+    api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0, NO_NIC)]));
     renderApp('/');
-    await waitFor(() => expect(pillText('pill-dropped')).toBe('dropped 5.00 %'));
+    await tick(0);
+    await tick(0);
+    expect(screen.queryByTestId('pill-lost')).not.toBeInTheDocument();
+    api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0, { nic_tx_pct: 2, nic_rx_pct: 0 })]));
+    await tick(2500);
+    expect(pillText('pill-lost')).toBe('lost 2.00 %');
+    api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0, NO_NIC)]));
+    await tick(2500);
+    expect(screen.queryByTestId('pill-lost')).not.toBeInTheDocument();
   });
 });
 
