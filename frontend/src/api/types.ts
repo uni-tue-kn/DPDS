@@ -288,6 +288,9 @@ export interface HistogramView {
   expected_overflow?: number;
   expected_model?: 'exact' | 'normal_approximation';
   expected_note?: string;
+  /** The link's mean and standard deviation of the delay at its last stats poll (null when unknown). */
+  mean_ns?: number | null;
+  std_ns?: number | null;
 }
 
 /** Body of `POST /api/emulation/start` and `POST /api/host/hints`: the whole configuration, no ids. */

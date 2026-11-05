@@ -429,6 +429,8 @@ export default function Dashboard() {
                     history={state === 'starting' ? NO_SAMPLES : (history[String(dir)] ?? NO_SAMPLES)}
                     drops={dropsOf(dir)}
                     empty={beforeRun}
+                    // The link's stored config says whether its run had delay statistics (default: on).
+                    endedStats={finished && storedLinks[dir]?.config.delay_stats !== false}
                     live={
                       finished || !s
                         ? undefined

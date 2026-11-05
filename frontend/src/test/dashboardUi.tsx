@@ -24,7 +24,7 @@
 //   chart area a react-bootstrap Tabs: role "tablist", one role "tab" per link (index order), titled "name: ingress → egress"
 //              (netdev labels), with the badge "Stopping" / "Stopped" / "Failed" inside the tab while the run has ended.
 //              Inside the active role "tabpanel": the chart (role "img" with an aria-label), centred below it the radiogroup
-//              "Chart" with the radios "Traffic rates", "Delay histogram" (only with delay_stats and while live) and "Packet loss" (spec 43 F5), in this order,
+//              "Chart" with the radios "Traffic rates", "Delay histogram" (only with delay_stats; spec 50 A3: also after the run ended) and "Packet loss" (spec 43 F5), in this order,
 //              then the loss donut.
 //   donut      chart-doughnut (the Doughnut stub of test/setup.ts), the React legend data-testid="donut-legend" (one listitem per
 //              cause, each with a `legend-swatch` and a button "About <label>" whose tooltip is the explanation), or the text
@@ -177,34 +177,41 @@ export const runButton = (name: string) =>
 /** The visible text of a pill, whitespace normalised ("9.25 Gbit/s (7.31 Mpps)"). */
 export const pillText = (testId: string) => (screen.getByTestId(testId).textContent ?? '').replace(/\s+/g, ' ').trim();
 
-/** Cause labels of the donut, in the order of its segments (spec 35 F5, spec 47 F1: nine causes, the xstat names). */
+/**
+ * Cause labels of the donut and of the Packet loss chart's datasets, in the order of the donut's segments (spec 35 F5, spec 47 F1:
+ * nine causes). Spec 50 B1: no counter names in the labels, they are in the legend's hover help (CAUSE_HELP).
+ */
 export const CAUSES = [
   'Loss model',
   'Rate limiter',
   'Buffer full',
-  'NIC TX ring full (tx_drops)',
-  'NIC RX missed (rx_missed_errors)',
-  'RX buffers exhausted (rx_mbuf_allocation_errors)',
-  'NIC RX port buffer full (rx_prio*_buf/cong_discard_packets)',
-  'NIC RX port discards (rx_phy_discard_packets)',
-  'NIC TX port discards (tx_phy_discard_packets)',
+  'NIC TX ring full',
+  'NIC RX missed',
+  'RX buffers exhausted',
+  'NIC RX port buffer full',
+  'NIC RX port discards',
+  'NIC TX port discards',
 ] as const;
 
-/** The legend tooltips of F5 (spec 47 F1), exactly. */
+/**
+ * The legend tooltips, exactly (spec 35 F5, spec 47 F1; spec 50 B2). CHOICE for B2, where the spec only shows "… (tx_drops)": the
+ * counter names (comma and space separated when there are two) go in brackets right before the final full stop of the old text.
+ * The first three causes have no counter and keep their text.
+ */
 export const CAUSE_HELP: Record<(typeof CAUSES)[number], string> = {
   'Loss model': 'Packets dropped on purpose by the configured loss model (random or Gilbert-Elliott).',
   'Rate limiter': "Packets the limiter refused: the Spacer's backlog or the token bucket's budget was exceeded.",
   'Buffer full': 'Packets that arrived while the delay buffer already held its maximum number of packets.',
-  'NIC TX ring full (tx_drops)': 'Packets the NIC would not accept for sending because its transmit ring was full.',
-  'NIC RX missed (rx_missed_errors)': 'Packets the NIC dropped because its receive queues were full.',
-  'RX buffers exhausted (rx_mbuf_allocation_errors)':
-    'Packets lost because no packet buffer (mbuf) was free to receive them.',
-  'NIC RX port buffer full (rx_prio*_buf/cong_discard_packets)':
-    "Packets the NIC's port buffer discarded because it was full or congested, summed over all priorities.",
-  'NIC RX port discards (rx_phy_discard_packets)':
-    'Packets the NIC port discarded on receive because it had no buffers left.',
-  'NIC TX port discards (tx_phy_discard_packets)':
-    'Packets the NIC accepted for sending but dropped before they reached the wire.',
+  'NIC TX ring full': 'Packets the NIC would not accept for sending because its transmit ring was full (tx_drops).',
+  'NIC RX missed': 'Packets the NIC dropped because its receive queues were full (rx_missed_errors).',
+  'RX buffers exhausted':
+    'Packets lost because no packet buffer (mbuf) was free to receive them (rx_mbuf_allocation_errors).',
+  'NIC RX port buffer full':
+    "Packets the NIC's port buffer discarded because it was full or congested, summed over all priorities (rx_prio*_buf_discard_packets, rx_prio*_cong_discard_packets).",
+  'NIC RX port discards':
+    'Packets the NIC port discarded on receive because it had no buffers left (rx_phy_discard_packets).',
+  'NIC TX port discards':
+    'Packets the NIC accepted for sending but dropped before they reached the wire (tx_phy_discard_packets).',
 };
 
 /**

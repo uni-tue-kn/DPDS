@@ -511,18 +511,16 @@ describe('Loss donut (spec 35 F5): the hover text', () => {
     expect(hoverText(0, 0)).toBe('Loss model: 40 packets (40.00 % of drops)');
     expect(hoverText(0, 1)).toBe('Rate limiter: 30 packets (30.00 % of drops)');
     expect(hoverText(0, 2)).toBe('Buffer full: 20 packets (20.00 % of drops)');
-    expect(hoverText(0, 3)).toBe('NIC TX ring full (tx_drops): 5 packets (5.00 % of drops)');
-    expect(hoverText(0, 4)).toBe('NIC RX missed (rx_missed_errors): 4 packets (4.00 % of drops)');
-    expect(hoverText(0, 5)).toBe('RX buffers exhausted (rx_mbuf_allocation_errors): 1 packets (1.00 % of drops)');
+    expect(hoverText(0, 3)).toBe('NIC TX ring full: 5 packets (5.00 % of drops)');
+    expect(hoverText(0, 4)).toBe('NIC RX missed: 4 packets (4.00 % of drops)');
+    expect(hoverText(0, 5)).toBe('RX buffers exhausted: 1 packets (1.00 % of drops)');
   });
 
   it('spec 47: the hover text of the three new causes, with their share of all nine', async () => {
     await openLive(live(0, NINE));
-    expect(hoverText(0, 6)).toBe(
-      'NIC RX port buffer full (rx_prio*_buf/cong_discard_packets): 3 packets (3.00 % of drops)',
-    );
-    expect(hoverText(0, 7)).toBe('NIC RX port discards (rx_phy_discard_packets): 2 packets (2.00 % of drops)');
-    expect(hoverText(0, 8)).toBe('NIC TX port discards (tx_phy_discard_packets): 1 packets (1.00 % of drops)');
+    expect(hoverText(0, 6)).toBe('NIC RX port buffer full: 3 packets (3.00 % of drops)');
+    expect(hoverText(0, 7)).toBe('NIC RX port discards: 2 packets (2.00 % of drops)');
+    expect(hoverText(0, 8)).toBe('NIC TX port discards: 1 packets (1.00 % of drops)');
   });
 
   it('the share is of the drops, not of the received packets', async () => {
@@ -545,7 +543,7 @@ describe('Loss donut (spec 35 F5): the hover text', () => {
 
   it('a segment at 0 reads "0 packets (0.00 % of drops)"', async () => {
     await openLive(live(0, { ...ZERO, loss_drops: 5 }));
-    expect(hoverText(0, 3)).toBe('NIC TX ring full (tx_drops): 0 packets (0.00 % of drops)');
+    expect(hoverText(0, 3)).toBe('NIC TX ring full: 0 packets (0.00 % of drops)');
   });
 
   it('the same text for an ended run, from the totals', async () => {
@@ -556,7 +554,7 @@ describe('Loss donut (spec 35 F5): the hover text', () => {
     renderApp('/');
     await tick(0);
     await tick(1000);
-    expect(hoverText(0, 3)).toBe('NIC TX ring full (tx_drops): 5 packets (5.00 % of drops)');
+    expect(hoverText(0, 3)).toBe('NIC TX ring full: 5 packets (5.00 % of drops)');
   });
 
   it('Chart.js tooltips are not switched off for the donut', async () => {
@@ -586,5 +584,114 @@ describe('Loss donut (spec 35 F5): neutral for the loss model, warm for the over
     await openLive(live(0, HUNDRED));
     const colours = dataOf(0).datasets[0].backgroundColor.map(rgbOf);
     expect(new Set(colours).size).toBe(9);
+  });
+});
+
+// ---- spec 50 B: the labels carry no counter names, the hover help does ----------------------------------------------------------------
+//
+// User 2026-11-05: "the labels should not contain in brackets the counter names. They are only shown when hovering above the donut.
+// Also the donut label should not include them." All nine lines stay in the Packet loss chart, zero lines too. The expectations
+// below are literal (not built from CAUSES) so that a stale helper cannot hide a stale label.
+
+const TRIMMED = [
+  'Loss model',
+  'Rate limiter',
+  'Buffer full',
+  'NIC TX ring full',
+  'NIC RX missed',
+  'RX buffers exhausted',
+  'NIC RX port buffer full',
+  'NIC RX port discards',
+  'NIC TX port discards',
+];
+
+/** The counter names each cause's hover help must mention (none for the first three). */
+const COUNTERS_IN_HELP: [string, string[]][] = [
+  ['NIC TX ring full', ['tx_drops']],
+  ['NIC RX missed', ['rx_missed_errors']],
+  ['RX buffers exhausted', ['rx_mbuf_allocation_errors']],
+  ['NIC RX port buffer full', ['rx_prio*_buf_discard_packets', 'rx_prio*_cong_discard_packets']],
+  ['NIC RX port discards', ['rx_phy_discard_packets']],
+  ['NIC TX port discards', ['tx_phy_discard_packets']],
+];
+
+describe('Loss donut (spec 50 B1): trimmed labels', () => {
+  it('the donut data labels are the nine trimmed names', async () => {
+    await openLive(live(0, NINE));
+    expect(dataOf(0).labels).toEqual(TRIMMED);
+  });
+
+  it('the legend lists the trimmed names, with no bracket and no counter name', async () => {
+    await openLive(live(0, NINE));
+    const items = within(legend(0)).getAllByRole('listitem');
+    expect(items.map((i) => (i.textContent ?? '').trim())).toEqual(TRIMMED);
+    for (const i of items) expect(i.textContent).not.toMatch(/[()_*]/);
+  });
+
+  it('the "About" buttons are named after the trimmed labels', async () => {
+    await openLive(live(0, NINE));
+    for (const name of TRIMMED) {
+      expect(within(legend(0)).getByRole('button', { name: `About ${name}` })).toBeInTheDocument();
+    }
+  });
+
+  it('the hover text of the donut has the trimmed label, never a counter name, for each of the nine causes', async () => {
+    await openLive(live(0, NINE));
+    TRIMMED.forEach((name, i) => {
+      const text = hoverText(0, i);
+      expect(text.startsWith(`${name}: ${NINE_VALUES[i]} packets (`), text).toBe(true);
+      expect(text).not.toMatch(/_/);
+    });
+  });
+
+  it('an ended run has the same trimmed labels in the donut and the legend', async () => {
+    vi.useFakeTimers();
+    serveHistory({ startedAt: 1762000000, samples: { '0': fx.historySamples(0, 3) }, totals: { '0': fx.totals() } });
+    api.getEmulation.mockResolvedValue(fx.emulation('stopped', { directions: [] }));
+    api.getStats.mockResolvedValue(fx.stats([], { stale: true, age_ms: undefined, elapsed_ms: 5000 }));
+    renderApp('/');
+    await tick(0);
+    await tick(1000);
+    expect(dataOf(0).labels).toEqual(TRIMMED);
+    const items = within(legend(0)).getAllByRole('listitem');
+    expect(items.map((i) => (i.textContent ?? '').trim())).toEqual(TRIMMED);
+  });
+
+  it('the Packet loss chart has nine datasets with the trimmed labels, the ones at 0 too', async () => {
+    await openLive(live(0, { ...ZERO, loss_drops: 3 }));
+    fireEvent.click(radio(0, 'Packet loss'));
+    const chart = JSON.parse(within(card(0)).getByTestId('chart-line').getAttribute('data-chart') ?? 'null') as {
+      datasets: { label: string }[];
+    };
+    expect(chart.datasets.map((d) => d.label)).toEqual(TRIMMED);
+  });
+});
+
+describe('Loss donut (spec 50 B2): the counter names are in the legend hover help', () => {
+  it.each(COUNTERS_IN_HELP)('"About %s" names its counter(s) in brackets', async (cause, counters) => {
+    const user = userEvent.setup();
+    await openLive(live(0, HUNDRED));
+    const button = within(legend(0)).getByRole('button', { name: `About ${cause}` });
+    await user.hover(button);
+    const tip = await screen.findByRole('tooltip');
+    const text = tip.textContent ?? '';
+    for (const c of counters) expect(text, c).toContain(c);
+    expect(text).toContain(`(${counters.join(', ')})`);
+    await user.unhover(button);
+    await waitFor(() => expect(screen.queryByRole('tooltip')).not.toBeInTheDocument());
+  });
+
+  it.each([
+    ['Loss model', 'Packets dropped on purpose by the configured loss model (random or Gilbert-Elliott).'],
+    ['Rate limiter', "Packets the limiter refused: the Spacer's backlog or the token bucket's budget was exceeded."],
+    ['Buffer full', 'Packets that arrived while the delay buffer already held its maximum number of packets.'],
+  ])('"About %s" keeps its text: it has no counter', async (cause, help) => {
+    const user = userEvent.setup();
+    await openLive(live(0, HUNDRED));
+    const button = within(legend(0)).getByRole('button', { name: `About ${cause}` });
+    await user.hover(button);
+    const tip = await screen.findByRole('tooltip');
+    expect(tip.textContent?.trim()).toBe(help);
+    await user.unhover(button);
   });
 });

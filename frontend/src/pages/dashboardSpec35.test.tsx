@@ -6,7 +6,6 @@ import {
   activePanel,
   CAUSES,
   card,
-  RUN_BUTTONS,
   expectState,
   findCard,
   findState,
@@ -14,6 +13,7 @@ import {
   hasTab,
   pillText,
   queryRadio,
+  RUN_BUTTONS,
   radio,
   radioNames,
   runButton,
@@ -22,8 +22,8 @@ import {
   summaryTab,
   tab,
   tabBadge,
-  tabTitle,
   tabs,
+  tabTitle,
 } from '../test/dashboardUi';
 import * as fx from '../test/fixtures';
 import { deferred, renderApp, seedRaw, seedStore, tick } from '../test/helpers';
@@ -756,13 +756,37 @@ describe('Dashboard (spec 35 F3): the radios under the chart', () => {
     expect(api.getDelayHistogram).not.toHaveBeenCalledWith(1);
   });
 
-  it.each(['stopping', 'stopped', 'failed'] as const)('"%s": an ended link has only Rate and Loss', async (state) => {
-    serveHistory({ startedAt: 1762000000, samples: { '0': fx.historySamples(0, 3), '1': fx.historySamples(0, 3) } });
-    ended(state);
-    await open();
-    await tick(1000);
-    for (const d of [0, 1]) expect(radioNames(d), `${state}: link ${d}`).toEqual(['Traffic rates', 'Packet loss']);
-  });
+  // Spec 50 A3. Was: '"%s": an ended link has only Rate and Loss'. An ended link keeps the histogram radio unless its stored config
+  // has delay_stats off.
+  it.each(['stopping', 'stopped', 'failed'] as const)(
+    '"%s": an ended link keeps Rate, Delay histogram and Loss',
+    async (state) => {
+      serveHistory({ startedAt: 1762000000, samples: { '0': fx.historySamples(0, 3), '1': fx.historySamples(0, 3) } });
+      ended(state);
+      await open();
+      await tick(1000);
+      for (const d of [0, 1]) {
+        expect(radioNames(d), `${state}: link ${d}`).toEqual(['Traffic rates', 'Delay histogram', 'Packet loss']);
+      }
+    },
+  );
+
+  it.each(['stopping', 'stopped', 'failed'] as const)(
+    '"%s": an ended link whose stored config has delay_stats off has only Rate and Loss',
+    async (state) => {
+      seedStore({ links: [fx.link(), fx.linkRev()] }); // linkRev has delay_stats off
+      serveHistory({ startedAt: 1762000000, samples: { '0': fx.historySamples(0, 3), '1': fx.historySamples(0, 3) } });
+      ended(state);
+      api.getDelayHistogram.mockImplementation(async (dir) => {
+        if (dir === 1) throw new ApiError(404, 'delay statistics are off for direction 1');
+        return fx.histogram(dir);
+      });
+      await open();
+      await tick(1000);
+      expect(radioNames(0), `${state}: link 0`).toEqual(['Traffic rates', 'Delay histogram', 'Packet loss']);
+      expect(radioNames(1), `${state}: link 1`).toEqual(['Traffic rates', 'Packet loss']);
+    },
+  );
 
   it('Rate is the default and the only chart; the radios sit below it, centred', async () => {
     renderApp('/');
@@ -838,7 +862,8 @@ describe('Dashboard (spec 35 F3): the radios under the chart', () => {
     expect(must(within(card(0)).getAllByRole('img')[0]).getAttribute('aria-label')).toMatch(/loss/i);
   });
 
-  it('a histogram choice falls back to Rate when the run ends, and nothing is fetched any more', async () => {
+  // Spec 50 A3. Was: 'a histogram choice falls back to Rate when the run ends, and nothing is fetched any more'.
+  it('a histogram choice stays when the run ends, and it is still fetched', async () => {
     vi.useFakeTimers();
     serveHistory({ startedAt: 1762000000, samples: { '0': fx.historySamples(0, 5), '1': fx.historySamples(0, 5) } });
     renderApp('/');
@@ -849,12 +874,11 @@ describe('Dashboard (spec 35 F3): the radios under the chart', () => {
     expect(within(card(0)).getByTestId('chart-bar')).toBeInTheDocument();
     ended('stopped');
     await tick(2500);
-    expect(within(card(0)).queryByTestId('chart-bar')).not.toBeInTheDocument();
-    expect(within(card(0)).getByTestId('chart-line')).toBeInTheDocument();
-    expect(radio(0, 'Traffic rates')).toBeChecked();
+    expect(within(card(0)).getByTestId('chart-bar')).toBeInTheDocument();
+    expect(radio(0, 'Delay histogram')).toBeChecked();
     const n = api.getDelayHistogram.mock.calls.length;
     await tick(5000);
-    expect(api.getDelayHistogram.mock.calls.length).toBe(n);
+    expect(api.getDelayHistogram.mock.calls.length).toBeGreaterThan(n);
   });
 });
 

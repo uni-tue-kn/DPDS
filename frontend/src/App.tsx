@@ -88,7 +88,14 @@ function Sidebar({
   return (
     <div className="sidebar">
       <div className="sidebar-brand">
-        <img src={logo} alt="DPDS logo" draggable={false} />
+        <a
+          href="https://github.com/uni-tue-kn/DPDS"
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label="DPDS on GitHub"
+        >
+          <img src={logo} alt="DPDS logo" draggable={false} />
+        </a>
       </div>
       <nav aria-label="Main navigation" className="nav flex-column">
         {NAV.map((n) => (

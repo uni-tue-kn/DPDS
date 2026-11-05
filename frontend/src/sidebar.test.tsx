@@ -63,6 +63,11 @@ describe('sidebar (spec 28): icon only', () => {
     const user = userEvent.setup();
     renderApp('/');
     await user.tab();
+    // spec 50 F: the first stop is now the logo link, the nav links follow
+    expect(must(document.activeElement as HTMLElement | null, 'focused element').getAttribute('aria-label')).toBe(
+      'DPDS on GitHub',
+    );
+    await user.tab();
     const focused = must(document.activeElement as HTMLElement | null, 'focused element');
     expect(LABELS).toContain(focused.getAttribute('aria-label') ?? '');
     await new Promise((r) => setTimeout(r, 50));

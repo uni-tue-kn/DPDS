@@ -3,6 +3,7 @@ import { Form, OverlayTrigger, Tooltip } from 'react-bootstrap';
 import { Line } from 'react-chartjs-2';
 import type { HistorySample } from '../api/types';
 import { secondsToTime } from '../common/format';
+import { selectTimeKeys } from '../common/selectTimeKeys';
 import { useTheme } from '../common/theme';
 import { chartOptions, RX_COLOR, RX_FILL, TX_COLOR, TX_FILL } from '../components/charts';
 import ChartBox from './ChartBox';
@@ -11,6 +12,9 @@ import type { DropCounts } from './LossDonut';
 import LossDonut, { CAUSES } from './LossDonut';
 
 type View = 'rate' | 'histogram' | 'loss';
+
+/** The most points a time chart plots, like P4TG's `time_statistics?limit=100`. */
+const MAX_POINTS = 100;
 
 /** The units of the rate chart's y axis, largest first; with no traffic it is Gbit/s, like P4TG. */
 const RATE_AXIS_UNITS = [
@@ -35,7 +39,8 @@ const COUNTS = [
 
 /**
  * The chart area of one link: the chart, the radios below it and the loss donut. `live` carries the live delay numbers; a
- * link of an ended run has none, and so no histogram (it needs live telemetry), nor has a link with delay statistics off.
+ * link of an ended run has none, but keeps its histogram (the controller answers the run's last one) when `endedStats` says
+ * the run had delay statistics. A link with delay statistics off has no histogram.
  * Without `dir` it is the Summary of all links: `history` and `drops` are their aggregates, and the histogram radio is
  * there but disabled (a histogram is per link).
  */
@@ -46,6 +51,7 @@ export default function LinkCharts({
   drops,
   live,
   empty = false,
+  endedStats = false,
 }: {
   dir?: number;
   /** Whether the link's tab is shown: react-bootstrap keeps hidden panes mounted, and a hidden histogram must not poll. */
@@ -54,6 +60,8 @@ export default function LinkCharts({
   drops: DropCounts;
   /** Before any run: the link has no telemetry, so its histogram radio is there but disabled, like the Summary's. */
   empty?: boolean;
+  /** An ended run whose link had delay statistics: the histogram stays, from the controller's copy. */
+  endedStats?: boolean;
   live?: { delayStats: boolean; meanNs?: number | null; stdNs?: number | null };
 }) {
   const theme = useTheme();
@@ -62,53 +70,55 @@ export default function LinkCharts({
   const summary = dir === undefined;
   const of = summary ? 'all links' : `link ${dir}`;
   const noHistogram = summary || empty;
-  const hasHistogram = live?.delayStats === true;
+  const hasHistogram = live?.delayStats === true || endedStats;
   const view = chosen === 'histogram' && !hasHistogram ? 'rate' : chosen;
   const views: [View, string][] = [
     ['rate', 'Traffic rates'],
     ...(hasHistogram || noHistogram ? ([['histogram', 'Delay histogram']] as [View, string][]) : []),
     ['loss', 'Packet loss'],
   ];
-  const labels = useMemo(() => history.map((s) => secondsToTime(Math.floor(s.t_ms / 1000))), [history]);
+  // The history stays complete; the time charts plot at most MAX_POINTS of it.
+  const points = useMemo(() => selectTimeKeys(history, MAX_POINTS), [history]);
+  const labels = useMemo(() => points.map((s) => secondsToTime(Math.floor(s.t_ms / 1000))), [points]);
   // The y axis shows one unit, like P4TG's "Gbit/s"; a link slower than that gets the largest unit its peak reaches.
   const rateUnit = useMemo(() => {
-    const peak = Math.max(0, ...history.map((s) => Math.max(s.rx_gbps, s.tx_gbps)));
+    const peak = Math.max(0, ...points.map((s) => Math.max(s.rx_gbps, s.tx_gbps)));
     if (peak === 0) return RATE_AXIS_UNITS[0];
     return RATE_AXIS_UNITS.find((u) => peak * u.perGbit >= 1) ?? RATE_AXIS_UNITS[RATE_AXIS_UNITS.length - 1];
-  }, [history]);
+  }, [points]);
   const rateData = useMemo(
     () => ({
       labels,
       datasets: [
         {
           label: 'RX',
-          data: history.map((s) => s.rx_gbps * rateUnit.perGbit),
+          data: points.map((s) => s.rx_gbps * rateUnit.perGbit),
           borderColor: RX_COLOR,
           backgroundColor: RX_FILL,
           fill: true,
         },
         {
           label: 'TX',
-          data: history.map((s) => s.tx_gbps * rateUnit.perGbit),
+          data: points.map((s) => s.tx_gbps * rateUnit.perGbit),
           borderColor: TX_COLOR,
           backgroundColor: TX_FILL,
           fill: true,
         },
       ],
     }),
-    [history, labels, rateUnit],
+    [points, labels, rateUnit],
   );
   const lossData = useMemo(
     () => ({
       labels,
       datasets: CAUSES.map((c, i) => ({
         label: c.label,
-        data: history.map(COUNTS[i]),
+        data: points.map(COUNTS[i]),
         borderColor: c.color,
         backgroundColor: c.color,
       })),
     }),
-    [history, labels],
+    [points, labels],
   );
   const rateOptions = useMemo(() => chartOptions<'line'>(theme, 'Time', rateUnit.label), [theme, rateUnit]);
   const lossOptions = useMemo(() => chartOptions<'line'>(theme, 'Time', 'Dropped packets'), [theme]);

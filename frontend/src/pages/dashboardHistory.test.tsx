@@ -1,11 +1,11 @@
 import { fireEvent, screen, within } from '@testing-library/react';
 import { vi } from 'vitest';
 import type { HistorySample, HistoryView } from '../api/types';
+import { CAUSES, card, expectState, hasTab, queryRadio, tab, tabBadge } from '../test/dashboardUi';
 import * as fx from '../test/fixtures';
-import { api, serveHistory } from '../test/mockApi';
-import type { HistoryServer } from '../test/mockApi';
 import { renderApp, seedStore, tick } from '../test/helpers';
-import { card, CAUSES, expectState, hasTab, queryRadio, tab, tabBadge } from '../test/dashboardUi';
+import type { HistoryServer } from '../test/mockApi';
+import { api, serveHistory } from '../test/mockApi';
 import { must } from '../test/must';
 
 // Spec 29 (user 2026-11-04, "Server-side series"): the dashboard charts are built from the controller's series,
@@ -234,11 +234,13 @@ describe('Dashboard (spec 29): the charts show the whole run with elapsed-time l
     expect(c.labels).toEqual(['0h 0m 1s', '0h 0m 2s']);
   });
 
-  it('there is no 120-sample cap: 300 samples are all in the chart, oldest first', async () => {
+  // Spec 50 G: a time chart shows at most 100 points, selected over the whole run (first and last kept); the cap of the page's
+  // history (86400) is in dashboardSpec29b.test.tsx. Was: all 300 samples are in the chart.
+  it('there is no 120-sample cap: 300 samples are charted as 100 points spanning the whole run, oldest first', async () => {
     server({ '0': fx.historySamples(0, 300), '1': fx.historySamples(0, 300) });
     await open();
-    expect(labelsOf(0)).toHaveLength(300);
-    expect(rxOf(0)).toHaveLength(300);
+    expect(labelsOf(0)).toHaveLength(100);
+    expect(rxOf(0)).toHaveLength(100);
     expect(labelsOf(0)[0]).toBe('0h 0m 0s');
     expect(labelsOf(0).at(-1)).toBe('0h 4m 59s');
   });
@@ -249,14 +251,15 @@ describe('Dashboard (spec 29): the charts show the whole run with elapsed-time l
     s.samples['0'].push(...fx.historySamples(119, 3));
     s.samples['1'].push(...fx.historySamples(119, 3));
     await tick(2000);
-    expect(rxOf(0)).toHaveLength(122);
+    expect(rxOf(0)).toHaveLength(100); // spec 50 G (was 122): the 122 samples are charted as 100 points, the newest one the last
     expect(labelsOf(0).at(-1)).toBe('0h 2m 1s');
   });
 
-  it('a run of hours is shown whole: 10800 samples (3 h at 1 s)', async () => {
+  it('a run of hours is shown whole, as 100 points (spec 50 G): 10800 samples (3 h at 1 s)', async () => {
     server({ '0': fx.historySamples(0, 10800), '1': [] });
     await open();
-    expect(rxOf(0)).toHaveLength(10800);
+    expect(rxOf(0)).toHaveLength(100);
+    expect(labelsOf(0)[0]).toBe('0h 0m 0s');
     expect(labelsOf(0).at(-1)).toBe('2h 59m 59s');
   });
 
@@ -487,9 +490,9 @@ describe('Dashboard (spec 29): a failing history request', () => {
 //     is not empty: one card per link index in the history (spec 35: one tab per link index), in the same session after a stop
 //     and after a reload/remount alike. The live stat list is NOT pinned; the titles are (spec 29b item 5, they come from the
 //     history's `links`);
-//   - the charts are the history's, Rate and Drops, both selectable; there is no "Delay histogram" choice on a stopped card
-//     (the controller's histogram needs live telemetry), nothing is fetched for it, and a card that showed the histogram falls
-//     back to Rate;
+//   - the charts are the history's, Rate and Drops, both selectable; spec 50 A3 (was: no "Delay histogram" choice on a stopped card,
+//     a card that showed the histogram fell back to Rate): the card keeps the enabled "Delay histogram" choice, the controller serves
+//     the run's last histogram after the stop (dashboardSpec50.test.tsx);
 //   - a start clears them: as soon as the state is `starting` (or the Start request has been answered) no stopped card is
 //     left, and the next run's cards show only its own samples.
 // A controller that never ran (no samples, started_at null) has no cards.
@@ -552,28 +555,26 @@ describe('Dashboard (spec 29, round 2): the final charts of a stopped run stay u
     expect(rxOf(0)).toHaveLength(7);
   });
 
-  it('there is no "Delay histogram" choice on a stopped card, and none is fetched', async () => {
+  // Spec 50 A3. Was: 'there is no "Delay histogram" choice on a stopped card, and none is fetched'.
+  it('the "Delay histogram" choice stays on a stopped card (spec 50 A3), enabled', async () => {
     const { stop } = await runThenStop();
     await stop();
-    expect(radioOf(0, 'Delay histogram')).not.toBeInTheDocument();
-    expect(radioOf(1, 'Delay histogram')).not.toBeInTheDocument();
-    const n = api.getDelayHistogram.mock.calls.length;
-    await tick(5000);
-    expect(api.getDelayHistogram.mock.calls.length).toBe(n);
+    for (const d of [0, 1]) expect(radioOf(d, 'Delay histogram'), `card ${d}`).toBeEnabled();
   });
 
-  it('a card that showed the histogram falls back to the Rate chart at the stop, and stops fetching', async () => {
+  // Spec 50 A3. Was: 'a card that showed the histogram falls back to the Rate chart at the stop, and stops fetching'.
+  it('a card that showed the histogram keeps showing it at the stop, and keeps fetching it', async () => {
     const { stop } = await runThenStop();
     fireEvent.click(must(radioOf(0, 'Delay histogram'), 'histogram radio'));
     await tick(1000);
     expect(within(card(0)).getByTestId('chart-bar')).toBeInTheDocument();
     await stop();
-    expect(within(card(0)).queryByTestId('chart-bar')).not.toBeInTheDocument();
-    expect(within(card(0)).getByTestId('chart-line')).toBeInTheDocument();
-    expect(radioOf(0, 'Traffic rates')).toBeChecked();
+    expect(within(card(0)).getByTestId('chart-bar')).toBeInTheDocument();
+    expect(within(card(0)).queryByTestId('chart-line')).not.toBeInTheDocument();
+    expect(radioOf(0, 'Delay histogram')).toBeChecked();
     const n = api.getDelayHistogram.mock.calls.length;
     await tick(5000);
-    expect(api.getDelayHistogram.mock.calls.length).toBe(n);
+    expect(api.getDelayHistogram.mock.calls.length).toBeGreaterThan(n);
   });
 
   // Spec 29b item 5. Was: 'while the run is stopping the cards are still the live ones, not marked', with the stats of the
@@ -653,7 +654,7 @@ describe('Dashboard (spec 29, round 2): the final charts of a stopped run stay u
     for (const d of [0, 1]) expect(marker(d), `card ${d}`).toBeInTheDocument();
     expect(rxOf(0)).toEqual(Array(5).fill(1.5));
     expect(rxOf(1)).toEqual(Array(5).fill(2.5));
-    expect(radioOf(0, 'Delay histogram')).not.toBeInTheDocument();
+    expect(radioOf(0, 'Delay histogram')).toBeEnabled(); // spec 50 A3 (was: not in the document)
   });
 
   it('a one-link run leaves one card', async () => {

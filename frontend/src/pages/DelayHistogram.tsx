@@ -108,7 +108,7 @@ export default function DelayHistogram({
   if (!hist || !data || !options) return null;
   return (
     <>
-      <HistogramTables hist={hist} meanNs={meanNs} stdNs={stdNs} />
+      <HistogramTables hist={hist} meanNs={meanNs ?? hist.mean_ns} stdNs={stdNs ?? hist.std_ns} />
       <ChartBox label={`Delay histogram of link ${dir}`}>
         <Bar data={data} options={options} />
       </ChartBox>

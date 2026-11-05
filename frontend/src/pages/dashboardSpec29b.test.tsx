@@ -4,7 +4,7 @@ import type { HistorySample } from '../api/types';
 import * as fx from '../test/fixtures';
 import { ApiError, api, serveHistory } from '../test/mockApi';
 import type { HistoryServer } from '../test/mockApi';
-import { renderApp, tick } from '../test/helpers';
+import { renderApp, seedStore, tick } from '../test/helpers';
 import { card, hasTab, radioNames, tab, tabBadge, tabTitle, tabs } from '../test/dashboardUi';
 import { must } from '../test/must';
 
@@ -173,7 +173,39 @@ describe('Dashboard (spec 29b item 5): history cards for stopping, stopped and f
       }
       expect(rxOf(0)).toEqual(Array(5).fill(1.5));
       expect(rxOf(1)).toEqual(Array(5).fill(2.5));
-      expect(radioNames(0)).toEqual(['Traffic rates', 'Packet loss']); // the final charts only, no live histogram
+      // spec 50 A3 (was: the final charts only, no histogram): no stored config says delay_stats is off, so the histogram stays
+      expect(radioNames(0)).toEqual(['Traffic rates', 'Delay histogram', 'Packet loss']);
+    },
+  );
+
+  it.each(['stopping', 'stopped', 'failed'] as const)(
+    '"%s": a link whose stored config has delay_stats off has the final charts only, the other one keeps its histogram (spec 50 A3)',
+    async (state) => {
+      seedStore({
+        links: [
+          fx.link({ id: 1, name: 'a-b' }),
+          fx.link({
+            id: 2,
+            name: 'b-a',
+            ingress: '0000:65:00.1',
+            egress: '0000:65:00.0',
+            config: { ...fx.config(), delay_stats: false },
+          }),
+        ],
+      });
+      server({
+        '0': fx.historySamples(0, 5, { rx_gbps: 1.5 }),
+        '1': fx.historySamples(0, 5, { rx_gbps: 2.5 }),
+      });
+      settle(state);
+      api.getDelayHistogram.mockImplementation(async (dir) => {
+        if (dir === 1) throw new ApiError(404, 'delay statistics are off for direction 1');
+        return fx.histogram(dir);
+      });
+      await open();
+      await tick(2500);
+      expect(radioNames(0)).toEqual(['Traffic rates', 'Delay histogram', 'Packet loss']);
+      expect(radioNames(1)).toEqual(['Traffic rates', 'Packet loss']);
     },
   );
 
@@ -382,17 +414,20 @@ describe('Dashboard (spec 29b item 7): the client keeps at most 86400 samples pe
   const numbered = (from: number, count: number): HistorySample[] =>
     Array.from({ length: count }, (_, i) => fx.historySample((from + i) * 1000, { rx_gbps: from + i }));
 
+  // Spec 50 G: a time chart plots at most 100 points, the first and the last of the history the page holds. So the cap of 86400
+  // samples is seen at the chart's FIRST point (the oldest sample the page still holds) and its last one (the newest).
   it('a series at the cap that grows by 3 keeps 86400 samples: the 3 oldest are gone', async () => {
     const s = server({ '0': numbered(0, 86400), '1': fx.historySamples(0, 10) });
     await open();
-    expect(rxOf(0)).toHaveLength(86400);
+    expect(rxOf(0)).toHaveLength(100);
+    expect(rxOf(0)[0]).toBe(0);
     s.samples['0'].push(...numbered(86400, 3));
     await tick(2000);
     const rx = rxOf(0);
-    expect(rx).toHaveLength(86400);
+    expect(rx).toHaveLength(100);
     expect(rx[0]).toBe(3);
     expect(rx.at(-1)).toBe(86402);
-    expect(labelsOf(0)).toHaveLength(86400);
+    expect(labelsOf(0)).toHaveLength(100);
     expect(labelsOf(0)[0]).toBe('0h 0m 3s');
     expect(labelsOf(0).at(-1)).toBe('24h 0m 2s');
   });
@@ -403,7 +438,9 @@ describe('Dashboard (spec 29b item 7): the client keeps at most 86400 samples pe
     s.samples['0'].push(...numbered(86400, 1));
     s.samples['1'].push(fx.historySample(86_400_000));
     await tick(2000);
-    expect(rxOf(0)).toHaveLength(86400);
+    expect(rxOf(0)).toHaveLength(100);
+    expect(rxOf(0)[0]).toBe(1); // the one oldest sample is gone (spec 50 G: seen at the first point)
+    expect(rxOf(0).at(-1)).toBe(86400);
     expect(rxOf(1)).toHaveLength(11);
   });
 
@@ -412,11 +449,12 @@ describe('Dashboard (spec 29b item 7): the client keeps at most 86400 samples pe
     await open();
     s.samples['0'].push(...numbered(86398, 2)); // exactly at the cap
     await tick(2000);
-    expect(rxOf(0)).toHaveLength(86400);
+    expect(rxOf(0)).toHaveLength(100);
     expect(rxOf(0)[0]).toBe(0);
+    expect(rxOf(0).at(-1)).toBe(86399);
     s.samples['0'].push(...numbered(86400, 3));
     await tick(2000);
-    expect(rxOf(0)).toHaveLength(86400);
+    expect(rxOf(0)).toHaveLength(100);
     expect(rxOf(0)[0]).toBe(3);
     expect(rxOf(0).at(-1)).toBe(86402);
   });
@@ -426,8 +464,9 @@ describe('Dashboard (spec 29b item 7): the client keeps at most 86400 samples pe
     await open();
     s.samples['0'].push(...numbered(86390, 5));
     await tick(2000);
-    expect(rxOf(0)).toHaveLength(86395);
-    expect(rxOf(0)[0]).toBe(0);
+    expect(rxOf(0)).toHaveLength(100);
+    expect(rxOf(0)[0]).toBe(0); // nothing dropped: the oldest sample is still the first point
+    expect(rxOf(0).at(-1)).toBe(86394);
   });
 
   it('polling stays incremental from the newest sample after the cap was reached', async () => {

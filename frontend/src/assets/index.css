@@ -59,7 +59,7 @@ body {
 }
 
 .sidebar-brand img {
-  width: 80px;
+  width: 100%;
   max-width: 100%;
   height: auto;
 }
@@ -156,6 +156,21 @@ body {
   --bs-btn-bg: var(--color-primary);
 }
 
+/* Outline-primary buttons (the Delay accuracy toggle) take the DPDS red instead of Bootstrap's blue, in every state. */
+.btn-outline-primary {
+  --bs-btn-color: var(--color-primary);
+  --bs-btn-border-color: var(--color-primary);
+  --bs-btn-hover-color: #fff;
+  --bs-btn-hover-bg: var(--color-primary);
+  --bs-btn-hover-border-color: var(--color-primary);
+  --bs-btn-focus-shadow-rgb: 231, 76, 60;
+  --bs-btn-active-color: #fff;
+  --bs-btn-active-bg: var(--color-primary);
+  --bs-btn-active-border-color: var(--color-primary);
+  --bs-btn-disabled-color: var(--color-primary);
+  --bs-btn-disabled-border-color: var(--color-primary);
+}
+
 .btn-success {
   --bs-btn-bg: var(--color-okay);
   --bs-btn-border-color: var(--color-okay);
@@ -172,7 +187,7 @@ body {
 
 .chart-box {
   position: relative;
-  height: 200px;
+  height: 400px;
 }
 
 .donut-box {

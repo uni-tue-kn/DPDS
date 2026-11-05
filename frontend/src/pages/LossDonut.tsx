@@ -24,34 +24,34 @@ export const CAUSES = [
     help: 'Packets that arrived while the delay buffer already held its maximum number of packets.',
   },
   {
-    label: 'NIC TX ring full (tx_drops)',
+    label: 'NIC TX ring full',
     color: '#e74c3c',
-    help: 'Packets the NIC would not accept for sending because its transmit ring was full.',
+    help: 'Packets the NIC would not accept for sending because its transmit ring was full (tx_drops).',
   },
   {
-    label: 'NIC RX missed (rx_missed_errors)',
+    label: 'NIC RX missed',
     color: '#c0392b',
-    help: 'Packets the NIC dropped because its receive queues were full.',
+    help: 'Packets the NIC dropped because its receive queues were full (rx_missed_errors).',
   },
   {
-    label: 'RX buffers exhausted (rx_mbuf_allocation_errors)',
+    label: 'RX buffers exhausted',
     color: '#8e2b1f',
-    help: 'Packets lost because no packet buffer (mbuf) was free to receive them.',
+    help: 'Packets lost because no packet buffer (mbuf) was free to receive them (rx_mbuf_allocation_errors).',
   },
   {
-    label: 'NIC RX port buffer full (rx_prio*_buf/cong_discard_packets)',
+    label: 'NIC RX port buffer full',
     color: '#a93226',
-    help: "Packets the NIC's port buffer discarded because it was full or congested, summed over all priorities.",
+    help: "Packets the NIC's port buffer discarded because it was full or congested, summed over all priorities (rx_prio*_buf_discard_packets, rx_prio*_cong_discard_packets).",
   },
   {
-    label: 'NIC RX port discards (rx_phy_discard_packets)',
+    label: 'NIC RX port discards',
     color: '#7b241c',
-    help: 'Packets the NIC port discarded on receive because it had no buffers left.',
+    help: 'Packets the NIC port discarded on receive because it had no buffers left (rx_phy_discard_packets).',
   },
   {
-    label: 'NIC TX port discards (tx_phy_discard_packets)',
+    label: 'NIC TX port discards',
     color: '#d35400',
-    help: 'Packets the NIC accepted for sending but dropped before they reached the wire.',
+    help: 'Packets the NIC accepted for sending but dropped before they reached the wire (tx_phy_discard_packets).',
   },
 ] as const;
 
@@ -126,7 +126,7 @@ function CauseInfo({ label, help }: { label: string; help: string }) {
   );
 }
 
-/** The distribution of a link's drops by cause, with a legend that explains the raw counter names. */
+/** The distribution of a link's drops by cause, with a legend whose hover help names the raw counters. */
 export default function LossDonut({ drops }: { drops: DropCounts }) {
   const theme = useTheme();
   const { loss, limiter, bufferFull, nicTx, missed, nombuf, portBuffer, rxPhy, txPhy } = drops;
