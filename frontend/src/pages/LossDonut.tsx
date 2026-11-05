@@ -73,6 +73,9 @@ export const dropsOfTotals = (t: HistoryTotals): DropCounts => ({
 /** All causes together; 0 means nothing was dropped. */
 export const totalDrops = (d: DropCounts) => d.loss + d.limiter + d.bufferFull + d.nicTx + d.imissed + d.nombuf;
 
+/** The one neutral segment shown instead of the causes when nothing was dropped. */
+const PLACEHOLDER = { label: 'No drops', color: '#adb5bd' } as const;
+
 /** The hover text of a segment: its count and its share of all drops. */
 function hoverText(label: string, count: number, total: number): string {
   const share = total > 0 ? (count / total) * 100 : 0;
@@ -102,14 +105,21 @@ function CauseInfo({ label, help }: { label: string; help: string }) {
 export default function LossDonut({ drops }: { drops: DropCounts }) {
   const theme = useTheme();
   const { loss, limiter, bufferFull, nicTx, imissed, nombuf } = drops;
+  const empty = totalDrops(drops) === 0;
   const data = useMemo(
-    () => ({
-      labels: CAUSES.map((c) => c.label),
-      datasets: [
-        { data: [loss, limiter, bufferFull, nicTx, imissed, nombuf], backgroundColor: CAUSES.map((c) => c.color) },
-      ],
-    }),
-    [loss, limiter, bufferFull, nicTx, imissed, nombuf],
+    () =>
+      empty
+        ? { labels: [PLACEHOLDER.label], datasets: [{ data: [1], backgroundColor: [PLACEHOLDER.color] }] }
+        : {
+            labels: CAUSES.map((c) => c.label),
+            datasets: [
+              {
+                data: [loss, limiter, bufferFull, nicTx, imissed, nombuf],
+                backgroundColor: CAUSES.map((c) => c.color),
+              },
+            ],
+          },
+    [empty, loss, limiter, bufferFull, nicTx, imissed, nombuf],
   );
   const options = useMemo(
     () =>
@@ -123,23 +133,27 @@ export default function LossDonut({ drops }: { drops: DropCounts }) {
           tooltip: {
             callbacks: {
               label: (ctx: { label: string; parsed: number; dataset: { data: number[] } }) =>
-                hoverText(
-                  ctx.label,
-                  ctx.parsed,
-                  ctx.dataset.data.reduce((a, b) => a + b, 0),
-                ),
+                empty
+                  ? PLACEHOLDER.label
+                  : hoverText(
+                      ctx.label,
+                      ctx.parsed,
+                      ctx.dataset.data.reduce((a, b) => a + b, 0),
+                    ),
             },
           },
         },
       }) as unknown as ChartOptions<'doughnut'>,
-    [theme],
+    [theme, empty],
   );
 
-  if (totalDrops(drops) === 0) return <p className="text-center text-body-secondary mb-0">No drops</p>;
   return (
     <div className="d-flex flex-wrap justify-content-center align-items-center gap-4">
-      <div className="donut-box" role="img" aria-label="Distribution of the dropped packets by cause">
-        <Doughnut data={data} options={options} />
+      <div>
+        <div className="donut-box" role="img" aria-label="Distribution of the dropped packets by cause">
+          <Doughnut data={data} options={options} />
+        </div>
+        {empty && <p className="text-center text-body-secondary mb-0">{PLACEHOLDER.label}</p>}
       </div>
       <ul className="list-unstyled mb-0" data-testid="donut-legend">
         {CAUSES.map((c) => (

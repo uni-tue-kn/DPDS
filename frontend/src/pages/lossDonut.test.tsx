@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { vi } from 'vitest';
 import type { Counters, DirectionStats } from '../api/types';
 import { propsOf } from '../test/chartProps';
-import { card, CAUSE_HELP, CAUSES, findCard, radio, tab } from '../test/dashboardUi';
+import { CAUSE_HELP, CAUSES, card, findCard, radio, tab } from '../test/dashboardUi';
 import * as fx from '../test/fixtures';
 import { renderApp, tick } from '../test/helpers';
 import { api, serveHistory } from '../test/mockApi';
@@ -21,7 +21,9 @@ import { must } from '../test/must';
 //   - the hover text is `options.plugins.tooltip.callbacks.label(context)` (Chart.js tooltip item: `label`, `parsed`, `raw`,
 //     `dataIndex`, `dataset.data`); CHOICE: the count has thousands separators ("1,234,567 packets"), the share two decimals
 //     ("33.33 % of drops"), always "packets";
-//   - all six counts 0: the text "No drops" and neither chart nor legend;
+//   - all six counts 0 (user 2026-11-05: the donut is always visible): the chart is still there, as ONE neutral grey full ring
+//     (a single placeholder segment: one dataset, one positive value, a grey colour), the legend of six causes is unchanged,
+//     "No drops" stays as text, and hovering the ring says "No drops" (never "NaN", never a division by zero);
 //   - CHOICE: the donut is shown under every radio choice (Rate, Delay histogram, Loss).
 
 const ZERO: Partial<Counters> = {
@@ -252,70 +254,126 @@ describe('Loss donut (spec 35 F5): what it plots', () => {
 
 // ---- no drops ------------------------------------------------------------------------------------------------------------------
 
-describe('Loss donut (spec 35 F5): "No drops"', () => {
-  it('all six counts 0: the text "No drops" and neither donut nor legend', async () => {
+/** The totals of an ended run with no drop at all. */
+const NO_TOTALS = {
+  loss_drops: 0,
+  limiter_drops: 0,
+  buffer_full_drops: 0,
+  nic_tx_drops: 0,
+  nic_rx_imissed: 0,
+  nic_rx_nombuf: 0,
+};
+
+async function openEnded(totals: Partial<typeof NO_TOTALS>) {
+  vi.useFakeTimers();
+  serveHistory({
+    startedAt: 1762000000,
+    samples: { '0': fx.historySamples(0, 3) },
+    totals: { '0': fx.totals(totals) },
+  });
+  api.getEmulation.mockResolvedValue(fx.emulation('stopped', { directions: [] }));
+  api.getStats.mockResolvedValue(fx.stats([], { stale: true, age_ms: undefined, elapsed_ms: 5000 }));
+  renderApp('/');
+  await tick(0);
+  await tick(1000);
+}
+
+/** The placeholder ring: one positive value in a grey that is not one of the cause colours. */
+function expectPlaceholderRing(d: number) {
+  const data = dataOf(d);
+  expect(data.datasets).toHaveLength(1);
+  expect(data.datasets[0].data).toHaveLength(1);
+  expect(data.datasets[0].data[0]).toBeGreaterThan(0);
+  expect(data.datasets[0].backgroundColor).toHaveLength(1);
+  expect(hsv(data.datasets[0].backgroundColor[0]).s).toBeLessThan(0.25);
+}
+
+describe('Loss donut (spec 35 F5): no drops, the donut is still there', () => {
+  it('live, all six counts 0: the donut is one grey full ring, and "No drops" is shown', async () => {
     await openLive(live(0, ZERO));
+    expect(queryDonut(0)).toBeInTheDocument();
+    expectPlaceholderRing(0);
     expect(within(card(0)).getByText('No drops')).toBeInTheDocument();
-    expect(queryDonut(0)).not.toBeInTheDocument();
-    expect(within(card(0)).queryByTestId('donut-legend')).not.toBeInTheDocument();
   });
 
-  it('the donut is there as soon as one count is not 0, even a single packet', async () => {
+  it('live, all six counts 0: the legend still lists the six causes with their "About" buttons', async () => {
+    await openLive(live(0, ZERO));
+    const items = within(legend(0)).getAllByRole('listitem');
+    expect(items).toHaveLength(6);
+    CAUSES.forEach((cause, i) => {
+      expect(items[i], cause).toHaveTextContent(cause);
+    });
+    expect(within(legend(0)).getAllByRole('button')).toHaveLength(6);
+  });
+
+  it('the legend swatches keep the cause colours, not the grey of the placeholder', async () => {
+    await openLive(live(0, ZERO));
+    const swatches = within(legend(0)).getAllByTestId('legend-swatch');
+    expect(new Set(swatches.map((s) => rgbOf(s.style.backgroundColor))).size).toBe(6);
+  });
+
+  it('the Chart.js legend is off and the tooltips are on, also for the placeholder', async () => {
+    await openLive(live(0, ZERO));
+    const options = JSON.parse(donut(0).getAttribute('data-options') ?? 'null');
+    expect(options.plugins.legend.display).toBe(false);
+    expect(options.plugins.tooltip?.enabled).not.toBe(false);
+  });
+
+  it('hovering the ring says "No drops": no NaN, no percentage, no count', async () => {
+    await openLive(live(0, ZERO));
+    const text = hoverText(0, 0);
+    expect(text).toContain('No drops');
+    expect(text).not.toMatch(/NaN|Infinity|%|packets/);
+  });
+
+  it('ended with totals of 0: the donut is there as well, grey, with "No drops" and the six-cause legend', async () => {
+    await openEnded(NO_TOTALS);
+    expect(queryDonut(0)).toBeInTheDocument();
+    expectPlaceholderRing(0);
+    expect(within(card(0)).getByText('No drops')).toBeInTheDocument();
+    expect(within(legend(0)).getAllByRole('listitem')).toHaveLength(6);
+    expect(hoverText(0, 0)).not.toMatch(/NaN|Infinity|%/);
+  });
+
+  it('with drops there is no placeholder and no "No drops"; even a single packet gives the real segments', async () => {
     await openLive(live(0, { ...ZERO, nic_rx_nombuf: 1 }));
     expect(valuesOf(0)).toEqual([0, 0, 0, 0, 0, 1]);
+    expect(dataOf(0).labels).toEqual([...CAUSES]);
     expect(within(card(0)).queryByText('No drops')).not.toBeInTheDocument();
   });
 
-  it('it is per link: one link with drops, the other without', async () => {
+  it('it is per link: one link with drops, the other without; both have a donut', async () => {
     await openLive(live(0, HUNDRED), live(1, ZERO));
+    expect(valuesOf(0)).toEqual([40, 30, 20, 5, 4, 1]);
     expect(within(card(0)).queryByText('No drops')).not.toBeInTheDocument();
+    expectPlaceholderRing(1);
     expect(within(card(1)).getByText('No drops')).toBeInTheDocument();
-    expect(queryDonut(1)).not.toBeInTheDocument();
   });
 
-  it('it comes and goes with the polls', async () => {
+  it('it switches with the polls: placeholder, then the real segments, then the placeholder again', async () => {
     vi.useFakeTimers();
     serveLive(live(0, ZERO));
     renderApp('/');
     await tick(0);
     await tick(0);
+    expectPlaceholderRing(0);
     expect(within(card(0)).getByText('No drops')).toBeInTheDocument();
     api.getStats.mockResolvedValue(fx.stats([live(0, { ...ZERO, loss_drops: 2 })]));
     await tick(2500);
-    expect(queryDonut(0)).toBeInTheDocument();
+    expect(valuesOf(0)).toEqual([2, 0, 0, 0, 0, 0]);
     expect(within(card(0)).queryByText('No drops')).not.toBeInTheDocument();
-  });
-
-  it('ended with totals of 0: "No drops" as well', async () => {
-    vi.useFakeTimers();
-    serveHistory({
-      startedAt: 1762000000,
-      samples: { '0': fx.historySamples(0, 3) },
-      totals: {
-        '0': fx.totals({
-          loss_drops: 0,
-          limiter_drops: 0,
-          buffer_full_drops: 0,
-          nic_tx_drops: 0,
-          nic_rx_imissed: 0,
-          nic_rx_nombuf: 0,
-        }),
-      },
-    });
-    api.getEmulation.mockResolvedValue(fx.emulation('stopped', { directions: [] }));
-    api.getStats.mockResolvedValue(fx.stats([], { stale: true, age_ms: undefined, elapsed_ms: 5000 }));
-    renderApp('/');
-    await tick(0);
-    await tick(1000);
+    api.getStats.mockResolvedValue(fx.stats([live(0, ZERO)]));
+    await tick(2500);
+    expectPlaceholderRing(0);
     expect(within(card(0)).getByText('No drops')).toBeInTheDocument();
-    expect(queryDonut(0)).not.toBeInTheDocument();
   });
 
-  it('CHOICE: "No drops" is also shown below every chart choice', async () => {
+  it('CHOICE: the ring and "No drops" are shown below every chart choice', async () => {
     await openLive(live(0, ZERO));
     for (const choice of ['Loss', 'Delay histogram', 'Rate']) {
       fireEvent.click(radio(0, choice));
       expect(within(card(0)).getByText('No drops'), choice).toBeInTheDocument();
+      expect(queryDonut(0), choice).toBeInTheDocument();
     }
   });
 });

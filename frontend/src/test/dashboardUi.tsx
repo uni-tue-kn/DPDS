@@ -17,7 +17,8 @@
 //              then the loss donut.
 //   donut      chart-doughnut (the Doughnut stub of test/setup.ts), the React legend data-testid="donut-legend" (one listitem per
 //              cause, each with a `legend-swatch` and a button "About <label>" whose tooltip is the explanation), or the text
-//              "No drops" when all six counts are 0 (then neither chart nor legend).
+//              With all six counts 0 the chart is still there as one grey placeholder ring (one dataset, one value), the legend is
+//              unchanged and the text "No drops" is shown too.
 //   log        only for state "failed" and a non-empty log_tail: a closed <details> whose <summary> reads "Show log" and that
 //              holds data-testid="log-tail".
 //   ports      no ports table on the dashboard; PortsTable (data-testid="ports-table", heading "NIC ports") is on /interfaces.
