@@ -25,7 +25,7 @@ describe('sidebar brand', () => {
     expect(link).toHaveAttribute('target', '_blank');
     const rel = (link.getAttribute('rel') ?? '').split(/\s+/);
     expect(rel).toEqual(expect.arrayContaining(['noopener', 'noreferrer']));
-    expect(screen.getByRole('link', { name: /github/i })).toBe(link);
+    expect(link).toHaveAccessibleName(/github/i);
     expect(link.closest('.sidebar-brand')).not.toBeNull();
   });
 
@@ -34,4 +34,24 @@ describe('sidebar brand', () => {
     expect(size).toBeGreaterThan(0);
     expect(size).toBeLessThan(40_000);
   });
+});
+
+// User 2026-11-05: "on the bottom of the page I also want a 'DPDS @ ' and then the github sign. And this should also link
+// to the GitHub page." A footer at the end of the main content, on every page.
+describe('page footer', () => {
+  it.each(['/', '/interfaces', '/hints', '/settings'])(
+    'on %s reads "DPDS @" with the GitHub icon and links to the repository',
+    (path) => {
+      renderApp(path);
+      const footer = must(document.querySelector('main.main-content > footer.app-footer'), 'the footer') as HTMLElement;
+      const link = must(footer.querySelector('a'), 'the footer link') as HTMLAnchorElement;
+      expect(link.getAttribute('href')).toBe('https://github.com/uni-tue-kn/DPDS');
+      expect(link).toHaveAttribute('target', '_blank');
+      expect((link.getAttribute('rel') ?? '').split(/\s+/)).toEqual(expect.arrayContaining(['noopener', 'noreferrer']));
+      expect(link.textContent?.replace(/\s+/g, ' ').trim()).toBe('DPDS @');
+      expect(link.querySelector('i.bi.bi-github')).not.toBeNull();
+      expect(link).toHaveAccessibleName(/DPDS @ GitHub/);
+      expect(footer).toBe(must(footer.parentElement).lastElementChild);
+    },
+  );
 });

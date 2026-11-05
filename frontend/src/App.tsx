@@ -8,7 +8,7 @@ import { resetConfig, useLocalConfig } from './common/localConfig';
 import { startPolling } from './common/polling';
 import type { Theme } from './common/theme';
 import { ThemeContext } from './common/theme';
-import { isUpdateAvailable, RELEASES_URL } from './common/updateCheck';
+import { isUpdateAvailable, RELEASES_URL, REPO_URL } from './common/updateCheck';
 import Dashboard from './pages/Dashboard';
 import Hints from './pages/Hints';
 import Interfaces from './pages/Interfaces';
@@ -88,12 +88,7 @@ function Sidebar({
   return (
     <div className="sidebar">
       <div className="sidebar-brand">
-        <a
-          href="https://github.com/uni-tue-kn/DPDS"
-          target="_blank"
-          rel="noopener noreferrer"
-          aria-label="DPDS on GitHub"
-        >
+        <a href={REPO_URL} target="_blank" rel="noopener noreferrer" aria-label="DPDS on GitHub">
           <img src={logo} alt="DPDS logo" draggable={false} />
         </a>
       </div>
@@ -231,6 +226,11 @@ export default function App() {
             <Route path="/settings/:id" element={<LinkEditor />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
+          <footer className="app-footer">
+            <a href={REPO_URL} target="_blank" rel="noopener noreferrer" aria-label="DPDS @ GitHub">
+              DPDS @ <i className="bi bi-github" aria-hidden="true" />
+            </a>
+          </footer>
         </main>
       </div>
     </ThemeContext.Provider>

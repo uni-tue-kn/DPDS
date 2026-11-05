@@ -1,6 +1,8 @@
 const VERSION_URL = 'https://raw.githubusercontent.com/uni-tue-kn/DPDS/refs/heads/main/VERSION.md';
 
-export const RELEASES_URL = 'https://github.com/uni-tue-kn/DPDS/releases';
+/** The DPDS repository on GitHub. */
+export const REPO_URL = 'https://github.com/uni-tue-kn/DPDS';
+export const RELEASES_URL = `${REPO_URL}/releases`;
 
 /** `x.y.z` (optionally `v`-prefixed, surrounding white space allowed) as numbers, or null. */
 function toParts(v: string): number[] | null {

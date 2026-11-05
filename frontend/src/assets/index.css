@@ -116,6 +116,25 @@ body {
   flex: 1;
   min-width: 0;
   padding: 1.5rem 2rem;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+/* "DPDS @ <GitHub icon>" at the bottom of every page, linking to the repository. */
+.app-footer {
+  margin-top: auto;
+  padding-top: 1.5rem;
+  text-align: center;
+}
+
+.app-footer a {
+  color: var(--color-text);
+  text-decoration: none;
+}
+
+.app-footer a:hover {
+  color: var(--color-primary);
 }
 
 @media (max-width: 768px) {
