@@ -34,7 +34,7 @@ impl Mempool {
                 c_name.as_ptr(),
                 n,
                 cache_size,
-                0, // priv_size – per-packet metadata travels next to the pointer (ring elements), never in the mbuf
+                0, // priv_size: no private area; DPDS keeps one f64 in the unused `hash` field (mbuf::set_arrival_ns)
                 data_room_size,
                 socket_id as i32,
             )

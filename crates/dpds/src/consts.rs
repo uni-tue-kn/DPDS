@@ -4,6 +4,14 @@
 /// `net_config::BURST_SIZE`).
 pub const BURST_SIZE: usize = 32;
 
+/// Capacity of the TX staging array: due packets are sent with one `tx_burst`
+/// of up to this many (spec 57).
+pub const TX_BURST_SIZE: usize = 64;
+
+/// A staged batch is sent at the latest this long (ns) after the send time of
+/// its oldest packet, however few packets it holds.
+pub const TX_MAX_WAIT_NS: f64 = 10_000.0;
+
 /// RX/TX descriptors requested per NIC queue (the driver clamps to what it
 /// supports via `rte_eth_dev_adjust_nb_rx_tx_desc`).
 pub const NIC_DESCRIPTORS: u16 = 4096;

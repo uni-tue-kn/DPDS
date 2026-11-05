@@ -38,12 +38,14 @@
 //! when the limiter is active, the Spacer queueing allowance
 //! `extra = limit / rate_bps * 1e9` ns with the DERIVED limit
 //! `limit = buffer_capacity * 1542 * 8` bit (spec20; `limit_bit` no longer exists;
-//! a Spacer packet can wait up to a full limit's worth of bits; the intended delay
-//! includes that offset):
+//! a Spacer packet can wait up to a full limit's worth of bits; the realized delay
+//! includes that offset). `2 * TX_MAX_WAIT_NS` (20 us, `TX_MAX_WAIT_NS` in `dpds::consts`) is always added to
+//! `hi`, so the window is at least that wide and the minimum-width rule (1000 ns) never
+//! applies any more:
 //!
 //! ```text
 //! lo = max(0, mean - 6 * std)
-//! hi = mean + 6 * std + extra
+//! hi = mean + 6 * std + extra + 2 * TX_MAX_WAIT_NS     (spec 57 T9: twice the staging wait)
 //! if hi - lo < 1000 ns:           (deterministic delay etc.: a window around the middle)
 //!     mid = (lo + hi) / 2;  lo = max(0, mid - 500);  hi = lo + 1000
 //! bin_ns = (hi - lo) / 256
@@ -60,10 +62,19 @@
 //! that message names both `lo_ns` and `hi_ns`.
 //!
 //! ## Stats (`/dpds/stats,<dir>` via `Stats::stats_reply`)
-//! Intended delay of every ACCEPTED packet, `max(0, send_time_ns as f64 - now)`
-//! (`now` = the iteration's clock read); lateness of every popped packet,
-//! `max(0, now - send_time_ns as f64)` (`pop_due_with_time`). Rejected packets
-//! are not counted. Keys (always present, zero before any packet):
+//! Spec 57: both are recorded at the TX enqueue, for the packets the NIC ACCEPTED
+//! (`staged[..sent]` of the `tx_burst`; the freed tail and rejected packets are not
+//! counted). `tx_ns` is the clock read immediately before `tx_burst` (delay-stats instance
+//! only). The delay is the realized delay `max(0, tx_ns - arrival_ns)` (arrival = the `now`
+//! of the push, `pop_due_with_time`'s third element); the lateness is
+//! `max(0, tx_ns - send_time_ns as f64)` and includes the staging wait (up to
+//! `TX_MAX_WAIT_NS`); `lateness_mean_ns` is the lateness sum over the number of recorded
+//! packets (the same count as the delay). Consequently, with a monotone clock the realized
+//! delay of a packet is at least its intended delay plus the wait of the batch. The
+//! histogram range rules above include `2 * TX_MAX_WAIT_NS` in `hi` (they are about the configured
+//! delay plus the staging wait, T9), so the histogram tests below compute the expected bin
+//! with `HistRange::bin` where the place depends on the clock.
+//! Keys (always present, zero before any packet):
 //!   `delay_mean_ns`, `delay_std_ns`, `lateness_mean_ns`: Str, `format!("{:.2}")`
 //!       (like `tx_pkts_per_call`; DPDK telemetry has no float setter);
 //!       std is the POPULATION standard deviation (divide by n);
@@ -113,9 +124,13 @@
 //!     absent or 0, `underflow`/`overflow` absent or 0), but it is still `Some(..)` for
 //!     `DirectionStats::delay_hist_reply` of an existing direction (a bad direction param
 //!     stays `None`);
-//!   - with `--features telemetry`: `forward::run` records no intended delay, lateness
+//!   - with `--features telemetry`: `forward::run` records no realized delay, lateness
 //!     or histogram entry, while every counter and drop cause is counted as before.
 
+use dpds::consts::TX_MAX_WAIT_NS;
+
+/// Spec 57 T9: the automatic window ends this far above `mean + 6 std + extra`.
+const WINDOW_MARGIN_NS: f64 = 2.0 * TX_MAX_WAIT_NS;
 use dpds::delay_stats::{Bin, HistRange, HistogramSpec, HIST_BINS, MAX_BINS, MIN_WIDTH_NS};
 use dpds::reply::{Reply, Value};
 use dpds::stats::{DirectionStats, Stats};
@@ -218,38 +233,57 @@ fn range(c: dpds_core::Config) -> (f64, f64) {
     (r.lo_ns, r.bin_ns)
 }
 
+/// The window `[lo, hi)` as `(lo, bin_ns)` for the bin width `(hi - lo) / 256`.
+fn window(lo: f64, hi: f64) -> (f64, f64) {
+    (lo, (hi - lo) / 256.0)
+}
+
 #[test]
-fn a_deterministic_delay_gets_a_one_microsecond_window_around_the_mean() {
-    // mean 1 ms, std 0: lo = 1e6 - 500, width 1000 -> bin 1000 / 256
-    assert_eq!(range(cfg(1_000_000.0, 0.0, None)), (999_500.0, 3.90625));
+fn a_deterministic_delay_gets_the_staging_wait_as_its_window() {
+    // mean 1 ms, std 0: [1e6, 1e6 + 2 * TX_MAX_WAIT_NS), width 20 us (>= 1 us: no recentring)
+    let w = WINDOW_MARGIN_NS;
+    assert_eq!(range(cfg(1_000_000.0, 0.0, None)), window(1e6, 1e6 + w));
+    assert_eq!(range(cfg(1_000_000.0, 0.0, None)), (1e6, 78.125));
     let r = HistRange::from_config(&cfg(1_000_000.0, 0.0, None));
-    assert_eq!(r.hi_ns(), 1_000_500.0);
+    assert_eq!(r.hi_ns(), 1e6 + w);
 }
 
 #[test]
-fn the_window_is_clamped_at_zero() {
-    assert_eq!(range(cfg(0.0, 0.0, None)), (0.0, 3.90625));
-    assert_eq!(range(cfg(200.0, 0.0, None)), (0.0, 3.90625), "[0, 1000)");
+fn the_window_starts_at_zero_or_at_the_lower_edge_and_ends_one_wait_above_the_mean() {
+    let w = WINDOW_MARGIN_NS;
+    assert_eq!(range(cfg(0.0, 0.0, None)), window(0.0, w));
+    // no recentring any more: lo is the mean itself
+    assert_eq!(range(cfg(200.0, 0.0, None)), window(200.0, 200.0 + w));
 }
 
 #[test]
-fn a_spread_below_the_minimum_width_still_gets_the_minimum_window() {
-    // 12 * std = 120 ns < 1000 ns
-    assert_eq!(range(cfg(100_000.0, 10.0, None)), (99_500.0, 3.90625));
+fn a_small_spread_adds_to_the_staging_wait() {
+    // 12 * std = 120 ns: [mean - 60, mean + 60 + 2 W)
+    let w = WINDOW_MARGIN_NS;
+    assert_eq!(
+        range(cfg(100_000.0, 10.0, None)),
+        window(100_000.0 - 60.0, 100_000.0 + 60.0 + w)
+    );
 }
 
 #[test]
-fn a_wide_enough_spread_is_mean_plus_minus_six_std() {
-    // [4 ms, 16 ms], width 12 ms
-    assert_eq!(range(cfg(10e6, 1e6, None)), (4e6, 46_875.0));
-    // 12 * 100 = 1200 ns >= 1000: no recentring, lo = 1e6 - 600
-    assert_eq!(range(cfg(1e6, 100.0, None)), (999_400.0, 4.6875));
+fn a_wide_spread_is_mean_plus_minus_six_std_plus_the_wait_above() {
+    let w = WINDOW_MARGIN_NS;
+    // [4 ms, 16 ms + 2 W)
+    assert_eq!(range(cfg(10e6, 1e6, None)), window(4e6, 16e6 + w));
+    assert_eq!(
+        range(cfg(1e6, 100.0, None)),
+        window(1e6 - 600.0, 1e6 + 600.0 + w)
+    );
 }
 
 #[test]
 fn mean_minus_six_std_below_zero_is_clamped_at_zero() {
-    // [0, 7 ms]: the clamped lower edge, upper edge mean + 6 std
-    assert_eq!(range(cfg(1e6, 1e6, None)), (0.0, 27_343.75));
+    // [0, 7 ms + 2 W): the clamped lower edge, upper edge mean + 6 std + 2 W
+    assert_eq!(
+        range(cfg(1e6, 1e6, None)),
+        window(0.0, 7e6 + WINDOW_MARGIN_NS)
+    );
 }
 
 /// The allowance is a floating-point division (123360 / 1e9 * 1e9 is not exact), so the
@@ -266,27 +300,32 @@ fn assert_range(got: (f64, f64), want: (f64, f64)) {
 
 #[test]
 fn an_active_limiter_widens_the_range_by_its_queueing_allowance() {
-    // capacity 10: derived limit 123_360 bit at 1e9 bit/s = 123_360 ns of
-    // possible Spacer queueing: [0, 123_360], bin 481.875
-    assert_range(range(cfg(0.0, 0.0, Some(1e9))), (0.0, 481.875));
-    // [mean - 6 std, mean + 6 std + 123_360] = [4e5, 1_723_360], width 1_323_360
-    assert_range(range(cfg(1e6, 1e5, Some(1e9))), (4e5, 5169.375));
+    // capacity 10: derived limit 123_360 bit at 1e9 bit/s = 123_360 ns of possible Spacer
+    // queueing: [0, 123_360 + 2 W]
+    let w = WINDOW_MARGIN_NS;
+    assert_range(range(cfg(0.0, 0.0, Some(1e9))), window(0.0, 123_360.0 + w));
+    // [mean - 6 std, mean + 6 std + 123_360 + 2 W] = [4e5, 1_733_360]
+    assert_range(
+        range(cfg(1e6, 1e5, Some(1e9))),
+        window(4e5, 1.6e6 + 123_360.0 + w),
+    );
 }
 
 #[test]
 fn the_queueing_allowance_follows_the_capacity_and_the_rate() {
-    // twice the capacity: twice the derived limit: [0, 246_720]
+    let w = WINDOW_MARGIN_NS;
+    // twice the capacity: twice the derived limit: [0, 246_720 + 2 W]
     assert_range(
         range(cfg_cap(20, 0.0, 0.0, Some(("Spacer", 1e9)))),
-        (0.0, 963.75),
+        window(0.0, 246_720.0 + w),
     );
-    // ten times the rate: a tenth of the allowance: [0, 12_336], bin 48.1875
+    // ten times the rate: a tenth of the allowance: [0, 12_336 + 2 W]
     assert_range(
         range(cfg_cap(10, 0.0, 0.0, Some(("Spacer", 1e10)))),
-        (0.0, 48.1875),
+        window(0.0, 12_336.0 + w),
     );
-    // an inactive limiter adds nothing whatever the capacity
-    assert_eq!(range(cfg_cap(10_000, 0.0, 0.0, None)), (0.0, 3.90625));
+    // an inactive limiter adds nothing whatever the capacity: only the wait
+    assert_eq!(range(cfg_cap(10_000, 0.0, 0.0, None)), window(0.0, w));
 }
 
 #[test]
@@ -294,7 +333,7 @@ fn a_token_bucket_filter_adds_no_allowance_to_the_range() {
     // the TBF never delays a packet: same window as without a limiter
     assert_eq!(
         range(cfg_cap(10, 0.0, 0.0, Some(("TokenBucketFilter", 1e9)))),
-        (0.0, 3.90625)
+        window(0.0, WINDOW_MARGIN_NS)
     );
 }
 
@@ -309,7 +348,7 @@ fn an_inactive_limiter_does_not_widen_the_range() {
         None, // activate = false
         json!({ "Random": 0.0 }),
     );
-    assert_eq!(range(c), (0.0, 3.90625));
+    assert_eq!(range(c), window(0.0, WINDOW_MARGIN_NS));
 }
 
 #[test]
@@ -323,7 +362,7 @@ fn the_rule_ignores_the_distribution_kind() {
         // std 0 is valid for the deterministic kind only; the others may
         // reject it, which is not what is tested here
         if dpds_core::buffer::Buffer::try_new(c).is_ok() {
-            assert_eq!(range(c), (10e6 - 500.0, 3.90625), "{dist}");
+            assert_eq!(range(c), window(10e6, 10e6 + WINDOW_MARGIN_NS), "{dist}");
         }
     }
 }
@@ -389,18 +428,20 @@ fn the_default_spec_is_the_automatic_range() {
 
 #[test]
 fn each_missing_field_falls_back_to_the_automatic_value() {
-    let c = cfg(10e6, 1e6, None); // automatic [4 ms, 16 ms), 256 bins
-                                  // only bins: the automatic range cut into 100 bins
+    // automatic [4 ms, 16 ms + 2 * TX_MAX_WAIT_NS), 256 bins
+    let c = cfg(10e6, 1e6, None);
+    let hi = 16e6 + WINDOW_MARGIN_NS;
+    // only bins: the automatic range cut into 100 bins
     assert_eq!(
         from_spec(c, spec(Some(100), None, None)).unwrap(),
-        wb(4e6, 120_000.0, 100)
+        wb(4e6, (hi - 4e6) / 100.0, 100)
     );
-    // only lo: [5 ms, 16 ms) in 256 bins
+    // only lo: [5 ms, 16 ms + 2 W) in 256 bins
     assert_eq!(
         from_spec(c, spec(None, Some(5e6), None)).unwrap(),
-        wb(5e6, 42_968.75, 256)
+        wb(5e6, (hi - 5e6) / 256.0, 256)
     );
-    // only hi: [4 ms, 20 ms) in 256 bins
+    // only hi: [4 ms, 20 ms) in 256 bins (an explicit hi is taken as given, no wait added)
     assert_eq!(
         from_spec(c, spec(None, None, Some(20e6))).unwrap(),
         wb(4e6, 62_500.0, 256)
@@ -486,7 +527,7 @@ fn a_bad_histogram_spec_is_an_error_naming_the_field() {
         (spec(None, None, Some(f64::INFINITY)), "hi_ns"),
         (spec(None, Some(5.0), Some(5.0)), "lo_ns,hi_ns"), // lo == hi
         (spec(None, Some(9.0), Some(5.0)), "lo_ns,hi_ns"), // lo > hi
-        (spec(None, Some(20e6), None), "lo_ns,hi_ns"),     // beyond the automatic hi (16 ms)
+        (spec(None, Some(20e6), None), "lo_ns,hi_ns"),     // beyond the automatic hi (16 ms + 2 W)
         (spec(None, None, Some(1e6)), "lo_ns,hi_ns"),      // below the automatic lo (4 ms)
     ] {
         let e = from_spec(c, sp).expect_err(&format!("{sp:?}"));
@@ -558,21 +599,58 @@ mod with_feature {
         }
     }
 
-    /// One direction (port 0 -> 0). `lens[i]` is the packet length of packet
-    /// i; all packets arrive in one burst at the first clock read; quit is
-    /// requested in that same rx call, so the second iteration drains.
+    /// One direction (port 0 -> 0), one burst `lens` (the packet length of packet i). Clock
+    /// reads, in order: `clock[0]` = the burst's arrival (iteration 1; quit is requested in
+    /// that rx call), `clock[1]` = `now` of iteration 2 (the pops and the send decision; it must
+    /// be at least `TX_MAX_WAIT_NS` past the oldest send time), `clock[2]` = `tx_ns`, the extra
+    /// read right before `tx_burst`; the last value repeats. The mbufs' `hash` starts as a
+    /// sentinel: nothing may depend on it.
     fn drive(cfg: Config, lens: &[u32], clock: &[f64], stats: &'static Stats) {
-        let mut m = FakeMbufs::new(lens.len(), 0, 64);
-        for (i, &l) in lens.iter().enumerate() {
-            m.set_pkt_len(i, l);
+        drive_bursts(cfg, &[lens], clock, stats, usize::MAX);
+    }
+
+    /// As [`drive`] with one burst per rx call (quit is requested in the last one) and a NIC
+    /// that takes at most `accept` packets per `tx_burst`. The clock is `arrival_1 .. arrival_n,
+    /// now, tx_ns`, which only holds while nothing is sent before the last iteration (the
+    /// callers use a delay nothing is due for, or a zero delay with all arrivals within
+    /// `TX_MAX_WAIT_NS`).
+    fn drive_bursts(
+        cfg: Config,
+        bursts: &[&[u32]],
+        clock: &[f64],
+        stats: &'static Stats,
+        accept: usize,
+    ) {
+        let total: usize = bursts.iter().map(|b| b.len()).sum();
+        let mut m = FakeMbufs::new(total, 0, 64);
+        let mut script = Vec::new();
+        let mut next = 0;
+        for b in bursts {
+            let mut ptrs = Vec::new();
+            for &l in *b {
+                m.set_pkt_len(next, l);
+                m.set_hash(next, HASH_SENTINEL);
+                ptrs.push(m.ptr(next));
+                next += 1;
+            }
+            script.push(ptrs);
         }
         let quit = Quit::new();
-        let mut rx = MockRx::with_script(vec![m.ptrs()]);
+        let last = bursts.len();
+        let mut rx = MockRx::with_script(script);
         {
             let q = &quit;
-            rx.on_call = Some(Box::new(move |_| q.request()));
+            rx.on_call = Some(Box::new(move |k| {
+                if k == last {
+                    q.request()
+                }
+            }));
         }
-        let (mut tx, mut free) = (MockTx::default(), MockFree::default());
+        let mut tx = MockTx {
+            accept_limit: accept,
+            ..Default::default()
+        };
+        let mut free = MockFree::default();
         let mut t = Telemetry::new(stats, 0.0);
         let (now, _) = scripted_clock(clock, None);
         // SAFETY: fake but valid mbufs owned by the test.
@@ -587,7 +665,27 @@ mod with_feature {
                 now,
             )
         };
-        assert_eq!(tx.offered().len() + free.freed().len(), lens.len());
+        // every mbuf was offered to the NIC or freed (an offered one the NIC refused is freed too)
+        let seen: std::collections::HashSet<_> =
+            tx.offered().into_iter().chain(free.freed()).collect();
+        assert_eq!(seen.len(), total);
+    }
+
+    /// Asserts that `n` packets of realized delay `delay_ns` are in the one histogram place
+    /// `range.bin(delay_ns)` names and nowhere else.
+    fn assert_all_in_bin(h: &Reply, range: HistRange, delay_ns: f64, n: u64) {
+        let (mut under, mut over, mut at) = (0, 0, None);
+        match range.bin(delay_ns) {
+            Bin::Underflow => under = n,
+            Bin::Overflow => over = n,
+            Bin::Index(i) => at = Some(i),
+        }
+        assert_eq!(uint(h, "underflow"), under, "{h:?}");
+        assert_eq!(uint(h, "overflow"), over, "{h:?}");
+        let b = bins(h);
+        for (i, c) in b.iter().enumerate() {
+            assert_eq!(*c, if Some(i) == at { n } else { 0 }, "bin {i}");
+        }
     }
 
     /// Spacer 1 bit/ns (capacity 100: derived limit 1_217_600 bit, far above
@@ -641,83 +739,186 @@ mod with_feature {
     }
 
     #[test]
-    fn delay_and_lateness_statistics_of_a_hand_built_sequence() {
-        // base 800, packet sizes 200, 192, 232, 192, 192 ns (len 1, 0, 5, 0, 0):
-        // delays 800, 1000, 1192, 1424, 1616, 1808
-        // mean 7840 / 6 = 1306.67, population std 347.54
-        // popped at now = 10_000: lateness 10000 - delay = 9200 ... 8192,
-        // mean 8693.33, same std, max 9200
+    fn delay_is_tx_minus_arrival_and_lateness_is_tx_minus_send_time() {
+        // Spacer 1 bit/ns, base 800, lens 1, 0, 5, 0, 0, 0 all arriving at 0: send times 800,
+        // 1000, 1192, 1424, 1616, 1808. Iteration 2 pops at 20_000 (oldest send time 19_200 old:
+        // tx), the tx read is 30_000. Delay: 30_000 for every packet, std 0.
+        // Lateness 30_000 - send: 29_200, 29_000, 28_808, 28_576, 28_384, 28_192 (sum 172_160).
         let stats: &'static Stats = Box::leak(Box::default());
         drive(
             spacer_cfg(800.0),
             &[1, 0, 5, 0, 0, 0],
-            &[0.0, 10_000.0],
+            &[0.0, 20_000.0, 30_000.0],
             stats,
         );
         let r = stats.stats_reply(0);
-        assert_eq!(string(&r, "delay_mean_ns"), "1306.67");
-        assert_eq!(string(&r, "delay_std_ns"), "347.54");
-        assert_eq!(uint(&r, "delay_min_ns"), 800);
-        assert_eq!(uint(&r, "delay_max_ns"), 1808);
-        assert_eq!(string(&r, "lateness_mean_ns"), "8693.33");
-        assert_eq!(uint(&r, "lateness_max_ns"), 9200);
+        assert_eq!(string(&r, "delay_mean_ns"), "30000.00");
+        assert_eq!(string(&r, "delay_std_ns"), "0.00");
+        assert_eq!(uint(&r, "delay_min_ns"), 30_000);
+        assert_eq!(uint(&r, "delay_max_ns"), 30_000);
+        assert_eq!(string(&r, "lateness_mean_ns"), "28693.33");
+        assert_eq!(uint(&r, "lateness_max_ns"), 29_200);
         assert_eq!(uint(&r, "tx_sent"), 6);
     }
 
     #[test]
-    fn a_constant_delay_has_zero_std_and_equal_min_max() {
+    fn a_constant_delay_is_not_the_realized_delay_the_staging_wait_is_included() {
+        // delay 5000, arrival 100, send time 5100. Popped at 20_000, tx at 25_000: realized
+        // delay 24_900 (not the intended 5000), lateness 19_900.
         let stats: &'static Stats = Box::leak(Box::default());
-        let cfg = config(100, 5_000.0, 0.0);
-        drive(cfg, &[64; 10], &[100.0, 20_000.0], stats);
+        drive(
+            config(100, 5_000.0, 0.0),
+            &[64; 10],
+            &[100.0, 20_000.0, 25_000.0],
+            stats,
+        );
         let r = stats.stats_reply(0);
-        assert_eq!(string(&r, "delay_mean_ns"), "5000.00");
+        assert_eq!(string(&r, "delay_mean_ns"), "24900.00");
         assert_eq!(string(&r, "delay_std_ns"), "0.00");
         assert_eq!(
             (uint(&r, "delay_min_ns"), uint(&r, "delay_max_ns")),
-            (5000, 5000)
+            (24_900, 24_900)
         );
-        // send time 5100, popped at 20_000
-        assert_eq!(string(&r, "lateness_mean_ns"), "14900.00");
-        assert_eq!(uint(&r, "lateness_max_ns"), 14_900);
+        assert_eq!(string(&r, "lateness_mean_ns"), "19900.00");
+        assert_eq!(uint(&r, "lateness_max_ns"), 19_900);
     }
 
     #[test]
-    fn the_std_is_exact_for_a_huge_mean_with_a_tiny_spread() {
-        // delays 1e10 + {0, 992, 1984, 2976} (len 100: 992 ns each): population
-        // std 1109.09 around the mean 1e10 + 1488. A naive f64 sum of squares
-        // (4 * 1e20) loses ~1e4 absolute, i.e. ~1 % of the variance.
+    fn every_packet_carries_its_own_arrival_to_the_tx() {
+        // four bursts of one packet arriving at 0, 992, 1984, 2976 (delay 5e9: nothing due before
+        // the last iteration), now 6e9, tx 1e10 + 2976: realized delays 1e10 + {2976, 1984, 992,
+        // 0}, population std 1109.09 around 1e10 + 1488 (exact for a huge mean, tiny spread).
         let stats: &'static Stats = Box::leak(Box::default());
-        drive(spacer_cfg(1e10), &[100; 4], &[0.0, 3e10], stats);
+        drive_bursts(
+            config(100, 5e9, 0.0),
+            &[&[100], &[100], &[100], &[100]],
+            &[0.0, 992.0, 1984.0, 2976.0, 6e9, 1e10 + 2976.0],
+            stats,
+            usize::MAX,
+        );
         let r = stats.stats_reply(0);
         assert_eq!(string(&r, "delay_mean_ns"), "10000001488.00");
         assert_eq!(string(&r, "delay_std_ns"), "1109.09");
         assert_eq!(uint(&r, "delay_min_ns"), 10_000_000_000);
         assert_eq!(uint(&r, "delay_max_ns"), 10_000_002_976);
+        // lateness: send times 5e9 + arrival; tx - send = 5e9 + 2976 - arrival
+        assert_eq!(string(&r, "lateness_mean_ns"), "5000001488.00");
+        assert_eq!(uint(&r, "lateness_max_ns"), 5_000_002_976);
     }
 
     #[test]
     fn only_accepted_packets_enter_the_delay_statistics() {
-        // the "mixed" scenario of causes.rs, reduced: one burst at now = 0 of
-        // 5 packets of 1519 bytes (12344 bit each), capacity 4 (derived limit
-        // 49344 bit): P1 lost (accounted), P2 (delay 1_012_344) and P3
-        // (1_024_688) accepted, P4, P5 limiter drops (37032 + 12344 > 49344).
-        // count 2: mean 1018516, std 6172.
+        // the "mixed" scenario of causes.rs, reduced: one burst at now = 0 of 5 packets of 1519
+        // bytes (12344 bit each), capacity 4: P1 lost (accounted), P2 (send time 1_012_344) and
+        // P3 (1_024_688) accepted, P4, P5 limiter drops. Popped at 5e6, tx 6e6: both packets have
+        // the delay 6e6; lateness 4_987_656 and 4_975_312 (mean 4_981_484 over the 2 packets).
         let cfg = mixed_limiter_cfg();
         let stats: &'static Stats = Box::leak(Box::default());
-        drive(cfg, &[1519; 5], &[0.0, 5_000_000.0], stats);
+        drive(cfg, &[1519; 5], &[0.0, 5_000_000.0, 6_000_000.0], stats);
         let r = stats.stats_reply(0);
         assert_eq!(uint(&r, "dpds_rejects"), 3);
-        assert_eq!(string(&r, "delay_mean_ns"), "1018516.00");
-        assert_eq!(string(&r, "delay_std_ns"), "6172.00");
-        assert_eq!(uint(&r, "delay_min_ns"), 1_012_344);
-        assert_eq!(uint(&r, "delay_max_ns"), 1_024_688);
-        // popped at 5e6: lateness 5e6 - 1012344 and 5e6 - 1024688
-        assert_eq!(string(&r, "lateness_mean_ns"), "3981484.00");
-        assert_eq!(uint(&r, "lateness_max_ns"), 3_987_656);
+        assert_eq!(string(&r, "delay_mean_ns"), "6000000.00");
+        assert_eq!(string(&r, "delay_std_ns"), "0.00");
+        assert_eq!(uint(&r, "delay_min_ns"), 6_000_000);
+        assert_eq!(uint(&r, "delay_max_ns"), 6_000_000);
+        assert_eq!(string(&r, "lateness_mean_ns"), "4981484.00");
+        assert_eq!(uint(&r, "lateness_max_ns"), 4_987_656);
         let h = stats.delay_hist_reply();
         let total: u64 =
             bins(&h).iter().sum::<u64>() + uint(&h, "underflow") + uint(&h, "overflow");
         assert_eq!(total, 2, "the histogram counts accepted packets only");
+    }
+
+    #[test]
+    fn only_the_packets_the_nic_accepted_are_recorded_and_the_mean_uses_that_count() {
+        // the first scenario, the NIC takes 4 of the 6 staged packets: delay and lateness of
+        // the first 4 only: lateness 29_200, 29_000, 28_808, 28_576 -> mean 28_896 (a mean over
+        // the 6 popped packets would be different), max 29_200.
+        let stats: &'static Stats = Box::leak(Box::default());
+        drive_bursts(
+            spacer_cfg(800.0),
+            &[&[1, 0, 5, 0, 0, 0]],
+            &[0.0, 20_000.0, 30_000.0],
+            stats,
+            4,
+        );
+        let r = stats.stats_reply(0);
+        assert_eq!(uint(&r, "tx_sent"), 4);
+        assert_eq!(uint(&r, "tx_drops"), 2);
+        assert_eq!(string(&r, "delay_mean_ns"), "30000.00");
+        assert_eq!(string(&r, "lateness_mean_ns"), "28896.00");
+        assert_eq!(uint(&r, "lateness_max_ns"), 29_200);
+        let h = stats.delay_hist_reply();
+        let total: u64 =
+            bins(&h).iter().sum::<u64>() + uint(&h, "underflow") + uint(&h, "overflow");
+        assert_eq!(total, 4, "the freed tail is not in the histogram");
+    }
+
+    #[test]
+    fn a_tx_that_takes_nothing_records_nothing() {
+        let stats: &'static Stats = Box::leak(Box::default());
+        drive_bursts(
+            config(100, 0.0, 0.0),
+            &[&[64; 5]],
+            &[0.0, 20_000.0, 30_000.0],
+            stats,
+            0,
+        );
+        let r = stats.stats_reply(0);
+        assert_eq!(uint(&r, "tx_sent"), 0);
+        for k in ["delay_mean_ns", "delay_std_ns", "lateness_mean_ns"] {
+            assert_eq!(string(&r, k), "0.00", "{k}");
+        }
+        for k in ["delay_min_ns", "delay_max_ns", "lateness_max_ns"] {
+            assert_eq!(uint(&r, k), 0, "{k}");
+        }
+        let h = stats.delay_hist_reply();
+        assert_eq!(
+            bins(&h).iter().sum::<u64>() + uint(&h, "underflow") + uint(&h, "overflow"),
+            0
+        );
+    }
+
+    #[test]
+    fn delay_and_lateness_are_clamped_at_zero() {
+        // arrival 1000, send time 1000, but the tx read is 500 (a clock that went back):
+        // both would be -500, both are recorded as 0 (in the histogram too).
+        let stats: &'static Stats = Box::leak(Box::default());
+        drive(
+            config(100, 0.0, 0.0),
+            &[64; 3],
+            &[1000.0, 20_000.0, 500.0],
+            stats,
+        );
+        let r = stats.stats_reply(0);
+        assert_eq!(string(&r, "delay_mean_ns"), "0.00");
+        assert_eq!((uint(&r, "delay_min_ns"), uint(&r, "delay_max_ns")), (0, 0));
+        assert_eq!(string(&r, "lateness_mean_ns"), "0.00");
+        assert_eq!(uint(&r, "lateness_max_ns"), 0);
+        assert_eq!(bins(&stats.delay_hist_reply())[0], 3, "delay 0 is bin 0");
+    }
+
+    #[test]
+    fn the_iat_histogram_is_still_recorded_at_pop_for_packets_the_nic_refused() {
+        // 6 packets, the NIC takes none: the 5 gaps between the model send times are still in
+        // the IAT histogram (recorded at pop, not at the send)
+        let cfg = spacer_cfg(800.0);
+        let stats: &'static Stats = Box::leak(Box::new(Stats::with_hists(
+            HistRange::default(),
+            HistRange::iat_from_config(&cfg),
+            true,
+        )));
+        drive_bursts(
+            cfg,
+            &[&[1, 0, 5, 0, 0, 0]],
+            &[0.0, 20_000.0, 30_000.0],
+            stats,
+            0,
+        );
+        let h = stats.iat_hist_reply();
+        let total: u64 =
+            bins(&h).iter().sum::<u64>() + uint(&h, "underflow") + uint(&h, "overflow");
+        assert_eq!(total, 5);
     }
 
     #[test]
@@ -735,39 +936,46 @@ mod with_feature {
     }
 
     #[test]
-    fn histogram_places_every_accepted_packet_incl_underflow_and_overflow() {
-        // range [1000, 1256) in 1 ns bins; delays 800, 1000, 1192, 1424, 1616,
-        // 1808 (see the stats test): underflow 1, bin 0, bin 192, overflow 3
+    fn histogram_places_the_realized_delay_incl_underflow_and_overflow() {
+        // range [20_000, 20_256) in 1 ns bins; six single-packet bursts arriving at 20_000,
+        // 20_192, 20_384, 20_616, 20_808, 21_008 (zero delay, all within one wait of each
+        // other), now = tx = 40_808: realized delays 20_808, 20_616, 20_424, 20_192, 20_000,
+        // 19_800: underflow 1, bin 0, bin 192, overflow 3.
         let stats: &'static Stats =
-            Box::leak(Box::new(Stats::with_range(HistRange::new(1000.0, 1.0))));
-        drive(
-            spacer_cfg(800.0),
-            &[1, 0, 5, 0, 0, 0],
-            &[0.0, 10_000.0],
+            Box::leak(Box::new(Stats::with_range(HistRange::new(20_000.0, 1.0))));
+        drive_bursts(
+            config(100, 0.0, 0.0),
+            &[&[64], &[64], &[64], &[64], &[64], &[64]],
+            &[
+                20_000.0, 20_192.0, 20_384.0, 20_616.0, 20_808.0, 21_008.0, 40_808.0,
+            ],
             stats,
+            usize::MAX,
         );
         let h = stats.delay_hist_reply();
         let b = bins(&h);
         assert_eq!(b.len(), 256);
         assert_eq!(uint(&h, "underflow"), 1);
         assert_eq!(uint(&h, "overflow"), 3);
-        assert_eq!(b[0], 1, "delay 1000 is the lower edge of bin 0");
-        assert_eq!(b[192], 1, "delay 1192");
+        assert_eq!(b[0], 1, "delay 20_000 is the lower edge of bin 0");
+        assert_eq!(b[192], 1, "delay 20_192");
         assert_eq!(b.iter().sum::<u64>(), 2);
-        assert_eq!(num(&h, "lo_ns"), 1000.0);
+        assert_eq!(num(&h, "lo_ns"), 20_000.0);
         assert_eq!(num(&h, "bin_ns"), 1.0);
     }
 
     #[test]
     fn a_custom_number_of_bins_changes_the_reply_length_and_the_placement() {
-        // range [1000, 1200) in 50 bins of 4 ns; delays 800, 1000, 1192, 1424,
-        // 1616, 1808: underflow 1, bin 0, bin 48 (192 / 4), overflow 3
-        let stats: &'static Stats = Box::leak(Box::new(Stats::with_range(wb(1000.0, 4.0, 50))));
-        drive(
-            spacer_cfg(800.0),
-            &[1, 0, 5, 0, 0, 0],
-            &[0.0, 10_000.0],
+        // as above in [20_000, 20_200): 50 bins of 4 ns: underflow 1, bin 0, bin 48, overflow 3
+        let stats: &'static Stats = Box::leak(Box::new(Stats::with_range(wb(20_000.0, 4.0, 50))));
+        drive_bursts(
+            config(100, 0.0, 0.0),
+            &[&[64], &[64], &[64], &[64], &[64], &[64]],
+            &[
+                20_000.0, 20_192.0, 20_384.0, 20_616.0, 20_808.0, 21_008.0, 40_808.0,
+            ],
             stats,
+            usize::MAX,
         );
         let h = stats.delay_hist_reply();
         let b = bins(&h);
@@ -776,7 +984,7 @@ mod with_feature {
         assert_eq!((uint(&h, "underflow"), uint(&h, "overflow")), (1, 3));
         assert_eq!((b[0], b[48]), (1, 1));
         assert_eq!(b.iter().sum::<u64>(), 2);
-        assert_eq!(num(&h, "lo_ns"), 1000.0);
+        assert_eq!(num(&h, "lo_ns"), 20_000.0);
         assert_eq!(num(&h, "bin_ns"), 4.0);
     }
 
@@ -791,45 +999,37 @@ mod with_feature {
     }
 
     #[test]
-    fn a_deterministic_delay_lands_in_the_window_around_the_mean() {
-        // delay 2 ms: range [1_999_500, 2_000_500), bin 3.90625; the intended
-        // delay (send - now) is exactly 2e6 at an integral now, i.e. 500 ns
-        // above lo = 128.0 bins: bin 127 or 128 depending on how the
-        // reciprocal 0.256 rounds, so both are accepted
-        let stats: &'static Stats = Box::leak(Box::new(Stats::with_range(HistRange::from_config(
-            &config(100, 2_000_000.0, 0.0),
-        ))));
-        drive(
-            config(100, 2_000_000.0, 0.0),
-            &[64; 7],
-            &[100.0, 3e6],
-            stats,
-        );
+    fn the_config_derived_range_contains_the_earliest_realized_delay() {
+        // delay 2 ms: the range (spec 57 T9) is [2e6, 2e6 + 2 * TX_MAX_WAIT_NS), 20 us wide. The
+        // earliest realized delay is one wait above the intended one (arrival 100, send time
+        // 2_000_100, now = tx = 2_010_100): delay 2_010_000, in the middle of the window.
+        let cfg = config(100, 2_000_000.0, 0.0);
+        let range = HistRange::from_config(&cfg);
+        let stats: &'static Stats = Box::leak(Box::new(Stats::with_range(range)));
+        drive(cfg, &[64; 7], &[100.0, 2_010_100.0, 2_010_100.0], stats);
         let h = stats.delay_hist_reply();
-        assert_eq!(num(&h, "lo_ns"), 1_999_500.0);
-        assert_eq!(num(&h, "bin_ns"), 3.90625);
-        let b = bins(&h);
-        assert_eq!(b[127] + b[128], 7, "{b:?}");
+        assert_eq!(num(&h, "lo_ns"), 2_000_000.0);
+        assert_eq!(range.hi_ns(), 2_000_000.0 + 2.0 * TX_MAX_WAIT_NS);
+        // exactly the window's middle: bin 127 or 128 depending on how the reciprocal rounds
+        assert!(matches!(range.bin(2_010_000.0), Bin::Index(127 | 128)));
         assert_eq!((uint(&h, "underflow"), uint(&h, "overflow")), (0, 0));
+        assert_all_in_bin(&h, range, 2_010_000.0, 7);
     }
 
     #[test]
-    fn the_limiter_shifted_delays_stay_inside_the_range_derived_from_the_config() {
-        // Spacer, capacity 4: derived limit 49344 bit, delay 1e6: range
-        // [1e6, 1e6 + 49344), bin 192.75; delays 1_012_344 and 1_024_688 (see
-        // the "mixed" scenario) -> bins 64 and 128, nothing out of range.
+    fn the_limiter_shifted_packets_are_binned_by_the_realized_delay() {
+        // the mixed scenario: P2 (send 1_012_344) and P3 (1_024_688) arrive at 0; the range is
+        // [1e6, 1e6 + 49_344 + 2 * TX_MAX_WAIT_NS); now 1_030_000 (>= W after the oldest send
+        // time), tx 1_030_500: both have the delay 1_030_500, inside the window
         let cfg = mixed_limiter_cfg();
-        let stats: &'static Stats =
-            Box::leak(Box::new(Stats::with_range(HistRange::from_config(&cfg))));
-        drive(cfg, &[1519; 5], &[0.0, 5_000_000.0], stats);
+        let range = HistRange::from_config(&cfg);
+        let stats: &'static Stats = Box::leak(Box::new(Stats::with_range(range)));
+        drive(cfg, &[1519; 5], &[0.0, 1_030_000.0, 1_030_500.0], stats);
         let h = stats.delay_hist_reply();
         assert_eq!(num(&h, "lo_ns"), 1_000_000.0);
-        assert!((num(&h, "bin_ns") - 192.75).abs() < 1e-6, "{h:?}");
-        let b = bins(&h);
-        assert_eq!(b[64], 1);
-        assert_eq!(b[128], 1);
-        assert_eq!(b.iter().sum::<u64>(), 2);
-        assert_eq!((uint(&h, "underflow"), uint(&h, "overflow")), (0, 0));
+        assert_eq!(range.hi_ns(), 1_000_000.0 + 49_344.0 + 2.0 * TX_MAX_WAIT_NS);
+        assert!(matches!(range.bin(1_030_500.0), Bin::Index(_)));
+        assert_all_in_bin(&h, range, 1_030_500.0, 2);
     }
 
     #[test]
@@ -881,20 +1081,22 @@ mod with_feature {
 
     #[test]
     fn a_direction_with_delay_stats_off_records_nothing_but_counts_everything() {
-        // capacity 3 and delay 1 ms: of 5 packets 3 are accepted (delay 1e6),
-        // 2 are refused (buffer full); all 3 are popped at 5 ms
+        // capacity 3 and delay 1 ms: of 5 packets 3 are accepted, 2 are refused (buffer
+        // full); all 3 are popped at 1.015 ms (15 us past their send time) and sent in that
+        // iteration (the switch-on instance reads the clock once more: still 1.015 ms, the
+        // last value repeats: realized delay 1_015_000, inside the automatic window)
         let cfg = || config(3, 1_000_000.0, 0.0);
         let range = HistRange::from_config(&cfg());
         let off: &'static Stats = Box::leak(Box::new(Stats::with_delay_stats(range, false)));
         let on: &'static Stats = Box::leak(Box::new(Stats::with_range(range)));
         for stats in [off, on] {
-            drive(cfg(), &[100; 5], &[0.0, 5_000_000.0], stats);
+            drive(cfg(), &[100; 5], &[0.0, 1_015_000.0], stats);
         }
 
         let (r_off, r_on) = (off.stats_reply(0), on.stats_reply(0));
         // control: the same traffic with the switch on has delay statistics
-        assert_eq!(string(&r_on, "delay_mean_ns"), "1000000.00");
-        assert_eq!(uint(&r_on, "lateness_max_ns"), 4_000_000);
+        assert_eq!(string(&r_on, "delay_mean_ns"), "1015000.00");
+        assert_eq!(uint(&r_on, "lateness_max_ns"), 15_000);
         let h_on = on.delay_hist_reply();
         assert_eq!(bins(&h_on).iter().sum::<u64>(), 3);
 
@@ -930,7 +1132,7 @@ mod with_feature {
         let off: &'static Stats = Box::leak(Box::new(Stats::with_delay_stats(range, false)));
         let on: &'static Stats = Box::leak(Box::new(Stats::with_range(range)));
         for stats in [off, on] {
-            drive(cfg(), &[64; 9], &[0.0, 10_000.0], stats);
+            drive(cfg(), &[64; 9], &[0.0, 20_000.0], stats);
         }
         let strip = |r: Reply| -> Reply {
             r.into_iter()

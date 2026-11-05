@@ -1,9 +1,13 @@
 //! Delay statistics and the delay histogram of one direction.
 //!
-//! The *intended delay* of an accepted packet is `send_time - now` at push
-//! (it includes the Spacer's queueing offset); the *lateness* of a popped
-//! packet is `now - send_time` at pop (poll granularity, head-of-line
-//! blocking, loop latency). Realized delay = intended delay + lateness.
+//! The *delay* of a packet is the realized one: from its arrival (the clock
+//! read of the iteration that pushed it) until it is enqueued into the TX
+//! descriptors (the clock read right before the `tx_burst` that the NIC
+//! accepted it in). It includes the delay model's offset (Spacer queueing
+//! too), poll granularity, head-of-line blocking and the TX staging wait. The
+//! *lateness* is `tx_ns - send_time`: how far past its send time the packet
+//! was enqueued, the staging wait included. Both are recorded at send time
+//! only for the packets the NIC accepted, and clamped at 0.
 //!
 //! The range types ([`HistRange`], [`HistogramSpec`], [`Bin`]) are pure and
 //! exist in every build. The accumulators ([`DelayStats`], [`DelayBatch`]) only
@@ -38,8 +42,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use dpds_core::limiter::LimiterMode;
 use dpds_core::Config;
 
-#[cfg(feature = "telemetry")]
-use crate::consts::BURST_SIZE;
+use crate::consts::TX_MAX_WAIT_NS;
 use crate::reply::{Reply, Value};
 
 /// Default number of histogram bins.
@@ -146,7 +149,7 @@ fn automatic_window(config: &Config) -> (f64, f64) {
         0.0
     };
     let lo = (mean - 6.0 * std).max(0.0);
-    let hi = mean + 6.0 * std + extra;
+    let hi = mean + 6.0 * std + extra + 2.0 * TX_MAX_WAIT_NS;
     if hi - lo < MIN_WIDTH_NS {
         let lo = ((lo + hi) / 2.0 - MIN_WIDTH_NS / 2.0).max(0.0);
         (lo, lo + MIN_WIDTH_NS)
@@ -196,8 +199,11 @@ impl HistRange {
     ///
     /// ```text
     /// lo = max(0, mean - 6 std)
-    /// hi = mean + 6 std + extra       extra = capacity * 12336 / rate_bps * 1e9 for an
-    ///                                 active Spacer (its queueing allowance), else 0
+    /// hi = mean + 6 std + extra + 2 * TX_MAX_WAIT_NS
+    ///                                 extra = capacity * 12336 / rate_bps * 1e9 for an
+    ///                                 active Spacer (its queueing allowance), else 0;
+    ///                                 TX_MAX_WAIT_NS (10 us) is the staging wait of the
+    ///                                 TX batch, twice that leaves room for loop latency
     /// if hi - lo < 1000 ns:           mid = (lo + hi) / 2
     ///                                 lo = max(0, mid - 500);  hi = lo + 1000
     /// bin_ns = (hi - lo) / 256
@@ -269,23 +275,18 @@ impl HistRange {
     }
 }
 
-/// The send times of the packets accepted and popped in one loop iteration,
-/// collected by the loop (one store per packet) and folded into the
-/// statistics by [`DelayStats::record_accepts`] / [`DelayStats::record_pops`]
-/// after the respective loop. Collecting first keeps the floating-point
-/// accumulators out of the push loop, which calls `Buffer::push_outcome`: a
-/// callee that uses `d8..d15` (the normal-delay sampler does) would save and
-/// restore every accumulator through the stack on each call. Created once per
-/// worker, [`begin`](Self::begin) starts an iteration. A zero-sized no-op
-/// without the `telemetry` feature.
+/// The state the loop carries between iterations for the IAT histogram: the
+/// send time of the last packet popped (the gap reference). The per-iteration
+/// send times and arrivals live in the loop's own staging arrays and are
+/// handed to [`DelayStats::record_pops`] / [`DelayStats::record_sent`] as
+/// slices, which keeps the floating-point accumulators out of the push loop
+/// (it calls `Buffer::push_outcome`, a callee that uses `d8..d15`: the
+/// normal-delay sampler does; every accumulator would be saved and restored
+/// through the stack on each call). Created once per worker. A zero-sized
+/// no-op without the `telemetry` feature.
 #[cfg(feature = "telemetry")]
 pub struct DelayBatch {
-    accepted: [u64; BURST_SIZE],
-    n_accepted: usize,
-    popped: [u64; BURST_SIZE],
-    n_popped: usize,
-    /// Send time of the last packet popped before this iteration, if any
-    /// (the IAT reference, carried across iterations).
+    /// Send time of the last packet popped before this iteration, if any.
     prev_send_ns: Option<u64>,
 }
 #[cfg(not(feature = "telemetry"))]
@@ -294,34 +295,7 @@ pub struct DelayBatch;
 #[cfg(feature = "telemetry")]
 impl DelayBatch {
     pub fn new() -> DelayBatch {
-        DelayBatch {
-            accepted: [0; BURST_SIZE],
-            n_accepted: 0,
-            popped: [0; BURST_SIZE],
-            n_popped: 0,
-            prev_send_ns: None,
-        }
-    }
-
-    /// Starts a loop iteration.
-    #[inline(always)]
-    pub fn begin(&mut self) {
-        self.n_accepted = 0;
-        self.n_popped = 0;
-    }
-
-    /// A packet accepted by the buffer, leaving at `send_time_ns`.
-    #[inline(always)]
-    pub fn accepted(&mut self, send_time_ns: u64) {
-        self.accepted[self.n_accepted] = send_time_ns;
-        self.n_accepted += 1;
-    }
-
-    /// A packet popped from the buffer, which was due at `send_time_ns`.
-    #[inline(always)]
-    pub fn popped(&mut self, send_time_ns: u64) {
-        self.popped[self.n_popped] = send_time_ns;
-        self.n_popped += 1;
+        DelayBatch { prev_send_ns: None }
     }
 }
 
@@ -330,15 +304,6 @@ impl DelayBatch {
     pub fn new() -> DelayBatch {
         DelayBatch
     }
-
-    #[inline(always)]
-    pub fn begin(&mut self) {}
-
-    #[inline(always)]
-    pub fn accepted(&mut self, _send_time_ns: u64) {}
-
-    #[inline(always)]
-    pub fn popped(&mut self, _send_time_ns: u64) {}
 }
 
 impl Default for DelayBatch {
@@ -476,63 +441,19 @@ impl DelayStats {
         self.enabled
     }
 
-    /// Folds the intended delays of the packets accepted in this iteration
-    /// (pushed at `now`) into the statistics and the histogram.
-    #[cfg(feature = "telemetry")]
-    #[inline(always)]
-    pub fn record_accepts(&self, batch: &DelayBatch, now: f64) {
-        debug_assert!(self.enabled, "recording into switched-off delay statistics");
-        let times = &batch.accepted[..batch.n_accepted];
-        let Some(&first) = times.first() else { return };
-        let l = &self.live;
-        let (lo, bins) = (self.range.lo_ns, self.range.bins);
-        let delay_of = |t: u64| (t as f64 - now).max(0.0);
-        let shift = delay_of(first);
-        let (mut s1, mut s2, mut min, mut max) = (0.0, 0.0, shift, shift);
-        for &t in times {
-            let delay = delay_of(t);
-            let d = delay - shift;
-            s1 += d;
-            s2 += d * d;
-            if delay < min {
-                min = delay;
-            }
-            if delay > max {
-                max = delay;
-            }
-            match place(lo, l.hi_ns, l.inv_bin_ns, bins, delay) {
-                Bin::Underflow => bump(&l.underflow),
-                Bin::Overflow => bump(&l.overflow),
-                Bin::Index(i) => bump(&l.bins[i]),
-            }
-        }
-        self.merge_delays(times.len() as u32, shift, s1, s2, min, max);
-    }
-
-    #[cfg(not(feature = "telemetry"))]
-    #[inline(always)]
-    pub fn record_accepts(&self, _batch: &DelayBatch, _now: f64) {}
-
-    /// Folds the packets popped in this iteration (at `now`): their lateness
-    /// into the lateness statistics and the gap between consecutive send times
-    /// into the IAT histogram. The first packet of the run has no gap; the
+    /// Folds the packets popped in this iteration, whose send times are
+    /// `sends` in pop order, into the IAT histogram: the gap between
+    /// consecutive send times. The first packet of the run has no gap; the
     /// previous send time is carried across iterations in `batch`, and a
     /// negative gap (reordering) counts as 0.
     #[cfg(feature = "telemetry")]
     #[inline(always)]
-    pub fn record_pops(&self, batch: &mut DelayBatch, now: f64) {
+    pub fn record_pops(&self, batch: &mut DelayBatch, sends: &[u64]) {
         debug_assert!(self.enabled, "recording into switched-off delay statistics");
-        let times = &batch.popped[..batch.n_popped];
-        let Some(&last) = times.last() else { return };
+        let Some(&last) = sends.last() else { return };
         let l = &self.live;
-        let (mut sum, mut max) = (0.0, 0.0);
         let mut prev = batch.prev_send_ns;
-        for &t in times {
-            let late = (now - t as f64).max(0.0);
-            sum += late;
-            if late > max {
-                max = late;
-            }
+        for &t in sends {
             if let Some(p) = prev {
                 let gap = t.saturating_sub(p) as f64;
                 match place(
@@ -550,15 +471,66 @@ impl DelayStats {
             prev = Some(t);
         }
         batch.prev_send_ns = Some(last);
-        store_f64(&l.late_sum, load_f64(&l.late_sum) + sum);
-        if max > load_f64(&l.late_max) {
-            store_f64(&l.late_max, max);
-        }
     }
 
     #[cfg(not(feature = "telemetry"))]
     #[inline(always)]
-    pub fn record_pops(&self, _batch: &mut DelayBatch, _now: f64) {}
+    pub fn record_pops(&self, _batch: &mut DelayBatch, _sends: &[u64]) {}
+
+    /// Folds the packets the NIC accepted in one `tx_burst` (enqueued at
+    /// `tx_ns`) into the statistics: `sends[i]` is the send time and
+    /// `arrivals[i]` the arrival (push) time of packet `i`. The delay
+    /// `tx_ns - arrival` goes into the delay statistics and the histogram, the
+    /// lateness `tx_ns - send_time` into the lateness statistics; both are
+    /// clamped at 0.
+    #[cfg(feature = "telemetry")]
+    #[inline(always)]
+    pub fn record_sent(&self, sends: &[u64], arrivals: &[f64], tx_ns: f64) {
+        debug_assert!(self.enabled, "recording into switched-off delay statistics");
+        debug_assert_eq!(sends.len(), arrivals.len());
+        let Some(&first) = arrivals.first() else {
+            return;
+        };
+        let l = &self.live;
+        let (lo, bins) = (self.range.lo_ns, self.range.bins);
+        let delay_of = |a: f64| (tx_ns - a).max(0.0);
+        let shift = delay_of(first);
+        let (mut s1, mut s2, mut min, mut max) = (0.0, 0.0, shift, shift);
+        for &a in arrivals {
+            let delay = delay_of(a);
+            let d = delay - shift;
+            s1 += d;
+            s2 += d * d;
+            if delay < min {
+                min = delay;
+            }
+            if delay > max {
+                max = delay;
+            }
+            match place(lo, l.hi_ns, l.inv_bin_ns, bins, delay) {
+                Bin::Underflow => bump(&l.underflow),
+                Bin::Overflow => bump(&l.overflow),
+                Bin::Index(i) => bump(&l.bins[i]),
+            }
+        }
+        let (mut late_sum, mut late_max) = (0.0, 0.0);
+        for &t in sends {
+            let late = (tx_ns - t as f64).max(0.0);
+            late_sum += late;
+            if late > late_max {
+                late_max = late;
+            }
+        }
+        store_f64(&l.late_sum, load_f64(&l.late_sum) + late_sum);
+        if late_max > load_f64(&l.late_max) {
+            store_f64(&l.late_max, late_max);
+        }
+        self.merge_delays(arrivals.len() as u32, shift, s1, s2, min, max);
+    }
+
+    #[cfg(not(feature = "telemetry"))]
+    #[inline(always)]
+    pub fn record_sent(&self, _sends: &[u64], _arrivals: &[f64], _tx_ns: f64) {}
 
     /// Chan's parallel update of `(count, mean, M2)` with a burst of `n`
     /// delays whose sums, shifted by `shift`, are `s1` and `s2`.
@@ -589,12 +561,13 @@ impl DelayStats {
     }
 
     /// `delay_mean_ns`, `delay_std_ns`, `delay_min_ns`, `delay_max_ns`,
-    /// `lateness_mean_ns`, `lateness_max_ns` for `/dpds/stats`. `popped` is the
-    /// number of popped packets (the lateness count). Means and the
+    /// `lateness_mean_ns`, `lateness_max_ns` for `/dpds/stats`. The lateness
+    /// mean is over the same packets as the delay (those the NIC accepted).
+    /// Means and the
     /// (population) standard deviation are 2-decimal strings, min and max
     /// truncated uints; all 0 before the first packet. Empty when the
     /// statistics are switched off.
-    pub fn stats_fields(&self, popped: u64) -> Reply {
+    pub fn stats_fields(&self) -> Reply {
         if !self.enabled {
             return Vec::new();
         }
@@ -614,11 +587,7 @@ impl DelayStats {
         #[cfg(not(feature = "telemetry"))]
         let (n, mean, m2, min, max, late_sum, late_max) = (0u64, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
         let std = if n > 0 { (m2 / n as f64).sqrt() } else { 0.0 };
-        let late_mean = if popped > 0 {
-            late_sum / popped as f64
-        } else {
-            0.0
-        };
+        let late_mean = if n > 0 { late_sum / n as f64 } else { 0.0 };
         vec![
             ("delay_mean_ns".into(), Value::Str(format!("{mean:.2}"))),
             ("delay_std_ns".into(), Value::Str(format!("{std:.2}"))),

@@ -4,25 +4,37 @@
 //! `worker.tx_port()`; the egress port is fixed, the mbuf `port` field is
 //! never written.
 //!
-//! One iteration, in observable order:
+//! One iteration, in observable order (spec 57: TX staging):
 //!  1. `quit` is read first;
-//!  2. ONE clock read `now` (also in the iteration that sees quit, and no
-//!     other read anywhere in the loop, not on the reject path, not on the
-//!     TX-error path, not for telemetry);
+//!  2. ONE clock read `now` (also in the iteration that sees quit). The only other read
+//!     is `tx_ns` of the delay-statistics instance (telemetry build, delay stats on),
+//!     immediately before a `tx_burst` and only in iterations that call it; not on the
+//!     reject path, not for first-loss times, not for anything else;
 //!  3. unless quit: ONE `rx_burst(rx_port, BURST_SIZE slots)`;
 //!  4. every received mbuf is pushed with `now`; rejects are collected and
 //!     freed with ONE `free_bulk` call (all rejects, in push order) after the
 //!     RX loop; no call when there are none;
-//!  5. up to `BURST_SIZE` (32) due packets are popped with the same `now`;
+//!  5. due packets are popped with the same `now` into the free slots of the staging
+//!     array that lives across iterations: at most `TX_BURST_SIZE - staged`;
 //!  6. (prefetch: not observable);
-//!  7. if k > 0: ONE `tx_burst(tx_port, popped[..k])` in the SAME iteration;
-//!     the unsent tail `popped[sent..k]` is freed with ONE `free_bulk`;
+//!  7. if `staged > 0` and (`staged == TX_BURST_SIZE` or the oldest staged packet,
+//!     `staged[0]`, is `TX_MAX_WAIT_NS` old: `now - send_time >= TX_MAX_WAIT_NS`): ONE `tx_burst(tx_port, staged[..n])`, also in an iteration
+//!     that popped nothing; the unsent tail is freed with ONE `free_bulk`; the staging
+//!     array is empty afterwards;
 //!  8. telemetry `buffer_len_max` after the pops, `tick(now, received)`;
-//!  9. stop if quit was read as requested and the buffer is empty.
+//!  9. stop if quit was read as requested, the buffer is empty AND nothing is staged
+//!     (the last partial batch leaves when its wait ran out, no flush on quit).
 //!
-//! Consequences: once quit was observed nothing is received any more, what
-//! was received is emitted at its send time (drain) or freed, and the loop
-//! terminates.
+//! `TX_BURST_SIZE` (64) is twice `BURST_SIZE` (32): a full batch takes at least two
+//! iterations to fill.
+//!
+//! Consequences: once quit was observed nothing is received any more, what was received
+//! is emitted at its send time plus at most the staging wait (drain) or freed, and the
+//! loop terminates. A loop whose clock never gets `TX_MAX_WAIT_NS` past the send time of
+//! a staged packet never terminates (the scripted clocks panic after 200 000 reads), so
+//! the scenarios below choose their clocks accordingly: the default clock of [`Play`]
+//! advances by `TX_MAX_WAIT_NS` per read, i.e. a zero-delay packet pushed in iteration
+//! k leaves in iteration k + 1 (exactly on the `>=` boundary).
 //!
 //! The tests record the interactions in an ordered log (`support::Ev`) and
 //! compare whole sequences. `Ev::Quit` is pushed by the test's hook inside
@@ -34,7 +46,8 @@
 
 use std::collections::HashSet;
 
-use dpds::consts::BURST_SIZE;
+use dpds::consts::{BURST_SIZE, TX_BURST_SIZE, TX_MAX_WAIT_NS};
+use dpds::delay_stats::HistRange;
 use dpds::forward::run;
 use dpds::io::{MbufFree, RxBurst, TxBurst};
 use dpds::quit::Quit;
@@ -130,8 +143,13 @@ impl Play {
             script,
             quit_at: 1,
             accept: usize::MAX,
-            clk: Clk::Fixed(0.0),
-            stats: Box::leak(Box::default()),
+            clk: Clk::Tick(0.0, TX_MAX_WAIT_NS),
+            // delay statistics off: the loop of the instance without them reads the
+            // clock once per iteration in every build, so the logs are build-independent
+            stats: Box::leak(Box::new(Stats::with_delay_stats(
+                HistRange::default(),
+                false,
+            ))),
             start_ns: 0.0,
         }
     }
@@ -154,6 +172,14 @@ impl Play {
 
     fn clock(mut self, clk: Clk) -> Play {
         self.clk = clk;
+        self
+    }
+
+    /// The direction's delay statistics on (telemetry builds): the loop reads the
+    /// clock once more before every `tx_burst`.
+    #[cfg(feature = "telemetry")]
+    fn delay_stats(mut self) -> Play {
+        self.stats = Box::leak(Box::new(Stats::with_range(HistRange::default())));
         self
     }
 
@@ -258,14 +284,15 @@ fn an_idle_iteration_is_one_clock_read_and_one_rx_burst_only() {
 }
 
 #[test]
-fn the_clock_is_read_before_rx_and_tx_happens_in_the_same_iteration_as_the_pop() {
+fn a_partial_batch_is_staged_and_leaves_in_a_later_iteration_that_pops_nothing() {
     let mut m = FakeMbufs::new(5, 0, 64);
     let p = m.ptrs();
     let o = Play::new(config(100, 0.0, 0.0), vec![p.clone()]).run();
     assert_eq!(
         o.events(),
-        [C, rx_ev(0), Q, tx_ev(0, 5), C],
-        "iteration 1: clock, rx, tx (no deferral to the next iteration); iteration 2 sees quit"
+        [C, rx_ev(0), Q, C, tx_ev(0, 5)],
+        "iteration 1: clock, rx, popped and staged, no tx; iteration 2 (clock +10 us, sees quit) \
+         pops nothing and sends the staged batch, then the loop ends"
     );
     assert_eq!(o.tx.calls[0].1, p, "in order");
     assert!(o.free.bulk_calls.is_empty());
@@ -291,12 +318,205 @@ fn rx_asks_for_exactly_burst_size_slots_every_time() {
 }
 
 #[test]
-fn a_full_burst_of_32_is_taken_through_in_one_tx_burst() {
+fn a_burst_of_32_is_not_a_full_batch_it_waits_and_goes_out_in_one_tx_burst() {
     let mut m = FakeMbufs::new(BURST_SIZE, 0, 64);
     let p = m.ptrs();
     let o = Play::new(config(100, 0.0, 0.0), vec![p.clone()]).run();
-    assert_eq!(o.events(), [C, rx_ev(0), Q, tx_ev(0, 32), C]);
+    assert_eq!(o.events(), [C, rx_ev(0), Q, C, tx_ev(0, 32)]);
     assert_eq!(o.tx.calls[0].1, p);
+}
+
+#[test]
+fn the_staging_constants_are_the_documented_ones() {
+    let _: usize = TX_BURST_SIZE;
+    let _: f64 = TX_MAX_WAIT_NS;
+    assert_eq!(TX_BURST_SIZE, 64);
+    assert_eq!(BURST_SIZE, 32, "the pop budget per iteration is unchanged");
+    assert_eq!(TX_MAX_WAIT_NS, 10_000.0);
+}
+
+// ── staging (spec 57 T2, T3, T5) ─────────────────────────────────────
+
+#[test]
+fn a_full_staging_array_of_64_is_sent_at_once_whatever_the_age() {
+    // 32 + 32 zero-delay packets in two iterations, 1 ns apart: the second pop fills the staging
+    // array (64 == TX_BURST_SIZE), so the tx happens in that iteration although the oldest staged
+    // packet is 1 ns old.
+    let mut m = FakeMbufs::new(TX_BURST_SIZE, 0, 64);
+    let p = m.ptrs();
+    let o = Play::new(config(100, 0.0, 0.0), batches(&p, &[32, 32]))
+        .quit_at(2)
+        .clock(Clk::Script(vec![0.0, 1.0, 2.0]))
+        .run();
+    assert_eq!(
+        o.events(),
+        [C, rx_ev(0), C, rx_ev(0), Q, tx_ev(0, TX_BURST_SIZE), C]
+    );
+    assert_eq!(o.tx.calls[0].1, p);
+    assert!(o.free.bulk_calls.is_empty());
+}
+
+#[test]
+fn nothing_is_sent_until_the_oldest_staged_send_time_is_10_us_old() {
+    // zero delay: packets pushed at 0 (3) and 1000 (2) have send times 0 and 1000. The clock
+    // reads 0, 1000, W - 1 (age 9999: no tx), W (age exactly W: tx of all 5 in one burst), W.
+    let mut m = FakeMbufs::new(5, 0, 64);
+    let p = m.ptrs();
+    let w = TX_MAX_WAIT_NS;
+    let o = Play::new(
+        config(100, 0.0, 0.0),
+        vec![p[..3].to_vec(), p[3..].to_vec()],
+    )
+    .quit_at(4)
+    .clock(Clk::Script(vec![0.0, 1000.0, w - 1.0, w, w]))
+    .run();
+    assert_eq!(
+        o.events(),
+        [
+            C,
+            rx_ev(0),
+            C,
+            rx_ev(0),
+            C,
+            rx_ev(0),
+            C,
+            rx_ev(0),
+            Q,
+            tx_ev(0, 5),
+            C
+        ],
+        "no tx at ages 0, 1000 (oldest staged) and W - 1; one tx at exactly W"
+    );
+    assert_eq!(o.tx.calls[0].1, p, "send-time order");
+}
+
+#[test]
+fn the_wait_is_measured_from_the_send_time_not_from_the_arrival_or_the_pop() {
+    // delay 5000: pushed at 0, send time 5000; popped at 8000 (late). Age: 3000 at the pop,
+    // 9999 at W + 4999, exactly W at W + 5000 = 15000. Measured from the arrival it would be
+    // old enough already at 9999 + ..., measured from the pop only at 18000.
+    let mut m = FakeMbufs::new(3, 0, 64);
+    let p = m.ptrs();
+    let o = Play::new(config(100, 5000.0, 0.0), vec![p.clone()])
+        .quit_at(4)
+        .clock(Clk::Script(vec![0.0, 8000.0, 14_999.0, 15_000.0]))
+        .run();
+    assert_eq!(
+        o.events(),
+        [
+            C,
+            rx_ev(0),
+            C,
+            rx_ev(0),
+            C,
+            rx_ev(0),
+            C,
+            rx_ev(0),
+            Q,
+            tx_ev(0, 3),
+            C
+        ]
+    );
+}
+
+#[test]
+fn the_pop_budget_is_limited_by_the_free_staging_slots() {
+    // zero delay, cap 100. it1 (t=0): 32 pushed and popped (staged 32). it2 (t=1): 20 more
+    // (staged 52). it3 (t=2): 30 more, 30 due, but only 64 - 52 = 12 slots are free: 12 are
+    // popped, the staging array is full and goes out (the first 64 packets, in order). it4 (t=3,
+    // quit seen): the other 18 are popped and wait; they leave once 10 us old (t = W + 2).
+    let mut m = FakeMbufs::new(82, 0, 64);
+    let p = m.ptrs();
+    let o = Play::new(config(100, 0.0, 0.0), batches(&p, &[32, 20, 30]))
+        .quit_at(3)
+        .clock(Clk::Script(vec![0.0, 1.0, 2.0, 3.0, TX_MAX_WAIT_NS + 2.0]))
+        .run();
+    assert_eq!(
+        o.events(),
+        [
+            C,
+            rx_ev(0),
+            C,
+            rx_ev(0),
+            C,
+            rx_ev(0),
+            Q,
+            tx_ev(0, 64),
+            C,
+            C,
+            tx_ev(0, 18)
+        ]
+    );
+    assert_eq!(o.tx.calls[0].1, p[..64].to_vec());
+    assert_eq!(o.tx.calls[1].1, p[64..].to_vec());
+}
+
+#[test]
+fn after_a_send_the_staging_is_empty_and_the_next_batch_is_a_separate_tx_burst() {
+    // 5 packets, tx (the NIC takes 3, the 2 left are freed and not retried), then 5 more
+    let mut m = FakeMbufs::new(10, 0, 64);
+    let p = m.ptrs();
+    let o = Play::new(
+        config(100, 0.0, 0.0),
+        vec![p[..5].to_vec(), vec![], p[5..].to_vec()],
+    )
+    .quit_at(3)
+    .accept(3)
+    .run();
+    assert_eq!(
+        o.events(),
+        [
+            C,
+            rx_ev(0),
+            C,
+            rx_ev(0),
+            tx_ev(0, 5),
+            free_ev(2),
+            C,
+            rx_ev(0),
+            Q,
+            C,
+            tx_ev(0, 5),
+            free_ev(2)
+        ]
+    );
+    assert_eq!(o.tx.calls[0].1, p[..5].to_vec());
+    assert_eq!(o.tx.calls[1].1, p[5..].to_vec(), "no leftover of batch 1");
+    assert_eq!(o.free.bulk_calls[0], p[3..5].to_vec());
+    assert_eq!(o.free.bulk_calls[1], p[8..].to_vec());
+}
+
+#[test]
+fn quit_does_not_flush_the_staging_and_the_loop_ends_only_when_nothing_is_staged() {
+    // quit during the first rx: the buffer is empty after the first pop, but 3 packets are
+    // staged. Iterations 2-4 (ages 100, 200, 300) send nothing and read the clock once each;
+    // iteration 5 (age W) sends and the loop ends right after it.
+    let mut m = FakeMbufs::new(3, 0, 64);
+    let p = m.ptrs();
+    let o = Play::new(config(100, 0.0, 0.0), vec![p.clone()])
+        .clock(Clk::Script(vec![0.0, 100.0, 200.0, 300.0, TX_MAX_WAIT_NS]))
+        .run();
+    assert_eq!(o.events(), [C, rx_ev(0), Q, C, C, C, C, tx_ev(0, 3)]);
+    assert_eq!(o.clock_reads(), 5);
+    assert_eq!(o.rx_calls.len(), 1);
+}
+
+// ── the mbuf's hash field (spec 57 T7) ───────────────────────────────
+
+#[test]
+fn the_instance_without_delay_statistics_never_touches_the_mbuf_hash() {
+    // accepted (and sent), rejected (cap 3) and unsent (NIC takes 1) packets alike
+    let mut m = FakeMbufs::new(8, 0, 64);
+    for i in 0..8 {
+        m.set_hash(i, HASH_SENTINEL + i as u64);
+    }
+    let p = m.ptrs();
+    let o = Play::new(config(3, 0.0, 0.0), vec![p]).accept(1).run();
+    assert_eq!(o.tx.offered().len(), 3);
+    assert_eq!(o.free.freed().len(), 5 + 2);
+    for i in 0..8 {
+        assert_eq!(m.hash(i), HASH_SENTINEL + i as u64, "mbuf {i}");
+    }
 }
 
 // ── ports ────────────────────────────────────────────────────────────
@@ -311,7 +531,7 @@ fn rx_uses_the_rx_port_and_tx_the_egress_port_of_the_direction() {
             .run();
         assert_eq!(
             o.events(),
-            [C, rx_ev(rx_port), Q, tx_ev(tx_port, 4), C],
+            [C, rx_ev(rx_port), Q, C, tx_ev(tx_port, 4)],
             "rx {rx_port} tx {tx_port}"
         );
         assert!(o.rx_calls.iter().all(|c| c.0 == rx_port));
@@ -388,12 +608,12 @@ fn a_batch_received_in_the_iteration_that_requested_quit_is_not_lost() {
 }
 
 #[test]
-fn delayed_packets_are_drained_after_quit_at_their_send_time_one_clock_read_per_iteration() {
-    // 10 packets ingested in iteration 1 (t = 0), 5 in iteration 2 (t = 50,
-    // quit is requested during that rx), delay 1000 ns, clock +50 ns per read.
-    // Iteration i reads t = (i - 1) * 50. Due: 1000 (iteration 21) and
-    // 1050 (iteration 22). A second clock read in any iteration would shift
-    // these times and the read count.
+fn delayed_packets_are_drained_after_quit_and_leave_one_wait_after_their_send_time() {
+    // 10 packets ingested in iteration 1 (t = 0), 5 in iteration 2 (t = 50, quit is requested
+    // during that rx), delay 1000 ns, clock +50 ns per read: iteration i reads (i - 1) * 50.
+    // Due: 1000 (iteration 21) and 1050 (iteration 22), both staged. The oldest staged send
+    // time (1000) is 10 us old at t = 11000, iteration 221: all 15 leave there in one burst.
+    // A second clock read in any iteration would shift these times and the read count.
     let mut m = FakeMbufs::new(15, 0, 64);
     let p = m.ptrs();
     let o = Play::new(config(100, 1000.0, 0.0), batches(&p, &[10, 5]))
@@ -403,14 +623,14 @@ fn delayed_packets_are_drained_after_quit_at_their_send_time_one_clock_read_per_
     assert_eq!(o.rx_calls.len(), 2, "rx stops once quit is observed");
     assert_eq!(
         o.tx_times(0.0, 50.0),
-        [(1000.0, 10), (1050.0, 5)],
-        "packets leave exactly when due, not flushed at quit time"
+        [(11_000.0, 15)],
+        "one burst, when the oldest send time is TX_MAX_WAIT_NS old; no flush at quit time"
     );
     assert_eq!(o.tx.offered(), p, "every packet, in order");
     assert!(o.free.bulk_calls.is_empty());
     assert_eq!(
         o.clock_reads(),
-        22,
+        221,
         "exactly one clock read per iteration, drain included"
     );
 }
@@ -422,41 +642,46 @@ fn a_packet_is_due_at_its_send_time_exactly_and_not_before() {
     let p = m.ptrs();
     let o = Play::new(config(100, 500.0, 0.0), vec![p.clone()])
         .quit_at(3)
-        .clock(Clk::Script(vec![1000.0, 1499.0, 1500.0]))
+        .clock(Clk::Script(vec![
+            1000.0,
+            1499.0,
+            1500.0,
+            1500.0 + TX_MAX_WAIT_NS,
+        ]))
         .run();
     assert_eq!(
         o.events(),
-        [C, rx_ev(0), C, rx_ev(0), C, rx_ev(0), Q, tx_ev(0, 3), C],
-        "nothing at 1499, all three at 1500 (equal counts as due)"
+        [C, rx_ev(0), C, rx_ev(0), C, rx_ev(0), Q, C, tx_ev(0, 3)],
+        "nothing at 1499, all three popped at 1500 (equal counts as due), sent 10 us later"
     );
     assert_eq!(o.tx.offered(), p);
 }
 
 #[test]
-fn push_and_pop_use_the_same_now_so_a_zero_delay_packet_leaves_in_its_own_iteration() {
-    // Clock jumps by a lot on every read; the packet must still go out in
-    // the iteration it arrived in (a second read would also work, but a
-    // stale/earlier pop time would not).
+fn push_and_pop_use_the_same_now_so_a_zero_delay_packet_is_staged_in_its_own_iteration() {
+    // Clock jumps by a lot on every read: the packet is old enough in the next iteration.
     let mut m = FakeMbufs::new(2, 0, 64);
     let p = m.ptrs();
     let o = Play::new(config(100, 0.0, 0.0), vec![p.clone()])
         .clock(Clk::Tick(1e9, 1e9))
         .run();
-    assert_eq!(o.events(), [C, rx_ev(0), Q, tx_ev(0, 2), C]);
+    assert_eq!(o.events(), [C, rx_ev(0), Q, C, tx_ev(0, 2)]);
 }
 
 // ── pop budget ───────────────────────────────────────────────────────
 
 #[test]
-fn at_most_32_packets_are_popped_and_sent_per_iteration() {
-    // 70 packets ingested at t = 0 over three iterations (delay 1000), then
-    // everything is due (t = 2000): 32 + 32 + 6 in FIFO order, one TX per
-    // iteration, one clock read per iteration.
+fn at_most_32_packets_are_popped_per_iteration_and_sent_in_batches_of_64() {
+    // 70 packets ingested at t = 0 over three iterations (delay 1000), then everything is due
+    // (t = 2000): it4 pops 32 (staged 32, not full, age 1000: no tx), it5 pops 32 (staged 64:
+    // tx at once), it6 pops 6 (no tx), it7 (t = 11000, age 10000) sends the 6.
     let mut m = FakeMbufs::new(70, 0, 64);
     let p = m.ptrs();
     let o = Play::new(config(100, 1000.0, 0.0), batches(&p, &[32, 32, 6]))
         .quit_at(3)
-        .clock(Clk::Script(vec![0.0, 0.0, 0.0, 2000.0]))
+        .clock(Clk::Script(vec![
+            0.0, 0.0, 0.0, 2000.0, 2000.0, 2000.0, 11_000.0,
+        ]))
         .run();
     assert_eq!(
         o.events(),
@@ -469,9 +694,9 @@ fn at_most_32_packets_are_popped_and_sent_per_iteration() {
             rx_ev(0),
             Q,
             C,
-            tx_ev(0, 32),
             C,
-            tx_ev(0, 32),
+            tx_ev(0, 64),
+            C,
             C,
             tx_ev(0, 6),
         ]
@@ -482,9 +707,10 @@ fn at_most_32_packets_are_popped_and_sent_per_iteration() {
 #[test]
 fn the_backlog_goes_first_and_the_budget_covers_old_and_new_packets_together() {
     // iteration 1: 32 packets (delay 100, not due at t = 0)
-    // iteration 2 (t = 1000): 32 more arrive, the 32 old ones are due ->
-    //   pop budget 32 -> exactly the old ones leave, the new ones are not
-    //   due yet (ingested at 1000, due 1100).
+    // iteration 2 (t = 1000): 32 more arrive, the 32 old ones are due -> they are popped and
+    //   staged (not due: the new ones, ingested at 1000, due 1100)
+    // iteration 3 (t = 1100): the new ones are popped, the staging array is full: one tx of 64,
+    //   the old ones first.
     let mut m = FakeMbufs::new(64, 0, 64);
     let p = m.ptrs();
     let o = Play::new(config(100, 100.0, 0.0), batches(&p, &[32, 32]))
@@ -493,10 +719,9 @@ fn the_backlog_goes_first_and_the_budget_covers_old_and_new_packets_together() {
         .run();
     assert_eq!(
         o.events(),
-        [C, rx_ev(0), C, rx_ev(0), Q, tx_ev(0, 32), C, tx_ev(0, 32)]
+        [C, rx_ev(0), C, rx_ev(0), Q, C, tx_ev(0, TX_BURST_SIZE)]
     );
-    assert_eq!(o.tx.calls[0].1, p[..32].to_vec());
-    assert_eq!(o.tx.calls[1].1, p[32..].to_vec());
+    assert_eq!(o.tx.calls[0].1, p);
 }
 
 // ── rejects: one bulk free after the RX loop ─────────────────────────
@@ -505,14 +730,17 @@ fn the_backlog_goes_first_and_the_budget_covers_old_and_new_packets_together() {
 fn rejects_are_freed_by_one_bulk_call_with_all_of_them_in_push_order() {
     let mut m = FakeMbufs::new(BURST_SIZE, 0, 64);
     let p = m.ptrs();
-    let o = Play::new(config(100, 0.0, 1.0), vec![p.clone()]).run(); // 100 % loss
+    // 100 % loss: nothing is staged, so even a frozen clock ends the loop
+    let o = Play::new(config(100, 0.0, 1.0), vec![p.clone()])
+        .clock(Clk::Fixed(0.0))
+        .run();
     assert_eq!(o.events(), [C, rx_ev(0), Q, free_ev(32), C]);
     assert_eq!(o.free.bulk_calls, [p], "one call, all 32 rejects, in order");
     assert!(o.tx.calls.is_empty(), "nothing popped: no tx_burst");
 }
 
 #[test]
-fn rejects_and_pops_of_one_iteration_rejects_are_freed_before_the_tx() {
+fn rejects_are_freed_in_their_own_iteration_before_the_later_tx() {
     // cap 10, zero delay: all 32 are pushed before the pop, so the first 10
     // fit and the other 22 are rejected.
     let mut m = FakeMbufs::new(BURST_SIZE, 0, 64);
@@ -522,8 +750,8 @@ fn rejects_and_pops_of_one_iteration_rejects_are_freed_before_the_tx() {
         .run();
     assert_eq!(
         o.events(),
-        [C, rx_ev(0), Q, free_ev(22), tx_ev(1, 10), C],
-        "rejects freed after the rx loop, then the tx of the same iteration"
+        [C, rx_ev(0), Q, free_ev(22), C, tx_ev(1, 10)],
+        "rejects freed after the rx loop; the 10 accepted ones are staged and leave in iteration 2"
     );
     assert_eq!(o.free.bulk_calls, [p[10..].to_vec()]);
     assert_eq!(o.tx.calls[0].1, p[..10].to_vec());
@@ -589,7 +817,7 @@ fn the_unsent_tail_is_freed_by_one_bulk_call_in_order() {
         .run();
     assert_eq!(
         o.events(),
-        [C, rx_ev(0), Q, tx_ev(1, 10), free_ev(7), C],
+        [C, rx_ev(0), Q, C, tx_ev(1, 10), free_ev(7)],
         "one clock read although the TX was short"
     );
     assert_eq!(o.free.bulk_calls, [p[3..].to_vec()]);
@@ -603,7 +831,7 @@ fn a_tx_that_takes_nothing_frees_the_whole_burst_once() {
     let o = Play::new(config(100, 0.0, 0.0), vec![p.clone()])
         .accept(0)
         .run();
-    assert_eq!(o.events(), [C, rx_ev(0), Q, tx_ev(0, 32), free_ev(32), C]);
+    assert_eq!(o.events(), [C, rx_ev(0), Q, C, tx_ev(0, 32), free_ev(32)]);
     assert_eq!(o.free.bulk_calls, [p]);
 }
 
@@ -628,37 +856,10 @@ fn rejects_then_tx_then_unsent_make_two_separate_bulk_calls_in_that_order() {
         .run();
     assert_eq!(
         o.events(),
-        [C, rx_ev(0), Q, free_ev(22), tx_ev(0, 10), free_ev(6), C]
+        [C, rx_ev(0), Q, free_ev(22), C, tx_ev(0, 10), free_ev(6)]
     );
     assert_eq!(o.free.bulk_calls[0], p[10..].to_vec(), "the rejects");
     assert_eq!(o.free.bulk_calls[1], p[4..10].to_vec(), "the unsent tail");
-}
-
-#[test]
-fn unsent_packets_of_different_iterations_are_not_coalesced() {
-    let mut m = FakeMbufs::new(10, 0, 64);
-    let p = m.ptrs();
-    let o = Play::new(config(100, 0.0, 0.0), batches(&p, &[5, 5]))
-        .quit_at(2)
-        .accept(3)
-        .run();
-    assert_eq!(
-        o.events(),
-        [
-            C,
-            rx_ev(0),
-            tx_ev(0, 5),
-            free_ev(2),
-            C,
-            rx_ev(0),
-            Q,
-            tx_ev(0, 5),
-            free_ev(2),
-            C
-        ]
-    );
-    assert_eq!(o.free.bulk_calls[0], p[3..5].to_vec());
-    assert_eq!(o.free.bulk_calls[1], p[8..].to_vec());
 }
 
 // ── clock reads ──────────────────────────────────────────────────────
@@ -709,11 +910,11 @@ fn the_tx_error_path_and_the_reject_path_do_not_read_the_clock_again() {
     let p = m.ptrs();
     let o = Play::new(config(8, 0.0, 0.0), vec![p])
         .accept(0)
-        .clock(Clk::Script(vec![123.0]))
+        .clock(Clk::Script(vec![123.0, 123.0 + TX_MAX_WAIT_NS]))
         .run();
     assert_eq!(
         o.events(),
-        [C, rx_ev(0), Q, free_ev(24), tx_ev(0, 8), free_ev(8), C]
+        [C, rx_ev(0), Q, free_ev(24), C, tx_ev(0, 8), free_ev(8)]
     );
     assert_eq!(o.clock_reads(), 2);
 }
@@ -734,7 +935,11 @@ fn reordering_mode_with_constant_delay_keeps_the_entry_order_across_bursts_at_on
     .clock(Clk::Script(vec![0.0, 0.0, 5000.0]))
     .run();
     assert_eq!(o.tx.offered(), p);
-    assert_eq!(o.tx.calls.len(), 2);
+    assert_eq!(
+        o.tx.calls.len(),
+        1,
+        "32 + 32 popped in two iterations fill the staging array"
+    );
 }
 
 #[test]
@@ -782,7 +987,7 @@ fn every_mbuf_is_either_accepted_by_the_nic_or_freed_exactly_once() {
     let mut accepted = HashSet::new();
     let mut offered = HashSet::new();
     for (_, bufs) in &o.tx.calls {
-        assert!(bufs.len() <= BURST_SIZE);
+        assert!(bufs.len() <= TX_BURST_SIZE);
         for (i, m) in bufs.iter().enumerate() {
             assert!(offered.insert(*m), "mbuf offered to the NIC twice");
             if i < 5 {
@@ -858,8 +1063,11 @@ mod counters {
         let c = &o.stats.counters;
         assert_eq!(c.rx_pkts.get(), 95);
         assert_eq!(c.rx_full_bursts.get(), 2);
-        assert_eq!(c.tx_batch_max.get(), 32);
-        assert_eq!(c.tx_calls.get(), 3);
+        // it1 stages 32 (t = 0); it2 (t = W) pops 31 -> 63 staged, the oldest is exactly W old:
+        // tx of 63; it3 stages 32 (t = 2W); it4 (t = 3W) sends them.
+        assert_eq!(c.tx_batch_max.get(), 63);
+        assert_eq!(c.tx_calls.get(), 2);
+        assert_eq!(c.tx_pkts.get(), 95);
     }
 
     #[test]
@@ -917,7 +1125,7 @@ mod counters {
         let mut play = Play::new(config(100, 0.0, 0.0), vec![p])
             .ports(0, 1)
             .accept(3)
-            .clock(Clk::Fixed(5_000.0));
+            .clock(Clk::Script(vec![5_000.0, 5_000.0 + TX_MAX_WAIT_NS]));
         play.start_ns = 1_000.0;
         let o = play.run();
         let c = &o.stats.counters;
@@ -936,7 +1144,10 @@ mod counters {
                 to: Stage::Nic
             }
         );
-        assert_eq!(ev.relative_ns, 4_000.0, "the same now, no extra clock read");
+        assert_eq!(
+            ev.relative_ns, 14_000.0,
+            "the now of the iteration that sent (5000 + W - 1000), no extra clock read"
+        );
         let r = o.stats.stats_reply(0);
         let drops = r.iter().find(|(k, _)| k == "tx_drops").unwrap();
         assert_eq!(drops.1, dpds::reply::Value::Uint(7));
@@ -963,9 +1174,12 @@ mod counters {
     fn tx_batch_max_is_the_largest_burst_over_iterations() {
         let mut m = FakeMbufs::new(10, 0, 64);
         let p = m.ptrs();
-        let o = Play::new(config(100, 0.0, 0.0), batches(&p, &[7, 3]))
-            .quit_at(2)
-            .run();
+        let o = Play::new(
+            config(100, 0.0, 0.0),
+            vec![p[..7].to_vec(), vec![], p[7..].to_vec()],
+        )
+        .quit_at(3)
+        .run();
         let c = &o.stats.counters;
         assert_eq!(c.tx_batch_max.get(), 7);
         assert_eq!(c.tx_calls.get(), 2);
@@ -981,7 +1195,7 @@ mod counters {
             vec![p[..2].to_vec(), vec![], p[2..].to_vec()],
         )
         .quit_at(3)
-        .clock(Clk::Script(vec![0.0, 0.0, 0.0, 5000.0]))
+        .clock(Clk::Script(vec![0.0, 0.0, 0.0, 5000.0, 11_000.0]))
         .run();
         let c = &o.stats.counters;
         assert_eq!(
@@ -1059,5 +1273,175 @@ mod counters {
         assert_eq!(r.counters[idx("tx_sent")], 3);
         assert_eq!(r.gauges[1], 0, "buffer_len_max of the epoch");
         assert_eq!(stats.epochs.first_loss(0), Some(None), "a clean epoch");
+    }
+
+    #[test]
+    fn pops_are_counted_at_pop_time_and_the_tx_counters_at_send_time() {
+        // it1 pops 3 packets (staged, no tx); at the start of the next rx call (it2) the pops are
+        // counted and no tx counter has moved. After the send (it2) the tx counters are there.
+        let mut m = FakeMbufs::new(3, 0, 64);
+        let p = m.ptrs();
+        let stats: &'static Stats = Box::leak(Box::new(Stats::with_delay_stats(
+            HistRange::default(),
+            false,
+        )));
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let quit = Quit::new();
+        let mut rx = MockRx::with_script(vec![p.clone()]);
+        {
+            let (q, seen) = (&quit, seen.clone());
+            rx.on_call = Some(Box::new(move |k| {
+                let c = &stats.counters;
+                seen.borrow_mut().push((
+                    c.pops.get(),
+                    c.tx_calls.get(),
+                    c.tx_pkts.get(),
+                    c.tx_sent.get(),
+                    c.tx_batch_max.get(),
+                ));
+                if k == 2 {
+                    q.request();
+                }
+            }));
+        }
+        let (mut tx, mut free) = (MockTx::default(), MockFree::default());
+        let mut t = Telemetry::new(stats, 0.0);
+        let (clock, _) = ticking_clock(0.0, TX_MAX_WAIT_NS, None);
+        let w = Worker::new(Buffer::new(config(100, 0.0, 0.0)), 0, 0);
+        drive(w, &mut rx, &mut tx, &mut free, &mut t, &quit, clock);
+        assert_eq!(
+            *seen.borrow(),
+            [(0, 0, 0, 0, 0), (3, 0, 0, 0, 0)],
+            "(pops, tx_calls, tx_pkts, tx_sent, tx_batch_max) at the start of rx calls 1 and 2"
+        );
+        let c = &stats.counters;
+        assert_eq!(c.pops.get(), 3);
+        assert_eq!(
+            (c.tx_calls.get(), c.tx_pkts.get(), c.tx_sent.get()),
+            (1, 3, 3)
+        );
+        assert_eq!(c.tx_batch_max.get(), 3);
+    }
+
+    #[test]
+    fn tx_counters_are_per_tx_burst_call_including_short_ones() {
+        // two batches of 5, the NIC takes 3 of each
+        let mut m = FakeMbufs::new(10, 0, 64);
+        let p = m.ptrs();
+        let o = Play::new(
+            config(100, 0.0, 0.0),
+            vec![p[..5].to_vec(), vec![], p[5..].to_vec()],
+        )
+        .quit_at(3)
+        .accept(3)
+        .run();
+        let c = &o.stats.counters;
+        assert_eq!(c.pops.get(), 10);
+        assert_eq!(c.tx_calls.get(), 2);
+        assert_eq!(c.tx_pkts.get(), 10);
+        assert_eq!(c.tx_sent.get(), 6);
+        assert_eq!(c.tx_short_calls.get(), 2);
+        assert_eq!(c.tx_batch_max.get(), 5);
+    }
+
+    #[test]
+    fn with_delay_stats_the_loop_reads_the_clock_once_more_right_before_each_tx_burst() {
+        // The scenario of `nothing_is_sent_until_the_oldest_staged_send_time_is_10_us_old`:
+        // only the iteration that sends has a second read, placed directly before the tx.
+        let mut m = FakeMbufs::new(5, 0, 64);
+        let p = m.ptrs();
+        let w = TX_MAX_WAIT_NS;
+        let o = Play::new(
+            config(100, 0.0, 0.0),
+            vec![p[..3].to_vec(), p[3..].to_vec()],
+        )
+        .quit_at(4)
+        .clock(Clk::Script(vec![
+            0.0,
+            1000.0,
+            w - 1.0,
+            w,
+            w + 500.0,
+            w + 500.0,
+        ]))
+        .delay_stats()
+        .run();
+        assert_eq!(
+            o.events(),
+            [
+                C,
+                rx_ev(0),
+                C,
+                rx_ev(0),
+                C,
+                rx_ev(0),
+                C,
+                rx_ev(0),
+                Q,
+                C,
+                tx_ev(0, 5),
+                C
+            ]
+        );
+        assert_eq!(o.clock_reads(), 6);
+    }
+
+    #[test]
+    fn with_delay_stats_the_extra_read_follows_the_reject_free_and_precedes_the_tx() {
+        // cap 10 of 32: the rejects are freed, then clock, then tx; the short tx frees its tail
+        let mut m = FakeMbufs::new(BURST_SIZE, 0, 64);
+        let p = m.ptrs();
+        let o = Play::new(config(10, 0.0, 0.0), vec![p])
+            .accept(4)
+            .delay_stats()
+            .run();
+        assert_eq!(
+            o.events(),
+            [C, rx_ev(0), Q, free_ev(22), C, C, tx_ev(0, 10), free_ev(6)],
+            "iteration 2: its own read, then the tx read directly before tx_burst"
+        );
+        let ev = o.events();
+        let tx_pos = ev.iter().position(|e| matches!(e, Ev::Tx { .. })).unwrap();
+        assert_eq!(ev[tx_pos - 1], C);
+    }
+
+    #[test]
+    fn with_delay_stats_the_extra_read_does_not_change_the_wait_decision_or_first_loss_time() {
+        // the send decision and the first-loss time use the iteration's `now` (read 2), the
+        // statistics the extra read (read 3)
+        let mut m = FakeMbufs::new(4, 0, 64);
+        let p = m.ptrs();
+        let mut play = Play::new(config(100, 0.0, 0.0), vec![p])
+            .accept(1)
+            .clock(Clk::Script(vec![0.0, TX_MAX_WAIT_NS, 3.0 * TX_MAX_WAIT_NS]))
+            .delay_stats();
+        play.start_ns = 0.0;
+        let o = play.run();
+        assert_eq!(o.tx.calls.len(), 1);
+        let ev = o.stats.first_loss.current().unwrap();
+        assert_eq!(ev.reason, FirstLossReason::DescriptorFull);
+        assert_eq!(ev.relative_ns, TX_MAX_WAIT_NS, "the iteration's now");
+    }
+
+    #[test]
+    fn the_delay_instance_stores_the_push_time_in_accepted_mbufs_only() {
+        // cap 3 of 5 packets; the iteration's now is 1234.5 (read 1), later reads are bigger:
+        // the 3 accepted mbufs carry 1234.5 as f64, the 2 rejected ones keep their sentinel.
+        let mut m = FakeMbufs::new(5, 0, 64);
+        for i in 0..5 {
+            m.set_hash(i, HASH_SENTINEL);
+        }
+        let p = m.ptrs();
+        let o = Play::new(config(3, 0.0, 0.0), vec![p])
+            .clock(Clk::Script(vec![1234.5, 1234.5 + TX_MAX_WAIT_NS, 1e6]))
+            .delay_stats()
+            .run();
+        assert_eq!(o.tx.offered().len(), 3);
+        for i in 0..3 {
+            assert_eq!(f64::from_bits(m.hash(i)), 1234.5, "accepted mbuf {i}");
+        }
+        for i in 3..5 {
+            assert_eq!(m.hash(i), HASH_SENTINEL, "rejected mbuf {i}");
+        }
     }
 }

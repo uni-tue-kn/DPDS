@@ -75,6 +75,9 @@ use serde_json::Value;
 const DPDS: &str = env!("CARGO_BIN_EXE_dpds");
 #[cfg(feature = "telemetry")]
 const BURST_SIZE: u64 = 32;
+/// `dpds::consts::TX_BURST_SIZE`: the staging capacity, the largest `tx_burst` (spec 57).
+#[cfg(feature = "telemetry")]
+const TX_BURST_SIZE: u64 = dpds::consts::TX_BURST_SIZE as u64;
 const FRAME_LEN: usize = 64;
 const START_TIMEOUT: Duration = Duration::from_secs(40);
 const EXIT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -816,13 +819,13 @@ fn exact_count(in_frames: &[Vec<Vec<u8>>]) {
                     "dir {d}: {st}"
                 );
                 assert!(
-                    u(&st, "tx_batch_max") >= 1 && u(&st, "tx_batch_max") <= BURST_SIZE,
+                    u(&st, "tx_batch_max") >= 1 && u(&st, "tx_batch_max") <= TX_BURST_SIZE,
                     "dir {d}: {st}"
                 );
                 let per_call: f64 = s(&st, "tx_pkts_per_call")
                     .parse()
                     .expect("a decimal string");
-                assert!((1.0..=BURST_SIZE as f64).contains(&per_call), "{st}");
+                assert!((1.0..=TX_BURST_SIZE as f64).contains(&per_call), "{st}");
                 assert_eq!(
                     per_call,
                     (u(&st, "tx_pkts") as f64 / u(&st, "tx_calls") as f64 * 100.0).round() / 100.0,
@@ -3129,8 +3132,10 @@ fn links_file_with_a_pair_and_a_hairpin_forwards_every_link_by_its_own_config() 
         for (d, delay) in [(0, 1_000_000.0), (1, 0.0), (2, 2_000_000.0)] {
             let st = run.query(&format!("/dpds/stats,{d}"));
             let mean = num(&st, "delay_mean_ns");
+            // realized delay (spec 57): the intended delay plus the staging wait
+            // (at most TX_MAX_WAIT_NS) plus the poll loop's own latency
             assert!(
-                (delay - 1.0..=delay).contains(&mean),
+                (delay..=delay + dpds::consts::TX_MAX_WAIT_NS + 1e6).contains(&mean),
                 "dir {d}: mean {mean} for a delay of {delay}: {st}"
             );
         }
@@ -3221,7 +3226,10 @@ fn a_ring_of_three_ports_forwards_each_link_by_its_own_config_with_exact_counts(
             assert_eq!(u(&st, "tx_sent"), N[0] as u64, "{st}");
             assert_eq!(u(&st, "dpds_rejects"), 0, "{st}");
             let mean = num(&st, "delay_mean_ns");
-            assert!((999_999.0..=1_000_000.0).contains(&mean), "{st}");
+            assert!(
+                (1_000_000.0..=1_000_000.0 + dpds::consts::TX_MAX_WAIT_NS + 1e6).contains(&mean),
+                "{st}"
+            );
             // B -> C: 100 % loss, every frame counted as a loss drop
             let st = run.query("/dpds/stats,1");
             assert_eq!(u(&st, "rx_pkts"), N[1] as u64, "{st}");
@@ -3234,7 +3242,10 @@ fn a_ring_of_three_ports_forwards_each_link_by_its_own_config_with_exact_counts(
             assert_eq!(u(&st, "tx_sent"), N[2] as u64, "{st}");
             assert_eq!(u(&st, "dpds_rejects"), 0, "{st}");
             let mean = num(&st, "delay_mean_ns");
-            assert!((1_999_999.0..=2_000_000.0).contains(&mean), "{st}");
+            assert!(
+                (2_000_000.0..=2_000_000.0 + dpds::consts::TX_MAX_WAIT_NS + 1e6).contains(&mean),
+                "{st}"
+            );
             // the NIC counters agree: port B received nothing it did not send on
             for (name, rx, tx) in [
                 ("net_pcap0", N[0], N[2]),
@@ -3597,11 +3608,11 @@ mod links_telemetry {
             "from=dpds,cause=buffer_full",
             "{d1}"
         );
-        // exactly the 8 accepted packets have an intended delay of ~5 s
-        let mean = num(&d1, "delay_mean_ns");
-        assert!((4_999_999_000.0..=5_000_000_000.0).contains(&mean), "{d1}");
+        // the delay is recorded when a packet is enqueued into the TX descriptors (spec 57):
+        // the 8 accepted packets are held for 5 s, so nothing is recorded yet
+        assert_eq!(num(&d1, "delay_mean_ns"), 0.0, "{d1}");
         let h = run.query("/dpds/delay_hist,1");
-        assert_eq!(hist_total(&h), 8, "only accepted packets are binned: {h}");
+        assert_eq!(hist_total(&h), 0, "nothing is enqueued yet: {h}");
 
         // the epochs carry the causes too (an idle gap closes an epoch)
         run.wait_until("a closed epoch on direction 0", START_TIMEOUT, |r| {
@@ -3716,25 +3727,35 @@ mod links_telemetry {
             "from=dpds,cause=buffer_full",
             "{st}"
         );
-        // the four frames wait 2 s plus 0, 1.2336, 2.4672, 3.7008 us of spacing
+        // nothing is enqueued yet, so nothing is recorded (spec 57)
+        assert_eq!(u(&st, "tx_sent"), 0, "{st}");
+        assert_eq!(hist_total(&run.query("/dpds/delay_hist,0")), 0);
+        // the four frames wait 2 s plus 0, 1.2336, 2.4672, 3.7008 us of spacing, then leave
+        // in one burst one staging wait after the first send time
+        run.wait_until("four frames sent", START_TIMEOUT, |r| {
+            r.try_query("/dpds/stats,0")
+                .is_some_and(|v| u(&v, "tx_sent") >= 4)
+        });
+        let st = run.query("/dpds/stats,0");
         assert!(num(&st, "delay_min_ns") >= 1_999_999_000.0, "{st}");
         let max = num(&st, "delay_max_ns");
-        assert!((2_000_003_000.0..=2_000_004_500.0).contains(&max), "{st}");
-        // range [2 s, 2 s + 4934.4 ns]: the queueing allowance of the derived limit
-        // (49344 bit at 1e10 bit/s); all 4 inside
+        assert!(
+            (2_000_003_000.0..=2_000_004_500.0 + 2.0 * dpds::consts::TX_MAX_WAIT_NS + 1e6)
+                .contains(&max),
+            "{st}"
+        );
+        // range [2 s, 2 s + 4934.4 ns + 2 * TX_MAX_WAIT_NS]: the queueing allowance of the
+        // derived limit (49344 bit at 1e10 bit/s) plus twice the staging wait; the realized
+        // delay (the frames leave about one wait after the first send time) is inside it
         let h = run.query("/dpds/delay_hist,0");
-        // the first frame has no spacing offset and its delay is the truncated send time
-        // minus now, a hair below 2 s: it may sit just under the lower edge (underflow)
-        let under = u(&h, "underflow");
-        assert!(under <= 1, "{h}");
         assert_eq!(hist_total(&h), 4, "{h}");
-        assert_eq!(u(&h, "overflow"), 0, "{h}");
+        assert_eq!((u(&h, "underflow"), u(&h, "overflow")), (0, 0), "{h}");
         let lo = num(&h, "lo_ns");
         assert!((lo - 2.0e9).abs() < 2.0, "{h}");
         let hi = lo + 256.0 * num(&h, "bin_ns");
         assert!(
-            (hi - lo - 4934.4).abs() < 1.0,
-            "the range is the allowance: {h}"
+            (hi - lo - (4934.4 + 2.0 * dpds::consts::TX_MAX_WAIT_NS)).abs() < 1.0,
+            "the range is the allowance plus twice the staging wait: {h}"
         );
 
         run.signal(libc::SIGINT);
@@ -3782,14 +3803,18 @@ mod links_telemetry {
             });
         }
 
-        // deterministic delay: a 1 us window around 2 ms
+        // deterministic delay 2 ms: the realized delay is the intended one plus the staging
+        // wait (none for a batch of 64 that fills up), plus the loop's latency
         let st = run.query("/dpds/stats,0");
         assert_eq!(u(&st, "dpds_rejects"), 0, "{st}");
         for k in ["delay_min_ns", "delay_max_ns"] {
             let v = num(&st, k);
-            assert!((1_999_999.0..=2_000_000.0).contains(&v), "{k}: {st}");
+            assert!(
+                (1_999_999.0..=2_000_000.0 + 2.0 * dpds::consts::TX_MAX_WAIT_NS + 1e6).contains(&v),
+                "{k}: {st}"
+            );
         }
-        assert!(num(&st, "delay_std_ns") < 1.0, "{st}");
+        assert!(num(&st, "delay_std_ns") < 1e6, "{st}");
         let h0 = run.query("/dpds/delay_hist,0");
         let mut keys: Vec<&str> = h0.as_object().unwrap().keys().map(|k| k.as_str()).collect();
         keys.sort();
@@ -3810,29 +3835,37 @@ mod links_telemetry {
         assert_eq!((u(&h0, "page"), u(&h0, "first_bin")), (0, 0), "{h0}");
         assert_eq!(bins_of(&h0).len(), 256, "{h0}");
         assert_eq!(hist_total(&h0), N0 as u64, "{h0}");
+        // spec 57 T9: [mean, mean + 2 * TX_MAX_WAIT_NS); the realized delay (2 ms + the staging
+        // wait + loop latency) is inside it
         assert_eq!((u(&h0, "underflow"), u(&h0, "overflow")), (0, 0), "{h0}");
-        assert!((num(&h0, "lo_ns") - 1_999_500.0).abs() < 1.0, "{h0}");
-        assert!((num(&h0, "bin_ns") - 3.90625).abs() < 1e-6, "{h0}");
-        // delay = 2e6 - (0..1) ns: bin 127 or 128 (the window centre)
-        let b0 = bins_of(&h0);
-        assert_eq!(b0[127] + b0[128], N0 as u64, "{h0}");
+        assert!((num(&h0, "lo_ns") - 2_000_000.0).abs() < 1.0, "{h0}");
+        assert!(
+            (num(&h0, "bin_ns") - 2.0 * dpds::consts::TX_MAX_WAIT_NS / 256.0).abs() < 1e-6,
+            "{h0}"
+        );
 
         // normal delay: range [mean - 6 std, mean + 6 std] = [2 ms, 8 ms]
         let st = run.query("/dpds/stats,1");
         assert_eq!(u(&st, "dpds_rejects"), 0, "{st}");
         let mean = num(&st, "delay_mean_ns");
+        // the realized delay of a FIFO link is not the intended distribution (spec 57): a
+        // packet leaves with its batch and behind the slowest earlier packet, so the mean is
+        // above the intended 5 ms and the spread is narrower
         assert!(
-            (4_900_000.0..=5_100_000.0).contains(&mean),
+            (4_900_000.0..=8_000_000.0 + 2.0 * dpds::consts::TX_MAX_WAIT_NS).contains(&mean),
             "mean {mean}: {st}"
         );
         let std = num(&st, "delay_std_ns");
-        assert!((450_000.0..=550_000.0).contains(&std), "std {std}: {st}");
+        assert!((1.0..=550_000.0).contains(&std), "std {std}: {st}");
         assert!(
             num(&st, "delay_min_ns") <= mean && mean <= num(&st, "delay_max_ns"),
             "{st}"
         );
         assert!(num(&st, "delay_min_ns") >= 2_000_000.0, "{st}");
-        assert!(num(&st, "delay_max_ns") <= 8_000_000.0, "{st}");
+        assert!(
+            num(&st, "delay_max_ns") <= 8_000_000.0 + dpds::consts::TX_MAX_WAIT_NS + 1e6,
+            "{st}"
+        );
         assert!(num(&st, "lateness_mean_ns") >= 0.0, "{st}");
         assert!(
             num(&st, "lateness_mean_ns") <= num(&st, "lateness_max_ns"),
@@ -3854,13 +3887,11 @@ mod links_telemetry {
         );
         let (lo, bin) = (num(&h1, "lo_ns"), num(&h1, "bin_ns"));
         assert!((lo - 2_000_000.0).abs() < 1.0, "{h1}");
-        assert!((bin - 23_437.5).abs() < 1e-3, "{h1}");
-        let b1 = bins_of(&h1);
-        let core: u64 = b1[64..=192].iter().sum(); // +- 3 sigma (sigma = 21.3 bins)
         assert!(
-            core * 100 >= N1 as u64 * 99,
-            "{core} of {N1} within 3 sigma: {h1}"
+            (bin - (6_000_000.0 + 2.0 * dpds::consts::TX_MAX_WAIT_NS) / 256.0).abs() < 1e-3,
+            "{h1}"
         );
+        let b1 = bins_of(&h1);
         assert!(
             b1[..16].iter().sum::<u64>() == 0 && b1[240..].iter().sum::<u64>() == 0,
             "{h1}"
@@ -3909,7 +3940,7 @@ fn a_custom_histogram_per_link_sets_bins_and_range() {
                 "net_pcap0",
                 "net_pcap1",
                 &config_json(2_000_000, 0.0),
-                r#"{ "bins": 100, "lo_ns": 1999000, "hi_ns": 2001000 }"#,
+                r#"{ "bins": 100, "lo_ns": 2000000, "hi_ns": 2100000 }"#,
             ),
             link_json_hist(
                 "b-to-a",
@@ -3935,23 +3966,28 @@ fn a_custom_histogram_per_link_sets_bins_and_range() {
     assert_eq!(u(&h0, "num_bins"), 100, "{h0}");
     let b0 = arr_u(&h0, "bins");
     assert_eq!(b0.len(), 100, "{h0}");
-    assert!((num(&h0, "lo_ns") - 1_999_000.0).abs() < 1e-3, "{h0}");
-    assert!((num(&h0, "bin_ns") - 20.0).abs() < 1e-6, "{h0}");
+    assert!((num(&h0, "lo_ns") - 2_000_000.0).abs() < 1e-3, "{h0}");
+    assert!((num(&h0, "bin_ns") - 1000.0).abs() < 1e-6, "{h0}");
+    // the realized delay is 2e6 plus 0..10 us of staging wait plus the loop's latency
+    // (a batch of 64 leaves without waiting): nothing below the intended delay
     assert_eq!((u(&h0, "underflow"), u(&h0, "overflow")), (0, 0), "{h0}");
-    // the delay is 2e6 - (0..1) ns: 1000 ns above lo = 50 bins (49.95..50)
-    assert_eq!(b0[49] + b0[50], N0 as u64, "{h0}");
+    assert_eq!(b0.iter().sum::<u64>(), N0 as u64, "{h0}");
 
     let h1 = run.query("/dpds/delay_hist,1");
     assert_eq!(u(&h1, "num_bins"), 50, "{h1}");
     let b1 = arr_u(&h1, "bins");
     assert_eq!(b1.len(), 50, "{h1}");
     assert!((num(&h1, "lo_ns") - 2_000_000.0).abs() < 1.0, "{h1}");
-    assert!((num(&h1, "bin_ns") - 120_000.0).abs() < 1e-3, "{h1}");
+    // automatic range [mean - 6 std, mean + 6 std + 2 * TX_MAX_WAIT_NS) in 50 bins
+    assert!(
+        (num(&h1, "bin_ns") - (6_000_000.0 + 2.0 * dpds::consts::TX_MAX_WAIT_NS) / 50.0).abs()
+            < 1e-3,
+        "{h1}"
+    );
     let total = b1.iter().sum::<u64>() + u(&h1, "underflow") + u(&h1, "overflow");
     assert_eq!(total, N1 as u64, "{h1}");
-    // sigma = 4.2 bins around bin 25: +-3 sigma is bins 12..=37
-    let core: u64 = b1[12..=37].iter().sum();
-    assert!(core * 100 >= N1 as u64 * 99, "{core} of {N1}: {h1}");
+    // (the realized delay of a FIFO link is not the intended distribution: nothing below it)
+    assert_eq!(b1[..10].iter().sum::<u64>(), 0, "{h1}");
 
     run.signal(libc::SIGINT);
     assert_clean_exit(run.wait_exit(), &run);
@@ -3983,7 +4019,7 @@ fn a_4096_bin_histogram_is_read_in_nine_pages() {
                 "net_pcap1",
                 "net_pcap0",
                 &config_json(1_000_000, 0.0),
-                r#"{ "bins": 100, "lo_ns": 999000, "hi_ns": 1001000 }"#,
+                r#"{ "bins": 100, "lo_ns": 1000000, "hi_ns": 1100000 }"#,
             ),
         ],
     );
@@ -4019,13 +4055,13 @@ fn a_4096_bin_histogram_is_read_in_nine_pages() {
     }
     assert_eq!(all.len(), 4096);
     assert_eq!(all.iter().sum::<u64>(), N0 as u64, "{per_page:?}");
+    // the realized delay of a FIFO link is not the intended distribution: a packet leaves
+    // with its batch, behind the slowest earlier packet, so the samples crowd near the top
+    // of the distribution; they are all above the intended mean - 6 sigma = 200 bins
     assert!(
-        per_page.iter().filter(|&&n| n > 0).count() >= 3,
-        "the samples spread over several pages: {per_page:?}"
+        all[..200].iter().sum::<u64>() == 0,
+        "nothing below mean - 6 sigma: {per_page:?}"
     );
-    // sigma = 300 bins around bin 2000: +-3 sigma is bins 1100..=2900
-    let core: u64 = all[1100..=2900].iter().sum();
-    assert!(core * 100 >= N0 as u64 * 99, "{core} of {N0}");
 
     // `,<dir>` alone is page 0
     let alone = run.query("/dpds/delay_hist,0");
@@ -4712,7 +4748,10 @@ fn delay_stats_off_in_the_links_file_still_forwards_and_counts() {
             assert!(st1.get(k).is_some(), "dir 1 reports {k}: {st1}");
         }
         let mean = num(&st1, "delay_mean_ns");
-        assert!((1_999_999.0..=2_000_000.0).contains(&mean), "{mean}");
+        assert!(
+            (1_999_999.0..=2_000_000.0 + 2.0 * dpds::consts::TX_MAX_WAIT_NS + 1e6).contains(&mean),
+            "{mean}"
+        );
 
         // the histogram of dir 1 has its counts, the one of dir 0 is empty
         let h1 = run.query("/dpds/delay_hist,1");

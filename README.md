@@ -131,10 +131,24 @@ One loop iteration of a worker:
 3. Unless quitting, `rx_burst` up to `BURST_SIZE` (32) packets.
 4. Push each packet into the buffer. Packets the buffer refuses (buffer full,
    loss model, rate limiter) are freed with one bulk free.
-5. Pop up to `BURST_SIZE` (32) packets whose send time is due.
+5. Pop the packets whose send time is due into the TX staging array (at most
+   `BURST_SIZE` (32) per iteration, at most as many as the array has free slots).
 6. Prefetch the popped packets' mbuf headers and those of the next queued ones.
-7. `tx_burst` the popped packets **in the same iteration**; whatever the NIC
-   did not accept is freed with one bulk free.
+7. If the staging array is full (64 packets) or its oldest packet has been due
+   for 10 µs, `tx_burst` everything staged; whatever the NIC did not accept is
+   freed with one bulk free.
+
+**TX staging.** At high rates one iteration pops only a packet or two, and a
+`tx_burst` per iteration then rings the NIC's doorbell for tiny batches, with a high
+per-packet cost in PCIe transactions (at 80 Gb/s with 1518 B frames this showed as
+RX and TX overflow). A worker therefore collects due packets in a staging array of
+`TX_BURST_SIZE` = 64 and sends them with one `tx_burst` when the array is full or
+when its oldest packet has been due for `TX_MAX_WAIT_NS` = 10 µs, whichever comes
+first (both are fixed, not configurable). A packet thus leaves up to about 10 µs
+after its send time (a bounded extra delay, included in the delay statistics and
+the delay histogram) and the output is burstier, in batches of up to 64 packets
+instead of the individual spacing of the model. The last partial batch of a run is
+not flushed early; it leaves when its 10 µs are over.
 
 The main lcore stays free for signal handling and for polling the NICs'
 hardware counters every 250 ms (`/nic/*` telemetry).
@@ -512,9 +526,9 @@ Build with `--features telemetry` to register the commands:
 
 | command | what |
 | --- | --- |
-| `/dpds/stats,<dir>` | Packet counters of link `<dir>` (its index in the [links file](#several-links-in-one-process---links); 0 or 1 with `--config*`) since start (`rx_pkts`, `dpds_rejects` and its causes `loss_drops` / `limiter_drops` / `buffer_full_drops`, `pops`, `tx_sent`, `tx_drops`, `out_of_order`, `frame_sizes` ...), gauges, delay statistics (`delay_mean_ns`, `delay_std_ns`, `delay_min_ns`, `delay_max_ns`, `lateness_mean_ns`, `lateness_max_ns`; absent for a link with `delay_stats` off), first-loss result. |
+| `/dpds/stats,<dir>` | Packet counters of link `<dir>` (its index in the [links file](#several-links-in-one-process---links); 0 or 1 with `--config*`) since start (`rx_pkts`, `dpds_rejects` and its causes `loss_drops` / `limiter_drops` / `buffer_full_drops`, `pops`, `tx_sent`, `tx_drops`, `out_of_order`, `frame_sizes` ...), gauges, delay statistics (`delay_mean_ns`, `delay_std_ns`, `delay_min_ns`, `delay_max_ns`: arrival until enqueued into the TX descriptors; `lateness_mean_ns`, `lateness_max_ns`: TX enqueue minus send time; absent for a link with `delay_stats` off), first-loss result. |
 | `/dpds/epochs,<dir>` | The same per epoch (a burst of traffic, closed after 500 ms of silence). |
-| `/dpds/delay_hist,<dir>[,<page>]` | Cumulative histogram of the intended delay of the accepted packets, up to 4096 bins, read in pages of at most 500 bins (`<page>` from 0, default 0; each page has `lo_ns`, `bin_ns`, `num_bins`, `underflow`, `overflow`, `page`, `first_bin` and its `bins`; empty page 0 for a link with `delay_stats` off). See [docs/TELEMETRY.md](docs/TELEMETRY.md). |
+| `/dpds/delay_hist,<dir>[,<page>]` | Cumulative histogram of the delay of the packets handed to the NIC (arrival until enqueued into the TX descriptors, the TX staging wait included), up to 4096 bins, read in pages of at most 500 bins (`<page>` from 0, default 0; each page has `lo_ns`, `bin_ns`, `num_bins`, `underflow`, `overflow`, `page`, `first_bin` and its `bins`; empty page 0 for a link with `delay_stats` off). See [docs/TELEMETRY.md](docs/TELEMETRY.md). |
 | `/dpds/iat_hist,<dir>[,<page>]` | Cumulative histogram of the IAT of link `<dir>`: the gap between the send times of consecutive packets that left the buffer (the departure gap `dpds` schedules, not a measured RX gap), exactly one `lo_ns` ... `bins` page like `/dpds/delay_hist`, by default 256 bins over `[0, 4 / initialization_rate_pps)` (4 mean gaps at the link's expected rate), or the link's `iat_histogram` (`bins`, `lo_ns`, `hi_ns`, each optional); empty for a link with `delay_stats` off. See [docs/TELEMETRY.md](docs/TELEMETRY.md). |
 | `/dpds/ports` | Port names, descriptor ring sizes (applied and requested), the number of links, and per link its name, ports (ids and device names), lcore, config path, pool size, free path and whether its delay statistics are on (`3 + 5 * ports + 10 * links` keys, at most 256). |
 | `/nic/hw_first_loss,<port>` | First NIC hardware drop (`imissed`, `rx_nombuf`, ...) seen by the main lcore. |

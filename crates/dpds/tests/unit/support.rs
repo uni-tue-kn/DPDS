@@ -51,6 +51,13 @@ pub fn clock_reads(log: &Log) -> usize {
     log.borrow().iter().filter(|e| **e == Ev::Clock).count()
 }
 
+/// Byte offset of `rte_mbuf::hash` (DPDK's first cache line: `pkt_len` at 36, `data_len` at
+/// 40, `vlan_tci` at 42, `hash` at 44).
+const HASH_OFFSET: usize = 44;
+
+/// A value no clock reading or `f64` arrival produces by accident.
+pub const HASH_SENTINEL: u64 = 0xDEAD_BEEF_0BAD_F00D;
+
 pub struct FakeMbufs {
     mbufs: Box<[dpdk_sys::rte_mbuf]>,
 }
@@ -82,6 +89,25 @@ impl FakeMbufs {
     #[cfg(feature = "telemetry")]
     pub fn set_pkt_len(&mut self, i: usize, len: u32) {
         self.mbufs[i].__bindgen_anon_2.__bindgen_anon_1.pkt_len = len;
+    }
+
+    /// Writes `v` into the 8-byte `hash` union of mbuf `i` (offset 44 of the first cache line,
+    /// next to `pkt_len`), the field the delay-stats loop uses to carry the arrival time.
+    pub fn set_hash(&mut self, i: usize, v: u64) {
+        // SAFETY: offset 44 + 8 bytes lie inside the zeroed, heap-allocated rte_mbuf.
+        unsafe {
+            let at = (&mut self.mbufs[i] as *mut dpdk_sys::rte_mbuf as *mut u8).add(HASH_OFFSET);
+            std::ptr::write_unaligned(at as *mut u64, v);
+        }
+    }
+
+    /// The 8 bytes of the `hash` union of mbuf `i` (see [`set_hash`](Self::set_hash)).
+    pub fn hash(&self, i: usize) -> u64 {
+        // SAFETY: as in `set_hash`.
+        unsafe {
+            let at = (&self.mbufs[i] as *const dpdk_sys::rte_mbuf as *const u8).add(HASH_OFFSET);
+            std::ptr::read_unaligned(at as *const u64)
+        }
     }
 
     pub fn set_port(&mut self, i: usize, port: u16) {

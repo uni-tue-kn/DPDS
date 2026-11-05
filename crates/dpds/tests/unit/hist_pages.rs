@@ -260,16 +260,46 @@ fn a_switched_off_direction_keeps_an_empty_page_zero_and_has_no_page_one() {
 #[cfg(feature = "telemetry")]
 mod with_feature {
     use super::*;
-    use dpds::delay_stats::DelayBatch;
+    use dpds::forward::run;
+    use dpds::io::{MbufFree, RxBurst, TxBurst};
+    use dpds::quit::Quit;
+    use dpds::stats::Telemetry;
+    use dpds::worker::Worker;
+    use dpds_core::buffer::Buffer;
 
-    /// Records `count` packets of intended delay `delay_ns` (at now = 0).
+    use crate::support::*;
+
+    /// Records `count` packets of realized delay `delay_ns` into direction `d` by running the
+    /// loop once: a zero-delay link, `count` packets (at most 11 here, so they stay staged) in
+    /// one burst at clock read 1 (the arrival, 0), the send in iteration 2 (read 2 = 20_000, old
+    /// enough), the read right before `tx_burst` (read 3) is `delay_ns`: delay = `delay_ns` - 0.
+    /// (A clock that goes back is fine for the loop, it only reads values.)
     fn record(ds: &DirectionStats, d: usize, delay_ns: u64, count: u64) {
-        let mut batch = DelayBatch::new();
-        for _ in 0..count {
-            batch.begin();
-            batch.accepted(delay_ns);
-            ds.stats[d].delay.record_accepts(&batch, 0.0);
+        let mut m = FakeMbufs::new(count as usize, 0, 64);
+        let quit = Quit::new();
+        let mut rx = MockRx::with_script(vec![m.ptrs()]);
+        {
+            let q = &quit;
+            rx.on_call = Some(Box::new(move |_| q.request()));
         }
+        let (mut tx, mut free) = (MockTx::default(), MockFree::default());
+        let mut t = Telemetry::new(&ds.stats[d], 0.0);
+        let (clock, _) = scripted_clock(&[0.0, 20_000.0, delay_ns as f64], None);
+        let w = Worker::new(Buffer::new(config(100, 0.0, 0.0)), 0, 0);
+        fn go(
+            w: Worker,
+            rx: &mut impl RxBurst,
+            tx: &mut impl TxBurst,
+            free: &mut impl MbufFree,
+            t: &mut Telemetry<'_>,
+            quit: &Quit,
+            clock: impl FnMut() -> f64,
+        ) {
+            // SAFETY: fake but valid mbufs owned by the caller.
+            unsafe { run(w, rx, tx, free, t, quit, clock) };
+        }
+        go(w, &mut rx, &mut tx, &mut free, &mut t, &quit, clock);
+        assert_eq!(tx.offered().len(), count as usize);
     }
 
     #[test]

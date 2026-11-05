@@ -1225,3 +1225,23 @@ fn the_readme_states_the_fixed_1000_ms_poll() {
         "a controller item says the telemetry poll interval is a fixed 1000 ms (spec 43 B2)"
     );
 }
+
+#[test]
+fn the_readme_documents_tx_staging_with_its_two_values() {
+    // spec 57: batches of up to 64 packets, sent at the latest 10 us after the oldest send time
+    let text = readme().replace('\u{3bc}', "\u{b5}");
+    let para = text
+        .split("\n\n")
+        .find(|p| p.to_lowercase().contains("tx staging"))
+        .expect("README has no paragraph about TX staging");
+    assert!(
+        para.contains("64"),
+        "the staging size 64 is missing: {para}"
+    );
+    assert!(
+        ["10 \u{b5}s", "10\u{b5}s", "10 us", "10 microseconds"]
+            .iter()
+            .any(|w| para.contains(w)),
+        "the 10 us wait is missing: {para}"
+    );
+}

@@ -1,9 +1,9 @@
 //! The data-plane loop of one direction (one worker lcore).
 
-use dpdk::mbuf::{pkt_len, prefetch_header};
+use dpdk::mbuf::{arrival_ns, pkt_len, prefetch_header, set_arrival_ns};
 use dpds_core::buffer::PushOutcome;
 
-use crate::consts::BURST_SIZE;
+use crate::consts::{BURST_SIZE, TX_BURST_SIZE, TX_MAX_WAIT_NS};
 use crate::counters::frame_bucket;
 use crate::delay_stats::DelayBatch;
 use crate::first_loss::{DropCause, FirstLossReason, Stage, StageLossDetail};
@@ -40,40 +40,50 @@ fn record_descriptor_full(t: &mut Telemetry<'_>, now: f64) {
     );
 }
 
-/// RX on `worker.rx_port()` -> delay/limit/loss buffer -> TX on
+/// RX on `worker.rx_port()` -> delay/limit/loss buffer -> TX staging -> TX on
 /// `worker.tx_port()` until told to quit, then drains the buffer (packets
-/// leave at their send time) before returning.
+/// leave at their send time, plus at most the staging wait) before returning.
 ///
 /// One iteration, in this order:
 /// 1. read `quit` (relaxed);
-/// 2. read the clock once: `now` serves push, pop, tick and first-loss
-///    times, nothing else in the loop reads a clock;
+/// 2. read the clock once: `now` serves push, pop, tick, first-loss times and
+///    the send decision;
 /// 3. unless quit: one `rx_burst` of `BURST_SIZE`;
 /// 4. push every received mbuf with its packet length
 ///    (`Buffer::push_outcome`); refused ones are collected, counted
 ///    (`dpds_rejects` and the cause: `loss_drops`, else `limiter_drops`, else
 ///    `buffer_full_drops`; `DpdsReject` first loss naming the cause) and
-///    freed with one bulk free after the loop; accepted ones feed the intended
-///    delay statistics and histogram (telemetry builds);
-/// 5. pop up to `BURST_SIZE` packets due at `now` (their lateness feeds the
-///    lateness statistics, telemetry builds);
+///    freed with one bulk free after the loop; with the delay statistics the
+///    accepted ones get `now` (their arrival) written into their mbuf;
+/// 5. pop the packets due at `now` into the free slots of the staging array
+///    (`TX_BURST_SIZE` slots, kept across iterations): at most
+///    `TX_BURST_SIZE - staged`, and at most `BURST_SIZE`;
 /// 6. prefetch the header line of every popped mbuf and of the next
 ///    queued ones (see [`Buffer::peek_nth`](dpds_core::buffer::Buffer::peek_nth));
-/// 7. if anything was popped, one `tx_burst` in the same iteration; the
-///    unsent tail is freed with one bulk free (`tx_short_calls`,
-///    `DescriptorFull` first loss);
-/// 8. sample `buffer_len_max` (after the pop), publish the iteration's delay
-///    statistics once, `t.tick(now, received)`;
-/// 9. stop if quit was read as requested and the buffer is empty.
+/// 7. if the array is full or its oldest packet (`staged[0]`, pops come out in
+///    send-time order) is due for `TX_MAX_WAIT_NS` already, one `tx_burst` of
+///    everything staged, also in an iteration that popped nothing; the unsent
+///    tail is freed with one bulk free (`tx_short_calls`, `DescriptorFull`
+///    first loss); the array is empty afterwards. With the delay statistics
+///    the clock is read once more right before the `tx_burst` (the TX enqueue
+///    time), the arrivals of the staged mbufs are read from the mbufs before
+///    it (afterwards the driver owns them), and the delay and lateness of the
+///    packets the NIC accepted are recorded (telemetry builds);
+/// 8. sample `buffer_len_max` (after the pop), `t.tick(now, received)`;
+/// 9. stop if quit was read as requested, the buffer is empty and nothing is
+///    staged.
 ///
 /// So once quit is observed nothing is received any more; everything received
-/// before is emitted (at its send time) or freed.
+/// before is emitted (at its send time, plus the staging wait) or freed. The
+/// last partial batch is not flushed at quit: it goes out when its wait is
+/// over.
 ///
 /// With the direction's delay statistics switched off (`Stats::delay`,
 /// `"delay_stats": false`) the loop is the instance without the statistics:
-/// the choice is made once, before the loop, and the push, pop and fold steps
-/// above that feed them are not compiled into it (no per-packet and no
-/// per-burst work).
+/// the choice is made once, before the loop, and the arrival stamp, the
+/// extra clock read and the recording are not compiled into it (no
+/// per-packet and no per-burst work). Without the `telemetry` feature the
+/// statistics are never recorded, so the loop is that instance either way.
 ///
 /// # Safety
 ///
@@ -91,7 +101,7 @@ pub unsafe fn run(
 ) {
     // SAFETY: the caller's contract is the one of `run_loop`.
     unsafe {
-        if t.stats.delay.enabled() {
+        if cfg!(feature = "telemetry") && t.stats.delay.enabled() {
             run_loop::<true>(worker, rx_nic, tx_nic, free, t, quit, now_ns);
         } else {
             run_loop::<false>(worker, rx_nic, tx_nic, free, t, quit, now_ns);
@@ -99,7 +109,8 @@ pub unsafe fn run(
     }
 }
 
-/// The loop of [`run`]; `DELAY` is whether the delay statistics are recorded.
+/// The loop of [`run`]; `DELAY` is whether the delay statistics are recorded
+/// (which costs the extra clock read before each `tx_burst`).
 ///
 /// # Safety
 ///
@@ -119,12 +130,15 @@ unsafe fn run_loop<const DELAY: bool>(
     let c = &stats.counters;
     let mut batch = [std::ptr::null_mut(); BURST_SIZE];
     let mut rejected = [std::ptr::null_mut(); BURST_SIZE];
-    let mut popped = [std::ptr::null_mut(); BURST_SIZE];
+    // The TX staging array, its send times (`send[0]` decides when a partial
+    // batch has to go) and, for the delay statistics, the arrivals read just
+    // before `tx_burst`.
+    let mut staged = [std::ptr::null_mut(); TX_BURST_SIZE];
+    let mut send = [0u64; TX_BURST_SIZE];
+    let mut arrivals = [0.0f64; TX_BURST_SIZE];
+    let mut staged_len = 0;
     let mut delays = DelayBatch::new();
     loop {
-        if DELAY {
-            delays.begin();
-        }
         let quit_requested = quit.is_requested();
         let now = now_ns();
         c.polls.inc();
@@ -151,9 +165,10 @@ unsafe fn run_loop<const DELAY: bool>(
             let len = unsafe { pkt_len(m) };
             sizes[frame_bucket(len)] += 1;
             let cause = match buffer.push_outcome(m.cast(), len, now) {
-                PushOutcome::Accepted { send_time_ns } => {
+                PushOutcome::Accepted { .. } => {
                     if DELAY {
-                        delays.accepted(send_time_ns);
+                        // SAFETY: valid mbuf owned by us, now in the buffer.
+                        unsafe { set_arrival_ns(m, now) };
                     }
                     continue;
                 }
@@ -190,30 +205,26 @@ unsafe fn run_loop<const DELAY: bool>(
             unsafe { free.free_bulk(&mut rejected[..rejects]) };
         }
 
-        if DELAY {
-            stats.delay.record_accepts(&delays, now);
-        }
-
-        let mut popped_len = 0;
-        while popped_len < BURST_SIZE {
+        let first_popped = staged_len;
+        let limit = (staged_len + BURST_SIZE).min(TX_BURST_SIZE);
+        while staged_len < limit {
             let Some((m, send_time_ns)) = buffer.pop_due_with_time(now) else {
                 break;
             };
-            if DELAY {
-                delays.popped(send_time_ns);
-            }
-            popped[popped_len] = m.cast();
-            popped_len += 1;
+            staged[staged_len] = m.cast();
+            send[staged_len] = send_time_ns;
+            staged_len += 1;
         }
-        if DELAY {
-            stats.delay.record_pops(&mut delays, now);
-        }
-        let popped_len = popped_len.min(BURST_SIZE);
+        let popped_len = staged_len - first_popped;
         c.out_of_order.set(buffer.out_of_order());
         if popped_len > 0 {
             c.pops.add(popped_len as u64);
-            let popped = &mut popped[..popped_len];
-            for &m in popped.iter() {
+            if DELAY {
+                stats
+                    .delay
+                    .record_pops(&mut delays, &send[first_popped..staged_len]);
+            }
+            for &m in &staged[first_popped..staged_len] {
                 prefetch_header(m);
             }
             for i in 0..popped_len {
@@ -222,25 +233,45 @@ unsafe fn run_loop<const DELAY: bool>(
                     None => break,
                 }
             }
+        }
 
-            let sent = (tx_nic.tx_burst(tx_port, popped) as usize).min(popped_len);
+        if staged_len > 0 && (staged_len == TX_BURST_SIZE || now - send[0] as f64 >= TX_MAX_WAIT_NS)
+        {
+            let n = staged_len;
+            let batch = &mut staged[..n];
+            let tx_ns = if DELAY {
+                for (a, &m) in arrivals.iter_mut().zip(batch.iter()) {
+                    // SAFETY: valid mbuf owned by us, stamped at its push.
+                    *a = unsafe { arrival_ns(m) };
+                }
+                now_ns()
+            } else {
+                now
+            };
+            let sent = (tx_nic.tx_burst(tx_port, batch) as usize).min(n);
             c.tx_calls.inc();
-            c.tx_pkts.add(popped_len as u64);
-            c.tx_batch_max.observe(popped_len as u64);
+            c.tx_pkts.add(n as u64);
+            c.tx_batch_max.observe(n as u64);
             c.tx_sent.add(sent as u64);
-            if sent < popped_len {
+            if sent < n {
                 c.tx_short_calls.inc();
                 record_descriptor_full(t, now);
                 // SAFETY: the NIC did not take these mbufs, we still own them.
-                unsafe { free.free_bulk(&mut popped[sent..]) };
+                unsafe { free.free_bulk(&mut batch[sent..]) };
             }
+            if DELAY {
+                stats
+                    .delay
+                    .record_sent(&send[..sent], &arrivals[..sent], tx_ns);
+            }
+            staged_len = 0;
         }
 
         // Sampled once per iteration after the pop, like preof's link stages.
         c.buffer_len_max.observe_with(|| buffer.len() as u64);
         // Also on idle iterations: an epoch only ends in an idle gap.
         t.tick(now, received as u64);
-        if quit_requested && buffer.is_empty() {
+        if quit_requested && buffer.is_empty() && staged_len == 0 {
             break;
         }
     }

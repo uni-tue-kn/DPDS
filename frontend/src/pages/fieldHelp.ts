@@ -55,18 +55,18 @@ export const HELP = {
   // dpds-core/src/dropper.rs:11-17, 68-72 (drop when the draw > h)
   'Gilbert-Elliot h':
     'Probability that a packet is delivered (not dropped) while in the bad state, so loss there is 1 \u2212 h. Between 0 and 1.',
-  // dpds-controller/src/dto.rs:166-170
+  // dpds-controller/src/dto.rs, spec 57 (delay = arrival until enqueued into the TX descriptors)
   'Delay statistics':
-    'Record the intended delay, lateness and delay histogram of this link. Off: dpds skips that work; the counters and drop causes stay.',
+    'Record the delay (from arrival until the packet is enqueued into the NIC\u2019s TX descriptors), the lateness (that enqueue time minus the scheduled send time) and the delay histogram of this link. Off: dpds skips that work; the counters and drop causes stay.',
   // spec 30: the cap is 4096 bins (dpds-controller MAX_HISTOGRAM_BINS, dpds MAX_BINS); 256 is the default
   'Histogram bins':
     'Number of equal-width bins of the delay histogram: a whole number from 1 to 4096. Empty: 256 bins. A power of two is only a suggestion.',
   // dpds/src/delay_stats.rs:30-31 (range [lo, lo + bins x width)), 131-152 (automatic window), 206-221 (from_spec), 229-231 (underflow); dpds-controller/src/dto.rs:130-143
   'Histogram lo':
-    'Lower edge of the histogram range (included), the start of the first bin; delays below it are counted as underflow. Stored in ns; finite, at least 0 and below Histogram hi. Empty: the mean \u2212 6 std, but not below 0. If the automatic range is narrower than 1 \u00b5s it is recentred to exactly 1 \u00b5s wide: lo = max(0, midpoint \u2212 500 ns).',
-  // dpds/src/delay_stats.rs:131-152 (automatic window incl. the Spacer allowance, 1 us minimum), 206-221, 229-231; dpds-controller/src/dto.rs:130-143
+    'Lower edge of the histogram range (included), the start of the first bin; delays below it are counted as underflow. Stored in ns; finite, at least 0 and below Histogram hi. Empty: the mean \u2212 6 std, but not below 0.',
+  // dpds/src/delay_stats.rs:131-160 (automatic window incl. the Spacer allowance and 2 * TX_MAX_WAIT_NS), 206-221, 229-231; dpds-controller/src/dto.rs:130-143
   'Histogram hi':
-    'Upper edge of the histogram range (excluded); delays from it on are counted as overflow. Stored in ns; finite and above Histogram lo. Empty: the mean + 6 std (plus the queueing allowance of an active Spacer), but at least 1 \u00b5s above lo. A value you enter is used as given.',
+    'Upper edge of the histogram range (excluded); delays from it on are counted as overflow. Stored in ns; finite and above Histogram lo. Empty: the mean + 6 std (plus the queueing allowance of an active Spacer) + 20 \u00b5s, twice the 10 \u00b5s TX staging wait, so the range is always at least 20 \u00b5s wide. A value you enter is used as given.',
   // spec 53 A: the IAT histogram is the delay histogram's HistogramDto; defaults lo 0, hi 4e9 / initialization rate, 256 bins
   'IAT histogram bins':
     'Number of equal-width bins of the inter-arrival time (departure gap) histogram: a whole number from 1 to 4096. Empty: 256 bins.',

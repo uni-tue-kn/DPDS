@@ -103,6 +103,31 @@ pub unsafe fn pkt_len(m: RawMbuf) -> u32 {
     (*m).__bindgen_anon_2.__bindgen_anon_1.pkt_len
 }
 
+/// Stores `ns` in the 8-byte `hash` union of `m` (`rte_mbuf::hash`, first
+/// cache line, next to `pkt_len`). DPDS carries the arrival time of a packet
+/// there while the delay buffer holds it: with one RX queue and no RSS the
+/// field is unused, and mlx5 TX never reads it. Unaligned write: the union is
+/// only 4-byte aligned.
+///
+/// # Safety
+/// `m` must point to a live mbuf that nothing else is accessing.
+#[inline(always)]
+pub unsafe fn set_arrival_ns(m: RawMbuf, ns: f64) {
+    let hash = std::ptr::addr_of_mut!((*m).__bindgen_anon_2.__bindgen_anon_1.__bindgen_anon_2.hash);
+    hash.cast::<f64>().write_unaligned(ns);
+}
+
+/// The value [`set_arrival_ns`] stored in `m`.
+///
+/// # Safety
+/// `m` must point to a live mbuf that nothing else is accessing, and
+/// [`set_arrival_ns`] must have been called on it since it left the pool.
+#[inline(always)]
+pub unsafe fn arrival_ns(m: RawMbuf) -> f64 {
+    let hash = std::ptr::addr_of!((*m).__bindgen_anon_2.__bindgen_anon_1.__bindgen_anon_2.hash);
+    hash.cast::<f64>().read_unaligned()
+}
+
 /// A borrowed, read-only view of one mbuf's packet data.
 ///
 /// Read-only by design: packet bytes are never written through this view.

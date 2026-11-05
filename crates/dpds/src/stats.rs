@@ -25,7 +25,7 @@ pub struct Stats {
     /// Received frames per size bucket, cumulative.
     pub frame_sizes: FrameSizes,
     pub epochs: DpdsEpochLog,
-    /// Intended delay / lateness statistics and the delay histogram.
+    /// Delay (arrival until enqueued into the TX descriptors) / lateness statistics and the delay histogram.
     pub delay: DelayStats,
 }
 
@@ -75,7 +75,7 @@ impl Stats {
     }
 
     /// Page 0 of the `/dpds/delay_hist` reply: the cumulative histogram of the
-    /// intended delay of the accepted packets (see [`delay_hist_page`](Self::delay_hist_page)).
+    /// delay of the packets the NIC accepted (see [`delay_hist_page`](Self::delay_hist_page)).
     pub fn delay_hist_reply(&self) -> Reply {
         self.delay.hist_page(0).unwrap_or_default()
     }
@@ -128,7 +128,7 @@ impl Stats {
             string("first_loss_detail", fields.detail),
             uint("first_loss_relative_ns", fields.relative_ns),
         ];
-        reply.extend(self.delay.stats_fields(c.pops.get()));
+        reply.extend(self.delay.stats_fields());
         reply
     }
 
@@ -262,7 +262,7 @@ impl DirectionStats {
         )?;
         dpdk::telemetry::register_command(
             "/dpds/delay_hist",
-            "One page of the cumulative histogram of the intended delay of one direction (query with ,<dir>,<page>)",
+            "One page of the cumulative delay histogram of one direction (query with ,<dir>,<page>)",
             move |param, d| {
                 if let Some(reply) = stats.delay_hist_reply(param) {
                     fill(d, reply);

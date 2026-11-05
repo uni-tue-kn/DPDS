@@ -95,7 +95,9 @@ pub enum LossModelDto {
 }
 
 /// Optional delay histogram settings of a direction; anything omitted is
-/// chosen automatically by `dpds` (256 bins, mean +- 6 std, at least 1 us wide).
+/// chosen automatically by `dpds` (256 bins, `lo` = mean - 6 std, `hi` = mean + 6 std + the Spacer's queueing
+/// allowance + 20 us, i.e. twice the 10 us TX staging wait; delays are measured from
+/// arrival until enqueued into the TX descriptors).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct HistogramDto {
@@ -167,7 +169,8 @@ pub struct ConfigDto {
     /// keep the defaults (`lo_ns` 0, `hi_ns` 4e9 / `initialization_rate_pps`, 256 bins).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub iat_histogram: Option<HistogramDto>,
-    /// Record the intended delay, lateness and histogram of this direction (absent: on;
+    /// Record the delay (arrival until enqueued into the TX descriptors), the lateness
+    /// (TX enqueue minus send time) and the histogram of this direction (absent: on;
     /// off: `dpds` skips that work, counters and drop causes stay). Kept as sent, so the
     /// running configuration echoes the request.
     #[serde(default, skip_serializing_if = "Option::is_none")]

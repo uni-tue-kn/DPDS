@@ -288,7 +288,8 @@ mod with_feature {
         let mut m = FakeMbufs::new(8, 0, 100);
         let p = m.ptrs();
         let stats: &'static Stats = Box::leak(Box::default());
-        drive(config(100, 0.0, 0.0), vec![p], &[0.0, 1.0], stats);
+        // the staged packets need 10 us to be sent: the last read is far past that
+        drive(config(100, 0.0, 0.0), vec![p], &[0.0, 1e6], stats);
         let c = &stats.counters;
         assert_eq!(
             (

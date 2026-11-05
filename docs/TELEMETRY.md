@@ -55,7 +55,7 @@ echo '/dpds/stats,0' | dpdk-telemetry.py -f <file-prefix>
 | --- | --- |
 | `/dpds/stats,<dir>` | Counters of link `<dir>`, cumulative since start, the delay statistics, plus that link's whole-run first-loss result. |
 | `/dpds/epochs,<dir>` | The same counters per epoch (deltas) and gauges per epoch (maxima), plus per-epoch first loss, for link `<dir>`. |
-| `/dpds/delay_hist,<dir>[,<page>]` | One page (500 bins) of the cumulative histogram of the intended delay of link `<dir>`; `,<dir>` alone is page 0. |
+| `/dpds/delay_hist,<dir>[,<page>]` | One page (500 bins) of the cumulative histogram of the delay (arrival until enqueued into the TX descriptors) of link `<dir>`; `,<dir>` alone is page 0. |
 | `/dpds/iat_hist,<dir>[,<page>]` | Cumulative histogram of the gaps between the send times of consecutive packets of link `<dir>` (256 bins by default, one page), same fields as `/dpds/delay_hist`. |
 | `/dpds/ports` | Static: device name and descriptor ring sizes of each port, the number of links, and the layout of each link. |
 | `/nic/hw_first_loss,<port>` | First NIC hardware drop seen by the main lcore on port `<port>` (a DPDK port id, any port of the links). |
@@ -85,27 +85,27 @@ atomics, cache-line aligned).
 | `limiter_drops` | Rejected packets the rate limiter refused (the Spacer's backlog would exceed the limiter's limit, or the Token Bucket Filter's budget is used up; the limit is derived from the buffer capacity, `buffer_capacity` x 1542 B x 8). |
 | `buffer_full_drops` | Rejected packets that found the buffer holding `buffer_capacity` packets (checked first: loss model and limiter never saw them). |
 | `pops` | Packets that left the DPDS buffer (their send time had arrived) and went on to TX. |
-| `tx_calls` | `tx_burst` calls with at least one packet. A worker transmits what it popped in the same loop iteration (at most `BURST_SIZE` = 32 packets), so there is at most one call per iteration; `tx_pkts / tx_calls` is the mean batch size. |
+| `tx_calls` | `tx_burst` calls with at least one packet. A worker stages the packets it pops and sends the staging array with one call when it is full (`TX_BURST_SIZE` = 64 packets) or when its oldest packet has been due for `TX_MAX_WAIT_NS` = 10 us (TX staging, see the README), so there is at most one call per iteration and normally far fewer; `tx_pkts / tx_calls` is the mean batch size. |
 | `tx_pkts` | Packets handed to `tx_burst`. |
 | `tx_sent` | Packets the NIC accepted. |
 | `tx_drops` | `tx_pkts - tx_sent`, derived when the reply is built (not a counter). Real loss at the NIC's TX descriptor ring. |
 | `tx_short_calls` | `tx_burst` calls that accepted fewer packets than offered: the TX descriptor ring was momentarily full. The unsent tail is freed. |
-| `tx_batch_max` (gauge) | Largest single `tx_burst` call (at most 32). |
+| `tx_batch_max` (gauge) | Largest single `tx_burst` call (at most 64). |
 | `tx_pkts_per_call` | `tx_pkts / tx_calls` with two decimals, as a string (telemetry dicts have no float type); `"0.00"` with no calls. |
 | `buffer_len_max` (gauge) | The DPDS buffer's depth, sampled once per loop iteration after the pop (as in preof), so a zero-delay pass-through reads about 0. At steady state roughly `arrival_rate x delay`. Pinned at `buffer_capacity` means the buffer is the bottleneck. |
 | `frame_sizes` | Array of 8 cumulative counts of the frames received (`pkt_len` of every mbuf `rx_burst` returned, before any drop) in P4TG's buckets: 0-63, 64, 65-127, 128-255, 256-511, 512-1023, 1024-1518, 1519 and larger bytes. In every link, also with `delay_stats` off. |
 | `out_of_order` | Packets popped with an arrival sequence number below the highest one popped before (P4TG's notion); only a `reordering` link counts, always 0 otherwise. |
 | `first_loss_reason` / `first_loss_detail` / `first_loss_relative_ns` | The first loss of the whole run (see below); `"Clean"` / `""` / `0` if none yet. |
-| `delay_mean_ns`, `delay_std_ns` | Mean and (population) standard deviation of the intended delay of every accepted packet, 2-decimal strings. See [Delay statistics](#delay-statistics). |
-| `delay_min_ns`, `delay_max_ns` | Smallest and largest intended delay, uints (truncated ns). |
-| `lateness_mean_ns`, `lateness_max_ns` | Mean (string) and maximum (uint) of how late popped packets left. |
+| `delay_mean_ns`, `delay_std_ns` | Mean and (population) standard deviation of the delay of every packet the NIC accepted (arrival until it is enqueued into the TX descriptors), 2-decimal strings. See [Delay statistics](#delay-statistics). |
+| `delay_min_ns`, `delay_max_ns` | Smallest and largest delay, uints (truncated ns). |
+| `lateness_mean_ns`, `lateness_max_ns` | Mean (string) and maximum (uint) of the TX enqueue time minus the send time of the packets the NIC accepted. |
 
 The six delay and lateness keys are absent for a link with
 `"delay_stats": false` ([Delay statistics off](#delay-statistics-off)).
 
 A packet that is neither delayed nor lost satisfies
-`rx_pkts = dpds_rejects + pops + (in buffer)` and `pops = tx_pkts` (a popped
-packet is handed to `tx_burst` in the same loop iteration), which makes `tx_sent == N` and `dpds_rejects == 0` a good
+`rx_pkts = dpds_rejects + pops + (in buffer)` and `pops = tx_pkts` (every popped
+packet is staged and handed to `tx_burst` within about 10 us), which makes `tx_sent == N` and `dpds_rejects == 0` a good
 exactness check for a run of `N` packets through one direction.
 
 Gauges in `/dpds/stats,<dir>` are the maximum over all epochs of the run, including
@@ -174,16 +174,23 @@ approximate while traffic flows; they are exact once the worker is idle.
 Per direction, behind the `telemetry` feature, written by the direction's worker
 only. Two quantities are tracked:
 
-- the **intended delay** of every *accepted* packet: `send_time - now` at the push,
-  with `now` the iteration's single clock read and `send_time` the whole-ns time
-  the buffer reports for the packet. It includes the delay distribution's sample,
-  the Spacer's queueing offset and, in reordering mode, the 1/64 ns tie offset
-  (truncated to whole ns). Rejected packets are not counted;
-- the **lateness** of every *popped* packet: `now - send_time` at the pop, never
-  below 0. It is the poll granularity, head-of-line blocking (FIFO mode: a packet
-  waits for the one in front of it) and loop latency. The realized delay of a
-  packet is its intended delay plus its lateness, so the mean realized delay is
-  `delay_mean_ns + lateness_mean_ns`.
+- the **delay** of every packet the NIC accepted: `tx_ns - arrival`, with `arrival`
+  the iteration's single clock read at the push and `tx_ns` the extra clock read
+  right before the `tx_burst` call that took the packet, i.e. the time it is
+  enqueued into the TX descriptors (no NIC hardware timestamps). It includes the
+  delay distribution's sample, the Spacer's queueing offset, the poll
+  granularity, head-of-line blocking (FIFO mode: a packet waits for the one in
+  front of it), loop latency and the TX staging wait (at most about 10 us).
+  Rejected packets and packets the NIC refused are not counted. The arrival
+  travels in the 8-byte `hash` field of the mbuf (unused with one RX queue and no
+  RSS) while the packet is in the buffer;
+- the **lateness** of the same packets: `tx_ns - send_time`, never below 0, the
+  delay beyond the scheduled send time (staging wait included); its mean is over
+  the same packets as the delay.
+
+Both are clamped at 0 and recorded at send time. With the statistics on, the worker
+reads the clock once more before each `tx_burst` (only the instance with the
+statistics does).
 
 `delay_std_ns` is the population standard deviation (divide by `n`). It doubles
 as a check that DPDS reproduces the configured distribution. Everything is
@@ -216,7 +223,7 @@ Each link can switch the delay statistics and the histogram off with its
 `"delay_stats": true|false` key in the `--links` file (default `true`; see the
 README). For a link with `false`:
 
-- the worker does not record the intended delay, the lateness or the histogram.
+- the worker does not record the delay, the lateness or the histogram (and does not read the clock before `tx_burst`).
   `forward::run` picks the loop without them once, before it starts, so the
   push and pop loops carry no statistics code at all (no per-packet and no
   per-burst work, same cost as a build without the `telemetry` feature);
@@ -232,8 +239,8 @@ A consumer checks `dir<d>_delay_stats` once, or tests for the absent keys.
 
 ## `/dpds/delay_hist,<dir>[,<page>]`
 
-A cumulative linear histogram of the intended delay (as defined above) of every
-accepted packet of link `<dir>`, since start, with up to 4096 bins. One DPDK
+A cumulative linear histogram of the delay (as defined above: arrival until enqueued
+into the TX descriptors) of every packet the NIC accepted on link `<dir>`, since start, with up to 4096 bins. One DPDK
 telemetry array holds at most 512 entries, so the histogram is read in pages of at
 most 500 bins: `/dpds/delay_hist,<dir>,<page>`, where `<page>` is a 0-based plain
 decimal number. `/dpds/delay_hist,<dir>` alone is page 0. A histogram of `num_bins`
@@ -270,17 +277,21 @@ The bin index is one subtraction and one multiplication by the reciprocal of
 optional). The automatic rule, from `delayer.mean_ns`, `delayer.std_ns` (for any
 distribution) and, for an active Spacer, its queueing allowance
 `extra = buffer_capacity * 12336 / rate_bps * 1e9` ns (a packet can wait up to a full limit's
-worth of bits behind the others, and the intended delay includes that wait):
+worth of bits behind the others, and the delay includes that wait) and the TX staging
+wait `TX_MAX_WAIT_NS` = 10 us, twice (the wait, plus as much again for loop latency: a
+timed-out batch's oldest packet is already 10 us late, so one wait alone would put it
+exactly on the exclusive upper edge):
 
 ```
 lo = max(0, mean - 6 * std)
-hi = mean + 6 * std + extra
+hi = mean + 6 * std + extra + 2 * 10000 ns
 if hi - lo < 1000 ns:      mid = (lo + hi) / 2;  lo = max(0, mid - 500);  hi = lo + 1000
 bin_ns = (hi - lo) / 256
 ```
 
-So a deterministic delay gets a 1 us window around the mean (bin width 3.90625 ns),
-and a Normal delay `mean +- 6 sigma`. A Token Bucket Filter adds no delay and no
+So a deterministic delay gets the window `[mean, mean + 20 us)` (bin width 78.125 ns), and a
+Normal delay `mean +- 6 sigma` plus the 20 us. The 1 us minimum width below can no longer
+trigger (the window is always at least 20 us wide). A Token Bucket Filter adds no delay and no
 allowance. With explicit values: a missing `bins` is 256, a missing `lo_ns` /
 `hi_ns` is the automatic one, `bin_ns = (hi - lo) / bins`, and explicit values are
 used as given (the 1 us minimum applies to the automatic range only). Startup
@@ -301,7 +312,7 @@ like for a bad `<dir>` (see [Delay statistics off](#delay-statistics-off)).
 
 The inter-arrival time (IAT) histogram of link `<dir>`: for every packet popped after the first of the run,
 `send_time - previous send_time` in ns (the send times of `dpds`' own schedule, the same ones
-the pop path collects for the lateness; the previous one is carried across bursts; a negative gap, possible
+the pop path collects; the previous one is carried across bursts; a negative gap, possible
 with reordering, counts as 0). Linear bins over `[0, 4 * 1e9 / initialization_rate_pps)`, 256
 of them (the defaults; the link's `iat_histogram` in the `--links` file, `bins`, `lo_ns`, `hi_ns`, each
 optional, overrides any of them, with the validation of `histogram`), plus `underflow` (never) and `overflow`. Fields, paging, bad-param and delay-statistics-off behaviour are those of

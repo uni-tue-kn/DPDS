@@ -9,6 +9,7 @@
 //!
 //! ```text
 //! dpds::consts   BURST_SIZE: usize = 32            (renamed from MAX_BURST_SIZE, which is gone)
+//!                TX_BURST_SIZE: usize = 64 (spec 57: TX staging capacity); TX_MAX_WAIT_NS: f64 = 10_000.0
 //!                NIC_DESCRIPTORS: u16 = 4096;  MBUF_CACHE_SIZE: u32 = 512;  MTU: u32 = 1500;
 //!                HW_STATS_POLL_INTERVAL_MS: u64 = 250
 //!                (DEFAULT_NUM_MBUFS is gone: the pool size is derived, see setup)
@@ -64,8 +65,10 @@
 //!                one direction per call: RX on worker.rx_port(), TX on worker.tx_port().
 //!                The clock is a plain closure; tests count its calls.
 //!                Per iteration, observable order: Clock, [Rx(rx_port, BURST_SIZE slots)
-//!                unless quit], [Free(all rejects) if any], [Tx(tx_port, k) if k > 0],
-//!                [Free(unsent) if any]. Details at the top of forward.rs.
+//!                unless quit], [Free(all rejects) if any], [Clock again, only with the delay
+//!                statistics (telemetry), directly before the tx], [Tx(tx_port, n) iff n packets
+//!                are staged and n == TX_BURST_SIZE or the oldest is TX_MAX_WAIT_NS old],
+//!                [Free(unsent) if any] (spec 57). Details at the top of forward.rs.
 //!
 //! dpds::first_loss, dpds::counters, dpds::reply   (unchanged, see their test modules)
 //!

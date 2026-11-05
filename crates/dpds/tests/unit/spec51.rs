@@ -423,9 +423,11 @@ mod with_feature {
         // delay 100, no limiter. it1 (now 0): A, B pushed, send 100, nothing due.
         // it2 (now 150): A, B popped -> gap 0; C pushed (send 250).
         // it3 (now 300, quit): C popped -> gap 250 - 100 = 150 from B, in another pass.
+        // The staged packets leave in it4 (spec 57: 10 us after the oldest send time).
         let cfg = plain(false);
         let stats = iat_stats(&cfg);
-        drive(cfg, &[&[64, 64], &[64]], &[0.0, 150.0, 300.0], stats);
+        // it4 (1e6) sends what it2 and it3 staged
+        drive(cfg, &[&[64, 64], &[64]], &[0.0, 150.0, 300.0, 1e6], stats);
         let r = stats.iat_hist_reply();
         assert_eq!(filled(&r), vec![(0, 1), (150, 1)]);
         assert_eq!((uint(&r, "underflow"), uint(&r, "overflow")), (0, 0));
