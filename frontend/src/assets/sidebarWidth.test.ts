@@ -22,4 +22,10 @@ describe('sidebar width like P4TG', () => {
   it('shows the logo 80 px wide, shrinking only when the sidebar is narrower', () => {
     expect(css).toMatch(/\.sidebar-brand img \{[^}]*\bwidth: 80px;[^}]*\bmax-width: 100%;/);
   });
+
+  // P4TG index.scss:270-280 and :834-837: navigation icons are 25px, 20px up to 450 px width (user: DPDS's were "a bit tiny").
+  it('navigation icons are 25px like P4TG, 20px on screens up to 450 px', () => {
+    expect(css).toMatch(/\.sidebar \.nav-link \{[^}]*\bfont-size: 25px;/);
+    expect(css).toMatch(/@media \(max-width: 450px\) \{ \.sidebar \.nav-link \{ font-size: 20px; \} \}/);
+  });
 });
