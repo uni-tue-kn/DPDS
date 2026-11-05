@@ -23,7 +23,6 @@ const OVERLOAD_COLOR = '#e74c3c';
  */
 export default function LinkCharts({
   dir,
-  dirLabel = '',
   active,
   history,
   drops,
@@ -31,8 +30,6 @@ export default function LinkCharts({
   empty = false,
 }: {
   dir?: number;
-  /** "ingress → egress" of the link, for the histogram tables. */
-  dirLabel?: string;
   /** Whether the link's tab is shown: react-bootstrap keeps hidden panes mounted, and a hidden histogram must not poll. */
   active: boolean;
   history: HistorySample[];
@@ -114,7 +111,7 @@ export default function LinkCharts({
         </ChartBox>
       )}
       {view === 'histogram' && active && dir !== undefined && (
-        <DelayHistogram dir={dir} dirLabel={dirLabel} meanNs={live?.meanNs} stdNs={live?.stdNs} />
+        <DelayHistogram dir={dir} meanNs={live?.meanNs} stdNs={live?.stdNs} />
       )}
       <Form.Group role="radiogroup" aria-label="Chart" className="text-center my-3">
         {views.map(([v, text]) => {

@@ -384,7 +384,6 @@ export default function Dashboard() {
                     dir={dir}
                     active={String(dir) === activeTab}
                     history={state === 'starting' ? NO_SAMPLES : (history[String(dir)] ?? NO_SAMPLES)}
-                    dirLabel={`${label(s?.rx) || '?'} → ${label(s?.tx) || '?'}`}
                     drops={dropsOf(dir)}
                     empty={beforeRun}
                     live={

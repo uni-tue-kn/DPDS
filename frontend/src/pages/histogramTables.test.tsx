@@ -14,17 +14,15 @@ import { must } from '../test/must';
 // `.col-12.col-md-4` columns, each a `table.table-striped.table-bordered.table-hover.table-sm` with a `thead.table-dark`, one header
 // row (whose hover tooltip is pinned below) and exactly one body row:
 //   1. "Histogram config":   Bin Range | #Bins | Bin Width  ->  [lo, lo + bins x bin_ns] | bins.length | bin_ns
-//   2. "Values calculated from histogram data":  Dir | Delay (overlined) | σ(Delay) | Outlier | Total #Packets
-//        ->  "<ingress> → <egress>" | delay_mean_ns | delay_std_ns | underflow + overflow | count (else Σbins + underflow + overflow)
-//   3. "Percentiles":       Dir | p50 | p90 | p99 | p99.9  ->  the Dir label, then each percentile or "-"
+//   2. "Values calculated from histogram data":  Delay (overlined) | σ(Delay) | Outlier | Total #Packets
+//        ->  delay_mean_ns | delay_std_ns | underflow + overflow | count (else Σbins + underflow + overflow)
+//   3. "Percentiles":       p50 | p90 | p99 | p99.9  ->  each percentile or "-"
+// No Dir column (user 2026-11-05: "Remove the direction in the histogram table").
 // Durations by formatDuration, counts by formatCount (expectations are built with the same functions, one literal spot check below).
 // The chart title line "Mean ... · Jitter (σ) ..." is gone; the percentile annotation lines stay (dashboardP4tg.test.tsx).
 // CHOICE: "Delay" is overlined by an inline `text-decoration: overline` on the header cell or an element inside it.
 // CHOICE: "-" (spec: "means not available") also stands for a missing mean or σ, not formatDuration's "n/a".
 // CHOICE: no tables while the histogram is unavailable (the error text shows instead).
-
-const DIR0 = 'enp101s0f0 → enp101s0f1';
-const DIR1 = 'enp101s0f1 → enp101s0f0';
 
 const tablesOf = (d: number) => within(card(d)).getAllByRole('table');
 const headers = (t: HTMLElement) =>
@@ -53,8 +51,8 @@ describe('Histogram tables (spec 36 S2): layout', () => {
     const tables = tablesOf(0);
     expect(tables).toHaveLength(3);
     expect(headers(must(tables[CONFIG]))).toEqual(['Bin Range', '#Bins', 'Bin Width']);
-    expect(headers(must(tables[VALUES]))).toEqual(['Dir', 'Delay', 'σ(Delay)', 'Outlier', 'Total #Packets']);
-    expect(headers(must(tables[PERCENTILES]))).toEqual(['Dir', 'p50', 'p90', 'p99', 'p99.9']);
+    expect(headers(must(tables[VALUES]))).toEqual(['Delay', 'σ(Delay)', 'Outlier', 'Total #Packets']);
+    expect(headers(must(tables[PERCENTILES]))).toEqual(['p50', 'p90', 'p99', 'p99.9']);
   });
 
   it('each table has the header row and exactly one body row', async () => {
@@ -86,12 +84,12 @@ describe('Histogram tables (spec 36 S2): layout', () => {
 
   it('"Delay" is overlined (the mean, like the overlined RTT of P4TG), the other headers are not', async () => {
     await ready();
-    const th = must(within(must(tablesOf(0)[VALUES])).getAllByRole('columnheader')[1]);
+    const th = must(within(must(tablesOf(0)[VALUES])).getAllByRole('columnheader')[0]);
     const styled = [th, ...Array.from(th.querySelectorAll('*'))].map((e) => e.getAttribute('style') ?? '');
     expect(styled.some((s) => /overline/.test(s))).toBe(true);
     const others = within(must(tablesOf(0)[VALUES]))
       .getAllByRole('columnheader')
-      .filter((_, i) => i !== 1);
+      .filter((_, i) => i !== 0);
     for (const h of others) {
       expect(
         [h, ...Array.from(h.querySelectorAll('*'))].some((e) => /overline/.test(e.getAttribute('style') ?? '')),
@@ -170,17 +168,16 @@ describe('Histogram tables (spec 36 S2): the cells', () => {
     expect(cells(must(tablesOf(0)[CONFIG]))[0]).toMatch(/^\[100\.00 ns, 1\.10 [µμ]s\]$/);
   });
 
-  it('values: direction, mean, σ from the link stats, outliers = underflow + overflow, count', async () => {
+  it('values: mean, σ from the link stats, outliers = underflow + overflow, count', async () => {
     await ready(); // delay_mean_ns 1000000, delay_std_ns 50000, underflow 3, overflow 7, count 163
     expect(cells(must(tablesOf(0)[VALUES]))).toEqual([
-      DIR0,
       formatDuration(1000000),
       formatDuration(50000),
       formatCount(10),
       formatCount(163),
     ]);
-    expect(cells(must(tablesOf(0)[VALUES]))[1]).toBe('1.00 ms');
-    expect(cells(must(tablesOf(0)[VALUES]))[2]).toMatch(/^50\.00 [µμ]s$/);
+    expect(cells(must(tablesOf(0)[VALUES]))[0]).toBe('1.00 ms');
+    expect(cells(must(tablesOf(0)[VALUES]))[1]).toMatch(/^50\.00 [µμ]s$/);
   });
 
   it('values: Total #Packets is Σbins + underflow + overflow when the reply has no count, with thousands separators', async () => {
@@ -195,14 +192,14 @@ describe('Histogram tables (spec 36 S2): the cells', () => {
     });
     await ready();
     const row = cells(must(tablesOf(0)[VALUES]));
-    expect(row[3]).toBe('1,234');
-    expect(row[4]).toBe('16,234'); // 15,000 + 1,000 + 234
+    expect(row[2]).toBe('1,234');
+    expect(row[3]).toBe('16,234'); // 15,000 + 1,000 + 234
   });
 
   it('values: the count of the reply wins over the sum of the bins', async () => {
     api.getDelayHistogram.mockImplementation(async (dir) => fx.histogram(dir, { count: 12345 }));
     await ready();
-    expect(cells(must(tablesOf(0)[VALUES]))[4]).toBe('12,345');
+    expect(cells(must(tablesOf(0)[VALUES]))[3]).toBe('12,345');
   });
 
   it('values: no outliers and no packets read 0', async () => {
@@ -211,8 +208,8 @@ describe('Histogram tables (spec 36 S2): the cells', () => {
     );
     await ready();
     const row = cells(must(tablesOf(0)[VALUES]));
+    expect(row[2]).toBe('0');
     expect(row[3]).toBe('0');
-    expect(row[4]).toBe('0');
   });
 
   it('values: a missing mean or σ reads "-"', async () => {
@@ -225,20 +222,18 @@ describe('Histogram tables (spec 36 S2): the cells', () => {
     fireEvent.click(radio(0, 'Delay histogram'));
     await within(card(0)).findAllByRole('table');
     const row = cells(must(tablesOf(0)[VALUES]));
-    expect(row.slice(1, 3)).toEqual(['-', '-']);
-    expect(row[0]).toBe(DIR0);
+    expect(row.slice(0, 2)).toEqual(['-', '-']);
   });
 
-  it('percentiles: the Dir label, then p50, p90, p99, p99.9', async () => {
+  it('percentiles: p50, p90, p99, p99.9', async () => {
     await ready();
     expect(cells(must(tablesOf(0)[PERCENTILES]))).toEqual([
-      DIR0,
       formatDuration(1050000),
       formatDuration(1150000),
       formatDuration(1250000),
       formatDuration(1290000),
     ]);
-    expect(cells(must(tablesOf(0)[PERCENTILES])).slice(1)).toEqual(['1.05 ms', '1.15 ms', '1.25 ms', '1.29 ms']);
+    expect(cells(must(tablesOf(0)[PERCENTILES]))).toEqual(['1.05 ms', '1.15 ms', '1.25 ms', '1.29 ms']);
   });
 
   it('percentiles: null reads "-" per percentile, the others keep their value', async () => {
@@ -246,7 +241,7 @@ describe('Histogram tables (spec 36 S2): the cells', () => {
       fx.histogram(dir, { percentiles: { p50: 1050000, p90: null, p99: 1250000, p999: null } }),
     );
     await ready();
-    expect(cells(must(tablesOf(0)[PERCENTILES]))).toEqual([DIR0, '1.05 ms', '-', '1.25 ms', '-']);
+    expect(cells(must(tablesOf(0)[PERCENTILES]))).toEqual(['1.05 ms', '-', '1.25 ms', '-']);
   });
 
   it('percentiles: a reply without percentiles reads "-" four times', async () => {
@@ -256,16 +251,16 @@ describe('Histogram tables (spec 36 S2): the cells', () => {
       return h;
     });
     await ready();
-    expect(cells(must(tablesOf(0)[PERCENTILES]))).toEqual([DIR0, '-', '-', '-', '-']);
+    expect(cells(must(tablesOf(0)[PERCENTILES]))).toEqual(['-', '-', '-', '-']);
   });
 
-  it('each link shows its own numbers and its own direction', async () => {
+  it('each link shows its own numbers, and no table has a direction', async () => {
     await ready(0, [fx.dirStats(0), fx.dirStats(1, { delay_mean_ns: 2_500_000_000, delay_std_ns: 800 })]);
-    expect(cells(must(tablesOf(0)[VALUES]))[0]).toBe(DIR0);
+    expect(within(card(0)).queryByText(/→/)).not.toBeInTheDocument();
     fireEvent.click(radio(1, 'Delay histogram'));
     await within(card(1)).findAllByRole('table');
-    expect(cells(must(tablesOf(1)[VALUES]))).toEqual([DIR1, '2.50 s', '800.00 ns', '10', '164']); // count 163 + dir
-    expect(cells(must(tablesOf(1)[PERCENTILES]))[0]).toBe(DIR1);
+    expect(cells(must(tablesOf(1)[VALUES]))).toEqual(['2.50 s', '800.00 ns', '10', '164']); // count 163 + dir
+    for (const t of tablesOf(1)) expect(within(t).queryByText(/→/)).not.toBeInTheDocument();
   });
 
   it('follow the next poll of the histogram and of the stats', async () => {
@@ -277,7 +272,7 @@ describe('Histogram tables (spec 36 S2): the cells', () => {
     await tick(0);
     fireEvent.click(radio(0, 'Delay histogram'));
     await tick(0);
-    expect(cells(must(tablesOf(0)[VALUES]))[4]).toBe('163');
+    expect(cells(must(tablesOf(0)[VALUES]))[3]).toBe('163');
     api.getDelayHistogram.mockImplementation(async (dir) =>
       fx.histogram(dir, {
         count: 999,
@@ -290,10 +285,10 @@ describe('Histogram tables (spec 36 S2): the cells', () => {
     );
     await tick(2500);
     const values = cells(must(tablesOf(0)[VALUES]));
-    expect(values[1]).toBe('3.00 ms');
-    expect(values[2]).toMatch(/^120\.00 [µμ]s$/);
-    expect(values[4]).toBe('999');
-    expect(cells(must(tablesOf(0)[PERCENTILES]))).toEqual([DIR0, '2.00 ms', '-', '-', '-']);
+    expect(values[0]).toBe('3.00 ms');
+    expect(values[1]).toMatch(/^120\.00 [µμ]s$/);
+    expect(values[3]).toBe('999');
+    expect(cells(must(tablesOf(0)[PERCENTILES]))).toEqual(['2.00 ms', '-', '-', '-']);
   });
 });
 

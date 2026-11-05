@@ -49,12 +49,10 @@ function StatTable({
 /** The numbers of a link's delay histogram in rows, like P4TG's histogram tables. `meanNs` and `stdNs` are the link's live stats. */
 export default function HistogramTables({
   hist,
-  dirLabel,
   meanNs,
   stdNs,
 }: {
   hist: HistogramView;
-  dirLabel: string;
   meanNs?: number | null;
   stdNs?: number | null;
 }) {
@@ -75,14 +73,14 @@ export default function HistogramTables({
       />
       <StatTable
         tip="Values calculated from histogram data"
-        heads={['Dir', 'Delay', 'σ(Delay)', 'Outlier', 'Total #Packets']}
+        heads={['Delay', 'σ(Delay)', 'Outlier', 'Total #Packets']}
         overlined="Delay"
-        cells={[dirLabel, duration(meanNs), duration(stdNs), formatCount(outliers), formatCount(total)]}
+        cells={[duration(meanNs), duration(stdNs), formatCount(outliers), formatCount(total)]}
       />
       <StatTable
         tip="Percentiles"
-        heads={['Dir', 'p50', 'p90', 'p99', 'p99.9']}
-        cells={[dirLabel, duration(p?.p50), duration(p?.p90), duration(p?.p99), duration(p?.p999)]}
+        heads={['p50', 'p90', 'p99', 'p99.9']}
+        cells={[duration(p?.p50), duration(p?.p90), duration(p?.p99), duration(p?.p999)]}
       />
     </Row>
   );

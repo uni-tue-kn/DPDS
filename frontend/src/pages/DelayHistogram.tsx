@@ -44,13 +44,10 @@ function percentileLines(hist: HistogramView, textColor: string) {
 /** The delay histogram of the whole run of link `dir`: its numbers in tables above the bars. */
 export default function DelayHistogram({
   dir,
-  dirLabel,
   meanNs,
   stdNs,
 }: {
   dir: number;
-  /** "ingress → egress" of the link. */
-  dirLabel: string;
   meanNs?: number | null;
   stdNs?: number | null;
 }) {
@@ -111,7 +108,7 @@ export default function DelayHistogram({
   if (!hist || !data || !options) return null;
   return (
     <>
-      <HistogramTables hist={hist} dirLabel={dirLabel} meanNs={meanNs} stdNs={stdNs} />
+      <HistogramTables hist={hist} meanNs={meanNs} stdNs={stdNs} />
       <ChartBox label={`Delay histogram of link ${dir}`}>
         <Bar data={data} options={options} />
       </ChartBox>
