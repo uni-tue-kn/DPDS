@@ -1,7 +1,7 @@
 //! The REST API (B2): routes under `/api`, Swagger UI at `/api/docs`, the
 //! OpenAPI document at `/api/openapi.json`. Error bodies are `{"message": ...}`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -37,7 +37,8 @@ use crate::nic_hints::FirmwareCache;
 use crate::sessions::SessionTracker;
 use crate::stats::{
     compute_stats, delay_histogram, delay_stats_on, uptime_ms, Clamped, Counters, DirectionStats,
-    ExpectedModel, HistogramView, HistoryLink, HistorySample, HistoryView, Percentiles, StatsView,
+    ExpectedModel, HistogramView, HistoryLink, HistorySample, HistoryView, Percentiles, Polled,
+    StatsView,
 };
 use crate::supervisor::{LaunchPlan, State as RunState, Supervisor};
 use crate::telemetry::TelemetrySource;
@@ -76,6 +77,8 @@ struct App {
     firmware: FirmwareCache,
     /// The GUI sessions that polled `/api/online` lately.
     sessions: SessionTracker,
+    /// Per link of the run, the last since-start delay histogram, served once the run ended.
+    histograms: Mutex<HashMap<usize, HistogramView>>,
 }
 
 type Shared = State<Arc<App>>;
@@ -629,6 +632,7 @@ async fn start(
         Ok::<_, ApiError>(planned)
     })
     .await??;
+    lock(&app.histograms).clear();
     app.deps.telemetry.set_run_links(
         config
             .links
@@ -696,6 +700,11 @@ async fn stop(
             "cannot stop while the emulation is {state:?}"
         )));
     }
+    blocking({
+        let a = app.clone();
+        move || a.copy_histograms()
+    })
+    .await?;
     app.deps.supervisor.stop();
     Ok((
         StatusCode::ACCEPTED,
@@ -781,45 +790,90 @@ async fn histogram(
     let window_s = parse_window(query.as_deref())?;
     let missing = || ApiError::not_found(format!("no delay histogram for direction {dir}"));
     let d: usize = dir.parse().map_err(|_| missing())?;
+    // after the run: the copy of its last since-start histogram, for any window; without a
+    // copy the answer is the live one (404 without data)
+    let ended = matches!(
+        app.deps.supervisor.status().state,
+        RunState::Stopped | RunState::Failed
+    );
+    if let Some(copy) = ended
+        .then(|| lock(&app.histograms).get(&d).cloned())
+        .flatten()
+    {
+        return Ok(Json(copy));
+    }
     let p = app.deps.telemetry.latest().ok_or_else(missing)?;
     if !delay_stats_on(&p.cur.ports, d) {
         return Err(ApiError::not_found(format!(
             "delay statistics are off for direction {d}, so it has no delay histogram"
         )));
     }
-    // the newest poll, and the newest older one that is at least `window_s` old
-    let ring = if window_s > 0 {
-        app.deps.telemetry.history()
-    } else {
-        Vec::new()
-    };
-    let (cur, base) = match ring.split_last() {
-        Some(((age_now, newest), older)) => (
-            newest,
-            older
-                .iter()
-                .rev()
-                .map(|(age, snap)| (age.saturating_sub(*age_now), snap))
-                .find(|(span, _)| *span >= u64::from(window_s) * 1000),
-        ),
-        None => (&p.cur, None),
-    };
-    let mut h = delay_histogram(cur, d).ok_or_else(missing)?;
-    let windowed_span = base.and_then(|(span, snap)| {
-        let b = delay_histogram(snap, d)?;
-        h.subtract(&b).then_some(span)
-    });
-    h.span_ms = windowed_span
-        .or_else(|| uptime_ms(cur, d))
-        .unwrap_or_default();
-    h.window_s = window_s;
-    h.age_ms = p.age_ms;
-    h.stale = p.stale;
-    h.summarise();
-    if let Some(config) = app.direction_config(d) {
-        h.add_expected(&config);
+    let (h, since_start) = app.live_histogram(&p, d, window_s).ok_or_else(missing)?;
+    if since_start {
+        lock(&app.histograms).insert(
+            d,
+            HistogramView {
+                window_s: 0,
+                ..h.clone()
+            },
+        );
     }
     Ok(Json(h))
+}
+
+impl App {
+    /// The histogram of link `d` over the last `window_s` seconds (0: since start) from the
+    /// newest poll `p`, and whether it covers the whole run (a window without enough history
+    /// falls back to that).
+    fn live_histogram(&self, p: &Polled, d: usize, window_s: u32) -> Option<(HistogramView, bool)> {
+        // the newest poll, and the newest older one that is at least `window_s` old
+        let ring = if window_s > 0 {
+            self.deps.telemetry.history()
+        } else {
+            Vec::new()
+        };
+        let (cur, base) = match ring.split_last() {
+            Some(((age_now, newest), older)) => (
+                newest,
+                older
+                    .iter()
+                    .rev()
+                    .map(|(age, snap)| (age.saturating_sub(*age_now), snap))
+                    .find(|(span, _)| *span >= u64::from(window_s) * 1000),
+            ),
+            None => (&p.cur, None),
+        };
+        let mut h = delay_histogram(cur, d)?;
+        let windowed_span = base.and_then(|(span, snap)| {
+            let b = delay_histogram(snap, d)?;
+            h.subtract(&b).then_some(span)
+        });
+        h.span_ms = windowed_span
+            .or_else(|| uptime_ms(cur, d))
+            .unwrap_or_default();
+        h.window_s = window_s;
+        h.age_ms = p.age_ms;
+        h.stale = p.stale;
+        h.summarise();
+        if let Some(config) = self.direction_config(d) {
+            h.add_expected(&config);
+        }
+        Some((h, windowed_span.is_none()))
+    }
+
+    /// Keeps the since-start histogram of every link with delay statistics, while dpds
+    /// still answers; a link that fails keeps its older copy.
+    fn copy_histograms(&self) {
+        let Some(p) = self.deps.telemetry.latest() else {
+            return;
+        };
+        let links = lock(&self.run).as_ref().map_or(0, |r| r.config.links.len());
+        for d in 0..links {
+            if let Some((h, _)) = self.live_histogram(&p, d, 0) {
+                lock(&self.histograms).insert(d, h);
+            }
+        }
+    }
 }
 
 // ---- router ------------------------------------------------------------------
@@ -894,6 +948,7 @@ pub fn router_with(deps: Deps, frontend: Frontend) -> Router {
         lifecycle: AsyncMutex::new(()),
         firmware: FirmwareCache::default(),
         sessions: SessionTracker::default(),
+        histograms: Mutex::default(),
     });
     let api = Router::new()
         .route("/api/online", get(online))

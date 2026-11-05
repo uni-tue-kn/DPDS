@@ -823,7 +823,13 @@ without internet access, means no notice.
   self-contained implementation (regularised incomplete gamma; shapes above 1e5 use the
   Wilson-Hilferty approximation) with unit tests instead of `statrs`, which would pull in
   `nalgebra` and `rand`. They are not tuned for extreme parameters: a zero std (or a zero mean
-  for LogNormal/Gamma) is treated as a point mass.
+  for LogNormal/Gamma) is treated as a point mass. The reply also has `mean_ns` and `std_ns`
+  (the link's `delay_mean_ns` / `delay_std_ns` of the latest stats poll, null when unknown).
+  The controller keeps a copy of the last since-start histogram of each link of the run
+  (refreshed whenever one is served while running, and once more right before `dpds` is
+  stopped); after the run ended (stopped or failed) the route answers that copy for any valid
+  `window_s`, with `window_s: 0`, or 404 for a link without one. The copies are cleared at the
+  next start.
 - **Stopping** the service stops `dpds` cleanly: it drains the delay buffers first, which can
   take as long as the longest configured delay. The unit's `TimeoutStopSec` is 600 s; after
   that systemd kills `dpds` mid-drain. The controller adds a `drain_timeout` hint when a

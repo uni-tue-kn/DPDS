@@ -321,6 +321,9 @@ pub struct HistogramView {
     /// Samples including underflow and overflow.
     pub count: u64,
     pub percentiles: Percentiles,
+    /// `delay_mean_ns` / `delay_std_ns` of the link in the latest stats poll; null when unknown.
+    pub mean_ns: Option<f64>,
+    pub std_ns: Option<f64>,
     /// Expected count per bin for `count` samples under the configured delay distribution.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expected: Option<Vec<f64>>,
@@ -585,6 +588,8 @@ pub fn delay_histogram(cur: &Snapshot, dir: usize) -> Option<HistogramView> {
         span_ms: 0,
         count: 0,
         percentiles: Percentiles::default(),
+        mean_ns: cur.dirs.get(dir).and_then(|c| num(c, "delay_mean_ns")),
+        std_ns: cur.dirs.get(dir).and_then(|c| num(c, "delay_std_ns")),
         expected: None,
         expected_underflow: None,
         expected_overflow: None,

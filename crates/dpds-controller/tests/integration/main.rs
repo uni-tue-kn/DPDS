@@ -48,6 +48,7 @@ mod release;
 mod spec41;
 mod spec48;
 mod spec49;
+mod spec50;
 mod start_body;
 mod startup_errors;
 mod stateless;
