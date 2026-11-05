@@ -9,20 +9,24 @@ import { renderApp, tick } from '../test/helpers';
 import { api, serveHistory } from '../test/mockApi';
 import { must } from '../test/must';
 
+// Spec 47 F1: nine causes (the three new ones are rx_port_buffer_discards, rx_phy_discards, tx_phy_discards). Below, "the six" /
+// "six" are the spec 35 wording of the first six; every list is now the nine of CAUSES.
 // Spec 35 F5 (user 2026-11-05): below the chart of the selected link a donut with the distribution of the losses, a React
 // legend with an explanation tooltip per cause, and on hover "<label>: <count> packets (<share> % of drops)". Contract (the
 // header of src/test/dashboardUi.tsx has the test ids):
-//   - the Doughnut (stub: `chart-doughnut`) has one dataset with six values in the order of CAUSES, labels = CAUSES; live from
-//     the link's `counters` (loss_drops, limiter_drops, buffer_full_drops, tx_drops, nic_rx_imissed, nic_rx_nombuf), ended from
-//     the history's `totals` (loss_drops, limiter_drops, buffer_full_drops, nic_tx_drops, nic_rx_imissed, nic_rx_nombuf);
+//   - the Doughnut (stub: `chart-doughnut`) has one dataset with nine values in the order of CAUSES, labels = CAUSES; live from
+//     the link's `counters` (loss_drops, limiter_drops, buffer_full_drops, tx_drops, nic_rx_missed, nic_rx_nombuf,
+//     nic_rx_port_buffer_discards, nic_rx_phy_discards, nic_tx_phy_discards), ended from
+//     the history's `totals` (loss_drops, limiter_drops, buffer_full_drops, nic_tx_drops, nic_rx_missed, nic_rx_nombuf,
+//     nic_rx_port_buffer_discards, nic_rx_phy_discards, nic_tx_phy_discards);
 //   - the Chart.js legend is off (`plugins.legend.display === false`); the legend is `donut-legend` with one listitem per cause
-//     (all six, also those at 0), each with a `legend-swatch` whose inline background colour is the segment's colour and a
+//     (all nine, also those at 0), each with a `legend-swatch` whose inline background colour is the segment's colour and a
 //     button "About <label>" whose hover/focus tooltip is exactly CAUSE_HELP[label];
 //   - the hover text is `options.plugins.tooltip.callbacks.label(context)` (Chart.js tooltip item: `label`, `parsed`, `raw`,
 //     `dataIndex`, `dataset.data`); CHOICE: the count has thousands separators ("1,234,567 packets"), the share two decimals
 //     ("33.33 % of drops"), always "packets";
-//   - all six counts 0 (user 2026-11-05: the donut is always visible): the chart is still there, as ONE neutral grey full ring
-//     (a single placeholder segment: one dataset, one positive value, a grey colour), the legend of six causes is unchanged,
+//   - all nine counts 0 (user 2026-11-05: the donut is always visible): the chart is still there, as ONE neutral grey full ring
+//     (a single placeholder segment: one dataset, one positive value, a grey colour), the legend of nine causes is unchanged,
 //     "No drops" stays as text, and hovering the ring says "No drops" (never "NaN", never a division by zero);
 //   - CHOICE: the donut is shown under every radio choice (Rate, Delay histogram, Loss).
 
@@ -31,10 +35,27 @@ const ZERO: Partial<Counters> = {
   limiter_drops: 0,
   buffer_full_drops: 0,
   tx_drops: 0,
-  nic_rx_imissed: 0,
+  nic_rx_missed: 0,
   nic_rx_nombuf: 0,
+  nic_rx_port_buffer_discards: 0,
+  nic_rx_phy_discards: 0,
+  nic_tx_phy_discards: 0,
   dpds_rejects: 0,
 };
+
+/** The live counter of each cause, in the order of CAUSES. */
+const COUNTER_KEYS = [
+  'loss_drops',
+  'limiter_drops',
+  'buffer_full_drops',
+  'tx_drops',
+  'nic_rx_missed',
+  'nic_rx_nombuf',
+  'nic_rx_port_buffer_discards',
+  'nic_rx_phy_discards',
+  'nic_tx_phy_discards',
+] as const;
+const zeros = (n = CAUSES.length) => Array<number>(n).fill(0);
 
 /** 100 drops out of 10000 received packets: a cause's share of the drops is its count in percent. */
 const HUNDRED: Partial<Counters> = {
@@ -43,10 +64,29 @@ const HUNDRED: Partial<Counters> = {
   limiter_drops: 30,
   buffer_full_drops: 20,
   tx_drops: 5,
-  nic_rx_imissed: 4,
+  nic_rx_missed: 4,
   nic_rx_nombuf: 1,
+  nic_rx_port_buffer_discards: 0,
+  nic_rx_phy_discards: 0,
+  nic_tx_phy_discards: 0,
   dpds_rejects: 90,
 };
+
+/** Nine distinct counts, one per cause, summing to 100: a swapped, merged or dropped cause shows. */
+const NINE: Partial<Counters> = {
+  rx_pkts: 10000,
+  loss_drops: 36,
+  limiter_drops: 24,
+  buffer_full_drops: 16,
+  tx_drops: 8,
+  nic_rx_missed: 6,
+  nic_rx_nombuf: 4,
+  nic_rx_port_buffer_discards: 3,
+  nic_rx_phy_discards: 2,
+  nic_tx_phy_discards: 1,
+  dpds_rejects: 90,
+};
+const NINE_VALUES = [36, 24, 16, 8, 6, 4, 3, 2, 1];
 
 const live = (dir: number, counters: Partial<Counters>, over: Partial<DirectionStats> = {}) =>
   fx.dirStats(dir, { counters: fx.counters(counters), ...over });
@@ -129,23 +169,29 @@ const rgbOf = (css: string): string => {
 // ---- the data --------------------------------------------------------------------------------------------------------------
 
 describe('Loss donut (spec 35 F5): what it plots', () => {
-  it('live: one dataset, six segments in the order of the causes, labelled with the cause names, from the counters', async () => {
+  it('live: one dataset, nine segments in the order of the causes, labelled with the cause names, from the counters', async () => {
     await openLive(live(0, HUNDRED), live(1, ZERO));
     const data = dataOf(0);
     expect(data.labels).toEqual([...CAUSES]);
     expect(data.datasets).toHaveLength(1);
-    expect(data.datasets[0].data).toEqual([40, 30, 20, 5, 4, 1]);
-    expect(data.datasets[0].backgroundColor).toHaveLength(6);
+    expect(data.datasets[0].data).toEqual([40, 30, 20, 5, 4, 1, 0, 0, 0]);
+    expect(data.datasets[0].backgroundColor).toHaveLength(9);
+  });
+
+  it('live: nine distinct counts land on nine segments, each cause on its own (spec 47 F1)', async () => {
+    await openLive(live(0, NINE));
+    expect(valuesOf(0)).toEqual(NINE_VALUES);
+    expect(CAUSES).toHaveLength(9);
+    expect(dataOf(0).labels).toEqual([...CAUSES]);
+    expect(dataOf(0).datasets[0].backgroundColor).toHaveLength(9);
   });
 
   it.each(CAUSES.map((c, i) => [c, i] as const))(
     'live: "%s" is segment %i and nothing else moves with its counter',
     async (_cause, i) => {
-      const key = ['loss_drops', 'limiter_drops', 'buffer_full_drops', 'tx_drops', 'nic_rx_imissed', 'nic_rx_nombuf'][
-        i
-      ];
+      const key = COUNTER_KEYS[i];
       await openLive(live(0, { ...ZERO, [key]: 7 }));
-      const want = [0, 0, 0, 0, 0, 0];
+      const want = zeros();
       want[i] = 7;
       expect(valuesOf(0)).toEqual(want);
     },
@@ -155,13 +201,13 @@ describe('Loss donut (spec 35 F5): what it plots', () => {
     await openLive(
       live(0, { ...ZERO, loss_drops: 11, limiter_drops: 22 }, { loss_pct: 99, limiter_pct: 0, buffer_full_pct: 50 }),
     );
-    expect(valuesOf(0)).toEqual([11, 22, 0, 0, 0, 0]);
+    expect(valuesOf(0)).toEqual([11, 22, 0, 0, 0, 0, 0, 0, 0]);
   });
 
   it('live: each link has its own donut, shown with its own tab', async () => {
     await openLive(live(0, HUNDRED), live(1, { ...ZERO, buffer_full_drops: 9, nic_rx_nombuf: 3 }));
-    expect(valuesOf(0)).toEqual([40, 30, 20, 5, 4, 1]);
-    expect(valuesOf(1)).toEqual([0, 0, 9, 0, 0, 3]);
+    expect(valuesOf(0)).toEqual([40, 30, 20, 5, 4, 1, 0, 0, 0]);
+    expect(valuesOf(1)).toEqual([0, 0, 9, 0, 0, 3, 0, 0, 0]);
     expect(tab(1)).toHaveAttribute('aria-selected', 'true');
   });
 
@@ -171,10 +217,12 @@ describe('Loss donut (spec 35 F5): what it plots', () => {
     renderApp('/');
     await tick(0);
     await tick(0);
-    expect(valuesOf(0)).toEqual([5, 0, 0, 0, 0, 0]);
-    api.getStats.mockResolvedValue(fx.stats([live(0, { ...ZERO, loss_drops: 5, nic_rx_imissed: 8 })]));
+    expect(valuesOf(0)).toEqual([5, 0, 0, 0, 0, 0, 0, 0, 0]);
+    api.getStats.mockResolvedValue(
+      fx.stats([live(0, { ...ZERO, loss_drops: 5, nic_rx_missed: 8, nic_tx_phy_discards: 2 })]),
+    );
     await tick(2500);
-    expect(valuesOf(0)).toEqual([5, 0, 0, 0, 8, 0]);
+    expect(valuesOf(0)).toEqual([5, 0, 0, 0, 8, 0, 0, 0, 2]);
   });
 
   it.each(['stopped', 'stopping', 'failed'] as const)(
@@ -191,8 +239,11 @@ describe('Loss donut (spec 35 F5): what it plots', () => {
             limiter_drops: 0,
             buffer_full_drops: 0,
             nic_tx_drops: 2,
-            nic_rx_imissed: 0,
+            nic_rx_missed: 0,
             nic_rx_nombuf: 6,
+            nic_rx_port_buffer_discards: 7,
+            nic_rx_phy_discards: 8,
+            nic_tx_phy_discards: 9,
           }),
         },
       });
@@ -201,8 +252,8 @@ describe('Loss donut (spec 35 F5): what it plots', () => {
       renderApp('/');
       await tick(0);
       await tick(1000);
-      expect(valuesOf(0)).toEqual([40, 30, 20, 5, 4, 1]);
-      expect(valuesOf(1)).toEqual([1, 0, 0, 2, 0, 6]);
+      expect(valuesOf(0)).toEqual([40, 30, 20, 5, 4, 1, 0, 0, 0]);
+      expect(valuesOf(1)).toEqual([1, 0, 0, 2, 0, 6, 7, 8, 9]);
       expect(dataOf(0).labels).toEqual([...CAUSES]);
     },
   );
@@ -220,10 +271,10 @@ describe('Loss donut (spec 35 F5): what it plots', () => {
     renderApp('/');
     await tick(0);
     await tick(1000);
-    expect(valuesOf(0)).toEqual([40, 30, 20, 5, 4, 1]);
-    s.totals = { '0': fx.totals({ loss_drops: 41, nic_rx_nombuf: 9 }) };
+    expect(valuesOf(0)).toEqual([40, 30, 20, 5, 4, 1, 0, 0, 0]);
+    s.totals = { '0': fx.totals({ loss_drops: 41, nic_rx_nombuf: 9, nic_rx_phy_discards: 5 }) };
     await tick(2500);
-    expect(valuesOf(0)).toEqual([41, 30, 20, 5, 4, 9]);
+    expect(valuesOf(0)).toEqual([41, 30, 20, 5, 4, 9, 0, 5, 0]);
   });
 
   it('the donut changes with the run: live counters while running, the totals once it has ended', async () => {
@@ -233,11 +284,11 @@ describe('Loss donut (spec 35 F5): what it plots', () => {
     renderApp('/');
     await tick(0);
     await tick(0);
-    expect(valuesOf(0)).toEqual([3, 0, 0, 0, 0, 0]);
+    expect(valuesOf(0)).toEqual([3, 0, 0, 0, 0, 0, 0, 0, 0]);
     api.getEmulation.mockResolvedValue(fx.emulation('stopped', { directions: [] }));
     api.getStats.mockResolvedValue(fx.stats([], { stale: true, age_ms: undefined, elapsed_ms: 5000 }));
     await tick(2500);
-    expect(valuesOf(0)).toEqual([40, 30, 20, 5, 4, 1]);
+    expect(valuesOf(0)).toEqual([40, 30, 20, 5, 4, 1, 0, 0, 0]);
   });
 
   it.each(['Traffic rates', 'Delay histogram', 'Packet loss'])(
@@ -245,7 +296,7 @@ describe('Loss donut (spec 35 F5): what it plots', () => {
     async (choice) => {
       await openLive(live(0, HUNDRED));
       fireEvent.click(radio(0, choice));
-      expect(valuesOf(0)).toEqual([40, 30, 20, 5, 4, 1]);
+      expect(valuesOf(0)).toEqual([40, 30, 20, 5, 4, 1, 0, 0, 0]);
       const group = within(card(0)).getByRole('radiogroup', { name: 'Chart' });
       expect(group.compareDocumentPosition(donut(0)) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     },
@@ -260,8 +311,11 @@ const NO_TOTALS = {
   limiter_drops: 0,
   buffer_full_drops: 0,
   nic_tx_drops: 0,
-  nic_rx_imissed: 0,
+  nic_rx_missed: 0,
   nic_rx_nombuf: 0,
+  nic_rx_port_buffer_discards: 0,
+  nic_rx_phy_discards: 0,
+  nic_tx_phy_discards: 0,
 };
 
 async function openEnded(totals: Partial<typeof NO_TOTALS>) {
@@ -289,27 +343,27 @@ function expectPlaceholderRing(d: number) {
 }
 
 describe('Loss donut (spec 35 F5): no drops, the donut is still there', () => {
-  it('live, all six counts 0: the donut is one grey full ring, and "No drops" is shown', async () => {
+  it('live, all nine counts 0: the donut is one grey full ring, and "No drops" is shown', async () => {
     await openLive(live(0, ZERO));
     expect(queryDonut(0)).toBeInTheDocument();
     expectPlaceholderRing(0);
     expect(within(card(0)).getByText('No drops')).toBeInTheDocument();
   });
 
-  it('live, all six counts 0: the legend still lists the six causes with their "About" buttons', async () => {
+  it('live, all nine counts 0: the legend still lists the nine causes with their "About" buttons', async () => {
     await openLive(live(0, ZERO));
     const items = within(legend(0)).getAllByRole('listitem');
-    expect(items).toHaveLength(6);
+    expect(items).toHaveLength(9);
     CAUSES.forEach((cause, i) => {
       expect(items[i], cause).toHaveTextContent(cause);
     });
-    expect(within(legend(0)).getAllByRole('button')).toHaveLength(6);
+    expect(within(legend(0)).getAllByRole('button')).toHaveLength(9);
   });
 
   it('the legend swatches keep the cause colours, not the grey of the placeholder', async () => {
     await openLive(live(0, ZERO));
     const swatches = within(legend(0)).getAllByTestId('legend-swatch');
-    expect(new Set(swatches.map((s) => rgbOf(s.style.backgroundColor))).size).toBe(6);
+    expect(new Set(swatches.map((s) => rgbOf(s.style.backgroundColor))).size).toBe(9);
   });
 
   it('the Chart.js legend is off and the tooltips are on, also for the placeholder', async () => {
@@ -326,25 +380,25 @@ describe('Loss donut (spec 35 F5): no drops, the donut is still there', () => {
     expect(text).not.toMatch(/NaN|Infinity|%|packets/);
   });
 
-  it('ended with totals of 0: the donut is there as well, grey, with "No drops" and the six-cause legend', async () => {
+  it('ended with totals of 0: the donut is there as well, grey, with "No drops" and the nine-cause legend', async () => {
     await openEnded(NO_TOTALS);
     expect(queryDonut(0)).toBeInTheDocument();
     expectPlaceholderRing(0);
     expect(within(card(0)).getByText('No drops')).toBeInTheDocument();
-    expect(within(legend(0)).getAllByRole('listitem')).toHaveLength(6);
+    expect(within(legend(0)).getAllByRole('listitem')).toHaveLength(9);
     expect(hoverText(0, 0)).not.toMatch(/NaN|Infinity|%/);
   });
 
   it('with drops there is no placeholder and no "No drops"; even a single packet gives the real segments', async () => {
     await openLive(live(0, { ...ZERO, nic_rx_nombuf: 1 }));
-    expect(valuesOf(0)).toEqual([0, 0, 0, 0, 0, 1]);
+    expect(valuesOf(0)).toEqual([0, 0, 0, 0, 0, 1, 0, 0, 0]);
     expect(dataOf(0).labels).toEqual([...CAUSES]);
     expect(within(card(0)).queryByText('No drops')).not.toBeInTheDocument();
   });
 
   it('it is per link: one link with drops, the other without; both have a donut', async () => {
     await openLive(live(0, HUNDRED), live(1, ZERO));
-    expect(valuesOf(0)).toEqual([40, 30, 20, 5, 4, 1]);
+    expect(valuesOf(0)).toEqual([40, 30, 20, 5, 4, 1, 0, 0, 0]);
     expect(within(card(0)).queryByText('No drops')).not.toBeInTheDocument();
     expectPlaceholderRing(1);
     expect(within(card(1)).getByText('No drops')).toBeInTheDocument();
@@ -360,7 +414,7 @@ describe('Loss donut (spec 35 F5): no drops, the donut is still there', () => {
     expect(within(card(0)).getByText('No drops')).toBeInTheDocument();
     api.getStats.mockResolvedValue(fx.stats([live(0, { ...ZERO, loss_drops: 2 })]));
     await tick(2500);
-    expect(valuesOf(0)).toEqual([2, 0, 0, 0, 0, 0]);
+    expect(valuesOf(0)).toEqual([2, 0, 0, 0, 0, 0, 0, 0, 0]);
     expect(within(card(0)).queryByText('No drops')).not.toBeInTheDocument();
     api.getStats.mockResolvedValue(fx.stats([live(0, ZERO)]));
     await tick(2500);
@@ -390,7 +444,7 @@ describe('Loss donut (spec 35 F5): the React legend', () => {
   it('one item per cause with the exact labels, in the order of the segments, also for causes at 0', async () => {
     await openLive(live(0, { ...ZERO, buffer_full_drops: 4 }));
     const items = within(legend(0)).getAllByRole('listitem');
-    expect(items).toHaveLength(6);
+    expect(items).toHaveLength(9);
     CAUSES.forEach((cause, i) => {
       expect(items[i], cause).toHaveTextContent(cause);
       expect(within(items[i]).getByText(cause)).toBeInTheDocument();
@@ -414,7 +468,7 @@ describe('Loss donut (spec 35 F5): the React legend', () => {
       const button = within(item).getByRole('button', { name: `About ${CAUSES[i]}` });
       expect(button).toHaveAttribute('type', 'button');
     });
-    expect(within(legend(0)).getAllByRole('button')).toHaveLength(6);
+    expect(within(legend(0)).getAllByRole('button')).toHaveLength(9);
   });
 
   it.each(CAUSES)('hovering "About %s" shows exactly its explanation', async (cause) => {
@@ -430,10 +484,10 @@ describe('Loss donut (spec 35 F5): the React legend', () => {
 
   it('keyboard focus shows the explanation too', async () => {
     await openLive(live(0, HUNDRED));
-    const button = within(legend(0)).getByRole('button', { name: 'About NIC RX missed (imissed)' });
+    const button = within(legend(0)).getByRole('button', { name: `About ${CAUSES[4]}` });
     fireEvent.focus(button);
     const tip = await screen.findByRole('tooltip');
-    expect(tip.textContent?.trim()).toBe(CAUSE_HELP['NIC RX missed (imissed)']);
+    expect(tip.textContent?.trim()).toBe(CAUSE_HELP[CAUSES[4]]);
   });
 
   it('the legend of an ended run is the same', async () => {
@@ -444,8 +498,8 @@ describe('Loss donut (spec 35 F5): the React legend', () => {
     renderApp('/');
     await tick(0);
     await tick(1000);
-    expect(within(legend(0)).getAllByRole('listitem')).toHaveLength(6);
-    expect(within(legend(0)).getAllByRole('button')).toHaveLength(6);
+    expect(within(legend(0)).getAllByRole('listitem')).toHaveLength(9);
+    expect(within(legend(0)).getAllByRole('button')).toHaveLength(9);
   });
 });
 
@@ -458,8 +512,17 @@ describe('Loss donut (spec 35 F5): the hover text', () => {
     expect(hoverText(0, 1)).toBe('Rate limiter: 30 packets (30.00 % of drops)');
     expect(hoverText(0, 2)).toBe('Buffer full: 20 packets (20.00 % of drops)');
     expect(hoverText(0, 3)).toBe('NIC TX ring full (tx_drops): 5 packets (5.00 % of drops)');
-    expect(hoverText(0, 4)).toBe('NIC RX missed (imissed): 4 packets (4.00 % of drops)');
-    expect(hoverText(0, 5)).toBe('RX buffers exhausted (rx_nombuf): 1 packets (1.00 % of drops)');
+    expect(hoverText(0, 4)).toBe('NIC RX missed (rx_missed_errors): 4 packets (4.00 % of drops)');
+    expect(hoverText(0, 5)).toBe('RX buffers exhausted (rx_mbuf_allocation_errors): 1 packets (1.00 % of drops)');
+  });
+
+  it('spec 47: the hover text of the three new causes, with their share of all nine', async () => {
+    await openLive(live(0, NINE));
+    expect(hoverText(0, 6)).toBe(
+      'NIC RX port buffer full (rx_prio*_buf/cong_discard_packets): 3 packets (3.00 % of drops)',
+    );
+    expect(hoverText(0, 7)).toBe('NIC RX port discards (rx_phy_discard_packets): 2 packets (2.00 % of drops)');
+    expect(hoverText(0, 8)).toBe('NIC TX port discards (tx_phy_discard_packets): 1 packets (1.00 % of drops)');
   });
 
   it('the share is of the drops, not of the received packets', async () => {
@@ -512,16 +575,16 @@ describe('Loss donut (spec 35 F5): neutral for the loss model, warm for the over
     expect(s < 0.25 || (h >= 180 && h <= 270), `hue ${h}, saturation ${s}`).toBe(true);
   });
 
-  it.each([1, 2, 3, 4, 5])('segment %i (an overload cause) is amber, orange or red', async (i) => {
+  it.each([1, 2, 3, 4, 5, 6, 7, 8])('segment %i (an overload cause) is amber, orange or red', async (i) => {
     await openLive(live(0, HUNDRED));
     const { h, s } = hsv(dataOf(0).datasets[0].backgroundColor[i]);
     expect(h <= 50 || h >= 340, `${CAUSES[i]}: hue ${h}`).toBe(true);
     expect(s, `${CAUSES[i]}: saturation`).toBeGreaterThanOrEqual(0.5);
   });
 
-  it('the six colours are all different', async () => {
+  it('the nine colours are all different', async () => {
     await openLive(live(0, HUNDRED));
     const colours = dataOf(0).datasets[0].backgroundColor.map(rgbOf);
-    expect(new Set(colours).size).toBe(6);
+    expect(new Set(colours).size).toBe(9);
   });
 });

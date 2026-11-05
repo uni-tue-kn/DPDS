@@ -24,10 +24,11 @@ import { must } from '../test/must';
 
 // Spec 28 (user 2026-11-04): the P4TG-like dashboard. Spec: items 1-3 of scratchpad/spec28.md (item 4, server-side history, is
 // spec 29 and not tested here). The tester's choices where the spec is silent are marked "CHOICE" and listed in the report:
-//   - test ids: pill-rx, pill-tx, pill-elapsed, pill-lost (spec 43: the lost pill reads "Lost N frames"; there is no state-badge any more)
-//   - the rate pills read "<n> Gbit/s (<m> Mpps)" with two decimals, e.g. "9.25 Gbit/s (7.31 Mpps)"
+//   - test ids: pill-tx, pill-rx, pill-status, pill-elapsed, loss-pct (spec 46, dashboardTopRow.test.tsx: P4TG's order and texts; was
+//     pill-lost "Lost N frames" of spec 43; there is no state-badge any more)
+//   - the rate pills read "<n> Gbit/s (<m> Mpps)" (spec 46: P4TG's formatBits, no label, no padded decimals), e.g. "9.25 Gbit/s (7.31 Mpps)"
 //   - radio group named "Chart", radios named "Traffic rates", "Packet loss", "Delay histogram" (spec 43 F5); the last one only with delay_stats on
-//   - the loss chart has six lines, one per donut cause, of cumulative counts (spec 43 F1; was two percent datasets)
+//   - the loss chart has nine lines (spec 47), one per donut cause, of cumulative counts (spec 43 F1; was two percent datasets)
 //   - Restart refuses locally (no stop) when the local document has no links or is unreadable
 //   - the histogram controls, percentile list and under/overflow line belong to the histogram view only
 // The chart stubs in test/setup.ts expose the chart data as `data-chart` and the options as `data-options`.
@@ -313,13 +314,17 @@ describe('Dashboard (spec 28): status pills', () => {
     await waitFor(() => expect(pill).toHaveTextContent(/7\.25 Gbit\/s \(6\.31 Mpps\)/));
   });
 
-  it('RX and TX are told apart in the pills (RX first)', async () => {
+  // Spec 46. Was: 'RX and TX are told apart in the pills (RX first)', with the labels "RX" and "TX" in the text. P4TG has no
+  // labels (the arrows tell them apart) and TX comes first.
+  it('TX and RX are told apart by their arrows, TX first, with no label in the text', async () => {
     renderApp('/');
     const rx = await screen.findByTestId('pill-rx');
     const tx = await screen.findByTestId('pill-tx');
-    expect(rx).toHaveTextContent(/RX/);
-    expect(tx).toHaveTextContent(/TX/);
-    expect(rx.compareDocumentPosition(tx) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(rx.textContent).not.toMatch(/RX|TX/);
+    expect(tx.textContent).not.toMatch(/RX|TX/);
+    expect(must(tx.querySelector('i'))).toHaveClass('bi-arrow-up-circle-fill');
+    expect(must(rx.querySelector('i'))).toHaveClass('bi-arrow-down-circle-fill');
+    expect(tx.compareDocumentPosition(rx) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('follows the next poll', async () => {
@@ -332,7 +337,7 @@ describe('Dashboard (spec 28): status pills', () => {
       fx.stats([fx.dirStats(0, { rx_bps: 1.5e9, rx_pps: 1.25e6, tx_bps: 1.5e9, tx_pps: 1.25e6 })]),
     );
     await tick(2500);
-    expect(screen.getByTestId('pill-rx')).toHaveTextContent(/1\.5(0)? Gbit\/s \(1\.25 Mpps\)/);
+    expect(screen.getByTestId('pill-rx')).toHaveTextContent(/1\.5 Gbit\/s \(1\.25 Mpps\)/);
   });
 
   // Spec 43 F3. Was: 'the state pill stays (same test id and live region)'.
@@ -406,12 +411,16 @@ describe('Dashboard (spec 28): status pills', () => {
       [3_725_000, '1h 2m 5s'],
       [59_999, '0h 0m 59s'],
       [1000, '0h 0m 1s'],
-      [999, '0h 0m 0s'],
-      [0, '0h 0m 0s'], // 0 is a value, not "absent"
       [36_000_000, '10h 0m 0s'],
     ])('elapsed_ms %s is "%s"', async (ms, text) => {
       await open(ms);
       expect(pill()).toHaveTextContent(text);
+    });
+
+    // Spec 46 item 4. Was: [0, '0h 0m 0s'] "0 is a value, not absent" (and 999 -> '0h 0m 0s'): the duration shows only when > 0.
+    it('is not shown at elapsed_ms 0', async () => {
+      await open(0);
+      expect(screen.queryByTestId('pill-elapsed')).not.toBeInTheDocument();
     });
 
     // The API omits the key when there is no run (`elapsed_ms?: number`, never null).
@@ -434,17 +443,21 @@ describe('Dashboard (spec 28): status pills', () => {
       expect(pill()).toHaveTextContent('0h 1m 5s');
     });
 
-    it('CHOICE: after a stop the pill keeps the frozen final time the controller still reports', async () => {
-      vi.useFakeTimers();
-      api.getEmulation.mockResolvedValue(fx.emulation('stopped'));
-      api.getStats.mockResolvedValue(fx.stats([], { stale: true, age_ms: undefined, elapsed_ms: 305_400 }));
-      renderApp('/');
-      await tick(0);
-      await tick(0);
-      expect(pill()).toHaveTextContent('0h 5m 5s');
-      await tick(10_000);
-      expect(pill()).toHaveTextContent('0h 5m 5s');
-    });
+    // Spec 46 item 4. Was: 'CHOICE: after a stop the pill keeps the frozen final time the controller still reports'.
+    it.each(['stopped', 'failed'] as const)(
+      'after a run ended ("%s") the pill is gone although the controller still reports the time',
+      async (state) => {
+        vi.useFakeTimers();
+        api.getEmulation.mockResolvedValue(fx.emulation(state));
+        api.getStats.mockResolvedValue(fx.stats([], { stale: true, age_ms: undefined, elapsed_ms: 305_400 }));
+        renderApp('/');
+        await tick(0);
+        await tick(0);
+        expect(screen.queryByTestId('pill-elapsed')).not.toBeInTheDocument();
+        await tick(10_000);
+        expect(screen.queryByTestId('pill-elapsed')).not.toBeInTheDocument();
+      },
+    );
 
     it('is not shown for a stopped controller that never ran (no elapsed_ms)', async () => {
       vi.useFakeTimers();
@@ -711,7 +724,7 @@ describe('Dashboard (spec 43 F1): the loss chart plots cumulative dropped packet
   beforeEach(() => {
     api.getEmulation.mockResolvedValue(fx.emulation('running'));
     api.getStats.mockResolvedValue(twoDirections());
-    serveFixtureHistory(); // spec 29: one sample per link with the default counts 40 / 30 / 20 / 5 / 4 / 1
+    serveFixtureHistory(); // spec 29: one sample per link with the default counts 40 / 30 / 20 / 5 / 4 / 1 / 0 / 0 / 0
   });
 
   const drops = async () => {
@@ -720,14 +733,14 @@ describe('Dashboard (spec 43 F1): the loss chart plots cumulative dropped packet
     return showChart(user, 0, 'Packet loss');
   };
 
-  it('has exactly six datasets, labelled and ordered like the donut causes', async () => {
+  it('has exactly nine datasets (spec 47), labelled and ordered like the donut causes', async () => {
     const chart = await drops();
     expect(dataOf(chart).datasets.map((s) => s.label)).toEqual([...CAUSES]);
   });
 
-  it('each line is the cumulative count of its cause (the default sample: 40, 30, 20, 5, 4, 1)', async () => {
+  it('each line is the cumulative count of its cause (the default sample: 40, 30, 20, 5, 4, 1, 0, 0, 0)', async () => {
     const chart = await drops();
-    expect(dataOf(chart).datasets.map((s) => s.data.at(-1))).toEqual([40, 30, 20, 5, 4, 1]);
+    expect(dataOf(chart).datasets.map((s) => s.data.at(-1))).toEqual([40, 30, 20, 5, 4, 1, 0, 0, 0]);
   });
 
   it.each(fx.DROP_FIELDS.map((f, i) => [f, i] as const))(
@@ -739,7 +752,7 @@ describe('Dashboard (spec 43 F1): the loss chart plots cumulative dropped packet
         samples: { '0': [fx.historySample(1000, { ...zero, [field]: 3 })], '1': [fx.historySample(1000)] },
       });
       const chart = await drops();
-      const want = [0, 0, 0, 0, 0, 0];
+      const want = Array<number>(fx.DROP_FIELDS.length).fill(0);
       want[i] = 3;
       expect(dataOf(chart).datasets.map((s) => s.data.at(-1))).toEqual(want);
     },
@@ -764,7 +777,7 @@ describe('Dashboard (spec 43 F1): the loss chart plots cumulative dropped packet
   it('the lines are told apart by colour, and each has the colour of its donut segment', async () => {
     const chart = await drops();
     const colours = dataOf(chart).datasets.map((s) => s.borderColor);
-    expect(new Set(colours).size).toBe(6);
+    expect(new Set(colours).size).toBe(9); // spec 47: nine causes
     const donut = JSON.parse(within(card(0)).getByTestId('chart-doughnut').getAttribute('data-chart') ?? 'null');
     expect(colours).toEqual(donut.datasets[0].backgroundColor);
   });

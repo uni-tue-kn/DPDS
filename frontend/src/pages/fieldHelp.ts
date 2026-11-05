@@ -13,10 +13,7 @@ export const HELP = {
     'Port this link sends its packets out on. A port can be the egress of at most one link. The same port may also be the ingress (hairpin).',
   // dpds-core/src/buffer.rs:259-261 (BufferFull when len >= capacity), dpds-controller/src/dto.rs:18-19 and 210-215 (at most 2^31), dpds-core/src/lib.rs:159-173 (derived limiter limit)
   'Buffer capacity':
-    'Most packets the buffer of this link holds at once (a number of packets, 0 to 2147483648 = 2^31). A packet arriving at a full buffer is dropped. The limiter\u2019s limit is derived from it.',
-  // dpds-core/src/lib.rs:106-113
-  Reordering:
-    'Off: packets leave in arrival order (FIFO), so a packet with a late send time holds back the ones behind it. On: packets leave in send-time order, so a packet with a short delay can overtake one with a long delay.',
+    'Most packets the buffer of this link holds at once (a number of packets, 0 to 2147483648 = 2^31; stored in packets, the unit select converts). A packet arriving at a full buffer is dropped. The limiter\u2019s limit is derived from it.',
   // dpds-core/src/lib.rs:94-100 (seeding), dpds-controller/src/dto.rs:162-163 (u64); the 2^53 - 1 cap is this form's own (linkForm.ts seed())
   Seed: 'Seed of the random generators for delay and loss. A whole number from 0 to 9007199254740991 (2^53 \u2212 1, the most this form can hold). The same seed and input give the same results. Empty: a random seed from the operating system.',
   // spec 25 (UI only); the 20 B L1 overhead is dpds-core/src/limiter.rs:1 (L1_OVERHEAD = 7 + 1 + 12)
@@ -30,12 +27,12 @@ export const HELP = {
   // dpds-controller/src/dto.rs:235-242; dpds-core/src/delayer.rs:85-87 (std compensation), 101 (Deterministic ignores it), 319 (clamp at 0)
   'Delay std':
     'Standard deviation of the delay. Stored in ns; finite and at least 0. Ignored by the Deterministic distribution. With correlation the random draws are scaled so that the smoothed delay has this std in the long run, before negative delays are cut to 0.',
-  // dpds-core/src/delayer.rs:80-83 (weight), 309-312 (smoothing)
-  'Activate correlation':
-    'Makes successive delays depend on each other: each packet\u2019s delay is w \u00d7 the previous delay + (1 \u2212 w) \u00d7 a fresh random draw. w follows from the half-life period and the packet rate.',
+  // spec 45 (UI over the two booleans reordering and activate_correlation); dpds-core/src/lib.rs:106-113 (reordering), delayer.rs:80-83 (weight), 309-312 (smoothing)
+  'Delay accuracy':
+    'How accurately the configured mean delay and jitter are reproduced. Basic: packets leave in arrival order (FIFO), so a short delay drawn after a long one is lengthened and the jitter is lower than configured. Reordering: every packet gets exactly its drawn delay and packets leave in send-time order, so they may overtake each other; this is a side effect, it does not emulate a reordering characteristic of a network. Correlation: successive delays are correlated (half-life), so FIFO order distorts them less.',
   // dpds-core/src/delayer.rs:80-83 (weight formula), 221-225 (checked always), 233-246 (weight >= 1 refused with correlation)
   'Half-life period':
-    'Time over which the influence of earlier delays halves when correlation is on (w = 2^(\u22121 / (half-life \u00d7 packet rate))). Stored in ns; finite and at least 0, checked even with correlation off. With correlation, a value so long that w reaches 1 is refused at start.',
+    'Time over which the influence of earlier delays halves when Correlation is selected (w = 2^(\u22121 / (half-life \u00d7 packet rate))). Stored in ns; finite and at least 0, checked even without Correlation. With Correlation, a value so long that w reaches 1 is refused at start.',
   // dpds-core/src/delayer.rs:36, 50 (1 ms estimate), 216-220 (always checked), 231, 275-284; dpds-core/src/lib.rs:152-156; dpds-controller/src/dto.rs:61-63
   'Initialization rate':
     'Required, with or without correlation, but it only matters with correlation on: the packet rate (packets/s) the correlation assumes at start-up until the first measured rate (updated every 1 ms) replaces it. Use the expected packet rate of this link. Stored in pps; finite and at least 1.',

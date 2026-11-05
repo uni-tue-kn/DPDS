@@ -456,7 +456,7 @@ describe('Links: inspect panel (v16)', () => {
     const { dialog } = await inspect('b-a');
     const buffer = group(dialog, 'Buffer');
     expect(field(buffer, 'Buffer capacity').textContent?.trim()).toBe('5000');
-    expect(field(buffer, 'Reordering').textContent?.trim()).toBe('on');
+    expect(field(buffer, 'Reordering').textContent?.trim()).toBe('off'); // spec45: config2 uses correlation, so no reordering
     expect(field(buffer, 'Seed').textContent?.trim()).toBe('42');
 
     const delayer = group(dialog, 'Delayer');
@@ -613,7 +613,7 @@ describe('Links list: Delay, Reordering, Limiter and Loss columns (v16)', () => 
     expect(await cells('a-b')).toEqual([`Normal 1 ${MU} / 10 ns`, MINUS, 'none', 'Random p=0']);
     expect(await cells('b-a')).toEqual([
       `Gamma 2.5 ${MU} / 300 ns`,
-      '+',
+      MINUS,
       'policing 40 Gbit/s',
       'Gilbert-Elliott p=0.01, r=0.2, h=0.3, k=0.9',
     ]);

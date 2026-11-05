@@ -6,7 +6,17 @@ import type { Location, NavigateFunction } from 'react-router';
 import App from '../App';
 import type { Link } from '../api/types';
 import * as fx from '../test/fixtures';
-import { rawStore, renderApp, sameConfig, seedLinks, storedDoc, storedLinks, watchStoreWrites } from '../test/helpers';
+import {
+  accuracyOf,
+  rawStore,
+  renderApp,
+  sameConfig,
+  seedLinks,
+  storedDoc,
+  storedLinks,
+  typeInto,
+  watchStoreWrites,
+} from '../test/helpers';
 
 // Spec 27 (user 2026-11-04): a button "Duplicate <link name>" (icon bi-files, P4TG's "Clone") sits in each Links-list row
 // between Edit and Delete. It opens the NEW-link editor pre-filled with a copy: same config and frame size, and
@@ -17,7 +27,10 @@ import { rawStore, renderApp, sameConfig, seedLinks, storedDoc, storedLinks, wat
 // Tester's choices where the spec is silent: the shortened base is `name.slice(0, 32 - suffix.length)`; the names that count as
 // taken are those of ALL stored links (exact match); the URL of the editor is not pinned (only its heading "New link").
 
-const framed = (l: Link, frame: number | null): Link => ({ ...l, avg_frame_size_byte: frame });
+const framed = (l: Link, frame: number | null): Link => ({
+  ...l,
+  avg_frame_size_byte: frame,
+});
 const ab = () => framed(fx.link(), 512); // a-b, id 1, config(), frame size 512
 const ba = () => fx.linkRev(); // b-a, id 3, config2(), no frame size
 
@@ -108,11 +121,11 @@ describe('Duplicate: the editor opens pre-filled with the copy', () => {
     const user = await listPage();
     await duplicate(user, 'b-a'); // config2: Gamma, correlation on, TBF 40 Gbit/s, Gilbert-Elliot loss, histogram, seed
     expect(nameField()).toHaveValue('b-a_copy');
-    expect(screen.getByLabelText('Buffer capacity')).toHaveValue(5000);
-    expect(screen.getByLabelText('Reordering')).toBeChecked();
+    expect(screen.getByLabelText('Buffer capacity')).toHaveValue(5);
+    expect(screen.getByLabelText('Buffer capacity unit')).toHaveDisplayValue('kpackets');
     expect(screen.getByLabelText('Seed')).toHaveValue(42);
     expect(screen.getByLabelText('Delay distribution')).toHaveValue('GammaDistribution');
-    expect(screen.getByLabelText('Activate correlation')).toBeChecked();
+    expect(accuracyOf()).toBe('Correlation');
     expect(screen.getByLabelText('Limiter mode')).toHaveValue('TokenBucketFilter');
     expect(screen.getByLabelText('Loss model')).toHaveValue('GilbertElliot');
     expect(screen.getByLabelText('Histogram bins')).toHaveValue(64);
@@ -177,7 +190,8 @@ describe('Duplicate: the editor opens pre-filled with the copy', () => {
     await duplicate(user, 'b-a');
     expect(nameField()).toHaveValue('b-a_copy');
     expect(screen.getByLabelText('Ingress')).toHaveValue('');
-    expect(screen.getByLabelText('Buffer capacity')).toHaveValue(5000);
+    expect(screen.getByLabelText('Buffer capacity')).toHaveValue(5);
+    expect(screen.getByLabelText('Buffer capacity unit')).toHaveDisplayValue('kpackets');
   });
 
   it('"New link" after a cancelled duplicate opens an EMPTY form (the copy does not leak)', async () => {
@@ -442,8 +456,7 @@ describe('Duplicate: saving goes through the normal checks', () => {
     await pickPorts(user);
     await user.clear(nameField());
     await user.type(nameField(), 'edited');
-    await user.clear(screen.getByLabelText('Buffer capacity'));
-    await user.type(screen.getByLabelText('Buffer capacity'), '777');
+    await typeInto(user, document.body, 'Buffer capacity', '777', 'packets');
     await save(user);
     await screen.findByRole('heading', { level: 1, name: 'Settings' });
     const copy = storedLinks().find((l) => l.name === 'edited');
@@ -516,12 +529,14 @@ describe('Duplicate: the router state is consumed once', () => {
     await duplicate(user, 'b-a');
     await waitFor(() => expect(copyOfOf(spy)).toBeUndefined());
     expect(nameField()).toHaveValue('b-a_copy');
-    expect(screen.getByLabelText('Buffer capacity')).toHaveValue(5000);
+    expect(screen.getByLabelText('Buffer capacity')).toHaveValue(5);
+    expect(screen.getByLabelText('Buffer capacity unit')).toHaveDisplayValue('kpackets');
     expect(screen.getByLabelText('Seed')).toHaveValue(42);
     expect(screen.getByLabelText('Delay distribution')).toHaveValue('GammaDistribution');
     await user.type(nameField(), '2');
     expect(nameField()).toHaveValue('b-a_copy2');
-    expect(screen.getByLabelText('Buffer capacity')).toHaveValue(5000);
+    expect(screen.getByLabelText('Buffer capacity')).toHaveValue(5);
+    expect(screen.getByLabelText('Buffer capacity unit')).toHaveDisplayValue('kpackets');
   });
 
   it('the entry is REPLACED, not pushed: Back leads straight to the list', async () => {
@@ -544,7 +559,7 @@ describe('Duplicate: the router state is consumed once', () => {
     await waitFor(() => expect(screen.getAllByRole('option', { name: /enp101s0f0/ })).not.toHaveLength(0));
     expect(nameField()).toHaveValue('');
     expect(screen.getByLabelText('Ingress')).toHaveValue('');
-    expect(screen.getByLabelText('Buffer capacity')).toHaveValue(100000); // the defaults of a new form, not b-a's 5000
+    expect(screen.getByLabelText('Buffer capacity')).toHaveValue(100); // the defaults of a new form (100 kpackets), not b-a's 5 kpackets
     expect(screen.getByLabelText('Seed')).toHaveValue(null);
   });
 

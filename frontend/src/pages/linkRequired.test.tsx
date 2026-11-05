@@ -9,6 +9,7 @@ import {
   expectOptional,
   expectRequired,
   numberField,
+  pickAccuracy,
   queryStage,
   removeButton,
   stageOf,
@@ -41,8 +42,7 @@ function neverRequired(): string[] {
     'Delay distribution',
     'Limiter mode',
     'Loss model',
-    'Reordering',
-    'Activate correlation',
+    'Delay accuracy',
     'Delay statistics',
     'Mean delay unit',
     'Delay std unit',
@@ -66,7 +66,7 @@ describe.each(PAGES)('$name: required fields are marked', (page: ConfigPage) => 
     const user = await page.openNew();
     for (const l of bareRequired(page)) expectRequired(ctl(l));
     expect(allRequiredMarkers()).toHaveLength(bareRequired(page).length);
-    for (const l of ['Seed', 'Histogram bins', 'Histogram lo', 'Histogram hi', 'Reordering', 'Delay statistics'])
+    for (const l of ['Seed', 'Histogram bins', 'Histogram lo', 'Histogram hi', 'Delay statistics'])
       expectOptional(ctl(l));
     for (const l of [
       'Mean delay',
@@ -146,9 +146,9 @@ describe.each(PAGES)('$name: conditionally required fields', (page: ConfigPage) 
   it('half-life is marked only while correlation is on', async () => {
     const user = await page.openFull();
     expectOptional(ctl('Half-life period'));
-    await user.click(ctl('Activate correlation'));
+    await pickAccuracy(user, 'Correlation');
     expectRequired(ctl('Half-life period'));
-    await user.click(ctl('Activate correlation'));
+    await pickAccuracy(user, 'Basic');
     expectOptional(ctl('Half-life period'));
   });
 
@@ -193,7 +193,7 @@ describe.each(PAGES)('$name: conditionally required fields', (page: ConfigPage) 
 
   it('with everything switched on the marker count is the full required set (no stale markers from hidden fields)', async () => {
     const user = await page.openFull();
-    await user.click(ctl('Activate correlation'));
+    await pickAccuracy(user, 'Correlation');
     await user.selectOptions(ctl('Loss model'), 'GilbertElliot');
     // pristine set minus the Random probability, plus half-life and the four Gilbert-Elliot parameters
     expect(allRequiredMarkers()).toHaveLength(pristineRequired(page).length - 1 + 1 + 4);
@@ -246,9 +246,9 @@ describe.each(PAGES)('$name: a field that is not required is never refused for b
   it('an emptied half-life with correlation switched off again saves; it is sent as 0', async () => {
     const user = await page.openFull();
     await ready(user);
-    await user.click(ctl('Activate correlation'));
+    await pickAccuracy(user, 'Correlation');
     await user.clear(numberField(body(), 'Half-life period'));
-    await user.click(ctl('Activate correlation'));
+    await pickAccuracy(user, 'Basic');
     await page.save(user);
     const d = must(page.created().delayer);
     expect(d.activate_correlation).toBe(false);
@@ -284,7 +284,7 @@ describe.each(PAGES)('$name: a field that is not required is never refused for b
   it('an emptied half-life with correlation ON is refused (it is marked required)', async () => {
     const user = await page.openFull();
     await ready(user);
-    await user.click(ctl('Activate correlation'));
+    await pickAccuracy(user, 'Correlation');
     await user.clear(numberField(body(), 'Half-life period'));
     await page.save(user);
     expect(await screen.findByRole('alert')).toHaveTextContent(/Half-life period/);

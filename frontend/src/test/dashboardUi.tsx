@@ -4,17 +4,17 @@
 //
 // ## Layout, top to bottom
 //   top row    data-testid="top-row", two columns like P4TG's Home.tsx:
-//                data-testid="top-pills"   `col-8 text-start`: pill-rx, pill-tx, pill-elapsed, pill-lost (DOM order). Spec 43 F3: there is
+//                data-testid="top-pills"   `col-8 text-start`: pill-tx, pill-rx, pill-status, pill-elapsed, loss-pct (DOM order, spec 46:
+//                                          P4TG's SendReceiveMonitor, see pages/dashboardTopRow.test.tsx). Spec 43 F3: there is
 //                                          no state badge (`state-badge`) any more; `expectState()` below tells the state from the run buttons.
 //                                          Spec 37 (user 2026-11-05), like P4TG: the pills are live statistics. While stopped, stopping
-//                                          or failed after a run, RX/TX read `RX|TX ${formatRatePill(0, 0)}` and pill-elapsed keeps
-//                                          the frozen elapsed_ms. Before any run: "–" for RX/TX, no elapsed pill. Running: the live
+//                                          or failed after a run, TX/RX read "0 Bit/s (0 Pps)" and pill-elapsed keeps
+//                                          the frozen elapsed_ms. Before any run: "–" for TX/RX, no elapsed pill. Running: the live
 //                                          sums. The charts (all tabs, Summary too) and the donuts keep the ended run's history and
 //                                          totals; the pills never read those.
-//                                          Spec 43 F2 (was spec 38's live NIC percentage): pill-lost reads "Lost <formatCount(N)> frames", N =
-//                                          the sum of all six causes of the Summary's drop counts (live counters while running, the run's
-//                                          totals after the stop), and exists only while N > 0, also after the stop. First child: the icon
-//                                          `<i class="bi bi-exclamation-circle-fill text-danger">`, before the text.
+//                                          Spec 46 (was spec 43 F2's pill-lost "Lost <N> frames"): pill-status exists only while running,
+//                                          "Status: Ok" or "Status: Error. Lost <formatFrameCount(N)> frames.", N = the sum of all six causes of
+//                                          the Summary's drop counts; loss-pct is the red icon and "<x.xx> %" when TX falls short of RX.
 //                data-testid="run-buttons" the `col-4 text-end` column (spec 43 F8, like P4TG: no ButtonGroup, plain Buttons with
 //                                          `mb-1`, no spinners): [Stop][Restart] while starting/running, [Draining…][Restart] (both
 //                                          disabled) while stopping, only [Start] otherwise (see RUN_BUTTONS)
@@ -174,27 +174,37 @@ export const runButtonNames = () =>
 export const runButton = (name: string) =>
   runButtons().find((b) => b.textContent?.replace(/\s+/g, ' ').trim() === name) ?? null;
 
-/** The visible text of a pill, whitespace normalised ("RX 9.25 Gbit/s (7.31 Mpps)"). */
+/** The visible text of a pill, whitespace normalised ("9.25 Gbit/s (7.31 Mpps)"). */
 export const pillText = (testId: string) => (screen.getByTestId(testId).textContent ?? '').replace(/\s+/g, ' ').trim();
 
-/** Cause labels of the donut, in the order of its segments (F5). */
+/** Cause labels of the donut, in the order of its segments (spec 35 F5, spec 47 F1: nine causes, the xstat names). */
 export const CAUSES = [
   'Loss model',
   'Rate limiter',
   'Buffer full',
   'NIC TX ring full (tx_drops)',
-  'NIC RX missed (imissed)',
-  'RX buffers exhausted (rx_nombuf)',
+  'NIC RX missed (rx_missed_errors)',
+  'RX buffers exhausted (rx_mbuf_allocation_errors)',
+  'NIC RX port buffer full (rx_prio*_buf/cong_discard_packets)',
+  'NIC RX port discards (rx_phy_discard_packets)',
+  'NIC TX port discards (tx_phy_discard_packets)',
 ] as const;
 
-/** The legend tooltips of F5, exactly. */
+/** The legend tooltips of F5 (spec 47 F1), exactly. */
 export const CAUSE_HELP: Record<(typeof CAUSES)[number], string> = {
   'Loss model': 'Packets dropped on purpose by the configured loss model (random or Gilbert-Elliott).',
   'Rate limiter': "Packets the limiter refused: the Spacer's backlog or the token bucket's budget was exceeded.",
   'Buffer full': 'Packets that arrived while the delay buffer already held its maximum number of packets.',
   'NIC TX ring full (tx_drops)': 'Packets the NIC would not accept for sending because its transmit ring was full.',
-  'NIC RX missed (imissed)': 'Packets the NIC dropped because its receive queues were full.',
-  'RX buffers exhausted (rx_nombuf)': 'Packets lost because no packet buffer (mbuf) was free to receive them.',
+  'NIC RX missed (rx_missed_errors)': 'Packets the NIC dropped because its receive queues were full.',
+  'RX buffers exhausted (rx_mbuf_allocation_errors)':
+    'Packets lost because no packet buffer (mbuf) was free to receive them.',
+  'NIC RX port buffer full (rx_prio*_buf/cong_discard_packets)':
+    "Packets the NIC's port buffer discarded because it was full or congested, summed over all priorities.",
+  'NIC RX port discards (rx_phy_discard_packets)':
+    'Packets the NIC port discarded on receive because it had no buffers left.',
+  'NIC TX port discards (tx_phy_discard_packets)':
+    'Packets the NIC accepted for sending but dropped before they reached the wire.',
 };
 
 /**

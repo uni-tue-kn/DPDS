@@ -27,7 +27,7 @@ import { must } from '../test/must';
 //   - before any run (no history samples, state not running/starting): the Summary tab plus one tab per STORED link in
 //     stored order, titled "name: ingress → egress" with netdev names, no ended badge; no stored links: the Summary only;
 //   - every tab: the empty Rate chart (axes titled, legend on), radios Rate / Delay histogram (disabled) / Loss, the grey
-//     "No drops" donut with the six-cause legend;
+//     "No drops" donut with the nine-cause legend;
 //   - nothing polls getDelayHistogram;
 //   - once a run starts the tabs come from the run (as before); an ended run's tabs stay, the stored links only fill in
 //     the before-any-run view.
@@ -189,7 +189,7 @@ describe('Dashboard before any run (spec 39): the empty diagrams', () => {
     expect(must(queryRadio(0, 'Delay histogram'), 'Delay histogram radio')).toBeDisabled();
   });
 
-  it.each(VIEWS)('%s, the donut is the grey "No drops" ring with the six-cause legend', async (_name, d) => {
+  it.each(VIEWS)('%s, the donut is the grey "No drops" ring with the nine-cause legend', async (_name, d) => {
     await open();
     const panel = panelFor(d);
     const donut = JSON.parse(within(panel).getByTestId('chart-doughnut').getAttribute('data-chart') ?? 'null');
@@ -198,7 +198,7 @@ describe('Dashboard before any run (spec 39): the empty diagrams', () => {
     expect(donut.datasets[0].data[0]).toBeGreaterThan(0);
     expect(within(panel).getByText('No drops')).toBeInTheDocument();
     const items = within(within(panel).getByTestId('donut-legend')).getAllByRole('listitem');
-    expect(items).toHaveLength(6);
+    expect(items).toHaveLength(9);
     CAUSES.forEach((cause, i) => {
       expect(items[i], `${name}: ${cause}`).toHaveTextContent(cause);
     });

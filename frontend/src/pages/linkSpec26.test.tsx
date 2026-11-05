@@ -179,10 +179,11 @@ describe('link editor: the name follows the controller rule (1 to 32 of A-Z a-z 
   it('a refused name keeps every other typed value and the corrected name saves', async () => {
     const user = await linkPage.openNew();
     await fillLink(user, 'bad name');
-    await typeInto(user, body(), 'Buffer capacity', '777');
+    await typeInto(user, body(), 'Buffer capacity', '777', 'packets');
     await save(user);
     await screen.findByRole('alert');
     expect(numberField(body(), 'Buffer capacity')).toHaveValue(777);
+    expect(unitOf(body(), 'Buffer capacity')).toBe('packets');
     expect((screen.getByLabelText('Ingress') as HTMLSelectElement).value).toBe('0000:65:00.0');
     expect(linkPage.requests()).toBe(0);
     const name = screen.getByLabelText('Name');

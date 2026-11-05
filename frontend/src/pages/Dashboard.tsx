@@ -1,8 +1,15 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, Badge, Button, Col, Row, Tab, Tabs } from 'react-bootstrap';
+import { type CSSProperties, useCallback, useEffect, useMemo, useState } from 'react';
+import { Alert, Badge, Button, Col, OverlayTrigger, Row, Tab, Tabs, Tooltip } from 'react-bootstrap';
 import * as api from '../api/client';
 import type { EmulationView, StatsView } from '../api/types';
-import { errorMessage, formatCount, formatElapsed, formatRatePill, linkLabel } from '../common/format';
+import {
+  errorMessage,
+  formatBits,
+  formatFrameCount,
+  formatPacketRate,
+  linkLabel,
+  secondsToTime,
+} from '../common/format';
 import { readConfig, startRequestOf, useLocalConfig } from '../common/localConfig';
 import { pendingRestart } from '../common/pendingRestart';
 import { startPolling } from '../common/polling';
@@ -15,7 +22,17 @@ import { type DropCounts, dropsOfCounters, dropsOfTotals, totalDrops } from './L
 
 const POLL_MS = 1000;
 
-const NO_DROPS: DropCounts = { loss: 0, limiter: 0, bufferFull: 0, nicTx: 0, imissed: 0, nombuf: 0 };
+const NO_DROPS: DropCounts = {
+  loss: 0,
+  limiter: 0,
+  bufferFull: 0,
+  nicTx: 0,
+  missed: 0,
+  nombuf: 0,
+  portBuffer: 0,
+  rxPhy: 0,
+  txPhy: 0,
+};
 
 /** The key of the Summary tab; the keys of the link tabs are their indexes. */
 const SUMMARY_TAB = 'summary';
@@ -24,6 +41,32 @@ const ENDED_TEXT = { stopping: 'Stopping', stopped: 'Stopped', failed: 'Failed' 
 
 const DASH = '–';
 
+// The look of P4TG's SendReceiveMonitor (Stat, StatusIndicator, Time), as inline styles.
+const BOX: CSSProperties = {
+  color: '#fff',
+  borderRadius: '10px',
+  display: 'inline-block',
+  marginRight: '10px',
+};
+const STAT_STYLE: CSSProperties = {
+  ...BOX,
+  background: 'var(--color-secondary)',
+  padding: '10px 15px',
+  minWidth: '250px',
+  textAlign: 'center',
+  marginBottom: '10px',
+};
+const TIME_STYLE: CSSProperties = {
+  ...BOX,
+  background: 'var(--color-secondary)',
+  padding: '10px 5px',
+  minWidth: '140px',
+  maxWidth: '140px',
+  textAlign: 'center',
+  marginBottom: '10px',
+};
+const ARROW_STYLE: CSSProperties = { paddingRight: '5px' };
+
 const ZERO_PILLS = { rxBps: 0, rxPps: 0, txBps: 0, txPps: 0 };
 
 const addDrops = (a: DropCounts, b: DropCounts): DropCounts => ({
@@ -31,8 +74,11 @@ const addDrops = (a: DropCounts, b: DropCounts): DropCounts => ({
   limiter: a.limiter + b.limiter,
   bufferFull: a.bufferFull + b.bufferFull,
   nicTx: a.nicTx + b.nicTx,
-  imissed: a.imissed + b.imissed,
+  missed: a.missed + b.missed,
   nombuf: a.nombuf + b.nombuf,
+  portBuffer: a.portBuffer + b.portBuffer,
+  rxPhy: a.rxPhy + b.rxPhy,
+  txPhy: a.txPhy + b.txPhy,
 });
 
 /** The log lines with a React key each: the line plus its occurrence number, since a line may repeat. */
@@ -227,24 +273,50 @@ export default function Dashboard() {
     <>
       <h1 className="mb-3">Dashboard</h1>
       <Row className="align-items-center mb-3" data-testid="top-row">
-        <Col xs={8} className="text-start d-flex flex-wrap align-items-center gap-3" data-testid="top-pills">
-          <span className="status-pill" data-testid="pill-rx">
-            <i className="bi bi-arrow-down-circle-fill" aria-hidden="true" />
-            RX {pills ? formatRatePill(pills.rxBps, pills.rxPps) : DASH}
+        <Col className="col-8 text-start" data-testid="top-pills">
+          <span style={STAT_STYLE} data-testid="pill-tx">
+            <i
+              className="bi bi-arrow-up-circle-fill"
+              style={{ ...ARROW_STYLE, color: 'var(--color-okay)' }}
+              aria-hidden="true"
+            />
+            {pills ? `${formatBits(pills.txBps)} (${formatPacketRate(pills.txPps)})` : DASH}
           </span>
-          <span className="status-pill status-pill-tx" data-testid="pill-tx">
-            <i className="bi bi-arrow-up-circle-fill" aria-hidden="true" />
-            TX {pills ? formatRatePill(pills.txBps, pills.txPps) : DASH}
+          <span style={STAT_STYLE} data-testid="pill-rx">
+            <i
+              className="bi bi-arrow-down-circle-fill"
+              style={{ ...ARROW_STYLE, color: 'var(--color-yellow)' }}
+              aria-hidden="true"
+            />
+            {pills ? `${formatBits(pills.rxBps)} (${formatPacketRate(pills.rxPps)})` : DASH}
           </span>
-          {stats?.elapsed_ms != null && (
-            <span className="status-pill" data-testid="pill-elapsed">
-              {formatElapsed(stats.elapsed_ms)}
+          {state === 'running' && (
+            <span
+              style={{
+                ...BOX,
+                background: lost > 0 ? 'var(--color-primary)' : 'var(--color-okay)',
+                padding: '10px 15px',
+              }}
+              data-testid="pill-status"
+            >
+              {lost > 0 ? (
+                <OverlayTrigger placement="top" overlay={<Tooltip id="lost-frames">{lost}</Tooltip>}>
+                  <span>Status: Error. Lost {formatFrameCount(lost)} frames.</span>
+                </OverlayTrigger>
+              ) : (
+                'Status: Ok'
+              )}
             </span>
           )}
-          {lost > 0 && (
-            <span className="status-pill" data-testid="pill-lost">
-              <i className="bi bi-exclamation-circle-fill text-danger" aria-hidden="true" />
-              Lost {formatCount(lost)} frames
+          {stats?.elapsed_ms != null && stats.elapsed_ms >= 1000 && state !== 'stopped' && state !== 'failed' && (
+            <span style={TIME_STYLE} data-testid="pill-elapsed">
+              {secondsToTime(Math.floor(stats.elapsed_ms / 1000))}
+            </span>
+          )}
+          {pills && pills.rxBps > 0 && 1 - pills.txBps / pills.rxBps > 0.001 && (
+            <span data-testid="loss-pct">
+              <i className="bi bi-exclamation-circle-fill text-danger" aria-hidden="true" />{' '}
+              {(100 * (1 - pills.txBps / pills.rxBps)).toFixed(2)} %
             </span>
           )}
         </Col>

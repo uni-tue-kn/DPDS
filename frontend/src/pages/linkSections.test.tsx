@@ -3,19 +3,21 @@ import type { ConfigDto } from '../api/types';
 import { PAGES, cfg } from '../test/configPages';
 import type { ConfigPage } from '../test/configPages';
 import {
-  SECTIONS,
-  STAGES,
-  STAGE_TITLE,
+  accuracyOf,
   addButton,
   addStages,
   numberField,
+  pickAccuracy,
   queryAddButton,
   queryRemoveButton,
   queryStage,
   removeButton,
   sameConfig,
   section,
+  SECTIONS,
+  STAGE_TITLE,
   stageOf,
+  STAGES,
   typeInto,
   unitSelect,
 } from '../test/helpers';
@@ -32,14 +34,13 @@ const ctl = (label: string) => screen.getByLabelText(label) as HTMLInputElement;
 
 // Labels (controls) that live in each subsection. The unit selects are "<label> unit".
 const CONTENT: Record<string, string[]> = {
-  Buffer: ['Buffer capacity', 'Reordering', 'Seed'],
+  Buffer: ['Buffer capacity', 'Seed'],
   Delayer: [
     'Delay distribution',
     'Mean delay',
     'Mean delay unit',
     'Delay std',
     'Delay std unit',
-    'Activate correlation',
     'Half-life period',
     'Half-life period unit',
     'Initialization rate',
@@ -236,7 +237,7 @@ describe.each(PAGES)('$name: v22 optional stages', (page: ConfigPage) => {
   it('removing and re-adding within the form keeps what was typed (delayer, limiter and dropper)', async () => {
     const user = await page.openFull();
     await typeInto(user, document.body, 'Mean delay', '7', 'ms');
-    await user.click(screen.getByLabelText('Activate correlation'));
+    await pickAccuracy(user, 'Correlation');
     await typeInto(user, document.body, 'Half-life period', '3', 'ms');
     await typeInto(user, document.body, 'Initialization rate', '2', 'Mpps');
     await user.selectOptions(screen.getByLabelText('Limiter mode'), 'TokenBucketFilter');
@@ -246,7 +247,7 @@ describe.each(PAGES)('$name: v22 optional stages', (page: ConfigPage) => {
     for (const s of STAGES) await user.click(removeButton(s));
     for (const s of STAGES) await user.click(addButton(s));
     expect(numberField(document.body, 'Mean delay')).toHaveValue(7);
-    expect(screen.getByLabelText('Activate correlation')).toBeChecked();
+    expect(accuracyOf()).toBe('Correlation');
     expect(numberField(document.body, 'Half-life period')).toHaveValue(3);
     expect(numberField(document.body, 'Initialization rate')).toHaveValue(2);
     expect(screen.getByLabelText('Limiter mode')).toHaveValue('TokenBucketFilter');
@@ -260,7 +261,7 @@ describe.each(PAGES)('$name: v22 optional stages', (page: ConfigPage) => {
     await addStages(user);
     expect(numberField(document.body, 'Mean delay')).toHaveValue(1);
     expect(screen.getByLabelText('Delay distribution')).toHaveValue('NormalDistribution');
-    expect(screen.getByLabelText('Activate correlation')).not.toBeChecked();
+    expect(accuracyOf()).toBe('Basic');
     expect(numberField(document.body, 'Initialization rate')).toHaveValue(null);
     expect(screen.getByLabelText('Limiter mode')).toHaveValue('Spacer');
     expect(numberField(document.body, 'Rate')).toHaveValue(10);
@@ -345,7 +346,8 @@ describe.each(PAGES)('$name: v22 optional stages', (page: ConfigPage) => {
   );
 
   it('saving a stored config unchanged keeps its stages and values (absent stages stay absent)', async () => {
-    for (const config of [fx.configBare(), fx.config2(), { ...fx.config3(), delayer: null }]) {
+    for (const config of [fx.configBare(), fx.config2(), { ...fx.config3(), delayer: null, reordering: false }]) {
+      // without a Delayer the delay accuracy is Basic, so reordering is saved as false (spec 45 F1)
       const user = await page.openStored(config);
       await page.save(user);
       sameConfig(page.updated(), config);
@@ -379,16 +381,16 @@ describe.each(PAGES)(
     const halfLife = () => ctl('Half-life period');
     const limiterFields = ['Limiter mode', 'Rate', 'Rate unit'];
 
-    it('half-life and its unit are disabled while "Activate correlation" is off and enabled while it is on', async () => {
+    it('half-life and its unit are disabled while "Delay accuracy" is not Correlation and enabled while it is', async () => {
       const user = await page.openFull();
-      expect(ctl('Activate correlation')).not.toBeChecked();
+      expect(accuracyOf()).toBe('Basic');
       expect(halfLife()).toBeInTheDocument();
       expect(halfLife()).toBeDisabled();
       expect(unitSelect(body(), 'Half-life period')).toBeDisabled();
-      await user.click(ctl('Activate correlation'));
+      await pickAccuracy(user, 'Correlation');
       expect(halfLife()).toBeEnabled();
       expect(unitSelect(body(), 'Half-life period')).toBeEnabled();
-      await user.click(ctl('Activate correlation'));
+      await pickAccuracy(user, 'Basic');
       expect(halfLife()).toBeDisabled();
       expect(unitSelect(body(), 'Half-life period')).toBeDisabled();
     });
@@ -397,7 +399,7 @@ describe.each(PAGES)(
       const user = await page.openFull();
       expect(ctl('Initialization rate')).toBeEnabled();
       expect(unitSelect(body(), 'Initialization rate')).toBeEnabled();
-      await user.click(ctl('Activate correlation'));
+      await pickAccuracy(user, 'Correlation');
       expect(ctl('Initialization rate')).toBeEnabled();
       expect(unitSelect(body(), 'Initialization rate')).toBeEnabled();
     });
@@ -410,13 +412,13 @@ describe.each(PAGES)(
 
     it('a typed half-life survives switching correlation off and on and is still sent while it is off', async () => {
       const user = await page.openFull();
-      await user.click(ctl('Activate correlation'));
+      await pickAccuracy(user, 'Correlation');
       await typeInto(user, body(), 'Half-life period', '5', 'ms');
-      await user.click(ctl('Activate correlation'));
+      await pickAccuracy(user, 'Basic');
       expect(halfLife()).toHaveValue(5);
-      await user.click(ctl('Activate correlation'));
+      await pickAccuracy(user, 'Correlation');
       expect(halfLife()).toHaveValue(5);
-      await user.click(ctl('Activate correlation'));
+      await pickAccuracy(user, 'Basic');
       await page.ready(user);
       await page.save(user);
       const d = must(page.created().delayer);
@@ -461,11 +463,9 @@ describe.each(PAGES)(
         'Mean delay unit',
         'Delay std',
         'Delay std unit',
-        'Activate correlation',
         'Loss model',
         'Random loss probability',
         'Buffer capacity',
-        'Reordering',
         'Seed',
         'Delay statistics',
         'Histogram bins',

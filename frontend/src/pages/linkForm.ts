@@ -3,6 +3,7 @@
 import { errorMessage } from '../common/format';
 import type { ConfigDto, DelayerDto, Distribution, LimiterMode, LossModelDto } from '../api/types';
 import {
+  PACKET_UNITS,
   PPS_UNITS,
   RATE_UNITS,
   TIME_UNITS,
@@ -30,6 +31,8 @@ export const MS = 2;
 export const MPPS = 2;
 export const GBIT = 3;
 export const MBIT = 2;
+/** Default unit of the buffer capacity: packets (a zero or empty value shows it). */
+export const PACKETS = 0;
 
 /**
  * The units of the two rate fields once a frame size is known: own family first, so an index into the own family means the
@@ -57,7 +60,8 @@ export interface ConfigForm {
   ge_r: string;
   ge_k: string;
   ge_h: string;
-  buffer_capacity: string;
+  buffer_capacity: UnitValue;
+  /** With `activate_correlation`, the "Delay accuracy" mode of the Delayer: Basic (neither), Reordering or Correlation. */
   reordering: boolean;
   seed: string;
   /** UI only (bytes, typed): not part of the config, kept beside it in the link. */
@@ -71,6 +75,24 @@ export interface ConfigForm {
 /** Conditionally required fields: the form marks them and refuses them empty only while the rule holds. */
 export const stdRequired = (f: ConfigForm) => f.distribution !== 'DeterministicDistribution';
 export const halfLifeRequired = (f: ConfigForm) => f.activate_correlation;
+
+export type Accuracy = 'Basic' | 'Reordering' | 'Correlation';
+export const ACCURACIES: Accuracy[] = ['Basic', 'Reordering', 'Correlation'];
+/** The delay accuracy option the two booleans show: reordering wins over correlation. */
+export const accuracyOf = (f: ConfigForm): Accuracy =>
+  f.reordering ? 'Reordering' : f.activate_correlation ? 'Correlation' : 'Basic';
+/** Without the Delayer stage the config is sent with Basic, so reordering counts only with it. */
+export const reorderingActive = (f: ConfigForm) => f.delayer_added && f.reordering;
+
+/** The form after picking a delay accuracy option; Reordering needs the token bucket, so it replaces the Spacer. */
+export function withAccuracy(f: ConfigForm, a: Accuracy): ConfigForm {
+  return {
+    ...f,
+    reordering: a === 'Reordering',
+    activate_correlation: a === 'Correlation',
+    limiter_mode: a === 'Reordering' ? 'TokenBucketFilter' : f.limiter_mode,
+  };
+}
 
 /** True while the rate field of an added stage shows a unit of the other family: only a frame size can convert it. */
 const crossUnit = (added: boolean, v: UnitValue, units: Unit[]) => added && !sameFamily(units[v.unit], units[0]);
@@ -97,7 +119,7 @@ export function defaultConfigForm(): ConfigForm {
     ge_r: '0.2',
     ge_k: '1',
     ge_h: '0',
-    buffer_capacity: '100000',
+    buffer_capacity: fromBase(100000, PACKET_UNITS, PACKETS),
     reordering: false,
     seed: '',
     avg_frame_size: '',
@@ -119,7 +141,7 @@ export function configToForm(c: ConfigDto, frame?: number | null): ConfigForm {
     delayer_added: c.delayer != null,
     limiter_added: c.limiter != null,
     dropper_added: c.loss_model != null,
-    buffer_capacity: String(c.buffer_capacity),
+    buffer_capacity: fromBase(c.buffer_capacity, PACKET_UNITS, PACKETS),
     reordering: c.reordering,
     seed: str(c.seed),
     avg_frame_size: str(frame),
@@ -239,12 +261,6 @@ function int(s: string, label: string): number {
   return n;
 }
 
-function nonNegativeInt(s: string, label: string): number {
-  const n = int(s, label);
-  if (n < 0) throw new Error(`${label} must not be negative`);
-  return n;
-}
-
 function optInt(s: string, label: string): number | null {
   return s.trim() === '' ? null : int(s, label);
 }
@@ -299,13 +315,32 @@ function limiterToDto(f: ConfigForm, frame: number | null) {
   return { mode: f.limiter_mode, rate_bps: limiterRate(f.rate_bps, frame) };
 }
 
+/** The buffer capacity as an integer packet count; a number of packets that is not a non-negative whole one is refused. */
+function bufferCapacity(v: UnitValue): number {
+  const label = 'Buffer capacity';
+  const n = toBase(v, PACKET_UNITS);
+  if (n === null) throw new Error(`${label} must be a number`);
+  if (!Number.isInteger(n)) throw new Error(`${label} must be a whole number of packets`);
+  if (n < 0) throw new Error(`${label} must not be negative`);
+  return n;
+}
+
+/** Reordering excludes correlation and the Spacer (the dpds buffer refuses both); only with the Delayer stage does it count. */
+function checkAccuracy(f: ConfigForm) {
+  if (!reorderingActive(f)) return;
+  if (f.activate_correlation) throw new Error('Reordering cannot be combined with correlation');
+  if (f.limiter_added && f.limiter_mode === 'Spacer') {
+    throw new Error('Reordering works only with the TokenBucketFilter limiter, not Spacer');
+  }
+}
+
 function configToDto(f: ConfigForm, frame: number | null): ConfigDto {
   const bins = optInt(f.hist_bins, 'Histogram bins');
   const lo_ns = f.hist_lo.text.trim() === '' ? null : unitNum(f.hist_lo, TIME_UNITS, 'Histogram lo');
   const hi_ns = f.hist_hi.text.trim() === '' ? null : unitNum(f.hist_hi, TIME_UNITS, 'Histogram hi');
   return {
-    buffer_capacity: nonNegativeInt(f.buffer_capacity, 'Buffer capacity'),
-    reordering: f.reordering,
+    buffer_capacity: bufferCapacity(f.buffer_capacity),
+    reordering: reorderingActive(f),
     delayer: f.delayer_added ? delayerToDto(f, frame) : null,
     limiter: f.limiter_added ? limiterToDto(f, frame) : null,
     loss_model: f.dropper_added ? lossToDto(f) : null,
@@ -326,6 +361,12 @@ export interface FormDto {
  * frame size is refused even when no rate field needs it.
  */
 export function formToDto(f: ConfigForm): FormDto {
+  checkAccuracy(f);
+  return convert(f);
+}
+
+/** `formToDto` without the delay accuracy rule, so a stored link that breaks it stays listed and openable to be fixed. */
+function convert(f: ConfigForm): FormDto {
   const frame = frameToDto(f);
   const config = configToDto(f, frame);
   return frame === null ? { config } : { config, avg_frame_size_byte: frame };
@@ -340,7 +381,7 @@ const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'obj
 /**
  * What is wrong with a stored or imported link, or null when the link editor would accept it unchanged: the name rule,
  * non-empty ports, an optional frame size, and a config that survives the editor's own round trip
- * (`configToForm` then `formToDto`).
+ * (`configToForm` then the conversion of `formToDto`, minus the delay accuracy rule).
  */
 export function linkProblem(v: unknown): string | null {
   try {
@@ -354,7 +395,7 @@ export function linkProblem(v: unknown): string | null {
     const frame = v.avg_frame_size_byte ?? null;
     if (frame !== null && typeof frame !== 'number') throw new Error('Average frame size must be a number');
     if (!isObject(v.config)) throw new Error('Link config is missing');
-    formToDto(configToForm(v.config as unknown as ConfigDto, frame));
+    convert(configToForm(v.config as unknown as ConfigDto, frame));
     return null;
   } catch (e) {
     return errorMessage(e);

@@ -2,7 +2,6 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { vi } from 'vitest';
 import type { Counters, DirectionStats, HistorySample } from '../api/types';
-import { formatElapsed } from '../common/format';
 import { propsOf } from '../test/chartProps';
 import {
   activePanel,
@@ -99,8 +98,11 @@ const counters = (over: Partial<Counters>) =>
     limiter_drops: 0,
     buffer_full_drops: 0,
     tx_drops: 0,
-    nic_rx_imissed: 0,
+    nic_rx_missed: 0,
     nic_rx_nombuf: 0,
+    nic_rx_port_buffer_discards: 0,
+    nic_rx_phy_discards: 0,
+    nic_tx_phy_discards: 0,
     ...over,
   });
 
@@ -319,7 +321,7 @@ describe('Summary tab (spec 36 S1): the rate chart', () => {
     await waitFor(() => expect(dataset(summary(), 'RX')).toHaveLength(2));
     expect(dataset(summary(), 'RX')).toEqual([9, 6.5]);
     expect(dataset(summary(), 'TX')).toEqual([1.75, 2.25]);
-    expect(lineOf(summary()).labels).toEqual([formatElapsed(1000), formatElapsed(2000)]);
+    expect(lineOf(summary()).labels).toEqual(['0h 0m 1s', '0h 0m 2s']);
     expect(lineOf(card(0)).labels).toEqual(lineOf(summary()).labels); // same time axis as a link's chart
   });
 
@@ -330,7 +332,7 @@ describe('Summary tab (spec 36 S1): the rate chart', () => {
     });
     await waitFor(() => expect(dataset(summary(), 'RX')).toHaveLength(2));
     expect(dataset(summary(), 'RX')).toEqual([12, 23]);
-    expect(lineOf(summary()).labels).toEqual([formatElapsed(2000), formatElapsed(3000)]);
+    expect(lineOf(summary()).labels).toEqual(['0h 0m 2s', '0h 0m 3s']);
   });
 
   it('is empty while one link has no sample at all', async () => {
@@ -407,20 +409,23 @@ describe('Summary tab (spec 36 S1): the rate chart', () => {
 // ---- loss view ----------------------------------------------------------------------------------------------------------------
 
 describe('Summary tab (spec 36 S1, spec 43 F1): the loss chart', () => {
-  const counts = (a: number, b = 0, c = 0, d = 0, e = 0, f = 0): Partial<HistorySample> => ({
+  const counts = (a: number, b = 0, c = 0, d = 0, e = 0, f = 0, g = 0, h = 0, i = 0): Partial<HistorySample> => ({
     loss_drops: a,
     limiter_drops: b,
     buffer_full_drops: c,
     nic_tx_drops: d,
-    nic_rx_imissed: e,
+    nic_rx_missed: e,
     nic_rx_nombuf: f,
+    nic_rx_port_buffer_discards: g,
+    nic_rx_phy_discards: h,
+    nic_tx_phy_discards: i,
   });
   const show = async (history: Record<string, HistorySample[]>) => {
     await open(history);
     fireEvent.click(summaryRadio('Packet loss'));
   };
 
-  it('has six lines in the order, with the labels, and the colours of the donut', async () => {
+  it('has nine lines (spec 47) in the order, with the labels, and the colours of the donut', async () => {
     await show({ '0': [sample(1000)], '1': [sample(1000)] });
     const chart = lineOf(summary());
     expect(chart.datasets.map((s) => s.label)).toEqual([...CAUSES]);
@@ -430,12 +435,12 @@ describe('Summary tab (spec 36 S1, spec 43 F1): the loss chart', () => {
 
   it('sums the links counts per cause, plainly (no weighting by rx_mpps)', async () => {
     await show({
-      '0': [sample(1000, { rx_mpps: 3, ...counts(4, 1, 2, 3, 4, 5) })],
-      '1': [sample(1000, { rx_mpps: 1, ...counts(8, 10, 20, 30, 40, 50) })],
+      '0': [sample(1000, { rx_mpps: 3, ...counts(4, 1, 2, 3, 4, 5, 6, 7, 8) })],
+      '1': [sample(1000, { rx_mpps: 1, ...counts(8, 10, 20, 30, 40, 50, 60, 70, 80) })],
     });
     await waitFor(() => expect(dataset(summary(), 'Loss model')).toHaveLength(1));
     const at = (label: string) => dataset(summary(), label)[0];
-    expect(CAUSES.map(at)).toEqual([12, 11, 22, 33, 44, 55]);
+    expect(CAUSES.map(at)).toEqual([12, 11, 22, 33, 44, 55, 66, 77, 88]);
   });
 
   it('the y axis is titled "Dropped packets" and starts at zero', async () => {
@@ -461,7 +466,7 @@ describe('Summary tab (spec 36 S1, spec 43 F1): the loss chart', () => {
     });
     await waitFor(() => expect(dataset(summary(), 'Loss model')).toHaveLength(2));
     expect(dataset(summary(), 'Loss model')).toEqual([12, 25]);
-    expect(lineOf(summary()).labels).toEqual([formatElapsed(1000), formatElapsed(2000)]);
+    expect(lineOf(summary()).labels).toEqual(['0h 0m 1s', '0h 0m 2s']);
   });
 });
 
@@ -482,10 +487,19 @@ describe('Summary tab (spec 36 S1): the loss donut', () => {
           limiter_drops: 30,
           buffer_full_drops: 20,
           tx_drops: 5,
-          nic_rx_imissed: 4,
+          nic_rx_missed: 4,
           nic_rx_nombuf: 1,
+          nic_rx_port_buffer_discards: 6,
+          nic_rx_phy_discards: 7,
         },
-        { rx_pkts: 500, loss_drops: 2, buffer_full_drops: 9, nic_rx_nombuf: 3 },
+        {
+          rx_pkts: 500,
+          loss_drops: 2,
+          buffer_full_drops: 9,
+          nic_rx_nombuf: 3,
+          nic_tx_phy_discards: 8,
+          nic_rx_phy_discards: 1,
+        },
       ),
     );
     renderApp('/');
@@ -493,25 +507,25 @@ describe('Summary tab (spec 36 S1): the loss donut', () => {
     const data = JSON.parse(within(summary()).getByTestId('chart-doughnut').getAttribute('data-chart') ?? 'null');
     expect(data.labels).toEqual([...CAUSES]);
     expect(data.datasets).toHaveLength(1);
-    expect(data.datasets[0].data).toEqual([42, 30, 29, 5, 4, 4]);
+    expect(data.datasets[0].data).toEqual([42, 30, 29, 5, 4, 4, 6, 8, 8]);
   });
 
   it('live: the link donuts stay the links', async () => {
     serveRunning(dirs({ loss_drops: 40 }, { loss_drops: 2 }));
     renderApp('/');
     await findTabs(2);
-    expect(donutValues(card(0))).toEqual([40, 0, 0, 0, 0, 0]);
-    expect(donutValues(card(1))).toEqual([2, 0, 0, 0, 0, 0]);
-    expect(donutValues(summary())).toEqual([42, 0, 0, 0, 0, 0]);
+    expect(donutValues(card(0))).toEqual([40, 0, 0, 0, 0, 0, 0, 0, 0]);
+    expect(donutValues(card(1))).toEqual([2, 0, 0, 0, 0, 0, 0, 0, 0]);
+    expect(donutValues(summary())).toEqual([42, 0, 0, 0, 0, 0, 0, 0, 0]);
   });
 
-  it('live: the legend lists the six causes with the explanation tooltips', async () => {
+  it('live: the legend lists the nine causes with the explanation tooltips', async () => {
     serveRunning(dirs({ loss_drops: 40 }, { loss_drops: 2 }));
     renderApp('/');
     await findTabs(2);
     const legend = within(summary()).getByTestId('donut-legend');
     const items = within(legend).getAllByRole('listitem');
-    expect(items).toHaveLength(6);
+    expect(items).toHaveLength(9);
     CAUSES.forEach((cause, i) => {
       expect(items[i], cause).toHaveTextContent(cause);
     });
@@ -530,7 +544,7 @@ describe('Summary tab (spec 36 S1): the loss donut', () => {
     expect(text).toContain('40.00 %'); // 40 of 100 summed drops
   });
 
-  it('live, no drop on any link: one grey ring, "No drops", and the six-cause legend', async () => {
+  it('live, no drop on any link: one grey ring, "No drops", and the nine-cause legend', async () => {
     serveRunning(dirs({}, {}));
     renderApp('/');
     await findTabs(2);
@@ -540,7 +554,7 @@ describe('Summary tab (spec 36 S1): the loss donut', () => {
     expect(data.datasets[0].data).toHaveLength(1);
     expect(data.datasets[0].data[0]).toBeGreaterThan(0);
     expect(within(panel).getByText('No drops')).toBeInTheDocument();
-    expect(within(within(panel).getByTestId('donut-legend')).getAllByRole('listitem')).toHaveLength(6);
+    expect(within(within(panel).getByTestId('donut-legend')).getAllByRole('listitem')).toHaveLength(9);
     expect(hoverText(panel, 0)).toContain('No drops');
     expect(hoverText(panel, 0)).not.toMatch(/NaN|Infinity/);
   });
@@ -550,23 +564,26 @@ describe('Summary tab (spec 36 S1): the loss donut', () => {
     renderApp('/');
     await findTabs(2);
     expect(within(summary()).queryByText('No drops')).not.toBeInTheDocument();
-    expect(donutValues(summary())).toEqual([1, 0, 0, 0, 0, 0]);
+    expect(donutValues(summary())).toEqual([1, 0, 0, 0, 0, 0, 0, 0, 0]);
   });
 
-  it('ended: the totals of all links summed per cause (loss, limiter, buffer, NIC TX, imissed, nombuf)', async () => {
+  it('ended: the totals of all links summed per cause (all nine causes, spec 47)', async () => {
     vi.useFakeTimers();
     serveHistory({
       startedAt: 1762000000,
       samples: { '0': fx.historySamples(0, 3), '1': fx.historySamples(0, 3) },
       totals: {
-        '0': fx.totals(), // 40, 30, 20, 5, 4, 1
+        '0': fx.totals(), // 40, 30, 20, 5, 4, 1, 0, 0, 0
         '1': fx.totals({
           loss_drops: 2,
           limiter_drops: 0,
           buffer_full_drops: 1,
           nic_tx_drops: 0,
-          nic_rx_imissed: 0,
+          nic_rx_missed: 0,
           nic_rx_nombuf: 3,
+          nic_rx_port_buffer_discards: 6,
+          nic_rx_phy_discards: 7,
+          nic_tx_phy_discards: 8,
         }),
       },
     });
@@ -576,7 +593,7 @@ describe('Summary tab (spec 36 S1): the loss donut', () => {
     await tick(0);
     await tick(1000);
     expect(summaryTab()).toHaveAttribute('aria-selected', 'true');
-    expect(donutValues(summary())).toEqual([42, 30, 21, 5, 4, 4]);
+    expect(donutValues(summary())).toEqual([42, 30, 21, 5, 4, 4, 6, 7, 8]);
   });
 
   it('ended with totals of 0 on every link: the grey ring and "No drops"', async () => {
@@ -586,8 +603,11 @@ describe('Summary tab (spec 36 S1): the loss donut', () => {
       limiter_drops: 0,
       buffer_full_drops: 0,
       nic_tx_drops: 0,
-      nic_rx_imissed: 0,
+      nic_rx_missed: 0,
       nic_rx_nombuf: 0,
+      nic_rx_port_buffer_discards: 0,
+      nic_rx_phy_discards: 0,
+      nic_tx_phy_discards: 0,
     });
     serveHistory({
       startedAt: 1762000000,

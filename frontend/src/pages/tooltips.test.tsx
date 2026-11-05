@@ -24,6 +24,8 @@ const queryAbout = (label: string) => screen.queryByRole('button', { name: `Abou
 function fieldLabels(): HTMLLabelElement[] {
   return Array.from(document.querySelectorAll('label')).filter((l) => {
     const t = l.textContent?.trim() ?? '';
+    // the three options of the "Delay accuracy" toggle (spec 45) are no fields: the toggle has the one button
+    if (l.control?.getAttribute('type') === 'radio') return false;
     return t !== '' && !t.endsWith(' unit') && t !== 'Import links file';
   });
 }
@@ -59,13 +61,12 @@ const LINK_LABELS = [
   'Ingress',
   'Egress',
   'Buffer capacity',
-  'Reordering',
   'Seed',
   'Average frame size',
   'Delay distribution',
   'Mean delay',
   'Delay std',
-  'Activate correlation',
+  'Delay accuracy',
   'Half-life period',
   'Initialization rate',
   'Limiter mode',
@@ -141,7 +142,6 @@ describe.each([linkPage])('$name: tooltips after every field label', (page: Conf
       'Rate',
       'Histogram lo',
       'Delay distribution',
-      'Reordering',
     ]) {
       const el = screen.getByLabelText(label);
       expect(el.tagName).not.toBe('BUTTON');
@@ -189,6 +189,16 @@ describe.each([linkPage])('$name: tooltips after every field label', (page: Conf
       const text = await hoverText(user, textOf(l));
       expect(text.length, `tooltip of ${textOf(l)}`).toBeGreaterThanOrEqual(MIN_TEXT);
     }
+  });
+
+  it('Delay accuracy: the tooltip says it is about the accuracy of mean delay and jitter and that Reordering is no emulated reordering (spec 45 F2)', async () => {
+    const user = await page.openFull();
+    const text = await hoverText(user, 'Delay accuracy');
+    expect(text).toMatch(/accura/i);
+    expect(text).toMatch(/mean delay/i);
+    expect(text).toMatch(/jitter/i);
+    for (const mode of ['Basic', 'Reordering', 'Correlation']) expect(text).toContain(mode);
+    expect(text).toMatch(/not (an )?emulat|does not emulate|no emulat/i);
   });
 
   it('Initialization rate names its base unit (pps)', async () => {

@@ -2,7 +2,7 @@ import { Fragment, useId, useMemo, useState } from 'react';
 import { Form, OverlayTrigger, Tooltip } from 'react-bootstrap';
 import { Line } from 'react-chartjs-2';
 import type { HistorySample } from '../api/types';
-import { formatElapsed } from '../common/format';
+import { secondsToTime } from '../common/format';
 import { useTheme } from '../common/theme';
 import { chartOptions, RX_COLOR, RX_FILL, TX_COLOR, TX_FILL } from '../components/charts';
 import ChartBox from './ChartBox';
@@ -26,8 +26,11 @@ const COUNTS = [
   (s: HistorySample) => s.limiter_drops,
   (s: HistorySample) => s.buffer_full_drops,
   (s: HistorySample) => s.nic_tx_drops,
-  (s: HistorySample) => s.nic_rx_imissed,
+  (s: HistorySample) => s.nic_rx_missed,
   (s: HistorySample) => s.nic_rx_nombuf,
+  (s: HistorySample) => s.nic_rx_port_buffer_discards,
+  (s: HistorySample) => s.nic_rx_phy_discards,
+  (s: HistorySample) => s.nic_tx_phy_discards,
 ];
 
 /**
@@ -66,7 +69,7 @@ export default function LinkCharts({
     ...(hasHistogram || noHistogram ? ([['histogram', 'Delay histogram']] as [View, string][]) : []),
     ['loss', 'Packet loss'],
   ];
-  const labels = useMemo(() => history.map((s) => formatElapsed(s.t_ms)), [history]);
+  const labels = useMemo(() => history.map((s) => secondsToTime(Math.floor(s.t_ms / 1000))), [history]);
   // The y axis shows one unit, like P4TG's "Gbit/s"; a link slower than that gets the largest unit its peak reaches.
   const rateUnit = useMemo(() => {
     const peak = Math.max(0, ...history.map((s) => Math.max(s.rx_gbps, s.tx_gbps)));

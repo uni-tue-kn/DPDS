@@ -21,8 +21,11 @@ const SUMMED = [
   'limiter_drops',
   'buffer_full_drops',
   'nic_tx_drops',
-  'nic_rx_imissed',
+  'nic_rx_missed',
   'nic_rx_nombuf',
+  'nic_rx_port_buffer_discards',
+  'nic_rx_phy_discards',
+  'nic_tx_phy_discards',
 ] as const;
 
 const ZERO_SAMPLE: HistorySample = {
@@ -35,8 +38,11 @@ const ZERO_SAMPLE: HistorySample = {
   limiter_drops: 0,
   buffer_full_drops: 0,
   nic_tx_drops: 0,
-  nic_rx_imissed: 0,
+  nic_rx_missed: 0,
   nic_rx_nombuf: 0,
+  nic_rx_port_buffer_discards: 0,
+  nic_rx_phy_discards: 0,
+  nic_tx_phy_discards: 0,
 };
 
 /** The newest `MAX_SAMPLES` of `list`. */

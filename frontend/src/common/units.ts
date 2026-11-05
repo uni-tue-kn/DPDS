@@ -31,6 +31,11 @@ export const SIZE_UNITS: Unit[] = [
   { label: 'Mbit', exp: 6 },
   { label: 'Gbit', exp: 9 },
 ];
+export const PACKET_UNITS: Unit[] = [
+  { label: 'packets', exp: 0 },
+  { label: 'kpackets', exp: 3 },
+  { label: 'Mpackets', exp: 6 },
+];
 
 /** What a unit field of the form holds: the typed text and the index of the selected unit. */
 export interface UnitValue {

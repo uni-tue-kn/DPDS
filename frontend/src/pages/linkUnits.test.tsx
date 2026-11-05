@@ -4,17 +4,20 @@ import type { ConfigDto } from '../api/types';
 import * as fx from '../test/fixtures';
 import { PAGES, cfg } from '../test/configPages';
 import type { ConfigPage } from '../test/configPages';
+import { PACKET_UNITS as SOURCE_PACKET_UNITS } from '../common/units';
 import {
+  numberField,
+  PACKET_UNITS,
+  pickAccuracy,
+  pickUnit,
   PPS_UNITS,
   RATE_UNITS,
-  SIZE_UNITS,
-  TIME_UNITS,
-  numberField,
-  pickUnit,
   renderApp,
   section,
   seedLinks,
   shownBase,
+  SIZE_UNITS,
+  TIME_UNITS,
   typeInto,
   typeRate,
   unitOf,
@@ -34,12 +37,14 @@ const UNIT_FIELDS: [string, string[]][] = [
   ['Histogram hi', TIME_UNITS],
   ['Rate', RATE_UNITS],
   ['Initialization rate', PPS_UNITS],
+  ['Buffer capacity', PACKET_UNITS],
 ];
 const SECTION_OF: Record<string, string> = {
   'Mean delay': 'Delayer',
   'Delay std': 'Delayer',
   'Half-life period': 'Delayer',
   'Initialization rate': 'Delayer',
+  'Buffer capacity': 'Buffer',
   Rate: 'Limiter',
   'Histogram lo': 'Statistics',
   'Histogram hi': 'Statistics',
@@ -53,6 +58,15 @@ describe('v16 constants of the contract', () => {
     expect(RATE_UNITS).toEqual(['bit/s', 'kbit/s', 'Mbit/s', 'Gbit/s']);
     expect(PPS_UNITS).toEqual(['pps', 'kpps', 'Mpps']);
     expect(SIZE_UNITS).toEqual(['bit', 'kbit', 'Mbit', 'Gbit']);
+    expect(PACKET_UNITS).toEqual(['packets', 'kpackets', 'Mpackets']);
+  });
+
+  it('PACKET_UNITS of common/units.ts: packets, kpackets, Mpackets with decimal exponents 0, 3, 6', () => {
+    expect(SOURCE_PACKET_UNITS).toEqual([
+      { label: 'packets', exp: 0 },
+      { label: 'kpackets', exp: 3 },
+      { label: 'Mpackets', exp: 6 },
+    ]);
   });
 });
 
@@ -81,10 +95,10 @@ describe.each(PAGES)('$name: unit selects', (page: ConfigPage) => {
     expect(controls[i + 1]).toBe(unitSelect(body(), label));
   });
 
-  it('only those seven fields have a unit select (no unit for capacity, seed, bins or probabilities)', async () => {
+  it('only those eight fields have a unit select (no unit for seed, bins or probabilities)', async () => {
     await page.openFull();
     expect(screen.getAllByLabelText(/ unit$/)).toHaveLength(UNIT_FIELDS.length);
-    for (const none of ['Buffer capacity', 'Seed', 'Histogram bins', 'Random loss probability']) {
+    for (const none of ['Seed', 'Histogram bins', 'Random loss probability']) {
       expect(screen.queryByLabelText(`${none} unit`)).not.toBeInTheDocument();
     }
   });
@@ -122,14 +136,15 @@ describe.each(PAGES)('$name: defaults of a new form', (page: ConfigPage) => {
     }
   });
 
-  it('keeps the old default values: mean 1 ms, std 1e5 ns, rate 10 Gbit/s, capacity 100000', async () => {
+  it('keeps the old default values: mean 1 ms, std 1e5 ns, rate 10 Gbit/s, capacity 100000 packets (shown 100 kpackets)', async () => {
     await page.openFull();
     expect(numberField(body(), 'Mean delay')).toHaveValue(1);
     expect(unitOf(body(), 'Mean delay')).toBe('ms');
     expect(shownBase(body(), 'Delay std')).toBe(100000); // 100 us or 0.1 ms: the display is free
     expect(numberField(body(), 'Rate')).toHaveValue(10);
     expect(unitOf(body(), 'Rate')).toBe('Gbit/s');
-    expect(numberField(body(), 'Buffer capacity')).toHaveValue(100000);
+    expect(numberField(body(), 'Buffer capacity')).toHaveValue(100);
+    expect(unitOf(body(), 'Buffer capacity')).toBe('kpackets');
   });
 
   it('sends those defaults in base units untouched', async () => {
@@ -347,7 +362,7 @@ describe.each(PAGES)('$name: changing a unit converts the shown value', (page: C
 
   it('half-life and histogram fields convert too', async () => {
     const user = await page.openFull();
-    await user.click(screen.getByLabelText('Activate correlation'));
+    await pickAccuracy(user, 'Correlation');
     await typeInto(user, body(), 'Half-life period', '4', 'ms');
     await pickUnit(user, body(), 'Half-life period', MU);
     expect(numberField(body(), 'Half-life period')).toHaveValue(4000);
@@ -425,7 +440,7 @@ describe.each(PAGES)('$name: payload in base units', (page: ConfigPage) => {
   it.each(PAYLOAD)('%s: %s %s is sent as %d', async (label, unit, text, expected, pick, prep) => {
     const user = await page.openFull();
     await page.ready(user);
-    if (prep === 'correlation') await user.click(screen.getByLabelText('Activate correlation'));
+    if (prep === 'correlation') await pickAccuracy(user, 'Correlation');
     await typeInto(user, body(), label, text, unit);
     await page.save(user);
     expect(pick(page.created())).toBe(expected);
@@ -448,7 +463,7 @@ describe.each(PAGES)('$name: validation per field (messages name the field, neve
 
   async function ready(user: UserEvent, prep?: Prep) {
     await page.ready(user);
-    if (prep === 'correlation') await user.click(screen.getByLabelText('Activate correlation'));
+    if (prep === 'correlation') await pickAccuracy(user, 'Correlation');
   }
 
   it.each([
@@ -551,5 +566,119 @@ describe.each(PAGES)('$name: stored values of disabled fields survive the unit h
     expect(numberField(body(), 'Half-life period')).toHaveValue(2.5);
     await page.save(user);
     expect(must(page.updated().delayer).half_life_period_ns).toBe(2500);
+  });
+});
+
+// [stored packet count, shown value, shown unit]: the same display rule as the other unit fields (largest unit with the
+// number >= 1 and at most 3 decimals).
+const PACKET_CASES: [number, number, string][] = [
+  [1, 1, 'packets'],
+  [999, 999, 'packets'],
+  [1000, 1, 'kpackets'],
+  [1001, 1.001, 'kpackets'],
+  [1500, 1.5, 'kpackets'],
+  [321, 321, 'packets'],
+  [100000, 100, 'kpackets'],
+  [1000500, 1000.5, 'kpackets'], // 1.0005 Mpackets has 4 decimals
+  [1000000, 1, 'Mpackets'],
+  [2500000, 2.5, 'Mpackets'],
+  [0, 0, 'packets'],
+];
+
+describe.each(PAGES)('$name: buffer capacity unit', (page: ConfigPage) => {
+  it.each(PACKET_CASES)(
+    'a stored capacity of %d packets is shown as %d %s and saved back unchanged',
+    async (n, shown, unit) => {
+      const user = await page.openStored({ ...cfg(), buffer_capacity: n });
+      expect(numberField(body(), 'Buffer capacity')).toHaveValue(shown);
+      if (n > 0) expect(unitOf(body(), 'Buffer capacity')).toBe(unit);
+      await page.save(user);
+      expect(page.updated().buffer_capacity).toBe(n);
+    },
+  );
+
+  it('1500 packets -> 1.5 kpackets -> 0.0015 Mpackets -> 1500 packets, and the saved count never changes', async () => {
+    const user = await page.openFull();
+    await typeInto(user, body(), 'Buffer capacity', '1500', 'packets');
+    await pickUnit(user, body(), 'Buffer capacity', 'kpackets');
+    expect(numberField(body(), 'Buffer capacity')).toHaveValue(1.5);
+    await pickUnit(user, body(), 'Buffer capacity', 'Mpackets');
+    expect(numberField(body(), 'Buffer capacity')).toHaveValue(0.0015);
+    await pickUnit(user, body(), 'Buffer capacity', 'packets');
+    expect(numberField(body(), 'Buffer capacity')).toHaveValue(1500);
+    await pickUnit(user, body(), 'Buffer capacity', 'kpackets');
+    await page.ready(user);
+    await page.save(user);
+    expect(page.created().buffer_capacity).toBe(1500);
+  });
+
+  it.each([
+    [1.001, 'kpackets', 'packets', 1001],
+    [2.5, 'Mpackets', 'kpackets', 2500],
+    [0.001, 'Mpackets', 'kpackets', 1],
+    [1.005, 'kpackets', 'packets', 1005],
+  ] as [number, string, string, number][])(
+    '%d %s converted to %s shows %d (exact decimal shift)',
+    async (typed, from, to, shown) => {
+      const user = await page.openFull();
+      await typeInto(user, body(), 'Buffer capacity', String(typed), from);
+      await pickUnit(user, body(), 'Buffer capacity', to);
+      expect(numberField(body(), 'Buffer capacity')).toHaveValue(shown);
+      expect(unitOf(body(), 'Buffer capacity')).toBe(to);
+    },
+  );
+
+  it('an empty capacity stays empty when its unit changes', async () => {
+    const user = await page.openFull();
+    await user.clear(numberField(body(), 'Buffer capacity'));
+    await pickUnit(user, body(), 'Buffer capacity', 'Mpackets');
+    expect(numberField(body(), 'Buffer capacity')).toHaveValue(null);
+    expect(unitOf(body(), 'Buffer capacity')).toBe('Mpackets');
+  });
+
+  it.each([
+    ['1500', 'packets', 1500],
+    ['1.5', 'kpackets', 1500],
+    ['1.001', 'kpackets', 1001],
+    ['0.001', 'Mpackets', 1000],
+    ['2', 'Mpackets', 2000000],
+    ['0', 'kpackets', 0],
+  ] as [string, string, number][])('%s %s is saved as the integer packet count %d', async (text, unit, packets) => {
+    const user = await page.openFull();
+    await page.ready(user);
+    await typeInto(user, body(), 'Buffer capacity', text, unit);
+    await page.save(user);
+    expect(page.created().buffer_capacity).toBe(packets);
+  });
+
+  it.each([
+    ['1.0005', 'kpackets'],
+    ['0.5', 'packets'],
+    ['1.5', 'packets'],
+    ['0.0000005', 'Mpackets'],
+  ] as [string, string][])(
+    '%s %s is not a whole number of packets: refused with an alert naming Buffer capacity, no request',
+    async (text, unit) => {
+      const user = await page.openFull();
+      await page.ready(user);
+      await typeInto(user, body(), 'Buffer capacity', text, unit);
+      await page.save(user);
+      const alert = await screen.findByRole('alert');
+      expect(alert).toHaveTextContent(/Buffer capacity/);
+      expect(page.requests()).toBe(0);
+      expect(numberField(body(), 'Buffer capacity')).toHaveValue(Number(text));
+      expect(unitOf(body(), 'Buffer capacity')).toBe(unit);
+    },
+  );
+
+  it('a refused fractional capacity can be corrected and saved', async () => {
+    const user = await page.openFull();
+    await page.ready(user);
+    await typeInto(user, body(), 'Buffer capacity', '1.0005', 'kpackets');
+    await page.save(user);
+    await screen.findByRole('alert');
+    await typeInto(user, body(), 'Buffer capacity', '1.5');
+    await page.save(user);
+    expect(page.created().buffer_capacity).toBe(1500);
   });
 });

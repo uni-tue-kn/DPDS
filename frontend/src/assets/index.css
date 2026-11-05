@@ -325,24 +325,6 @@ fieldset.config-section > legend {
   margin: 0;
 }
 
-.status-pill {
-  display: inline-block;
-  padding: 0.5rem 0.9rem;
-  border-radius: 10px;
-  background: var(--color-secondary);
-  color: #ffffff;
-  white-space: nowrap;
-}
-
-.status-pill i {
-  margin-right: 0.35rem;
-  color: var(--color-yellow);
-}
-
-.status-pill-tx i {
-  color: var(--color-okay);
-}
-
 .histogram-optimization-hint {
   display: flex;
   flex-wrap: wrap;

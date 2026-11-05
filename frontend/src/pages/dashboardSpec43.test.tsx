@@ -8,11 +8,11 @@ import { api } from '../test/mockApi';
 import { must } from '../test/must';
 
 // Spec 43 (user 2026-11-05), the frontend parts that have no home in an older test file:
-//   F4  (amended by the user 2026-11-05: "no matter if the DPDS is started or stopped") the RX pill's arrow is always the
-//       yellow/orange one (`--color-yellow`) and the TX pill's arrow always the green one (`--color-okay`), in every state. jsdom renders no CSS, so the colour that applies to the arrow `<i>` is
-//       worked out from the stylesheet: every top-level rule of index.css whose selector matches the element (or an ancestor, for
-//       inheritance), the one with the highest specificity (later wins a tie) sets `color`. This does not care which class names the
-//       implementation uses. CHOICE: the value is `var(--color-yellow)` / `var(--color-okay)` or the literal hex of the variable.
+//   F4  (amended by the user 2026-11-05: "no matter if the DPDS is started or stopped"; spec 46: P4TG order, no RX/TX label) the
+//       RX pill's arrow is always the yellow/orange one (`--color-yellow`) and the TX pill's arrow always the green one
+//       (`--color-okay`), in every state. Spec 46 sets them inline on the arrow `<i>` (`style.color`); CHOICE: see the header of
+//       dashboardTopRow.test.tsx. Was: the colour worked out from the rules of index.css (specificity walk). The full set of
+//       top row tests is in dashboardTopRow.test.tsx.
 //   F5  the radios of a link's chart area are "Traffic rates", "Packet loss", "Delay histogram"; the old names are gone.
 // (F1 to F3, F6 and F8 are in dashboardP4tg, dashboardSpec35, dashboardSummary, dashboardHistory, interfacesNoStats; F7 in
 // src/assets/stylesSpec43.test.ts.)
@@ -24,56 +24,6 @@ const variable = (name: string) =>
   must(new RegExp(`${name}\\s*:\\s*([^;]+);`).exec(css), `variable ${name}`)[1]
     .trim()
     .toLowerCase();
-
-function specificity(selector: string): number {
-  const ids = (selector.match(/#[\w-]+/g) ?? []).length;
-  const classes = (selector.match(/\.[\w-]+|\[[^\]]*\]|:(?!:)[\w-]+(?:\([^)]*\))?/g) ?? []).length;
-  const bare = selector.replace(/\.[\w-]+|#[\w-]+|\[[^\]]*\]|:+[\w-]+(?:\([^)]*\))?/g, ' ');
-  const tags = (bare.match(/(?:^|[\s>+~])[a-zA-Z][\w-]*/g) ?? []).length;
-  return ids * 10000 + classes * 100 + tags;
-}
-
-interface Decl {
-  weight: number;
-  order: number;
-  value: string;
-}
-
-/** The `color` declared for `el` itself by the stylesheet (highest specificity, then last), or undefined. */
-function ownColor(el: Element): string | undefined {
-  const found: Decl[] = [];
-  const re = /([^{}]+)\{([^{}]*)\}/g;
-  let order = 0;
-  for (let m = re.exec(css); m !== null; m = re.exec(css)) {
-    order += 1;
-    const color = /(?:^|[;\s])color\s*:\s*([^;]+)/.exec(m[2]);
-    if (!color || m[1].trim().startsWith('@')) continue;
-    for (const selector of m[1].split(',').map((s) => s.trim())) {
-      let hit = false;
-      try {
-        hit = el.matches(selector);
-      } catch {
-        hit = false;
-      }
-      if (hit) found.push({ weight: specificity(selector), order, value: color[1].trim().toLowerCase() });
-    }
-  }
-  found.sort((a, b) => a.weight - b.weight || a.order - b.order);
-  return found.at(-1)?.value;
-}
-
-/** The colour of the arrow icon in `pill`, inherited from an ancestor if no rule hits the icon. */
-function arrowColor(pill: HTMLElement): string {
-  const icon = must(pill.querySelector('i'), 'the arrow icon');
-  for (let el: Element | null = icon; el; el = el.parentElement) {
-    const c = ownColor(el);
-    if (c) return c;
-  }
-  throw new Error('no colour rule applies to the arrow');
-}
-
-const isVariable = (colour: string, name: '--color-yellow' | '--color-okay') =>
-  colour === `var(${name})` || colour === variable(name);
 
 async function arrows(state: 'running' | 'stopped' | 'stopping' | 'failed' | 'starting') {
   seedStore({ links: [fx.link(), fx.linkRev()] });
@@ -97,8 +47,8 @@ describe('Dashboard (spec 43 F4): the arrows of the RX and TX pills', () => {
     '"%s": the RX arrow is yellow and the TX arrow green',
     async (state) => {
       const { rx, tx } = await arrows(state);
-      expect(isVariable(arrowColor(rx), '--color-yellow'), `RX arrow: ${arrowColor(rx)}`).toBe(true);
-      expect(isVariable(arrowColor(tx), '--color-okay'), `TX arrow: ${arrowColor(tx)}`).toBe(true);
+      expect(must(rx.querySelector('i')).style.color).toBe('var(--color-yellow)');
+      expect(must(tx.querySelector('i')).style.color).toBe('var(--color-okay)');
     },
   );
 

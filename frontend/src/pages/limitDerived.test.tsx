@@ -4,7 +4,7 @@ import { screen, within } from '@testing-library/react';
 import { PAGES, cfg } from '../test/configPages';
 import type { ConfigPage } from '../test/configPages';
 import * as fx from '../test/fixtures';
-import { addButton, numberField, removeButton, section } from '../test/helpers';
+import { addButton, numberField, removeButton, section, typeInto, unitOf } from '../test/helpers';
 
 // v22: the limiter is an optional stage (no "Limiter active" switch, `activate` is gone), so the info line exists only while
 // the limiter is added (forms are opened with `openFull()` unless said otherwise).
@@ -64,7 +64,8 @@ describe.each(PAGES)('$name: no burst limit field', (page: ConfigPage) => {
 describe.each(PAGES)('$name: the derived limit is shown read-only', (page: ConfigPage) => {
   it('a new form (capacity 100000) shows "1233.6 Mbit" in the Limiter subsection', async () => {
     await page.openFull();
-    expect(numberField(body(), 'Buffer capacity')).toHaveValue(100000);
+    expect(numberField(body(), 'Buffer capacity')).toHaveValue(100);
+    expect(unitOf(body(), 'Buffer capacity')).toBe('kpackets');
     expect(infoElement()).toHaveTextContent(infoWith('1233.6 Mbit'));
   });
 
@@ -91,8 +92,7 @@ describe.each(PAGES)('$name: the derived limit is shown read-only', (page: Confi
     ['1000000', '12.336 Gbit'],
   ])('follows the buffer capacity while it is edited: %s packets -> %s', async (capacity, text) => {
     const user = await page.openFull();
-    await user.clear(numberField(body(), 'Buffer capacity'));
-    await user.type(numberField(body(), 'Buffer capacity'), capacity);
+    await typeInto(user, body(), 'Buffer capacity', capacity, 'packets');
     expect(infoElement()).toHaveTextContent(infoWith(text));
   });
 

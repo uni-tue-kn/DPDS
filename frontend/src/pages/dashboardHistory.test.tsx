@@ -18,7 +18,7 @@ import { must } from '../test/must';
 //     history is fetched in full again, because the new run's t_ms start at 0 again and an incremental answer would be empty.
 //     `started_at` is display data and no longer decides anything (see dashboardSpec29b.test.tsx).
 //   - the card of link d (its `dir`) charts samples[String(d)]: rate = rx_gbps / tx_gbps as they are, drops = the six cumulative counts (spec 43);
-//     x labels = formatElapsed(t_ms / 1000), e.g. t_ms 192000 -> "0h 3m 12s".
+//     x labels = secondsToTime(floor(t_ms / 1000)) (spec 46; was formatElapsed(t_ms)), e.g. t_ms 192000 -> "0h 3m 12s".
 //   - no cap: the 120-sample client buffer is gone, a run of any length is shown whole.
 // (Spec 29, round 2 and spec 29b: after a stop, and while stopping or after a failure, the cards of the run stay, see the
 // last sections of this file and dashboardSpec29b.test.tsx.)
@@ -194,7 +194,7 @@ describe('Dashboard (spec 29): the charts show the whole run with elapsed-time l
   });
 
   // Spec 43 F1. Was: loss_pct and the sum of the four overload shares (percent).
-  it('the loss chart plots the six cumulative counts, one line per cause in the donut order', async () => {
+  it('the loss chart plots the nine cumulative counts (spec 47), one line per cause in the donut order', async () => {
     server({
       '0': [
         fx.historySample(1000, {
@@ -202,16 +202,22 @@ describe('Dashboard (spec 29): the charts show the whole run with elapsed-time l
           limiter_drops: 2,
           buffer_full_drops: 3,
           nic_tx_drops: 4,
-          nic_rx_imissed: 5,
+          nic_rx_missed: 5,
           nic_rx_nombuf: 6,
+          nic_rx_port_buffer_discards: 7,
+          nic_rx_phy_discards: 8,
+          nic_tx_phy_discards: 9,
         }),
         fx.historySample(2000, {
           loss_drops: 10,
           limiter_drops: 20,
           buffer_full_drops: 30,
           nic_tx_drops: 40,
-          nic_rx_imissed: 50,
+          nic_rx_missed: 50,
           nic_rx_nombuf: 60,
+          nic_rx_port_buffer_discards: 70,
+          nic_rx_phy_discards: 80,
+          nic_tx_phy_discards: 90,
         }),
       ],
       '1': [],
@@ -221,8 +227,9 @@ describe('Dashboard (spec 29): the charts show the whole run with elapsed-time l
     await tick(0);
     const c = chartOf(0);
     expect(c.datasets.map((d) => d.label)).toEqual([...CAUSES]);
+    expect(c.datasets).toHaveLength(9);
     CAUSES.forEach((label, i) => {
-      expect(dataset(c, new RegExp(`^${label.replace(/[()]/g, '\\$&')}$`)).data, label).toEqual([i + 1, (i + 1) * 10]);
+      expect(c.datasets[i].data, label).toEqual([i + 1, (i + 1) * 10]);
     });
     expect(c.labels).toEqual(['0h 0m 1s', '0h 0m 2s']);
   });
@@ -532,8 +539,8 @@ describe('Dashboard (spec 29, round 2): the final charts of a stopped run stay u
   it('the Loss chart of a stopped link works too, and Rate comes back', async () => {
     const { s, stop } = await runThenStop();
     s.samples['0'].push(
-      fx.historySample(5000, { loss_drops: 2, nic_tx_drops: 0, nic_rx_imissed: 3 }),
-      fx.historySample(6000, { loss_drops: 4, nic_tx_drops: 0, nic_rx_imissed: 3 }),
+      fx.historySample(5000, { loss_drops: 2, nic_tx_drops: 0, nic_rx_missed: 3 }),
+      fx.historySample(6000, { loss_drops: 4, nic_tx_drops: 0, nic_rx_missed: 3 }),
     );
     await stop();
     fireEvent.click(must(radioOf(0, 'Packet loss'), 'Drops radio'));

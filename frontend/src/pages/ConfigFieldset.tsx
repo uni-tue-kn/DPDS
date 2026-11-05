@@ -1,18 +1,22 @@
 import type { ReactNode } from 'react';
-import { Button, Col, Form, InputGroup, Row } from 'react-bootstrap';
+import { Button, Col, Form, InputGroup, Row, ToggleButton, ToggleButtonGroup } from 'react-bootstrap';
 import {
+  ACCURACIES,
+  accuracyOf,
   DISTRIBUTIONS,
   frameRequired,
   halfLifeRequired,
   INIT_RATE_UNITS,
   LIMITER_MODES,
   LIMITER_RATE_UNITS,
+  reorderingActive,
   stdRequired,
+  withAccuracy,
 } from './linkForm';
-import type { ConfigForm } from './linkForm';
+import type { Accuracy, ConfigForm } from './linkForm';
 import { FieldLabel, InfoTip } from './FieldLabel';
 import type { HelpKey } from './fieldHelp';
-import { TIME_UNITS, changeUnit, parseFrame, sameFamily, shiftDecimal, toBase } from '../common/units';
+import { PACKET_UNITS, TIME_UNITS, changeUnit, parseFrame, sameFamily, shiftDecimal, toBase } from '../common/units';
 import type { Unit, UnitValue } from '../common/units';
 import { derivedLimitText } from './linkSummary';
 
@@ -118,6 +122,7 @@ export default function ConfigFieldset({ title, value, onChange }: Props) {
   };
 
   const frame = parseFrame(value.avg_frame_size);
+  const packets = shiftDecimal(value.buffer_capacity.text, PACKET_UNITS[value.buffer_capacity.unit].exp) ?? '';
   const advice = rangeAdvice(value);
   const binsText = value.hist_bins.trim();
   const binsHint =
@@ -187,12 +192,41 @@ export default function ConfigFieldset({ title, value, onChange }: Props) {
     </Form.Group>
   );
 
-  const select = (key: 'distribution' | 'limiter_mode' | 'loss_type', label: HelpKey, options: readonly string[]) => (
+  /** The three-way "Delay accuracy" toggle: it sets the two booleans of the config together. */
+  const accuracyToggle = () => (
+    <Form.Group as={Col} md={4} className="mb-3" controlId={id('accuracy')}>
+      <FieldLabel help="Delay accuracy" />
+      <div>
+        <ToggleButtonGroup
+          type="radio"
+          name={id('accuracy')}
+          id={id('accuracy')}
+          aria-label="Delay accuracy"
+          size="sm"
+          value={accuracyOf(value)}
+          onChange={(a: Accuracy) => onChange(withAccuracy(value, a))}
+        >
+          {ACCURACIES.map((a) => (
+            <ToggleButton key={a} id={id(`accuracy-${a}`)} value={a} variant="outline-primary">
+              {a}
+            </ToggleButton>
+          ))}
+        </ToggleButtonGroup>
+      </div>
+    </Form.Group>
+  );
+
+  const select = (
+    key: 'distribution' | 'limiter_mode' | 'loss_type',
+    label: HelpKey,
+    options: readonly string[],
+    disabled: readonly string[] = [],
+  ) => (
     <Form.Group as={Col} md={4} className="mb-3" controlId={id(key)}>
       <FieldLabel help={label} />
       <Form.Select value={value[key]} onChange={(e) => set(key, e.target.value as never)}>
         {options.map((o) => (
-          <option key={o} value={o}>
+          <option key={o} value={o} disabled={disabled.includes(o)}>
             {o}
           </option>
         ))}
@@ -226,8 +260,7 @@ export default function ConfigFieldset({ title, value, onChange }: Props) {
         {title}
       </div>
       <Section title="Buffer">
-        {text('buffer_capacity', 'Buffer capacity', { required: true })}
-        {check('reordering', 'Reordering')}
+        {unitField('buffer_capacity', 'Buffer capacity', PACKET_UNITS, { required: true })}
         {text('seed', 'Seed', { hint: 'Empty: random seed.' })}
         {text('avg_frame_size', 'Average frame size', { addon: 'B', required: frameRequired(value) })}
       </Section>
@@ -238,10 +271,10 @@ export default function ConfigFieldset({ title, value, onChange }: Props) {
           {select('distribution', 'Delay distribution', DISTRIBUTIONS)}
           {unitField('mean_ns', 'Mean delay', TIME_UNITS, { required: true })}
           {unitField('std_ns', 'Delay std', TIME_UNITS, { required: stdRequired(value) })}
-          {check('activate_correlation', 'Activate correlation')}
+          {accuracyToggle()}
           {unitField('half_life_period_ns', 'Half-life period', TIME_UNITS, {
             required: halfLifeRequired(value),
-            disabled: !value.activate_correlation,
+            disabled: accuracyOf(value) !== 'Correlation',
           })}
           {unitField('initialization_rate_pps', 'Initialization rate', INIT_RATE_UNITS, {
             required: true,
@@ -253,10 +286,15 @@ export default function ConfigFieldset({ title, value, onChange }: Props) {
         'limiter_added',
         'Limiter',
         <>
-          {select('limiter_mode', 'Limiter mode', LIMITER_MODES)}
+          {select('limiter_mode', 'Limiter mode', LIMITER_MODES, reorderingActive(value) ? ['Spacer'] : [])}
+          {reorderingActive(value) && (
+            <Col md={8} className="mb-3">
+              <Form.Text>Reordering works only with the policer (token bucket).</Form.Text>
+            </Col>
+          )}
           {unitField('rate_bps', 'Rate', LIMITER_RATE_UNITS, { required: true })}
           <Col md={12} className="mb-3">
-            <Form.Text>{derivedLimitText(value.buffer_capacity)}</Form.Text>
+            <Form.Text>{derivedLimitText(packets)}</Form.Text>
           </Col>
         </>,
       )}

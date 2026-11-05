@@ -1,6 +1,5 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { vi } from 'vitest';
-import { formatRatePill } from '../common/format';
 import * as fx from '../test/fixtures';
 import { expectStartBody, renderApp, seedStore, storedDoc, tick } from '../test/helpers';
 import { ApiError, api, fakeController, serveHistory } from '../test/mockApi';
@@ -202,46 +201,22 @@ describe('Dashboard (spec 28b item 1): Restart waits until the stop has finished
 
 // ---- item 3 ------------------------------------------------------------------------------------------------------------
 
-describe('Dashboard (spec 28b item 3): the pill unit is chosen after rounding', () => {
-  it.each([
-    [999_996, 0, '1.00 Mbit/s (0 pps)'],
-    [0, 999_996, '0 bit/s (1.00 Mpps)'],
-    [999.6, 999.6, '1.00 kbit/s (1.00 kpps)'],
-    [999.5, 999.5, '1.00 kbit/s (1.00 kpps)'],
-    [999.4, 999.4, '999 bit/s (999 pps)'],
-    [999_994, 999_994, '999.99 kbit/s (999.99 kpps)'],
-    [999_996_000, 0, '1.00 Gbit/s (0 pps)'],
-    [999_996_000, 999_996_000, '1.00 Gbit/s (1000.00 Mpps)'], // Mpps is the largest pps unit: nothing to move to
-    [999_996_000_000, 0, '1000.00 Gbit/s (0 pps)'], // so is Gbit/s
-    [1000, 1000, '1.00 kbit/s (1.00 kpps)'],
-    [1_000_000, 1_000_000, '1.00 Mbit/s (1.00 Mpps)'],
-    [9.25e9, 7.31e6, '9.25 Gbit/s (7.31 Mpps)'],
-    [0, 0, '0 bit/s (0 pps)'],
-  ])('formatRatePill(%s bit/s, %s pps) = "%s"', (bps, pps, text) => {
-    expect(formatRatePill(bps, pps)).toBe(text);
-  });
-
-  it('never shows "1000.00" in a unit that has a larger one', () => {
-    for (const v of [999_995, 999_996, 999_999, 999_999_995, 999_500, 999.5, 999.99]) {
-      const text = formatRatePill(v, v);
-      expect(text, String(v)).not.toMatch(/1000\.00 (kbit\/s|Mbit\/s|kpps)/);
-      expect(text, String(v)).not.toMatch(/\b1000 (bit\/s|pps)/);
-    }
-  });
-
-  it('the RX and TX pills of the dashboard use it', async () => {
+// Spec 46. Was: 'the pill unit is chosen after rounding' (formatRatePill: 999 996 bit/s is "1.00 Mbit/s", pps units up to Mpps, two
+// decimals everywhere). P4TG's formatBits/formatPacketRate replace it: the unit comes from the magnitude before rounding, trailing
+// zeros are dropped, units go up to Tbit/s and Tpps. The formatters are pinned with literals in common/format.test.ts.
+describe("Dashboard (spec 28b item 3, spec 46): the pills use P4TG's formatBits and formatPacketRate", () => {
+  it('the TX and RX pills read the summed rates in P4TG units', async () => {
     api.getEmulation.mockResolvedValue(fx.emulation('running'));
     api.getStats.mockResolvedValue(
       fx.stats([
-        fx.dirStats(0, { rx_bps: 999_996, rx_pps: 999_996, tx_bps: 999.6, tx_pps: 999.6 }),
+        fx.dirStats(0, { rx_bps: 1.5e6, rx_pps: 2500, tx_bps: 999.6, tx_pps: 999.6 }),
         fx.dirStats(1, { rx_bps: 0, rx_pps: 0, tx_bps: 0, tx_pps: 0 }),
       ]),
     );
     renderApp('/');
     const rx = await screen.findByTestId('pill-rx');
-    await waitFor(() => expect(rx).toHaveTextContent('RX 1.00 Mbit/s (1.00 Mpps)'));
-    expect(screen.getByTestId('pill-tx')).toHaveTextContent('TX 1.00 kbit/s (1.00 kpps)');
-    expect(rx.textContent).not.toContain('1000');
+    await waitFor(() => expect(rx).toHaveTextContent('1.5 Mbit/s (2.5 Kpps)'));
+    expect(screen.getByTestId('pill-tx')).toHaveTextContent('999.6 Bit/s (999.6 Pps)');
   });
 });
 
@@ -325,9 +300,10 @@ describe('Dashboard (spec 28b item 4): the action error and the live poll error'
 });
 
 // Spec 35 F2, spec 37. Was: 'no RX/TX pills while stopped' (no pill when the stats have no directions; they went away with the run).
-// The pills stay now: "–" while nothing has run, 0 (formatRatePill(0, 0)) after it. Full contract: dashboardSpec35.test.tsx.
+// The pills stay now: "–" while nothing has run, "0 Bit/s (0 Pps)" (spec 46: formatBits(0), formatPacketRate(0)) after it. Full
+// contract: dashboardSpec35.test.tsx, dashboardTopRow.test.tsx.
 describe('Dashboard (spec 28b item 4, spec 37): RX and TX pills when the stats have no directions', () => {
-  it('stopped, nothing ever ran: "RX –" and "TX –", not "RX 0 bit/s (0 pps)"', async () => {
+  it('stopped, nothing ever ran: "–" in both pills, not "0 Bit/s (0 Pps)"', async () => {
     vi.useFakeTimers();
     api.getEmulation.mockResolvedValue(fx.emulation('stopped'));
     api.getStats.mockResolvedValue(fx.stats([]));
@@ -336,9 +312,9 @@ describe('Dashboard (spec 28b item 4, spec 37): RX and TX pills when the stats h
     await tick(0);
     await tick(2500);
     expectState('stopped');
-    expect(screen.getByTestId('pill-rx')).toHaveTextContent(/^RX\s+–$/);
-    expect(screen.getByTestId('pill-tx')).toHaveTextContent(/^TX\s+–$/);
-    expect(screen.queryByText(/0 bit\/s/)).not.toBeInTheDocument();
+    expect(screen.getByTestId('pill-rx')).toHaveTextContent(/^\s*–$/);
+    expect(screen.getByTestId('pill-tx')).toHaveTextContent(/^\s*–$/);
+    expect(screen.queryByText(/0 Bit\/s/)).not.toBeInTheDocument();
   });
 
   it('they show the live numbers while links run and 0 when it has stopped', async () => {
@@ -353,12 +329,12 @@ describe('Dashboard (spec 28b item 4, spec 37): RX and TX pills when the stats h
     renderApp('/');
     await tick(0);
     await tick(0);
-    expect(screen.getByTestId('pill-rx')).toHaveTextContent('RX 9.50 Gbit/s (1.23 Mpps)');
+    expect(screen.getByTestId('pill-rx')).toHaveTextContent('9.5 Gbit/s (1.23 Mpps)');
     api.getEmulation.mockResolvedValue(fx.emulation('stopped'));
     api.getStats.mockResolvedValue(fx.stats([], { stale: true, age_ms: undefined, elapsed_ms: 4000 }));
     await tick(2500);
-    expect(screen.getByTestId('pill-rx')).toHaveTextContent(`RX ${formatRatePill(0, 0)}`);
-    expect(screen.getByTestId('pill-tx')).toHaveTextContent(`TX ${formatRatePill(0, 0)}`);
+    expect(screen.getByTestId('pill-rx')).toHaveTextContent('0 Bit/s (0 Pps)');
+    expect(screen.getByTestId('pill-tx')).toHaveTextContent('0 Bit/s (0 Pps)');
   });
 
   it('a starting emulation without directions yet shows "–", not empty pills and not the old run', async () => {
@@ -368,8 +344,8 @@ describe('Dashboard (spec 28b item 4, spec 37): RX and TX pills when the stats h
     renderApp('/');
     await tick(0);
     await tick(0);
-    expect(screen.getByTestId('pill-rx')).toHaveTextContent(/^RX\s+–$/);
-    expect(screen.getByTestId('pill-tx')).toHaveTextContent(/^TX\s+–$/);
+    expect(screen.getByTestId('pill-rx')).toHaveTextContent(/^\s*–$/);
+    expect(screen.getByTestId('pill-tx')).toHaveTextContent(/^\s*–$/);
   });
 });
 

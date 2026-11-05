@@ -29,14 +29,29 @@ export const CAUSES = [
     help: 'Packets the NIC would not accept for sending because its transmit ring was full.',
   },
   {
-    label: 'NIC RX missed (imissed)',
+    label: 'NIC RX missed (rx_missed_errors)',
     color: '#c0392b',
     help: 'Packets the NIC dropped because its receive queues were full.',
   },
   {
-    label: 'RX buffers exhausted (rx_nombuf)',
+    label: 'RX buffers exhausted (rx_mbuf_allocation_errors)',
     color: '#8e2b1f',
     help: 'Packets lost because no packet buffer (mbuf) was free to receive them.',
+  },
+  {
+    label: 'NIC RX port buffer full (rx_prio*_buf/cong_discard_packets)',
+    color: '#a93226',
+    help: "Packets the NIC's port buffer discarded because it was full or congested, summed over all priorities.",
+  },
+  {
+    label: 'NIC RX port discards (rx_phy_discard_packets)',
+    color: '#7b241c',
+    help: 'Packets the NIC port discarded on receive because it had no buffers left.',
+  },
+  {
+    label: 'NIC TX port discards (tx_phy_discard_packets)',
+    color: '#d35400',
+    help: 'Packets the NIC accepted for sending but dropped before they reached the wire.',
   },
 ] as const;
 
@@ -46,8 +61,11 @@ export interface DropCounts {
   limiter: number;
   bufferFull: number;
   nicTx: number;
-  imissed: number;
+  missed: number;
   nombuf: number;
+  portBuffer: number;
+  rxPhy: number;
+  txPhy: number;
 }
 
 /** From the live counters of `GET /api/stats`. */
@@ -56,8 +74,11 @@ export const dropsOfCounters = (c: Counters): DropCounts => ({
   limiter: c.limiter_drops,
   bufferFull: c.buffer_full_drops,
   nicTx: c.tx_drops,
-  imissed: c.nic_rx_imissed,
+  missed: c.nic_rx_missed,
   nombuf: c.nic_rx_nombuf,
+  portBuffer: c.nic_rx_port_buffer_discards,
+  rxPhy: c.nic_rx_phy_discards,
+  txPhy: c.nic_tx_phy_discards,
 });
 
 /** From the run's final counters of `GET /api/stats/history`. */
@@ -66,12 +87,16 @@ export const dropsOfTotals = (t: HistoryTotals): DropCounts => ({
   limiter: t.limiter_drops,
   bufferFull: t.buffer_full_drops,
   nicTx: t.nic_tx_drops,
-  imissed: t.nic_rx_imissed,
+  missed: t.nic_rx_missed,
   nombuf: t.nic_rx_nombuf,
+  portBuffer: t.nic_rx_port_buffer_discards,
+  rxPhy: t.nic_rx_phy_discards,
+  txPhy: t.nic_tx_phy_discards,
 });
 
 /** All causes together; 0 means nothing was dropped. */
-export const totalDrops = (d: DropCounts) => d.loss + d.limiter + d.bufferFull + d.nicTx + d.imissed + d.nombuf;
+export const totalDrops = (d: DropCounts) =>
+  d.loss + d.limiter + d.bufferFull + d.nicTx + d.missed + d.nombuf + d.portBuffer + d.rxPhy + d.txPhy;
 
 /** The one neutral segment shown instead of the causes when nothing was dropped. */
 const PLACEHOLDER = { label: 'No drops', color: '#adb5bd' } as const;
@@ -104,7 +129,7 @@ function CauseInfo({ label, help }: { label: string; help: string }) {
 /** The distribution of a link's drops by cause, with a legend that explains the raw counter names. */
 export default function LossDonut({ drops }: { drops: DropCounts }) {
   const theme = useTheme();
-  const { loss, limiter, bufferFull, nicTx, imissed, nombuf } = drops;
+  const { loss, limiter, bufferFull, nicTx, missed, nombuf, portBuffer, rxPhy, txPhy } = drops;
   const empty = totalDrops(drops) === 0;
   const data = useMemo(
     () =>
@@ -114,12 +139,12 @@ export default function LossDonut({ drops }: { drops: DropCounts }) {
             labels: CAUSES.map((c) => c.label),
             datasets: [
               {
-                data: [loss, limiter, bufferFull, nicTx, imissed, nombuf],
+                data: [loss, limiter, bufferFull, nicTx, missed, nombuf, portBuffer, rxPhy, txPhy],
                 backgroundColor: CAUSES.map((c) => c.color),
               },
             ],
           },
-    [empty, loss, limiter, bufferFull, nicTx, imissed, nombuf],
+    [empty, loss, limiter, bufferFull, nicTx, missed, nombuf, portBuffer, rxPhy, txPhy],
   );
   const options = useMemo(
     () =>

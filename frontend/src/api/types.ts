@@ -144,9 +144,16 @@ export interface Counters {
   tx_pkts: number;
   tx_sent: number;
   tx_drops: number;
-  /** Cumulative `imissed` and `rx_nombuf` of the receiving port (a hairpin's two links report the same port). */
-  nic_rx_imissed: number;
+  /** Cumulative NIC losses of the ingress port (RX side) and of the egress port (TX side); a hairpin reports one port for both. */
+  nic_rx_missed: number;
   nic_rx_nombuf: number;
+  nic_rx_port_buffer_discards: number;
+  nic_rx_phy_discards: number;
+  nic_tx_phy_discards: number;
+  /** Diagnostics, in no loss total. */
+  nic_rx_crc_errors: number;
+  nic_rx_symbol_errors: number;
+  nic_rx_length_errors: number;
 }
 
 export interface DirectionStats {
@@ -201,8 +208,11 @@ export interface HistorySample {
   limiter_drops: number;
   buffer_full_drops: number;
   nic_tx_drops: number;
-  nic_rx_imissed: number;
+  nic_rx_missed: number;
   nic_rx_nombuf: number;
+  nic_rx_port_buffer_discards: number;
+  nic_rx_phy_discards: number;
+  nic_tx_phy_discards: number;
 }
 
 /** A link of the run, as the controller ran it. */
@@ -219,8 +229,11 @@ export interface HistoryTotals {
   limiter_drops: number;
   buffer_full_drops: number;
   nic_tx_drops: number;
-  nic_rx_imissed: number;
+  nic_rx_missed: number;
   nic_rx_nombuf: number;
+  nic_rx_port_buffer_discards: number;
+  nic_rx_phy_discards: number;
+  nic_tx_phy_discards: number;
 }
 
 /**

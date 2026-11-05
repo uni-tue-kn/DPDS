@@ -208,7 +208,7 @@ describe.each(PAGES)('$name: editing a stored entry', (page: ConfigPage) => {
 
   it('an unrelated edit keeps the stored frame size', async () => {
     const user = await openStored(page, 1518);
-    await typeInto(user, body(), 'Buffer capacity', '4321');
+    await typeInto(user, body(), 'Buffer capacity', '4321', 'packets');
     await page.save(user);
     await waitFor(() => expect(storedEntry(page).config.buffer_capacity).toBe(4321));
     expect(storedFrame(page)).toBe(1518);

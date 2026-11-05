@@ -228,7 +228,7 @@
 //                   unit ("10 Gbit/s", "1.5 kbit/s"); the burst limit is not shown.
 //       Loss        "Random p=<p>" | "Gilbert-Elliott p=<p>, r=<r>, h=<h>, k=<k>" (this order); numbers as stored, no float noise.
 //     Examples: config() -> "Normal 1 µs / 10 ns" | "−" | "none" | "Random p=0";
-//               config2() -> "Gamma 2.5 µs / 300 ns" | "+" | "policing 40 Gbit/s" | "Gilbert-Elliott p=0.01, r=0.2, h=0.3, k=0.9".
+//               config2() -> "Gamma 2.5 µs / 300 ns" | "−" | "policing 40 Gbit/s" | "Gilbert-Elliott p=0.01, r=0.2, h=0.3, k=0.9".
 //   - Inspect = SIDE PANEL (react-bootstrap Offcanvas, the user's "slider"), not an expandable row. "Inspect <name>" opens
 //     exactly one `role="dialog"` whose accessible name is the link name (it contains a heading with the name, one
 //     "Close" button, and a link "Edit <name>" to /links/<id>); nothing is rendered while closed; it uses the list data
@@ -499,6 +499,7 @@ export const TIME_UNITS = ['ns', '\u00b5s', 'ms', 's'];
 export const RATE_UNITS = ['bit/s', 'kbit/s', 'Mbit/s', 'Gbit/s'];
 export const PPS_UNITS = ['pps', 'kpps', 'Mpps'];
 export const SIZE_UNITS = ['bit', 'kbit', 'Mbit', 'Gbit'];
+export const PACKET_UNITS = ['packets', 'kpackets', 'Mpackets'];
 export const MULTIPLIER: Record<string, number> = {
   ns: 1,
   '\u00b5s': 1e3,
@@ -515,7 +516,21 @@ export const MULTIPLIER: Record<string, number> = {
   kbit: 1e3,
   Mbit: 1e6,
   Gbit: 1e9,
+  packets: 1,
+  kpackets: 1e3,
+  Mpackets: 1e6,
 };
+/** Spec 45: the "Delay accuracy" toggle of the Delayer section replaces the Reordering and Activate correlation checkboxes. */
+export const ACCURACY_MODES = ['Basic', 'Reordering', 'Correlation'];
+export const accuracyRadio = (mode: string): HTMLInputElement => screen.getByRole('radio', { name: mode });
+export async function pickAccuracy(user: UserEvent, mode: string): Promise<void> {
+  await user.click(accuracyRadio(mode));
+}
+/** The selected option of the "Delay accuracy" toggle. */
+export function accuracyOf(): string | undefined {
+  return ACCURACY_MODES.find((m) => accuracyRadio(m).checked);
+}
+
 /** The five subsections of the config form, in their order. */
 export const SECTIONS = ['Buffer', 'Delayer', 'Limiter', 'Dropper', 'Statistics'];
 

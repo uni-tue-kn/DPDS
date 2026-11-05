@@ -57,28 +57,36 @@ export function linkLabel(
   return `${name || '?'}: ${label(ingress) || '?'} → ${label(egress) || '?'}`;
 }
 
-/**
- * The first of `units` (each 1000 x the one before) in which `v` shows as at least 1, with two decimals ("9.25 Gbit/s";
- * none for the base unit). The unit is chosen after rounding, so 999 996 bit/s is "1.00 Mbit/s", not "1000.00 kbit/s".
- */
-function scaled(v: number, units: string[]): string {
-  const show = (x: number, i: number) => x.toFixed(i === 0 ? 0 : 2);
-  let i = 0;
-  let x = v;
-  while (i < units.length - 1 && Number(show(x, i)) >= 1000) {
-    x /= 1000;
-    i += 1;
-  }
-  return `${show(x, i)} ${units[i]}`;
+// The four formatters below are ported exactly from P4TG's SendReceiveMonitor.tsx and Helper.ts.
+const K = 1000;
+
+function unitScaled(v: number, sizes: string[], decimals: number): [number, string] {
+  const i = Math.floor(Math.log(v) / Math.log(K));
+  return [Number.parseFloat((v / K ** i).toFixed(decimals)), sizes[i] ?? ''];
 }
 
-/** The rate pills of the dashboard: "9.25 Gbit/s (7.31 Mpps)". */
-export function formatRatePill(bps: number, pps: number): string {
-  return `${scaled(bps, ['bit/s', 'kbit/s', 'Mbit/s', 'Gbit/s'])} (${scaled(pps, ['pps', 'kpps', 'Mpps'])})`;
+/** "9.25 Gbit/s"; 1000-based, trailing zeros dropped. */
+export function formatBits(bits: number, decimals = 2): string {
+  if (bits <= 0) return '0 Bit/s';
+  const [x, unit] = unitScaled(bits, ['Bit/s', 'Kbit/s', 'Mbit/s', 'Gbit/s', 'Tbit/s'], decimals);
+  return `${x} ${unit}`;
 }
 
-/** Milliseconds (a run's relative time) as "1h 2m 5s". */
-export function formatElapsed(ms: number): string {
-  const s = Math.max(0, Math.floor(ms / 1000));
-  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m ${s % 60}s`;
+/** "7.31 Mpps". */
+export function formatPacketRate(packets: number, decimals = 2): string {
+  if (packets <= 0) return '0 Pps';
+  const [x, unit] = unitScaled(packets, ['Pps', 'Kpps', 'Mpps', 'Gpps', 'Tpps'], decimals);
+  return `${x} ${unit}`;
+}
+
+/** "7.77 K"; always the decimals, an empty unit below 1000 ("5.00 "). */
+export function formatFrameCount(packets: number, decimals = 2): string {
+  if (packets === 0) return '0';
+  const [x, unit] = unitScaled(packets, ['', 'K', 'M', 'B', 'T'], decimals);
+  return `${x.toFixed(decimals)} ${unit}`;
+}
+
+/** Seconds as "1h 2m 5s"; the hours do not wrap at a day. */
+export function secondsToTime(seconds: number): string {
+  return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m ${Math.floor((seconds % 3600) % 60)}s`;
 }

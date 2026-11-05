@@ -19,7 +19,7 @@ function members(name: string): string {
 const keysOf = (m: string) => Array.from(m.matchAll(/^\s*(\w+)\??:\s*[^;]+;/gm)).map((k) => k[1]);
 
 describe('types.ts (spec 43)', () => {
-  it('HistorySample has the rates and the six cumulative drop counters, and no *_pct field', () => {
+  it('HistorySample has the rates and the nine cumulative drop counters (spec 47), and no *_pct field', () => {
     const keys = keysOf(members('HistorySample'));
     expect(keys.sort()).toEqual(
       [
@@ -32,8 +32,11 @@ describe('types.ts (spec 43)', () => {
         'limiter_drops',
         'buffer_full_drops',
         'nic_tx_drops',
-        'nic_rx_imissed',
+        'nic_rx_missed',
         'nic_rx_nombuf',
+        'nic_rx_port_buffer_discards',
+        'nic_rx_phy_discards',
+        'nic_tx_phy_discards',
       ].sort(),
     );
     expect(members('HistorySample')).toMatch(/\bnic_rx_nombuf:\s*number\s*;/);

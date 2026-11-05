@@ -3,7 +3,16 @@ import type { UserEvent } from '@testing-library/user-event';
 import * as fx from '../test/fixtures';
 import { PAGES, cfg } from '../test/configPages';
 import type { ConfigPage } from '../test/configPages';
-import { numberField, rawStore, renderApp, seedLinks, typeInto, unitOf, watchStoreWrites } from '../test/helpers';
+import {
+  numberField,
+  pickAccuracy,
+  rawStore,
+  renderApp,
+  seedLinks,
+  typeInto,
+  unitOf,
+  watchStoreWrites,
+} from '../test/helpers';
 import { must } from '../test/must';
 
 // spec19 item 6. The form refuses negative values for times, rates, capacity and the initialization rate, and loss
@@ -39,7 +48,7 @@ const NEGATIVES: [string, string, string | undefined, Prep, number][] = [
   ['Rate', '-250', 'kbit/s', undefined, -250000],
   ['Initialization rate', '-2', 'Mpps', undefined, -2000000],
   ['Initialization rate', '-5', 'kpps', undefined, -5000],
-  ['Buffer capacity', '-5', undefined, undefined, -5],
+  ['Buffer capacity', '-5', 'packets', undefined, -5],
 ];
 
 /** The digits of the base-unit value without its sign: "5000000". Short values such as "3" or "5" are not searched for. */
@@ -48,7 +57,7 @@ const baseDigits = (n: number) => String(Math.abs(n));
 describe.each(PAGES)('$name: negative values are refused in the unit the user typed', (page: ConfigPage) => {
   async function ready(user: UserEvent, prep: Prep) {
     await page.ready(user);
-    if (prep === 'correlation') await user.click(screen.getByLabelText('Activate correlation'));
+    if (prep === 'correlation') await pickAccuracy(user, 'Correlation');
   }
 
   it.each(NEGATIVES)(
@@ -75,7 +84,7 @@ describe.each(PAGES)('$name: negative values are refused in the unit the user ty
   it('a negative buffer capacity is refused on a form with no stage added (alert naming the field, no write)', async () => {
     const user = await page.openNew();
     await page.ready(user);
-    await typeInto(user, body(), 'Buffer capacity', '-5');
+    await typeInto(user, body(), 'Buffer capacity', '-5', 'packets');
     await page.save(user);
     expect((await screen.findByRole('alert')).textContent).toMatch(/Buffer capacity/);
     expect(page.requests()).toBe(0);
@@ -108,7 +117,7 @@ describe.each(PAGES)('$name: negative values are refused in the unit the user ty
   it('Buffer capacity = 0 is accepted and sent as 0 (also with no stage added)', async () => {
     const user = await page.openNew();
     await ready(user, undefined);
-    await typeInto(user, body(), 'Buffer capacity', '0');
+    await typeInto(user, body(), 'Buffer capacity', '0', 'packets');
     await page.save(user);
     expect(page.created().buffer_capacity).toBe(0);
   });

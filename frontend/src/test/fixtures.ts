@@ -66,7 +66,7 @@ export function configBare(over: Partial<ConfigDto> = {}): ConfigDto {
 export function config2(): ConfigDto {
   return {
     buffer_capacity: 5000,
-    reordering: true,
+    reordering: false, // spec45: reordering excludes correlation, which this config uses
     delayer: {
       distribution: 'GammaDistribution',
       mean_ns: 2500,
@@ -96,7 +96,7 @@ export function config3(): ConfigDto {
       half_life_period_ns: 555,
       initialization_rate_pps: 2500000,
     },
-    limiter: { mode: 'Spacer', rate_bps: 5000000000 },
+    limiter: { mode: 'Spacer', rate_bps: 5000000000 }, // display-only fixture: never saved through the editor (spec45)
     loss_model: { type: 'Random', p: 0.25 },
     seed: 7,
     histogram: { bins: 32, lo_ns: 1000, hi_ns: 50000 },
@@ -274,9 +274,16 @@ export function counters(over: Partial<Counters> = {}): Counters {
     tx_pkts: 990,
     tx_sent: 990,
     tx_drops: 0,
-    // spec 35 (C2): cumulative counters of the receiving port
-    nic_rx_imissed: 0,
+    // spec 35 (C2), spec 47 (C4): cumulative NIC loss counters of the ingress (RX) and egress (TX) port
+    nic_rx_missed: 0,
     nic_rx_nombuf: 0,
+    nic_rx_port_buffer_discards: 0,
+    nic_rx_phy_discards: 0,
+    nic_tx_phy_discards: 0,
+    // spec 47 (C4): diagnostics, in no loss total
+    nic_rx_crc_errors: 0,
+    nic_rx_symbol_errors: 0,
+    nic_rx_length_errors: 0,
     ...over,
   };
 }
@@ -393,8 +400,12 @@ export function historySample(t_ms: number, over: Partial<HistorySample> = {}): 
     limiter_drops: 30,
     buffer_full_drops: 20,
     nic_tx_drops: 5,
-    nic_rx_imissed: 4,
+    nic_rx_missed: 4,
     nic_rx_nombuf: 1,
+    // spec 47: the three new causes are 0 by default (the six above keep their counts; tests of the new ones set them)
+    nic_rx_port_buffer_discards: 0,
+    nic_rx_phy_discards: 0,
+    nic_tx_phy_discards: 0,
     ...over,
   };
 }
@@ -420,7 +431,7 @@ export function history(samples: Record<string, HistorySample[]>, over: Partial<
 
 /**
  * Spec 35 (C1): one link's final cumulative counters, as `totals` of `GET /api/stats/history` carries them. Distinct counts
- * that sum to 100 drops (loss 40, limiter 30, buffer 20, NIC TX 5, imissed 4, nombuf 1) out of 10000 received packets, so the
+ * that sum to 100 drops (loss 40, limiter 30, buffer 20, NIC TX 5, missed 4, nombuf 1; the three spec 47 causes 0) out of 10000 received packets, so the
  * share of a cause "of all drops" is its count in percent, and differs from its share of the received packets.
  */
 export function totals(over: Partial<HistoryTotals> = {}): HistoryTotals {
@@ -430,8 +441,12 @@ export function totals(over: Partial<HistoryTotals> = {}): HistoryTotals {
     limiter_drops: 30,
     buffer_full_drops: 20,
     nic_tx_drops: 5,
-    nic_rx_imissed: 4,
+    nic_rx_missed: 4,
     nic_rx_nombuf: 1,
+    // spec 47: the three new causes are 0 by default (the six above keep their counts; tests of the new ones set them)
+    nic_rx_port_buffer_discards: 0,
+    nic_rx_phy_discards: 0,
+    nic_tx_phy_discards: 0,
     ...over,
   };
 }
@@ -441,12 +456,15 @@ export function historySamples(from: number, count: number, over: Partial<Histor
   return Array.from({ length: count }, (_, i) => historySample((from + i) * 1000, over));
 }
 
-/** Spec 43 B1: the cumulative drop fields of a `HistorySample`, in the order of the donut's causes (and of the loss chart's lines). */
+/** Spec 43 B1: the cumulative drop fields of a `HistorySample`, in the order of the donut's causes (and of the loss chart's lines): nine causes (spec 47). */
 export const DROP_FIELDS = [
   'loss_drops',
   'limiter_drops',
   'buffer_full_drops',
   'nic_tx_drops',
-  'nic_rx_imissed',
+  'nic_rx_missed',
   'nic_rx_nombuf',
+  'nic_rx_port_buffer_discards',
+  'nic_rx_phy_discards',
+  'nic_tx_phy_discards',
 ] as const;

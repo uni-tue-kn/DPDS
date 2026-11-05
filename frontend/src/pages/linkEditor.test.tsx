@@ -5,12 +5,13 @@ import type { ConfigDto, Link, LinkInput } from '../api/types';
 import { api, ApiError } from '../test/mockApi';
 import * as fx from '../test/fixtures';
 import {
+  accuracyOf,
   addStages,
+  pickAccuracy,
   queryAddButton,
   queryStage,
   rawStore,
   renderApp,
-  watchStoreWrites,
   section,
   seedLinks,
   seedStore,
@@ -20,6 +21,7 @@ import {
   typeInto,
   typeRate,
   unitOf,
+  watchStoreWrites,
 } from '../test/helpers';
 import { must } from '../test/must';
 
@@ -390,14 +392,12 @@ describe('Link editor: create', () => {
     await user.selectOptions(within(g).getByLabelText('Delay distribution'), 'GammaDistribution');
     await typeInto(user, g, 'Mean delay', '2.5', 'ms');
     await typeInto(user, g, 'Delay std', '120', '\u00b5s');
-    await user.click(input(g, 'Activate correlation'));
+    await pickAccuracy(user, 'Correlation');
     await typeInto(user, g, 'Half-life period', '8', 'ms');
     await typeInto(user, g, 'Initialization rate', '4', 'Mpps');
     await user.selectOptions(within(g).getByLabelText('Limiter mode'), 'TokenBucketFilter');
     await typeInto(user, g, 'Rate', '100', 'Gbit/s');
-    await user.clear(input(g, 'Buffer capacity'));
-    await user.type(input(g, 'Buffer capacity'), '250000');
-    await user.click(input(g, 'Reordering'));
+    await typeInto(user, g, 'Buffer capacity', '250000', 'packets');
     await user.clear(input(g, 'Seed'));
     await user.type(input(g, 'Seed'), '1234');
     await user.type(input(g, 'Histogram bins'), '128');
@@ -419,7 +419,7 @@ describe('Link editor: create', () => {
     });
     expect(c.limiter).toEqual({ mode: 'TokenBucketFilter', rate_bps: 100000000000 });
     expect(c.buffer_capacity).toBe(250000);
-    expect(c.reordering).toBe(true);
+    expect(c.reordering).toBe(false);
     expect(c.seed).toBe(1234);
     expect(c.histogram).toEqual({ bins: 128, lo_ns: 1000000, hi_ns: 4000000 });
     expect(c.delay_stats).toBe(false);
@@ -516,8 +516,7 @@ describe('Link editor: create', () => {
     const user = await openNew();
     await fillValid(user, 'bad');
     await user.clear(input(group(), 'Delay std'));
-    await user.clear(input(group(), 'Buffer capacity'));
-    await user.type(input(group(), 'Buffer capacity'), '777');
+    await typeInto(user, group(), 'Buffer capacity', '777', 'packets');
     await user.click(save());
     expect(await screen.findByRole('alert')).toHaveTextContent(/Delay std/);
     expect(screen.getByRole('heading', { level: 1, name: 'New link' })).toBeInTheDocument();
@@ -525,6 +524,7 @@ describe('Link editor: create', () => {
     expect(select('Ingress').value).toBe('0000:65:00.0');
     expect(select('Egress').value).toBe('0000:65:00.1');
     expect(input(group(), 'Buffer capacity')).toHaveValue(777);
+    expect(unitOf(group(), 'Buffer capacity')).toBe('packets');
     expectNoWrite();
     await typeInto(user, group(), 'Delay std', '5', '\u00b5s');
     await user.click(save());
@@ -632,7 +632,7 @@ describe('Link editor: edit', () => {
     expect(unitOf(g, 'Mean delay')).toBe('\u00b5s');
     expect(input(g, 'Delay std')).toHaveValue(10); // 10 ns
     expect(unitOf(g, 'Delay std')).toBe('ns');
-    expect(input(g, 'Activate correlation')).not.toBeChecked();
+    expect(accuracyOf()).toBe('Basic');
     expect(input(g, 'Half-life period')).toHaveValue(0);
     expect(unitOf(g, 'Half-life period')).toBe('ms'); // 0 -> the default unit
     expect(input(g, 'Initialization rate')).toHaveValue(12.5); // 12500000 pps
@@ -643,8 +643,9 @@ describe('Link editor: edit', () => {
     expect(screen.queryByLabelText('Rate')).not.toBeInTheDocument();
     expect(within(g).getByLabelText('Loss model')).toHaveValue('Random');
     expect(input(g, 'Random loss probability')).toHaveValue(0);
-    expect(input(g, 'Buffer capacity')).toHaveValue(1000);
-    expect(input(g, 'Reordering')).not.toBeChecked();
+    expect(input(g, 'Buffer capacity')).toHaveValue(1);
+    expect(unitOf(g, 'Buffer capacity')).toBe('kpackets');
+    expect(accuracyOf()).toBe('Basic');
     expect(input(g, 'Seed')).toHaveDisplayValue('');
     expect(input(g, 'Histogram bins')).toHaveValue(null);
     expect(input(g, 'Histogram lo')).toHaveValue(null);
@@ -664,7 +665,7 @@ describe('Link editor: edit', () => {
     expect(unitOf(g, 'Mean delay')).toBe('\u00b5s');
     expect(input(g, 'Delay std')).toHaveValue(300);
     expect(unitOf(g, 'Delay std')).toBe('ns');
-    expect(input(g, 'Activate correlation')).toBeChecked();
+    expect(accuracyOf()).toBe('Correlation');
     expect(input(g, 'Half-life period')).toHaveValue(4); // 4000000 ns
     expect(unitOf(g, 'Half-life period')).toBe('ms');
     expect(input(g, 'Initialization rate')).toHaveValue(8);
@@ -678,8 +679,8 @@ describe('Link editor: edit', () => {
     expect(input(g, 'Gilbert-Elliot k')).toHaveValue(0.9);
     expect(input(g, 'Gilbert-Elliot h')).toHaveValue(0.3);
     expect(screen.queryByLabelText('Gilbert-Elliot starts in good state')).not.toBeInTheDocument();
-    expect(input(g, 'Buffer capacity')).toHaveValue(5000);
-    expect(input(g, 'Reordering')).toBeChecked();
+    expect(input(g, 'Buffer capacity')).toHaveValue(5);
+    expect(unitOf(g, 'Buffer capacity')).toBe('kpackets');
     expect(input(g, 'Seed')).toHaveDisplayValue('42');
     expect(input(g, 'Histogram bins')).toHaveValue(64);
     expect(input(g, 'Histogram lo')).toHaveValue(100); // 100 ns
@@ -710,7 +711,7 @@ describe('Link editor: edit', () => {
     expect(sent.config.seed).toBe(42);
     expect(sent.config.histogram).toEqual({ bins: 64, lo_ns: 100, hi_ns: 9000 });
     expect(sent.config.delay_stats).toBe(false);
-    expect(sent.config.reordering).toBe(true);
+    expect(sent.config.reordering).toBe(false);
     expect(await screen.findByRole('heading', { level: 1, name: 'Settings' })).toBeInTheDocument();
   });
 
@@ -1020,11 +1021,11 @@ describe('Link editor: initialization rate (v12)', () => {
     expect(order(rate(), section('Limiter'))).toBeTruthy();
   });
 
-  it('is shown while "Activate correlation" is off and stays after switching it on (always required)', async () => {
+  it('is shown while the delay accuracy is Basic and stays after switching it to Correlation (always required)', async () => {
     const user = await openNew();
-    expect(input(group(), 'Activate correlation')).not.toBeChecked();
+    expect(accuracyOf()).toBe('Basic');
     expect(rate()).toBeInTheDocument();
-    await user.click(input(group(), 'Activate correlation'));
+    await pickAccuracy(user, 'Correlation');
     expect(rate()).toBeInTheDocument();
   });
 
@@ -1096,7 +1097,7 @@ describe('Link editor: initialization rate (v12)', () => {
     await fillName(user, 'v');
     await user.selectOptions(select('Ingress'), '0000:65:00.0');
     await user.selectOptions(select('Egress'), '0000:65:00.1');
-    expect(input(group(), 'Activate correlation')).not.toBeChecked();
+    expect(accuracyOf()).toBe('Basic');
     await user.click(save());
     expect(await screen.findByRole('alert')).toHaveTextContent(/Initialization rate/);
     await typeRate(user, '9000000');

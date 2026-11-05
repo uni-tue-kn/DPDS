@@ -2,7 +2,6 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { vi } from 'vitest';
 import type { EmulationState } from '../api/types';
-import { formatRatePill } from '../common/format';
 import {
   activePanel,
   CAUSES,
@@ -85,13 +84,14 @@ describe('Dashboard (spec 35 F1): the top row, pills left and buttons right like
     expect(pills.compareDocumentPosition(group) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it('the pills come in this order: RX, TX, elapsed, lost (spec 43 F3: no state badge before them; default counters drop packets)', async () => {
+  // Spec 46. Was: RX, TX, elapsed, lost. P4TG's order now (dashboardTopRow.test.tsx has the one with the exact children).
+  it('the pills come in this order: TX, RX, Status, elapsed, loss % (spec 43 F3: no state badge before them; default counters drop packets)', async () => {
     api.getEmulation.mockResolvedValue(fx.emulation('running'));
     api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0), fx.dirStats(1)], { elapsed_ms: 192_000 }));
     renderApp('/');
     const pills = await screen.findByTestId('top-pills');
     await within(pills).findByTestId('pill-elapsed');
-    const ids = ['pill-rx', 'pill-tx', 'pill-elapsed', 'pill-lost'];
+    const ids = ['pill-tx', 'pill-rx', 'pill-status', 'pill-elapsed', 'loss-pct'];
     const found = ids.map((id) => within(pills).getByTestId(id));
     for (let i = 1; i < found.length; i += 1) {
       expect(found[i - 1].compareDocumentPosition(found[i]) & Node.DOCUMENT_POSITION_FOLLOWING, ids[i]).toBeTruthy();
@@ -101,7 +101,7 @@ describe('Dashboard (spec 35 F1): the top row, pills left and buttons right like
     expect(within(screen.getByTestId('run-buttons')).queryByTestId('pill-rx')).not.toBeInTheDocument();
   });
 
-  it('the live pills read "RX <Gbit/s> (<Mpps>)", "TX ...", the elapsed time and "Lost <n> frames"', async () => {
+  it('the live pills read "<Gbit/s> (<Mpps>)" for TX and RX, the elapsed time, the Status and the loss percentage', async () => {
     api.getEmulation.mockResolvedValue(fx.emulation('running'));
     api.getStats.mockResolvedValue(
       fx.stats(
@@ -113,11 +113,12 @@ describe('Dashboard (spec 35 F1): the top row, pills left and buttons right like
       ),
     );
     renderApp('/');
-    await waitFor(() => expect(pillText('pill-rx')).toBe('RX 9.25 Gbit/s (7.31 Mpps)'));
-    expect(pillText('pill-tx')).toBe('TX 7.25 Gbit/s (6.31 Mpps)');
+    await waitFor(() => expect(pillText('pill-rx')).toBe('9.25 Gbit/s (7.31 Mpps)'));
+    expect(pillText('pill-tx')).toBe('7.25 Gbit/s (6.31 Mpps)');
     expect(pillText('pill-elapsed')).toBe('0h 3m 12s');
-    // spec 43 F2: the default counters of each link drop 4 + 3 + 3 packets, so 20 over the two links
-    expect(pillText('pill-lost')).toBe('Lost 20 frames');
+    // spec 43 F2, spec 46: the default counters of each link drop 4 + 3 + 3 packets, so 20 over the two links
+    expect(pillText('pill-status')).toBe('Status: Error. Lost 20.00 frames.');
+    expect(pillText('loss-pct')).toBe('21.62 %');
   });
 
   // Spec 43 F8. Was: the group held exactly [Restart] and one contextual button in every state, Restart disabled unless running,
@@ -316,8 +317,9 @@ describe('Dashboard (spec 35 F1): notices go in a row below the top row, never i
 // ---- F2: the pills after a stop -----------------------------------------------------------------------------------------
 
 describe('Dashboard (spec 37, was spec 35 F2): the pills show 0 once the run has ended, the history stays in charts and donuts', () => {
-  const ZERO_RX = `RX ${formatRatePill(0, 0)}`;
-  const ZERO_TX = `TX ${formatRatePill(0, 0)}`;
+  // Spec 46: no label, P4TG's formatBits(0) and formatPacketRate(0). Was: `RX ${formatRatePill(0, 0)}`.
+  const ZERO_RX = '0 Bit/s (0 Pps)';
+  const ZERO_TX = '0 Bit/s (0 Pps)';
 
   /**
    * Two links, each with an early sample and a final one, and `totals` of the run: link 0 received 1000 packets and dropped 50,
@@ -344,7 +346,7 @@ describe('Dashboard (spec 37, was spec 35 F2): the pills show 0 once the run has
           limiter_drops: 20,
           buffer_full_drops: 5,
           nic_tx_drops: 5,
-          nic_rx_imissed: 7,
+          nic_rx_missed: 7,
           nic_rx_nombuf: 3,
         }),
         '1': fx.totals({
@@ -353,7 +355,7 @@ describe('Dashboard (spec 37, was spec 35 F2): the pills show 0 once the run has
           limiter_drops: 100,
           buffer_full_drops: 50,
           nic_tx_drops: 20,
-          nic_rx_imissed: 20,
+          nic_rx_missed: 20,
           nic_rx_nombuf: 10,
         }),
       },
@@ -361,7 +363,7 @@ describe('Dashboard (spec 37, was spec 35 F2): the pills show 0 once the run has
   }
 
   it.each(['stopped', 'stopping', 'failed'] as const)(
-    '"%s": RX and TX read the 0 of formatRatePill(0, 0), the lost pill keeps the run\'s total, elapsed is the frozen time',
+    '"%s": RX and TX read 0 Bit/s (0 Pps), there is no Status (spec 46; was: the lost pill kept the run\'s total) and no duration once stopped or failed (spec 46 item 4; was: the frozen time)',
     async (state) => {
       twoLinkRun();
       ended(state, 305_400);
@@ -369,28 +371,28 @@ describe('Dashboard (spec 37, was spec 35 F2): the pills show 0 once the run has
       await tick(1000);
       expect(pillText('pill-rx')).toBe(ZERO_RX);
       expect(pillText('pill-tx')).toBe(ZERO_TX);
-      expect(pillText('pill-lost')).toBe('Lost 350 frames'); // 110 + 120 + 55 + 25 + 27 + 13: the totals of both links
-      expect(pillText('pill-elapsed')).toBe('0h 5m 5s');
+      expect(screen.queryByTestId('pill-status')).not.toBeInTheDocument(); // the run's totals (350) are in the donut only
+      expect(screen.queryByTestId('pill-lost')).not.toBeInTheDocument();
+      // spec 46 item 4: the duration is gone once stopped or failed; while stopping (the drain) it still shows
+      if (state === 'stopping') expect(screen.getByTestId('pill-elapsed')).toHaveTextContent('0h 5m 5s');
+      else expect(screen.queryByTestId('pill-elapsed')).not.toBeInTheDocument();
     },
   );
-
-  it('the 0 rate text is the live formatter\'s own, not "–" and not empty', () => {
-    expect(ZERO_RX).toMatch(/^RX 0(\.0+)? bit\/s \(0(\.0+)? pps\)$/);
-  });
 
   it('the pills do not move on while the run stays ended', async () => {
     twoLinkRun();
     ended('stopped');
     await open();
     await tick(1000);
-    const before = ['pill-rx', 'pill-tx', 'pill-elapsed'].map(pillText);
+    const before = ['pill-rx', 'pill-tx'].map(pillText);
     await tick(30_000);
-    expect(['pill-rx', 'pill-tx', 'pill-elapsed'].map(pillText)).toEqual(before);
+    expect(['pill-rx', 'pill-tx'].map(pillText)).toEqual(before);
+    expect(screen.queryByTestId('pill-elapsed')).not.toBeInTheDocument();
     expect(before.slice(0, 2)).toEqual([ZERO_RX, ZERO_TX]);
-    expect(pillText('pill-lost')).toBe('Lost 350 frames');
+    expect(screen.queryByTestId('pill-status')).not.toBeInTheDocument();
   });
 
-  it('after a live run stops the pills turn from the live numbers to 0, the elapsed time stays', async () => {
+  it('after a live run stops the pills turn from the live numbers to 0 and the elapsed time goes (spec 46 item 4; was: it stayed)', async () => {
     twoLinkRun();
     api.getEmulation.mockResolvedValue(fx.emulation('running'));
     api.getStats.mockResolvedValue(
@@ -399,43 +401,22 @@ describe('Dashboard (spec 37, was spec 35 F2): the pills show 0 once the run has
       }),
     );
     await open();
-    expect(pillText('pill-rx')).toBe('RX 2.00 Gbit/s (200.00 kpps)');
-    expect(pillText('pill-lost')).toBe('Lost 20 frames'); // live counters
+    expect(pillText('pill-rx')).toBe('2 Gbit/s (200 Kpps)');
+    expect(pillText('pill-status')).toBe('Status: Error. Lost 20.00 frames.'); // live counters
     ended('stopped', 9000);
     await tick(2500);
     expect(pillText('pill-rx')).toBe(ZERO_RX);
     expect(pillText('pill-tx')).toBe(ZERO_TX);
-    expect(pillText('pill-lost')).toBe('Lost 350 frames'); // the run's totals once it has ended
-    expect(pillText('pill-elapsed')).toBe('0h 0m 9s');
+    expect(screen.queryByTestId('pill-status')).not.toBeInTheDocument(); // only while running
+    expect(screen.queryByTestId('pill-elapsed')).not.toBeInTheDocument();
   });
 
-  it('while stopping the lost pill already shows the totals of the history', async () => {
+  it('while stopping (the drain) there is no Status, P4TG: running && !draining', async () => {
     twoLinkRun();
     ended('stopping');
     await open();
     await tick(2500);
-    expect(pillText('pill-lost')).toBe('Lost 350 frames');
-  });
-
-  it('a run that dropped nothing has no lost pill after the stop either', async () => {
-    serveHistory({
-      startedAt: 1762000000,
-      samples: { '0': fx.historySamples(1, 2) },
-      totals: {
-        '0': fx.totals({
-          loss_drops: 0,
-          limiter_drops: 0,
-          buffer_full_drops: 0,
-          nic_tx_drops: 0,
-          nic_rx_imissed: 0,
-          nic_rx_nombuf: 0,
-        }),
-      },
-    });
-    ended('stopped');
-    await open();
-    await tick(2500);
-    expect(screen.queryByTestId('pill-lost')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('pill-status')).not.toBeInTheDocument();
   });
 
   it('the charts keep the ended run: every link tab and the Summary still plot the history, the donuts show the totals', async () => {
@@ -454,24 +435,24 @@ describe('Dashboard (spec 37, was spec 35 F2): the pills show 0 once the run has
         .data as number[];
     // the Summary (selected by default) sums the links per sample; its donut sums the totals per cause
     expect(rx(activePanel())?.map((v) => Math.round(v * 100) / 100)).toEqual([2, 9.25]);
-    expect(donut(activePanel())).toEqual([110, 120, 55, 25, 27, 13]);
+    expect(donut(activePanel())).toEqual([110, 120, 55, 25, 27, 13, 0, 0, 0]);
     expect(rx(card(0))).toEqual([1, 6.1]);
-    expect(donut(card(0))).toEqual([10, 20, 5, 5, 7, 3]);
+    expect(donut(card(0))).toEqual([10, 20, 5, 5, 7, 3, 0, 0, 0]);
     expect(rx(card(1))).toEqual([1, 3.15]);
-    expect(donut(card(1))).toEqual([100, 100, 50, 20, 20, 10]);
+    expect(donut(card(1))).toEqual([100, 100, 50, 20, 20, 10, 0, 0, 0]);
     // and the pills beside them say 0 all along
     expect(pillText('pill-rx')).toBe(ZERO_RX);
   });
 
-  it('before any run the RX and TX pills say "–" and there is no lost pill', async () => {
+  it('before any run the TX and RX pills say "–" and there is no Status', async () => {
     api.getEmulation.mockResolvedValue(fx.emulation('stopped'));
     api.getStats.mockResolvedValue(fx.stats([], { stale: true, age_ms: undefined }));
     await open();
     await tick(2500);
-    expect(pillText('pill-rx')).toBe('RX –');
-    expect(pillText('pill-tx')).toBe('TX –');
-    expect(screen.queryByTestId('pill-lost')).not.toBeInTheDocument();
-    expect(screen.queryByText(/\d+(\.\d+)? (Gbit|Mbit|kbit|bit)/)).not.toBeInTheDocument();
+    expect(pillText('pill-rx')).toBe('–');
+    expect(pillText('pill-tx')).toBe('–');
+    expect(screen.queryByTestId('pill-status')).not.toBeInTheDocument();
+    expect(screen.queryByText(/\d+(\.\d+)? [GMKT]?bit\/s/i)).not.toBeInTheDocument();
   });
 
   it('CHOICE: no elapsed pill before any run (the stats carry no elapsed_ms)', async () => {
@@ -485,9 +466,8 @@ describe('Dashboard (spec 37, was spec 35 F2): the pills show 0 once the run has
     api.getEmulation.mockResolvedValue(fx.emulation('running'));
     api.getStats.mockImplementation(() => new Promise(() => undefined));
     await open();
-    expect(pillText('pill-rx')).toBe('RX –');
-    expect(pillText('pill-tx')).toBe('TX –');
-    expect(screen.queryByTestId('pill-lost')).not.toBeInTheDocument();
+    expect(pillText('pill-rx')).toBe('–');
+    expect(pillText('pill-tx')).toBe('–');
   });
 
   it('CHOICE: once a new run is "starting" the pills go back from 0 to "–"', async () => {
@@ -498,122 +478,15 @@ describe('Dashboard (spec 37, was spec 35 F2): the pills show 0 once the run has
     api.getEmulation.mockResolvedValue(fx.emulation('starting'));
     api.getStats.mockResolvedValue(fx.stats([], { stale: true, age_ms: undefined }));
     await tick(2500);
-    expect(pillText('pill-rx')).toBe('RX –');
-    expect(pillText('pill-tx')).toBe('TX –');
-    expect(screen.queryByTestId('pill-lost')).not.toBeInTheDocument();
+    expect(pillText('pill-rx')).toBe('–');
+    expect(pillText('pill-tx')).toBe('–');
+    expect(screen.queryByTestId('pill-status')).not.toBeInTheDocument();
   });
 
-  // ---- spec 43 F2: the "lost" pill, "Lost <N> frames", N = every drop of the Summary's counts ----
-  // Was (spec 38): "lost <x.xx> %", the live NIC-only share (nic_tx_pct + nic_rx_pct, weighted by rx_pps), gone after the stop.
-
-  const ZERO_COUNTERS = {
-    loss_drops: 0,
-    limiter_drops: 0,
-    buffer_full_drops: 0,
-    tx_drops: 0,
-    nic_rx_imissed: 0,
-    nic_rx_nombuf: 0,
-    dpds_rejects: 0,
-  };
-  const withCounters = (dir: number, c: object, over: Partial<ReturnType<typeof fx.dirStats>> = {}) =>
-    fx.dirStats(dir, { counters: fx.counters({ ...ZERO_COUNTERS, ...c }), ...over });
-  const runningWith = (...dirs: ReturnType<typeof fx.dirStats>[]) => {
-    api.getEmulation.mockResolvedValue(fx.emulation('running'));
-    api.getStats.mockResolvedValue(fx.stats(dirs));
-    renderApp('/');
-  };
-
-  it('there is no pill-dropped', async () => {
-    runningWith(fx.dirStats(0), fx.dirStats(1));
-    await screen.findByTestId('pill-lost');
-    expect(screen.queryByTestId('pill-dropped')).not.toBeInTheDocument();
-  });
-
-  it('reads "Lost <N> frames" with N the sum of all six causes (distinct counts, 100 in all)', async () => {
-    runningWith(
-      withCounters(0, {
-        loss_drops: 40,
-        limiter_drops: 30,
-        buffer_full_drops: 20,
-        tx_drops: 5,
-        nic_rx_imissed: 4,
-        nic_rx_nombuf: 1,
-      }),
-    );
-    await waitFor(() => expect(pillText('pill-lost')).toBe('Lost 100 frames'));
-  });
-
-  it.each([
-    ['loss_drops', 'Loss model'],
-    ['limiter_drops', 'Rate limiter'],
-    ['buffer_full_drops', 'Buffer full'],
-    ['tx_drops', 'NIC TX ring full'],
-    ['nic_rx_imissed', 'NIC RX missed'],
-    ['nic_rx_nombuf', 'RX buffers exhausted'],
-  ])('%s alone (%s) makes the pill show, with its count', async (key) => {
-    runningWith(withCounters(0, { [key]: 7 }));
-    await waitFor(() => expect(pillText('pill-lost')).toBe('Lost 7 frames'));
-  });
-
-  it('is the sum over the links, like the Summary donut', async () => {
-    runningWith(
-      withCounters(0, { loss_drops: 3, tx_drops: 4 }),
-      withCounters(1, { buffer_full_drops: 5, nic_rx_nombuf: 6 }),
-    );
-    await waitFor(() => expect(pillText('pill-lost')).toBe('Lost 18 frames'));
-  });
-
-  it('uses formatCount: thousands separators', async () => {
-    runningWith(withCounters(0, { loss_drops: 1_000_000, nic_rx_imissed: 234_567 }));
-    await waitFor(() => expect(pillText('pill-lost')).toBe('Lost 1,234,567 frames'));
-  });
-
-  it('is absent while every counter is 0, whatever the percentage fields say, and dpds_rejects do not count', async () => {
-    runningWith(
-      withCounters(
-        0,
-        { dpds_rejects: 90 },
-        { loss_pct: 5, limiter_pct: 7, buffer_full_pct: 9, nic_tx_pct: 1, nic_rx_pct: 2 },
-      ),
-      withCounters(1, { dpds_rejects: 10 }),
-    );
-    await waitFor(() => expect(pillText('pill-rx')).not.toBe('RX –'));
-    expect(screen.queryByTestId('pill-lost')).not.toBeInTheDocument();
-  });
-
-  it('emulated causes count too: loss model, rate limiter and buffer full alone show the pill', async () => {
-    runningWith(withCounters(0, { loss_drops: 5, limiter_drops: 7, buffer_full_drops: 9 }));
-    await waitFor(() => expect(pillText('pill-lost')).toBe('Lost 21 frames'));
-  });
-
-  it('carries the red icon before the text, and no percent sign', async () => {
-    runningWith(fx.dirStats(0), fx.dirStats(1));
-    const pill = await screen.findByTestId('pill-lost');
-    const icon = must(pill.querySelector('i'), 'the icon in the lost pill');
-    expect(icon).toHaveClass('bi', 'bi-exclamation-circle-fill', 'text-danger');
-    expect(pill.firstElementChild).toBe(icon);
-    expect(pill.textContent?.trim().startsWith('Lost')).toBe(true);
-    expect(pill.textContent).not.toContain('%');
-  });
-
-  it('appears, grows and disappears with the live counters', async () => {
-    vi.useFakeTimers();
-    api.getEmulation.mockResolvedValue(fx.emulation('running'));
-    api.getStats.mockResolvedValue(fx.stats([withCounters(0, {})]));
-    renderApp('/');
-    await tick(0);
-    await tick(0);
-    expect(screen.queryByTestId('pill-lost')).not.toBeInTheDocument();
-    api.getStats.mockResolvedValue(fx.stats([withCounters(0, { nic_rx_imissed: 2 })]));
-    await tick(2500);
-    expect(pillText('pill-lost')).toBe('Lost 2 frames');
-    api.getStats.mockResolvedValue(fx.stats([withCounters(0, { nic_rx_imissed: 2, loss_drops: 40 })]));
-    await tick(2500);
-    expect(pillText('pill-lost')).toBe('Lost 42 frames');
-    api.getStats.mockResolvedValue(fx.stats([withCounters(0, {})]));
-    await tick(2500);
-    expect(screen.queryByTestId('pill-lost')).not.toBeInTheDocument();
-  });
+  // Spec 46. Removed: the spec 43 F2 block about the "lost" pill ("Lost <N> frames", formatCount, the red icon, shown after the stop,
+  // no pill-dropped). Its cases (N = sum of the six causes over the links, each cause alone, dpds_rejects not counted, appears and
+  // disappears with the counters) are now about the Status "Status: Error. Lost <formatFrameCount> frames." and its tooltip
+  // in dashboardTopRow.test.tsx; the Status exists only while running.
 });
 
 // ---- F3: tabs ---------------------------------------------------------------------------------------------------------
