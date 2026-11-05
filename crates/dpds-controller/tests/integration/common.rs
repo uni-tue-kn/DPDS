@@ -1779,8 +1779,15 @@ pub struct DirSample {
 pub struct PortSample {
     pub ibytes: u64,
     pub obytes: u64,
-    pub imissed: u64,
-    pub rx_nombuf: u64,
+    pub rx_missed_errors: u64,
+    pub rx_mbuf_allocation_errors: u64,
+}
+
+/// Adds (or overwrites) xstats of port `port` in the reply of `/ethdev/xstats,<port>` (spec 47).
+pub fn set_xstats(snap: &mut Snapshot, port: usize, pairs: &[(&str, u64)]) {
+    for (k, v) in pairs {
+        snap.eth[port][*k] = Value::from(*v);
+    }
 }
 
 /// Two ports (0, 1), two links `a-to-b` (dir0: port 0 -> 1) and `b-to-a` (dir1: port 1 -> 0).
@@ -1807,9 +1814,11 @@ pub fn snapshot(dirs: [DirSample; 2], ports: [PortSample; 2]) -> Snapshot {
         })
     };
     let eth_json = |p: &PortSample| {
-        json!({ "ipackets": p.ibytes / 100, "opackets": p.obytes / 100, "ibytes": p.ibytes,
-                "obytes": p.obytes, "imissed": p.imissed, "ierrors": 0, "oerrors": 0,
-                "rx_nombuf": p.rx_nombuf })
+        // the reply of `/ethdev/xstats,<p>` (spec 47): flat name -> value
+        json!({ "rx_good_packets": p.ibytes / 100, "tx_good_packets": p.obytes / 100,
+                "rx_good_bytes": p.ibytes, "tx_good_bytes": p.obytes,
+                "rx_missed_errors": p.rx_missed_errors,
+                "rx_mbuf_allocation_errors": p.rx_mbuf_allocation_errors })
     };
     let mut snap = Snapshot {
         ports: ports_reply,

@@ -16,8 +16,8 @@
 //! Rates and percentages are computed over the window between the two snapshots
 //! (dt = delta of the direction's own `uptime_ns`); they are 0.0 (never null/NaN/inf)
 //! without `prev`, with dt == 0, with zero rx delta, or when a counter went backwards
-//! (restart). `rx_bps` = delta `ibytes` of the rx port * 8 / dt, `tx_bps` = delta
-//! `obytes` of the tx port * 8 / dt. `nic_rx_pct` = (delta imissed + delta rx_nombuf of the
+//! (restart). `rx_bps` = delta `rx_good_bytes` (xstat, spec 47) of the rx port * 8 / dt, `tx_bps` = delta
+//! `tx_good_bytes` of the tx port * 8 / dt. `nic_rx_pct` = (delta rx_missed_errors + delta rx_mbuf_allocation_errors + ... of the
 //! rx port) / delta rx_pkts * 100. Delay / lateness / buffer_len_max / first_loss are
 //! passed through from `cur` (cumulative), as numbers even when telemetry sent
 //! decimal strings.
@@ -38,12 +38,12 @@ fn d(uptime_ns: u64, rx: u64, tx: u64, loss: u64, lim: u64, full: u64, txd: u64)
     }
 }
 
-fn p(ibytes: u64, obytes: u64, imissed: u64, nombuf: u64) -> PortSample {
+fn p(ibytes: u64, obytes: u64, missed: u64, nombuf: u64) -> PortSample {
     PortSample {
         ibytes,
         obytes,
-        imissed,
-        rx_nombuf: nombuf,
+        rx_missed_errors: missed,
+        rx_mbuf_allocation_errors: nombuf,
     }
 }
 
@@ -319,9 +319,9 @@ fn ring_snapshot(t_s: u64) -> dpds_controller::stats::Snapshot {
         })
     };
     let eth = |p: u64| {
-        json!({"ipackets": 0, "opackets": 0, "ibytes": 1_000 * (p + 1) * t_s,
-               "obytes": 100_000 * (p + 1) * t_s, "imissed": 0, "ierrors": 0, "oerrors": 0,
-               "rx_nombuf": 0})
+        json!({"rx_good_packets": 0, "tx_good_packets": 0, "rx_good_bytes": 1_000 * (p + 1) * t_s,
+               "tx_good_bytes": 100_000 * (p + 1) * t_s, "rx_missed_errors": 0,
+               "rx_mbuf_allocation_errors": 0})
     };
     let mut snap = dpds_controller::stats::Snapshot {
         ports,
@@ -375,9 +375,9 @@ fn ring_histograms_are_per_link_index() {
 
 // ---- spec 35 (C2): the receiving port's imissed and rx_nombuf per direction --------------------
 //
-// `counters` of a direction also carries `nic_rx_imissed` and `nic_rx_nombuf`: the CUMULATIVE
+// `counters` of a direction also carries `nic_rx_missed` and `nic_rx_nombuf`: the CUMULATIVE
 // `imissed` and `rx_nombuf` of the direction's RECEIVING port (`dir<d>_rx_port`, the link's
-// ingress), straight from the newest snapshot's `/ethdev/stats`, so they are the same whatever the
+// ingress), straight from the newest snapshot's `/ethdev/xstats`, so they are the same whatever the
 // window (not deltas, not clamped after a restart, present without a `prev`). Two links that
 // receive on the same port both report that port's counters (a hairpin of one port; they are not
 // split and not summed). A receiving port without NIC stats reports 0. The existing `nic_rx_pct`
@@ -389,12 +389,12 @@ fn nic_rx(v: &Value, d: usize) -> (u64, u64) {
         c[k].as_u64()
             .unwrap_or_else(|| panic!("counters.{k} is not a u64 in {c}"))
     };
-    (n("nic_rx_imissed"), n("nic_rx_nombuf"))
+    (n("nic_rx_missed"), n("nic_rx_nombuf"))
 }
 
 /// `cur()` with port 1 given its own imissed and rx_nombuf, so that a direction that takes the
 /// wrong port shows.
-fn cur_with_port1(imissed: u64, nombuf: u64) -> dpds_controller::stats::Snapshot {
+fn cur_with_port1(missed: u64, nombuf: u64) -> dpds_controller::stats::Snapshot {
     snapshot(
         [
             d(
@@ -410,7 +410,7 @@ fn cur_with_port1(imissed: u64, nombuf: u64) -> dpds_controller::stats::Snapshot
         ],
         [
             p(2_250_000_000, 725_000_000, 30_100, 10_000),
-            p(1000, 1_800_000_000, imissed, nombuf),
+            p(1000, 1_800_000_000, missed, nombuf),
         ],
     )
 }
@@ -461,8 +461,8 @@ fn a_receiving_port_without_nic_stats_reports_zero() {
 fn ring_with_nic_drops(t_s: u64) -> dpds_controller::stats::Snapshot {
     let mut s = ring_snapshot(t_s);
     for (port, e) in s.eth.iter_mut().enumerate() {
-        e["imissed"] = json!(11 * (port as u64 + 1));
-        e["rx_nombuf"] = json!(port as u64 + 5);
+        e["rx_missed_errors"] = json!(11 * (port as u64 + 1));
+        e["rx_mbuf_allocation_errors"] = json!(port as u64 + 5);
     }
     s
 }

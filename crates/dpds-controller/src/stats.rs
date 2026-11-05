@@ -16,7 +16,7 @@ pub struct Snapshot {
     pub ports: Value,
     /// `dirs[d]` = reply of `/dpds/stats,<d>`.
     pub dirs: Vec<Value>,
-    /// `eth[p]` = reply of `/ethdev/stats,<p>` (p = DPDK port id).
+    /// `eth[p]` = reply of `/ethdev/xstats,<p>` (p = DPDK port id), a flat `{name: value}` object.
     pub eth: Vec<Value>,
     /// `hists[d]` = reply of `/dpds/delay_hist,<d>` (page 0) without its `bins`, only the
     /// metadata (edges, under/overflow); `null` when the histogram is absent.
@@ -48,11 +48,71 @@ pub struct Counters {
     pub tx_pkts: u64,
     pub tx_sent: u64,
     pub tx_drops: u64,
-    /// Cumulative `imissed` of the receiving port; links that share a receiving port (a
-    /// hairpin of one port) both report the port's counter.
-    pub nic_rx_imissed: u64,
-    /// Cumulative `rx_nombuf` of the receiving port, shared like `nic_rx_imissed`.
+    /// Cumulative `rx_missed_errors` (= `imissed`) of the ingress port; links that share an
+    /// ingress port (a hairpin of one port) both report the port's counter.
+    pub nic_rx_missed: u64,
+    /// Cumulative `rx_mbuf_allocation_errors` (= `rx_nombuf`) of the ingress port.
     pub nic_rx_nombuf: u64,
+    /// Cumulative sum of the ingress port's `rx_prio[0-7]_(buf|cong)_discard_packets`.
+    pub nic_rx_port_buffer_discards: u64,
+    /// Cumulative `rx_phy_discard_packets` of the ingress port.
+    pub nic_rx_phy_discards: u64,
+    /// Cumulative `tx_phy_discard_packets` of the egress port: frames the NIC took from
+    /// `tx_burst` and dropped before the wire.
+    pub nic_tx_phy_discards: u64,
+    /// Diagnostics of the ingress port, counted in no loss total: `rx_phy_crc_errors`.
+    pub nic_rx_crc_errors: u64,
+    /// `rx_phy_symbol_errors` of the ingress port (a diagnostic).
+    pub nic_rx_symbol_errors: u64,
+    /// `rx_phy_in_range_len_errors` of the ingress port (a diagnostic).
+    pub nic_rx_length_errors: u64,
+}
+
+/// `^rx_prio[0-7]_(buf|cong)_discard_packets$`
+fn is_port_buffer_discard(name: &str) -> bool {
+    name.strip_prefix("rx_prio")
+        .and_then(|r| r.strip_suffix("_discard_packets"))
+        .and_then(|r| r.strip_prefix(|c: char| ('0'..='7').contains(&c)))
+        .is_some_and(|r| r == "_buf" || r == "_cong")
+}
+
+/// The loss xstats of one port; a name the NIC does not report is 0.
+#[derive(Debug, Clone, Copy, Default)]
+struct NicXstats {
+    missed: u64,
+    nombuf: u64,
+    port_buffer: u64,
+    rx_phy: u64,
+    tx_phy: u64,
+    crc: u64,
+    symbol: u64,
+    length: u64,
+}
+
+impl NicXstats {
+    fn read(e: &Value) -> NicXstats {
+        let port_buffer = e.as_object().map_or(0, |o| {
+            o.iter()
+                .filter(|(k, _)| is_port_buffer_discard(k))
+                .filter_map(|(_, v)| v.as_u64())
+                .sum()
+        });
+        NicXstats {
+            missed: u(e, "rx_missed_errors"),
+            nombuf: u(e, "rx_mbuf_allocation_errors"),
+            port_buffer,
+            rx_phy: u(e, "rx_phy_discard_packets"),
+            tx_phy: u(e, "tx_phy_discard_packets"),
+            crc: u(e, "rx_phy_crc_errors"),
+            symbol: u(e, "rx_phy_symbol_errors"),
+            length: u(e, "rx_phy_in_range_len_errors"),
+        }
+    }
+
+    /// The RX-side NIC losses (not the diagnostics).
+    fn rx_losses(&self) -> u64 {
+        self.missed + self.nombuf + self.port_buffer + self.rx_phy
+    }
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -70,9 +130,10 @@ pub struct DirectionStats {
     pub loss_pct: f64,
     pub limiter_pct: f64,
     pub buffer_full_pct: f64,
-    /// TX ring drops (`tx_drops`) of the NIC.
+    /// TX ring drops (`tx_drops`) plus `tx_phy_discard_packets` of the egress NIC.
     pub nic_tx_pct: f64,
-    /// `imissed` + `rx_nombuf` of the receiving NIC.
+    /// `rx_missed_errors`, `rx_mbuf_allocation_errors`, the port buffer discards and
+    /// `rx_phy_discard_packets` of the ingress NIC.
     pub nic_rx_pct: f64,
     /// The direction records delay statistics (`dir<d>_delay_stats` of `/dpds/ports`;
     /// on when the key is absent). When off, the `delay_*` and `lateness_*` values are null.
@@ -120,8 +181,11 @@ pub struct HistorySample {
     pub buffer_full_drops: u64,
     /// `tx_drops` of the NIC.
     pub nic_tx_drops: u64,
-    pub nic_rx_imissed: u64,
+    pub nic_rx_missed: u64,
     pub nic_rx_nombuf: u64,
+    pub nic_rx_port_buffer_discards: u64,
+    pub nic_rx_phy_discards: u64,
+    pub nic_tx_phy_discards: u64,
 }
 
 impl HistorySample {
@@ -137,8 +201,11 @@ impl HistorySample {
             limiter_drops: c.limiter_drops,
             buffer_full_drops: c.buffer_full_drops,
             nic_tx_drops: c.tx_drops,
-            nic_rx_imissed: c.nic_rx_imissed,
+            nic_rx_missed: c.nic_rx_missed,
             nic_rx_nombuf: c.nic_rx_nombuf,
+            nic_rx_port_buffer_discards: c.nic_rx_port_buffer_discards,
+            nic_rx_phy_discards: c.nic_rx_phy_discards,
+            nic_tx_phy_discards: c.nic_tx_phy_discards,
         }
     }
 }
@@ -152,8 +219,11 @@ pub struct HistoryTotals {
     pub buffer_full_drops: u64,
     /// `counters.tx_drops` of `/api/stats`.
     pub nic_tx_drops: u64,
-    pub nic_rx_imissed: u64,
+    pub nic_rx_missed: u64,
     pub nic_rx_nombuf: u64,
+    pub nic_rx_port_buffer_discards: u64,
+    pub nic_rx_phy_discards: u64,
+    pub nic_tx_phy_discards: u64,
 }
 
 impl From<&Counters> for HistoryTotals {
@@ -164,8 +234,11 @@ impl From<&Counters> for HistoryTotals {
             limiter_drops: c.limiter_drops,
             buffer_full_drops: c.buffer_full_drops,
             nic_tx_drops: c.tx_drops,
-            nic_rx_imissed: c.nic_rx_imissed,
+            nic_rx_missed: c.nic_rx_missed,
             nic_rx_nombuf: c.nic_rx_nombuf,
+            nic_rx_port_buffer_discards: c.nic_rx_port_buffer_discards,
+            nic_rx_phy_discards: c.nic_rx_phy_discards,
+            nic_tx_phy_discards: c.nic_tx_phy_discards,
         }
     }
 }
@@ -396,7 +469,9 @@ pub fn compute_stats(prev: Option<&Snapshot>, cur: &Snapshot) -> StatsView {
             let rx_port = uint(&cur.ports, &format!("dir{d}_rx_port")).unwrap_or(0) as usize;
             let tx_port = uint(&cur.ports, &format!("dir{d}_tx_port")).unwrap_or(0) as usize;
             let delay_stats = delay_stats_on(&cur.ports, d);
-            let rx_eth = cur.eth.get(rx_port);
+            let nic_of = |snap: &Snapshot, i: usize| snap.eth.get(i).map(NicXstats::read);
+            let rx_nic = nic_of(cur, rx_port).unwrap_or_default();
+            let tx_nic = nic_of(cur, tx_port).unwrap_or_default();
             let delay = |key: &str| if delay_stats { num(c, key) } else { None };
             let mut s = DirectionStats {
                 dir: d as u32,
@@ -433,8 +508,14 @@ pub fn compute_stats(prev: Option<&Snapshot>, cur: &Snapshot) -> StatsView {
                     tx_pkts: u(c, "tx_pkts"),
                     tx_sent: u(c, "tx_sent"),
                     tx_drops: u(c, "tx_drops"),
-                    nic_rx_imissed: rx_eth.map_or(0, |e| u(e, "imissed")),
-                    nic_rx_nombuf: rx_eth.map_or(0, |e| u(e, "rx_nombuf")),
+                    nic_rx_missed: rx_nic.missed,
+                    nic_rx_nombuf: rx_nic.nombuf,
+                    nic_rx_port_buffer_discards: rx_nic.port_buffer,
+                    nic_rx_phy_discards: rx_nic.rx_phy,
+                    nic_tx_phy_discards: tx_nic.tx_phy,
+                    nic_rx_crc_errors: rx_nic.crc,
+                    nic_rx_symbol_errors: rx_nic.symbol,
+                    nic_rx_length_errors: rx_nic.length,
                 },
             };
             let Some(p) = prev else { return s };
@@ -453,14 +534,18 @@ pub fn compute_stats(prev: Option<&Snapshot>, cur: &Snapshot) -> StatsView {
             s.loss_pct = pct(d_or_0("loss_drops"), rx);
             s.limiter_pct = pct(d_or_0("limiter_drops"), rx);
             s.buffer_full_pct = pct(d_or_0("buffer_full_drops"), rx);
-            s.nic_tx_pct = pct(d_or_0("tx_drops"), rx);
             let port = |snap: &Snapshot, i: usize| snap.eth.get(i).cloned().unwrap_or(Value::Null);
             let (rc, rp) = (port(cur, rx_port), port(p, rx_port));
             let (tc, tp) = (port(cur, tx_port), port(p, tx_port));
             let nic = |a: &Value, b: &Value, k: &str| delta(a, b, k).unwrap_or(0);
-            s.rx_bps = nic(&rc, &rp, "ibytes") as f64 * 8.0 / secs;
-            s.tx_bps = nic(&tc, &tp, "obytes") as f64 * 8.0 / secs;
-            s.nic_rx_pct = pct(nic(&rc, &rp, "imissed") + nic(&rc, &rp, "rx_nombuf"), rx);
+            s.rx_bps = nic(&rc, &rp, "rx_good_bytes") as f64 * 8.0 / secs;
+            s.tx_bps = nic(&tc, &tp, "tx_good_bytes") as f64 * 8.0 / secs;
+            // a loss counter that went backwards (restart) adds 0
+            let grown = |c: u64, p: u64| c.saturating_sub(p);
+            let (rc, rp) = (NicXstats::read(&rc), NicXstats::read(&rp));
+            let (tc, tp) = (NicXstats::read(&tc), NicXstats::read(&tp));
+            s.nic_tx_pct = pct(d_or_0("tx_drops") + grown(tc.tx_phy, tp.tx_phy), rx);
+            s.nic_rx_pct = pct(grown(rc.rx_losses(), rp.rx_losses()), rx);
             s
         })
         .collect();

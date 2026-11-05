@@ -277,14 +277,14 @@ async fn the_histogram_expects_the_running_configuration() {
             PortSample {
                 ibytes: 0,
                 obytes: 0,
-                imissed: 0,
-                rx_nombuf: 0,
+                rx_missed_errors: 0,
+                rx_mbuf_allocation_errors: 0,
             },
             PortSample {
                 ibytes: 0,
                 obytes: 0,
-                imissed: 0,
-                rx_nombuf: 0,
+                rx_missed_errors: 0,
+                rx_mbuf_allocation_errors: 0,
             },
         ],
     );

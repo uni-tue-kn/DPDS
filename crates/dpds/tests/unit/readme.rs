@@ -656,14 +656,17 @@ fn the_readme_documents_get_api_stats_history() {
 
 // ---- spec 35: `totals` of the history and the receiving port's counters of `/api/stats` ----------
 
-const TOTALS_FIELDS: [&str; 7] = [
+const TOTALS_FIELDS: [&str; 10] = [
     "rx_pkts",
     "loss_drops",
     "limiter_drops",
     "buffer_full_drops",
     "nic_tx_drops",
-    "nic_rx_imissed",
+    "nic_rx_missed",
     "nic_rx_nombuf",
+    "nic_rx_port_buffer_discards",
+    "nic_rx_phy_discards",
+    "nic_tx_phy_discards",
 ];
 
 /// The item that documents the stats route (not the history route, which also names
@@ -713,7 +716,13 @@ fn the_readme_documents_totals_on_the_history() {
 fn the_readme_documents_the_port_counters_of_a_direction_on_the_stats() {
     let item = stats_route_item();
     let lower = item.to_lowercase();
-    for field in ["`nic_rx_imissed`", "`nic_rx_nombuf`"] {
+    for field in [
+        "`nic_rx_missed`",
+        "`nic_rx_nombuf`",
+        "`nic_rx_port_buffer_discards`",
+        "`nic_rx_phy_discards`",
+        "`nic_tx_phy_discards`",
+    ] {
         assert!(
             item.contains(field),
             "`GET /api/stats` documents {field}: {item}"

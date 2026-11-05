@@ -114,8 +114,8 @@ fn hist_snapshot() -> Snapshot {
     let p = || PortSample {
         ibytes: 0,
         obytes: 0,
-        imissed: 0,
-        rx_nombuf: 0,
+        rx_missed_errors: 0,
+        rx_mbuf_allocation_errors: 0,
     };
     snapshot([d(), d()], [p(), p()])
 }

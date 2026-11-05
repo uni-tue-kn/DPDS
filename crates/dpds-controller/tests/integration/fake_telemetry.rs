@@ -152,7 +152,7 @@ impl FakeTelemetryServer {
                 "/dpds/ports" => Some(snapshot.ports.clone()),
                 "/dpds/stats" => snapshot.dirs.get(idx).cloned(),
                 "/dpds/delay_hist" => hist_page(&hists, param),
-                "/ethdev/stats" => snapshot.eth.get(idx).cloned(),
+                "/ethdev/xstats" => snapshot.eth.get(idx).cloned(),
                 _ => None,
             }
         })

@@ -474,7 +474,7 @@ fn poller_rig() -> PollerRig {
                     d
                 }),
                 "/dpds/delay_hist" => hist_page(&full_hists(&base), param),
-                "/ethdev/stats" => base.eth.get(idx).cloned(),
+                "/ethdev/xstats" => base.eth.get(idx).cloned(),
                 _ => None,
             }
         },

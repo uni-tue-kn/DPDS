@@ -11,11 +11,11 @@
 //!   `/api/emulation` reports it. Nothing ran since the controller started: `started_at` null (or
 //!   absent) and `samples` `{}`.
 //! - A sample is `{t_ms, rx_gbps, tx_gbps, rx_mpps, tx_mpps, loss_drops, limiter_drops,
-//!   buffer_full_drops, nic_tx_drops, nic_rx_imissed, nic_rx_nombuf}`, all numbers (spec 43: the
-//!   five `*_pct` shares are gone; the six counters are the link's cumulative drops, u64). `t_ms` is a whole number of
+//!   buffer_full_drops, nic_tx_drops, nic_rx_missed, nic_rx_nombuf}`, all numbers (spec 43: the
+//!   five `*_pct` shares are gone; the nine counters are the link's cumulative drops, u64). `t_ms` is a whole number of
 //!   milliseconds since the start of the run, strictly increasing (u64, never a fraction). The rates are `/api/stats`' `rx_bps / 1e9`, `tx_bps / 1e9`,
 //!   `rx_pps / 1e6`, `tx_pps / 1e6`; the counters are `/api/stats`' `counters.loss_drops`,
-//!   `limiter_drops`, `buffer_full_drops`, `tx_drops` (as `nic_tx_drops`), `nic_rx_imissed`,
+//!   `limiter_drops`, `buffer_full_drops`, `tx_drops` (as `nic_tx_drops`), `nic_rx_missed`,
 //!   `nic_rx_nombuf` of the same poll.
 //! - At most one sample per link per second, taken from the poller's snapshots with no extra
 //!   telemetry query; every link gets a sample at the same `t_ms`.
@@ -74,7 +74,7 @@ use serde_json::{json, Value};
 
 /// Spec 43 (B1): a sample has the rates and, instead of the five per-cause shares, the link's
 /// cumulative drop counters (named like `HistoryTotals`; all u64).
-const SAMPLE_FIELDS: [&str; 11] = [
+const SAMPLE_FIELDS: [&str; 14] = [
     "t_ms",
     "rx_gbps",
     "tx_gbps",
@@ -84,18 +84,24 @@ const SAMPLE_FIELDS: [&str; 11] = [
     "limiter_drops",
     "buffer_full_drops",
     "nic_tx_drops",
-    "nic_rx_imissed",
+    "nic_rx_missed",
     "nic_rx_nombuf",
+    "nic_rx_port_buffer_discards",
+    "nic_rx_phy_discards",
+    "nic_tx_phy_discards",
 ];
 
-/// The cumulative counters of a sample.
-const COUNTER_FIELDS: [&str; 6] = [
+/// The cumulative counters of a sample (spec 47: nine causes).
+const COUNTER_FIELDS: [&str; 9] = [
     "loss_drops",
     "limiter_drops",
     "buffer_full_drops",
     "nic_tx_drops",
-    "nic_rx_imissed",
+    "nic_rx_missed",
     "nic_rx_nombuf",
+    "nic_rx_port_buffer_discards",
+    "nic_rx_phy_discards",
+    "nic_tx_phy_discards",
 ];
 
 /// The old per-cause shares, gone from the samples.
@@ -182,25 +188,50 @@ fn at(uptime_ns: u64) -> dpds_controller::stats::Snapshot {
     // imissed 0.1 % and rx_nombuf 0.05 % of link 0's packets: 0.15 % together
     let miss0 = a.rx_mpps * 1e6;
     let bytes = |gbps: f64| n(gbps * 1e9 / 8.0);
-    snapshot(
+    let mut snap = snapshot(
         [d0, d1],
         [
             // port 0: link 0 receives, link 1 sends
             PortSample {
                 ibytes: bytes(a.rx_gbps),
                 obytes: bytes(b.tx_gbps),
-                imissed: n(miss0 * 0.001),
-                rx_nombuf: n(miss0 * 0.0005),
+                rx_missed_errors: n(miss0 * 0.001),
+                rx_mbuf_allocation_errors: n(miss0 * 0.0005),
             },
             // port 1: link 1 receives, link 0 sends
             PortSample {
                 ibytes: bytes(b.rx_gbps),
                 obytes: bytes(a.tx_gbps),
-                imissed: 0,
-                rx_nombuf: 0,
+                rx_missed_errors: 0,
+                rx_mbuf_allocation_errors: 0,
             },
         ],
-    )
+    );
+    // spec 47: the other loss xstats, per second: link 0 (rx port 0, tx port 1) and link 1 (rx
+    // port 1, tx port 0) get different numbers. Port-buffer discards are the sum of several
+    // priorities, buf and cong.
+    set_xstats(
+        &mut snap,
+        0,
+        &[
+            ("rx_prio0_buf_discard_packets", n(3000.0)),
+            ("rx_prio3_cong_discard_packets", n(1500.0)),
+            ("rx_phy_discard_packets", n(700.0)),
+            ("tx_phy_discard_packets", n(600.0)),
+            ("rx_phy_crc_errors", n(11.0)),
+        ],
+    );
+    set_xstats(
+        &mut snap,
+        1,
+        &[
+            ("rx_prio2_buf_discard_packets", n(800.0)),
+            ("rx_prio7_cong_discard_packets", n(200.0)),
+            ("rx_phy_discard_packets", n(400.0)),
+            ("tx_phy_discard_packets", n(300.0)),
+        ],
+    );
+    snap
 }
 
 /// A fake `dpds` socket. Its uptime is the time since `restart_clock` (or `live`); the clock is
@@ -237,7 +268,7 @@ fn live(runtime_dir: &Path, pid: u32) -> Live {
                 "/dpds/ports" => Some(snap.ports),
                 "/dpds/stats" => snap.dirs.get(idx).cloned(),
                 "/dpds/delay_hist" => hist_page(&hists, param),
-                "/ethdev/stats" => snap.eth.get(idx).cloned(),
+                "/ethdev/xstats" => snap.eth.get(idx).cloned(),
                 _ => None,
             }
         },
@@ -542,10 +573,13 @@ async fn the_samples_equal_the_rates_of_api_stats() {
 }
 
 /// Spec 43 (B1): per second the fake `dpds` adds this many drops to link 0 and link 1:
-/// loss, limiter, buffer full, tx_drops, imissed, rx_nombuf (= `EXPECT`'s shares of its rx rate).
-const DROPS_PER_S: [[f64; 6]; 2] = [
-    [40_000.0, 20_000.0, 10_000.0, 5_000.0, 2_000.0, 1_000.0],
-    [5_000.0, 0.0, 40_000.0, 0.0, 0.0, 0.0],
+/// loss, limiter, buffer full, tx_drops, rx_missed, rx_nombuf, port buffer (sum of prio buf+cong),
+/// rx phy, tx phy of the egress port (spec 47; the first four are `EXPECT`'s shares of the rx rate).
+const DROPS_PER_S: [[f64; 9]; 2] = [
+    [
+        40_000.0, 20_000.0, 10_000.0, 5_000.0, 2_000.0, 1_000.0, 4_500.0, 700.0, 300.0,
+    ],
+    [5_000.0, 0.0, 40_000.0, 0.0, 0.0, 0.0, 1_000.0, 400.0, 600.0],
 ];
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -562,7 +596,7 @@ async fn the_samples_carry_the_cumulative_drop_counters_of_the_link() {
         for w in all.windows(2) {
             let (a, b) = (counts(&w[0]), counts(&w[1]));
             let dt = t_secs(&w[1]) - t_secs(&w[0]);
-            for k in 0..6 {
+            for k in 0..9 {
                 assert!(
                     a[k] <= b[k],
                     "{} never decreases: {} -> {}",
@@ -590,7 +624,7 @@ async fn the_samples_carry_the_cumulative_drop_counters_of_the_link() {
         );
         // causes that never happen stay 0, the others are well above 0 after 2 s
         let last = counts(all.last().unwrap());
-        for k in 0..6 {
+        for k in 0..9 {
             if DROPS_PER_S[i][k] == 0.0 {
                 assert_eq!(last[k], 0, "link {link} {}", COUNTER_FIELDS[k]);
             } else {
@@ -612,8 +646,11 @@ async fn the_samples_carry_the_cumulative_drop_counters_of_the_link() {
             ("limiter_drops", "limiter_drops"),
             ("buffer_full_drops", "buffer_full_drops"),
             ("nic_tx_drops", "tx_drops"),
-            ("nic_rx_imissed", "nic_rx_imissed"),
+            ("nic_rx_missed", "nic_rx_missed"),
             ("nic_rx_nombuf", "nic_rx_nombuf"),
+            ("nic_rx_port_buffer_discards", "nic_rx_port_buffer_discards"),
+            ("nic_rx_phy_discards", "nic_rx_phy_discards"),
+            ("nic_tx_phy_discards", "nic_tx_phy_discards"),
         ] {
             let (a, b) = (s[key].as_u64().unwrap(), c[stat].as_u64().unwrap());
             assert!(a <= b, "link {link} {key}: sample {a} > stats {stat} {b}");
@@ -637,8 +674,8 @@ async fn recording_the_series_asks_dpds_for_nothing_extra() {
         "/dpds/stats,1",
         "/dpds/delay_hist,0",
         "/dpds/delay_hist,1",
-        "/ethdev/stats,0",
-        "/ethdev/stats,1",
+        "/ethdev/xstats,0",
+        "/ethdev/xstats,1",
     ];
     for q in &queries {
         assert!(
@@ -651,7 +688,7 @@ async fn recording_the_series_asks_dpds_for_nothing_extra() {
     assert!(polls >= 10, "{polls} polls in 2 s at 100 ms");
     assert!(
         count("/dpds/stats,0").abs_diff(polls) <= 1
-            && count("/ethdev/stats,1").abs_diff(polls) <= 1,
+            && count("/ethdev/xstats,1").abs_diff(polls) <= 1,
         "one set of queries per poll: {queries:?}"
     );
 }
@@ -1789,21 +1826,21 @@ async fn a_stalled_elapsed_reader_does_not_restart_the_clock_of_an_older_run() {
 // choices is the tester's):
 //
 // - `GET /api/stats/history` also carries `totals`: `{"<link index>": {rx_pkts, loss_drops,
-//   limiter_drops, buffer_full_drops, nic_tx_drops, nic_rx_imissed, nic_rx_nombuf}}`, the key set
-//   of the samples (the order of the start body), each object with exactly these seven u64 fields.
+//   limiter_drops, buffer_full_drops, nic_tx_drops, nic_rx_missed, nic_rx_nombuf}}`, the key set
+//   of the samples (the order of the start body), each object with exactly these ten u64 fields (spec 47).
 //   They are the cumulative counters since the `dpds` process started, taken from the NEWEST
 //   successful poll of the run (not from the newest once-a-second sample): `rx_pkts`,
 //   `loss_drops`, `limiter_drops`, `buffer_full_drops` are the counters of `/api/stats` of the
 //   same names; `nic_tx_drops` is its `counters.tx_drops` (the link's `tx_drops` of `/dpds/stats`,
-//   there is no counter called `nic_tx_drops` today); `nic_rx_imissed` and `nic_rx_nombuf` are
-//   `counters.nic_rx_imissed` and `counters.nic_rx_nombuf` (the receiving port's cumulative
+//   there is no counter called `nic_tx_drops` today); `nic_rx_missed` and `nic_rx_nombuf` are
+//   `counters.nic_rx_missed` and `counters.nic_rx_nombuf` (the receiving port's cumulative
 //   `imissed` and `rx_nombuf`).
 // - Every answer has it, incremental ones (`since_ms`) too, also when no sample is newer.
 // - Before any run it is `{}` (present, not null and not omitted). It is kept after the stop with
 //   the values of the last poll while the run was running, and when failed polls clear the stats
 //   cache, like the samples. A new run (a new start) drops the old totals; they are `{}` or the new
 //   run's own until its first poll gives numbers. A refused start changes nothing.
-// - OpenAPI: `totals` is a property of the 200 body, an object whose values have exactly these seven
+// - OpenAPI: `totals` is a property of the 200 body, an object whose values have exactly these ten
 //   integer properties.
 //
 // The fake `dpds` below ticks per POLL, not per second: its uptime is 100 ms times the number of
@@ -1816,14 +1853,17 @@ const COUNT_STEP_NS: u64 = 100_000_000;
 /// Packets per poll of link 0 and link 1 (`EXPECT`'s rates times 100 ms).
 const RX_PER_POLL: [u64; 2] = [200_000, 100_000];
 
-const TOTALS_FIELDS: [&str; 7] = [
+const TOTALS_FIELDS: [&str; 10] = [
     "rx_pkts",
     "loss_drops",
     "limiter_drops",
     "buffer_full_drops",
     "nic_tx_drops",
-    "nic_rx_imissed",
+    "nic_rx_missed",
     "nic_rx_nombuf",
+    "nic_rx_port_buffer_discards",
+    "nic_rx_phy_discards",
+    "nic_tx_phy_discards",
 ];
 
 /// A fake `dpds` whose uptime advances by [`COUNT_STEP_NS`] with every `/dpds/ports` query: the
@@ -1846,7 +1886,7 @@ fn counting(runtime_dir: &Path, pid: u32) -> Live {
                 "/dpds/ports" => Some(snap.ports),
                 "/dpds/stats" => snap.dirs.get(idx).cloned(),
                 "/dpds/delay_hist" => hist_page(&hists, param),
-                "/ethdev/stats" => snap.eth.get(idx).cloned(),
+                "/ethdev/xstats" => snap.eth.get(idx).cloned(),
                 _ => None,
             }
         },
@@ -1890,24 +1930,36 @@ fn poll_of(link: usize, rx: u64, what: &Value) -> u64 {
         .unwrap_or_else(|| panic!("rx_pkts {rx} of link {link} is no poll's counter: {what}"))
 }
 
-/// What the seven totals of `link` are after poll `k`, from the fake's own reply: link `d`
+/// What the ten totals of `link` are after poll `k`, from the fake's own reply: link `d`
 /// receives on port `d` in this fake.
 fn totals_after(k: u64, link: usize) -> Value {
     let s = at(k * COUNT_STEP_NS);
     let d = &s.dirs[link];
     let port = &s.eth[link];
+    let egress = &s.eth[1 - link];
+    let prio_sum = |p: &Value| -> u64 {
+        p.as_object()
+            .unwrap()
+            .iter()
+            .filter(|(k, _)| k.starts_with("rx_prio") && k.ends_with("_discard_packets"))
+            .map(|(_, v)| v.as_u64().unwrap())
+            .sum()
+    };
     json!({
         "rx_pkts": d["rx_pkts"],
         "loss_drops": d["loss_drops"],
         "limiter_drops": d["limiter_drops"],
         "buffer_full_drops": d["buffer_full_drops"],
         "nic_tx_drops": d["tx_drops"],
-        "nic_rx_imissed": port["imissed"],
-        "nic_rx_nombuf": port["rx_nombuf"],
+        "nic_rx_missed": port["rx_missed_errors"],
+        "nic_rx_nombuf": port["rx_mbuf_allocation_errors"],
+        "nic_rx_port_buffer_discards": prio_sum(port),
+        "nic_rx_phy_discards": port["rx_phy_discard_packets"],
+        "nic_tx_phy_discards": egress["tx_phy_discard_packets"],
     })
 }
 
-/// Checks the `totals` of an answer: both links, exactly the seven u64 fields, all of one poll
+/// Checks the `totals` of an answer: both links, exactly the ten u64 fields, all of one poll
 /// that matches the fake's counters; returns that poll.
 fn check_totals(v: &Value) -> u64 {
     let totals = v["totals"]
@@ -1926,7 +1978,7 @@ fn check_totals(v: &Value) -> u64 {
         fields.sort_unstable();
         let mut want = TOTALS_FIELDS.to_vec();
         want.sort_unstable();
-        assert_eq!(fields, want, "exactly the seven fields: {t}");
+        assert_eq!(fields, want, "exactly the ten fields: {t}");
         for f in TOTALS_FIELDS {
             assert!(t[f].is_u64(), "{f} is a u64 in {t}");
         }
@@ -1952,13 +2004,20 @@ fn stats_poll(stats: &Value) -> u64 {
         let k = poll_of(i, c["rx_pkts"].as_u64().unwrap(), stats);
         let want = totals_after(k, i);
         assert_eq!(
-            c["nic_rx_imissed"], want["nic_rx_imissed"],
-            "link {i}: the receiving port's imissed: {c}"
+            c["nic_rx_missed"], want["nic_rx_missed"],
+            "link {i}: the receiving port's rx_missed_errors: {c}"
         );
         assert_eq!(
             c["nic_rx_nombuf"], want["nic_rx_nombuf"],
-            "link {i}: the receiving port's rx_nombuf: {c}"
+            "link {i}: the receiving port's rx_mbuf_allocation_errors: {c}"
         );
+        for key in [
+            "nic_rx_port_buffer_discards",
+            "nic_rx_phy_discards",
+            "nic_tx_phy_discards",
+        ] {
+            assert_eq!(c[key], want[key], "link {i}: {key}: {c}");
+        }
         polls.push(k);
     }
     polls[0]
@@ -2208,7 +2267,16 @@ async fn openapi_documents_the_port_counters_of_a_direction() {
                 .is_some_and(|p| p.contains_key("tx_drops") && p.contains_key("loss_drops"))
         })
         .unwrap_or_else(|| panic!("no counters schema: {:?}", schemas.keys()));
-    for name in ["nic_rx_imissed", "nic_rx_nombuf"] {
+    for name in [
+        "nic_rx_missed",
+        "nic_rx_nombuf",
+        "nic_rx_port_buffer_discards",
+        "nic_rx_phy_discards",
+        "nic_tx_phy_discards",
+        "nic_rx_crc_errors",
+        "nic_rx_symbol_errors",
+        "nic_rx_length_errors",
+    ] {
         let p = resolve(&doc, &counters["properties"][name]);
         assert_eq!(p["type"], "integer", "{name} is documented: {counters}");
     }

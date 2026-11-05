@@ -22,7 +22,7 @@ fn core_config(loss: LossModel, seed: Option<u64>) -> Config {
             distribution: RVDistribution::LogNormalDistribution,
             mean_ns: 5.0e6,
             std_ns: 5.0e5,
-            activate_correlation: true,
+            activate_correlation: false,
             half_life_period_ns: 5.0e7,
             initialization_rate_pps: 15e6,
         },
@@ -48,7 +48,7 @@ fn json_with_random_loss_converts_to_the_core_config() {
     v["buffer_capacity"] = json!(4096);
     v["reordering"] = json!(true);
     v["delayer"]["distribution"] = json!("LogNormalDistribution");
-    v["delayer"]["activate_correlation"] = json!(true);
+    v["delayer"]["activate_correlation"] = json!(false);
     v["delayer"]["half_life_period_ns"] = json!(5.0e7);
     v["limiter"] = json!({"mode":"TokenBucketFilter","rate_bps":1.0e9});
     v["loss_model"] = json!({"type":"Random","p":0.25});

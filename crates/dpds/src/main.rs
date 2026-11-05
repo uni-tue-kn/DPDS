@@ -409,6 +409,11 @@ fn run() -> Result<()> {
         if !port.link_up()? {
             return Err(format!("link is down on port {id}").into());
         }
+        // the NIC counters count from this process's start, like dpds's own; a PMD
+        // without a reset is not fatal, its counters then count from the NIC's start
+        if let Err(e) = port::eth_stats_reset(id) {
+            eprintln!("dpds: warning: could not reset the NIC counters of port {id}: {e}");
+        }
         let socket = port::rte_eth_dev_socket_id(id);
         println!(
             "Port {id} ({}): socket {socket}, RX ring {} (requested {}), TX ring {} (requested {}), \

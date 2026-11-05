@@ -84,7 +84,7 @@ fn handler(
                 let (d, p) = dir_page(param);
                 tamper(d, p, honest)
             }
-            "/ethdev/stats" => base.eth.get(idx).cloned(),
+            "/ethdev/xstats" => base.eth.get(idx).cloned(),
             _ => None,
         }
     }

@@ -783,14 +783,14 @@ async fn stats_serve_the_computed_view_of_the_cached_snapshots() {
                 PortSample {
                     ibytes: rx * 100,
                     obytes: 0,
-                    imissed: 0,
-                    rx_nombuf: 0,
+                    rx_missed_errors: 0,
+                    rx_mbuf_allocation_errors: 0,
                 },
                 PortSample {
                     ibytes: 0,
                     obytes: rx * 100,
-                    imissed: 0,
-                    rx_nombuf: 0,
+                    rx_missed_errors: 0,
+                    rx_mbuf_allocation_errors: 0,
                 },
             ],
         )
@@ -836,14 +836,14 @@ async fn delay_histogram_endpoint() {
             PortSample {
                 ibytes: 0,
                 obytes: 0,
-                imissed: 0,
-                rx_nombuf: 0,
+                rx_missed_errors: 0,
+                rx_mbuf_allocation_errors: 0,
             },
             PortSample {
                 ibytes: 0,
                 obytes: 0,
-                imissed: 0,
-                rx_nombuf: 0,
+                rx_missed_errors: 0,
+                rx_mbuf_allocation_errors: 0,
             },
         ],
     );

@@ -134,8 +134,8 @@ fn port(bytes: u64) -> PortSample {
     PortSample {
         ibytes: bytes,
         obytes: bytes,
-        imissed: 0,
-        rx_nombuf: 0,
+        rx_missed_errors: 0,
+        rx_mbuf_allocation_errors: 0,
     }
 }
 

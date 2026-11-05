@@ -66,14 +66,14 @@ fn rig(interval_ms: u64) -> Rig {
             PortSample {
                 ibytes: 10_000,
                 obytes: 5_000,
-                imissed: 0,
-                rx_nombuf: 0,
+                rx_missed_errors: 0,
+                rx_mbuf_allocation_errors: 0,
             },
             PortSample {
                 ibytes: 5_000,
                 obytes: 10_000,
-                imissed: 0,
-                rx_nombuf: 0,
+                rx_missed_errors: 0,
+                rx_mbuf_allocation_errors: 0,
             },
         ],
     );
@@ -214,8 +214,8 @@ fn one_port() -> PortSample {
     PortSample {
         ibytes: 1,
         obytes: 1,
-        imissed: 0,
-        rx_nombuf: 0,
+        rx_missed_errors: 0,
+        rx_mbuf_allocation_errors: 0,
     }
 }
 

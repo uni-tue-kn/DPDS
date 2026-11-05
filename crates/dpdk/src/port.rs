@@ -493,6 +493,14 @@ pub struct PortStats {
     pub rx_nombuf: u64,
 }
 
+/// Reset a port's basic statistics and its xstats to 0 (`rte_eth_stats_reset` and
+/// `rte_eth_xstats_reset`), so the NIC counters count from now on.
+pub fn eth_stats_reset(port: u16) -> Result<(), DpdkError> {
+    check(unsafe { dpdk_sys::rte_eth_stats_reset(port) })?;
+    check(unsafe { dpdk_sys::rte_eth_xstats_reset(port) })?;
+    Ok(())
+}
+
 /// Read a port's basic statistics.
 ///
 /// This is a control-path API: DPDK validates the port ID (unknown ports

@@ -209,7 +209,7 @@ pub fn poll_once(client: &mut Client) -> io::Result<Snapshot> {
         snap.hist_bins.push(bins);
     }
     for p in 0..n_ports {
-        snap.eth.push(client.query(&format!("/ethdev/stats,{p}"))?);
+        snap.eth.push(client.query(&format!("/ethdev/xstats,{p}"))?);
     }
     snap.ports = ports;
     Ok(snap)

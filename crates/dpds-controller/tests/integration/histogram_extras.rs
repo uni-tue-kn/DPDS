@@ -90,8 +90,8 @@ fn zero_port() -> PortSample {
     PortSample {
         ibytes: 0,
         obytes: 0,
-        imissed: 0,
-        rx_nombuf: 0,
+        rx_missed_errors: 0,
+        rx_mbuf_allocation_errors: 0,
     }
 }
 

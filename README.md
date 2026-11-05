@@ -749,14 +749,23 @@ without internet access, means no notice.
   with `age_ms` and `stale`. `elapsed_ms` is the time since the run started in whole milliseconds,
   read from the controller's monotonic clock, so a client never compares its own clock with the
   controller's. It keeps counting while the run goes on, is frozen at the stop and is absent before
-  any run; a new run restarts it near 0. A direction's `counters` also carry `nic_rx_imissed` and
-  `nic_rx_nombuf`, the cumulative `imissed` and `rx_nombuf` of its receiving port (0 without NIC
-  statistics). Two links that share a receiving port (a hairpin of one port) both report that
-  port's counters, unsplit.
+  any run; a new run restarts it near 0. A direction's `counters` also carry the cumulative NIC loss counts, read from the
+  ports' xstats (`/ethdev/xstats`, polled once a second; a name the NIC does not report is 0; the NIC counters are reset
+  when `dpds` starts, so they count from its start like the others). From the link's receiving (ingress) port:
+  `nic_rx_missed` (`rx_missed_errors`, the same counter as `imissed` and mlx5 `rx_out_of_buffer`),
+  `nic_rx_nombuf` (`rx_mbuf_allocation_errors`), `nic_rx_port_buffer_discards` (the sum of
+  `rx_prio0..7_buf_discard_packets` and `rx_prio0..7_cong_discard_packets`) and `nic_rx_phy_discards`
+  (`rx_phy_discard_packets`); from its transmitting (egress) port `nic_tx_phy_discards`
+  (`tx_phy_discard_packets`, frames the NIC took from `tx_burst` but dropped before the wire). The diagnostics
+  `nic_rx_crc_errors`, `nic_rx_symbol_errors` and `nic_rx_length_errors` (`rx_phy_crc_errors`, `rx_phy_symbol_errors`,
+  `rx_phy_in_range_len_errors`) are shown but counted in no loss total. Two links that share a port (a hairpin of one
+  port) both report that port's counters, unsplit. `nic_rx_pct` is the share of the window's received packets lost to the
+  four RX-side NIC causes, `nic_tx_pct` the share lost to `tx_drops` plus `nic_tx_phy_discards`.
 - **Chart history** (`GET /api/stats/history`, optionally with `?since_ms=<t>`): the answer is `{started_at, run_id,
   links, samples}`. `samples` has, per link index (the order of the start body), the series of the
   run, oldest first. Each sample is `{t_ms, rx_gbps, tx_gbps, rx_mpps, tx_mpps, loss_drops,
-  limiter_drops, buffer_full_drops, nic_tx_drops, nic_rx_imissed, nic_rx_nombuf}`: the rates of `GET
+  limiter_drops, buffer_full_drops, nic_tx_drops, nic_rx_missed, nic_rx_nombuf, nic_rx_port_buffer_discards,
+  nic_rx_phy_discards, nic_tx_phy_discards}`: the rates of `GET
   /api/stats` for the poll window ending at `t_ms` (whole milliseconds since the run started on
   the same monotonic clock as `elapsed_ms`) and the link's cumulative drop counters at that poll. The controller takes one sample per link per second
   (all links at the same `t_ms`) and keeps at most 86400 per link (24 hours), dropping the oldest.
@@ -766,7 +775,8 @@ without internet access, means no notice.
   `[{name, ingress, egress}]` of that run in link order, `[]` before any run, so a client can title
   the charts of a finished run. The answer also has `totals`, per link index (like `samples`) an object
   of `rx_pkts`, `loss_drops`, `limiter_drops`, `buffer_full_drops`, `nic_tx_drops`,
-  `nic_rx_imissed` and `nic_rx_nombuf`: the cumulative counters since the `dpds` process started, taken from the last
+  `nic_rx_missed`, `nic_rx_nombuf`, `nic_rx_port_buffer_discards`, `nic_rx_phy_discards` and
+  `nic_tx_phy_discards`: the cumulative counters since the `dpds` process started, taken from the last
   poll of the run (not from the newest once-a-second sample), so a finished run's drops by cause
   stay readable. `nic_tx_drops` is `counters.tx_drops` of `GET /api/stats`. `totals` is in every
   answer, also with `since_ms`, and is the empty object `{}` before any run. A client that sees a new `run_id` starts over. The history is
