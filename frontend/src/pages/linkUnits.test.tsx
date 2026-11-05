@@ -35,6 +35,8 @@ const UNIT_FIELDS: [string, string[]][] = [
   ['Half-life period', TIME_UNITS],
   ['Histogram lo', TIME_UNITS],
   ['Histogram hi', TIME_UNITS],
+  ['IAT histogram lo', TIME_UNITS], // spec 53 A
+  ['IAT histogram hi', TIME_UNITS],
   ['Rate', RATE_UNITS],
   ['Initialization rate', PPS_UNITS],
   ['Buffer capacity', PACKET_UNITS],
@@ -48,6 +50,8 @@ const SECTION_OF: Record<string, string> = {
   Rate: 'Limiter',
   'Histogram lo': 'Statistics',
   'Histogram hi': 'Statistics',
+  'IAT histogram lo': 'Statistics',
+  'IAT histogram hi': 'Statistics',
 };
 const body = () => document.body;
 
@@ -95,10 +99,10 @@ describe.each(PAGES)('$name: unit selects', (page: ConfigPage) => {
     expect(controls[i + 1]).toBe(unitSelect(body(), label));
   });
 
-  it('only those eight fields have a unit select (no unit for seed, bins or probabilities)', async () => {
+  it('only those ten fields have a unit select (no unit for seed, bins, IAT bins or probabilities)', async () => {
     await page.openFull();
     expect(screen.getAllByLabelText(/ unit$/)).toHaveLength(UNIT_FIELDS.length);
-    for (const none of ['Seed', 'Histogram bins', 'Random loss probability']) {
+    for (const none of ['Seed', 'Histogram bins', 'IAT histogram bins', 'Random loss probability']) {
       expect(screen.queryByLabelText(`${none} unit`)).not.toBeInTheDocument();
     }
   });
@@ -130,7 +134,7 @@ describe.each(PAGES)('$name: defaults of a new form', (page: ConfigPage) => {
     await page.openFull();
     expect(unitOf(body(), 'Half-life period')).toBe('ms');
     expect(numberField(body(), 'Half-life period')).toHaveValue(0);
-    for (const l of ['Histogram lo', 'Histogram hi']) {
+    for (const l of ['Histogram lo', 'Histogram hi', 'IAT histogram lo', 'IAT histogram hi']) {
       expect(numberField(body(), l)).toHaveValue(null);
       expect(unitOf(body(), l)).toBe('ms');
     }
@@ -423,6 +427,8 @@ const PAYLOAD: [string, string, string, number, Pick, Prep][] = [
   ['Histogram lo', 'ns', '100', 100, (c) => c.histogram?.lo_ns, undefined],
   ['Histogram hi', 's', '2', 2000000000, (c) => c.histogram?.hi_ns, undefined],
   ['Histogram hi', MU, '9', 9000, (c) => c.histogram?.hi_ns, undefined],
+  ['IAT histogram lo', 'ns', '100', 100, (c) => c.iat_histogram?.lo_ns, undefined],
+  ['IAT histogram hi', 's', '2', 2000000000, (c) => c.iat_histogram?.hi_ns, undefined],
   ['Rate', 'bit/s', '1000', 1000, (c) => must(c.limiter).rate_bps, undefined],
   ['Rate', 'kbit/s', '1.1', 1100, (c) => must(c.limiter).rate_bps, undefined],
   ['Rate', 'Mbit/s', '1.5', 1500000, (c) => must(c.limiter).rate_bps, undefined],
@@ -487,13 +493,16 @@ describe.each(PAGES)('$name: validation per field (messages name the field, neve
     },
   );
 
-  it.each(['Histogram lo', 'Histogram hi'])('an empty %s is fine (automatic range)', async (label) => {
-    const user = await page.openFull();
-    await ready(user);
-    expect(numberField(body(), label)).toHaveValue(null);
-    await page.save(user);
-    expect(page.requests()).toBe(1);
-  });
+  it.each(['Histogram lo', 'Histogram hi', 'IAT histogram lo', 'IAT histogram hi'])(
+    'an empty %s is fine (automatic range)',
+    async (label) => {
+      const user = await page.openFull();
+      await ready(user);
+      expect(numberField(body(), label)).toHaveValue(null);
+      await page.save(user);
+      expect(page.requests()).toBe(1);
+    },
+  );
 
   it.each([
     ['0.5', 'Mpps', 500000],

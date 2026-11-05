@@ -67,6 +67,13 @@ export const HELP = {
   // dpds/src/delay_stats.rs:131-152 (automatic window incl. the Spacer allowance, 1 us minimum), 206-221, 229-231; dpds-controller/src/dto.rs:130-143
   'Histogram hi':
     'Upper edge of the histogram range (excluded); delays from it on are counted as overflow. Stored in ns; finite and above Histogram lo. Empty: the mean + 6 std (plus the queueing allowance of an active Spacer), but at least 1 \u00b5s above lo. A value you enter is used as given.',
+  // spec 53 A: the IAT histogram is the delay histogram's HistogramDto; defaults lo 0, hi 4e9 / initialization rate, 256 bins
+  'IAT histogram bins':
+    'Number of equal-width bins of the inter-arrival time (departure gap) histogram: a whole number from 1 to 4096. Empty: 256 bins.',
+  'IAT histogram lo':
+    'Lower edge of the IAT histogram range (included); gaps below it are counted as underflow. Stored in ns; finite, at least 0 and below IAT histogram hi. Empty: 0.',
+  'IAT histogram hi':
+    'Upper edge of the IAT histogram range (excluded); gaps from it on are counted as overflow. Stored in ns; finite and above IAT histogram lo. Empty: 4 x 1e9 / initialization rate (four mean gaps).',
 } as const;
 
 export type HelpKey = keyof typeof HELP;

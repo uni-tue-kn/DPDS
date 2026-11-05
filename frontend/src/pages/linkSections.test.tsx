@@ -55,6 +55,11 @@ const CONTENT: Record<string, string[]> = {
     'Histogram lo unit',
     'Histogram hi',
     'Histogram hi unit',
+    'IAT histogram bins', // spec 53 A
+    'IAT histogram lo',
+    'IAT histogram lo unit',
+    'IAT histogram hi',
+    'IAT histogram hi unit',
   ],
 };
 
@@ -473,6 +478,9 @@ describe.each(PAGES)(
         'Histogram lo unit',
         'Histogram hi',
         'Histogram hi unit',
+        'IAT histogram bins',
+        'IAT histogram lo',
+        'IAT histogram hi',
       ]) {
         expect(ctl(l)).toBeEnabled();
       }
@@ -482,7 +490,18 @@ describe.each(PAGES)(
       const user = await page.openFull();
       await user.click(ctl('Delay statistics'));
       expect(ctl('Delay statistics')).not.toBeChecked();
-      for (const l of ['Histogram bins', 'Histogram lo', 'Histogram lo unit', 'Histogram hi', 'Histogram hi unit']) {
+      for (const l of [
+        'Histogram bins',
+        'Histogram lo',
+        'Histogram lo unit',
+        'Histogram hi',
+        'Histogram hi unit',
+        'IAT histogram bins',
+        'IAT histogram lo',
+        'IAT histogram lo unit',
+        'IAT histogram hi',
+        'IAT histogram hi unit',
+      ]) {
         expect(ctl(l)).toBeEnabled();
       }
     });

@@ -320,6 +320,9 @@ export default function ConfigFieldset({ title, value, onChange }: Props) {
         {text('hist_bins', 'Histogram bins', { hint: `Empty: 256 bins, mean +- 6 std. Max 4096.${binsHint}` })}
         {unitField('hist_lo', 'Histogram lo', TIME_UNITS)}
         {unitField('hist_hi', 'Histogram hi', TIME_UNITS)}
+        {text('iat_bins', 'IAT histogram bins')}
+        {unitField('iat_lo', 'IAT histogram lo', TIME_UNITS)}
+        {unitField('iat_hi', 'IAT histogram hi', TIME_UNITS)}
         {advice && (
           <Col md={12} className="histogram-optimization-hint">
             <span>

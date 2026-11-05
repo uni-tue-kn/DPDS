@@ -136,6 +136,40 @@ describe('Duplicate: the editor opens pre-filled with the copy', () => {
     expect(screen.getByLabelText('Egress')).toHaveValue('');
   });
 
+  // spec 53 A: the IAT histogram is part of the config, so a copy carries it like `histogram`
+  it('copies the IAT histogram: the fields show it, and saving the copy stores it next to the delay histogram', async () => {
+    const withIat = fx.link({
+      id: 3,
+      name: 'iat',
+      config: {
+        ...fx.config2(),
+        histogram: { bins: 32, lo_ns: 1000, hi_ns: 50000 },
+        iat_histogram: { bins: 64, lo_ns: 2000, hi_ns: 80000 },
+      },
+    });
+    const user = await listPage([withIat]);
+    await duplicate(user, 'iat');
+    expect(screen.getByLabelText('IAT histogram bins')).toHaveValue(64);
+    expect(screen.getByLabelText('IAT histogram lo')).toHaveValue(2);
+    expect(screen.getByLabelText('IAT histogram lo unit')).toHaveDisplayValue('\u00b5s');
+    expect(screen.getByLabelText('IAT histogram hi')).toHaveValue(80);
+    expect(screen.getByLabelText('IAT histogram hi unit')).toHaveDisplayValue('\u00b5s');
+    expect(screen.getByLabelText('Histogram bins')).toHaveValue(32);
+    await pickPorts(user);
+    await save(user);
+    const copy = storedLinks().find((l) => l.name === 'iat_copy');
+    expect(copy?.config.iat_histogram).toEqual({ bins: 64, lo_ns: 2000, hi_ns: 80000 });
+    expect(copy?.config.histogram).toEqual({ bins: 32, lo_ns: 1000, hi_ns: 50000 });
+  });
+
+  it('a source without an IAT histogram gives a copy with three empty IAT fields', async () => {
+    const user = await listPage();
+    await duplicate(user, 'b-a');
+    for (const l of ['IAT histogram bins', 'IAT histogram lo', 'IAT histogram hi']) {
+      expect(screen.getByLabelText(l)).toHaveValue(null);
+    }
+  });
+
   it('a link on a port that is not an interface (a vdev) gives a copy without ports as well', async () => {
     const user = await listPage([fx.loopLink()]);
     await duplicate(user, 'loop');

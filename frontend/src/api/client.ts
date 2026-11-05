@@ -73,7 +73,9 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 
 export const getOnline = () => request<OnlineView>('GET', '/online');
 export const getInterfaces = () => request<Interface[]>('GET', '/interfaces');
-export const getHostHints = () => request<Hint[]>('GET', '/host/hints');
+/** The host hints the controller computed when it started; `recheck` computes them (and the NIC firmware) again. */
+export const getHostHints = (opts?: { recheck?: boolean }) =>
+  request<Hint[]>('GET', `/host/hints${opts?.recheck ? '?recheck=true' : ''}`);
 /** Host-only hints (GET) plus the ones that depend on the links (POST with the configuration, nothing is started).
  * `recheck` makes the controller read the NIC firmware again instead of answering from its cache. */
 export const getHostHintsFor = (req: StartRequest, opts?: { recheck?: boolean }) =>

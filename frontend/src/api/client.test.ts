@@ -120,11 +120,25 @@ describe('api client (real module)', () => {
       expect(lastCall().url).toBe('/api/host/hints');
     });
 
-    it('getHostHints (the GET) takes no recheck: it never carries a query', async () => {
+    // Spec 55: the GET answers the controller's stored result; `{ recheck: true }` computes it again.
+    it('getHostHints({ recheck: true }) is a body-less GET of /api/host/hints?recheck=true', async () => {
+      reply(200, fx.hints());
+      await expect(client.getHostHints({ recheck: true })).resolves.toEqual(fx.hints());
+      const { url, init } = lastCall();
+      expect(url).toBe('/api/host/hints?recheck=true');
+      expect((init.method ?? 'GET').toUpperCase()).toBe('GET');
+      expect(init.body).toBeUndefined();
+    });
+
+    it.each([
+      ['no argument', () => client.getHostHints()],
+      ['an empty options object', () => client.getHostHints({})],
+      ['{ recheck: false }', () => client.getHostHints({ recheck: false })],
+      ['{ recheck: undefined }', () => client.getHostHints({ recheck: undefined })],
+    ])('getHostHints with %s sends no query at all', async (_name, call) => {
       reply(200, []);
-      await client.getHostHints();
+      await call();
       expect(lastCall().url).toBe('/api/host/hints');
-      expect(lastCall().url).not.toContain('?');
     });
 
     it('a recheck that fails rejects with the ApiError of the controller (400 naming recheck)', async () => {

@@ -479,13 +479,13 @@ describe('Dashboard (spec 29): a failing history request', () => {
 
 // ---- spec 29, second round: the final charts stay after a stop -----------------------------------------------------------
 //
-// Spec 35: the cards are tabs, the "Stopped" marker is the badge in the tab title, "Drops" is "Loss".
+// Spec 35: the cards are tabs, "Drops" is "Loss". Spec 54 L1: the "Stopped" marker (the badge in the tab title) is gone, an ended
+// run's tab is just there; spec 54 L3: a start no longer clears the tabs, they stay under the loading overlay.
 //
 // User decision (2026-11-04): after a stop the dashboard keeps showing the stopped run's link cards with their final rate and
 // drops charts (from the history, which the controller keeps until the next start), marked as stopped, until the next start.
 // Contract the tests pin (the tester's choices, not user-confirmed):
-//   - the marker is the visible text "Stopped" inside each card (the card of a running link has none); spec 29b item 5 makes
-//     it the state: "Stopping", "Stopped" or "Failed" (dashboardSpec29b.test.tsx);
+//   - (spec 54 L1: no marker any more, neither "Stopped" nor the state of spec 29b item 5; `marker()` below is the tab itself);
 //   - cards are there while the polled state is `stopped` (spec 29b: also `stopping` and `failed`) and the history of the run
 //     is not empty: one card per link index in the history (spec 35: one tab per link index), in the same session after a stop
 //     and after a reload/remount alike. The live stat list is NOT pinned; the titles are (spec 29b item 5, they come from the
@@ -493,14 +493,14 @@ describe('Dashboard (spec 29): a failing history request', () => {
 //   - the charts are the history's, Rate and Drops, both selectable; spec 50 A3 (was: no "Delay histogram" choice on a stopped card,
 //     a card that showed the histogram fell back to Rate): the card keeps the enabled "Delay histogram" choice, the controller serves
 //     the run's last histogram after the stop (dashboardSpec50.test.tsx);
-//   - a start clears them: as soon as the state is `starting` (or the Start request has been answered) no stopped card is
-//     left, and the next run's cards show only its own samples.
+//   - (spec 54 L3: a start no longer clears them, they stay under the loading overlay while `starting`;) the next run's cards
+//     show only its own samples once it runs.
 // A controller that never ran (no samples, started_at null) has no cards.
 
 describe('Dashboard (spec 29, round 2): the final charts of a stopped run stay until the next start', () => {
   const stoppedStats = (elapsed_ms = 305_400) => fx.stats([], { stale: true, age_ms: undefined, elapsed_ms });
-  // Spec 35 F3: the marker is the badge in the tab title (it was text inside the card)
-  const marker = (d: number) => within(tab(d)).queryByText('Stopped');
+  // Spec 54 L1. Was (spec 35 F3): the marker is the badge "Stopped" in the tab title. Now: the tab, without any badge.
+  const marker = (d: number) => (hasTab(d) && tabBadge(d) === '' ? tab(d) : null);
   const radioOf = (d: number, name: string) => queryRadio(d, name);
 
   /** A running emulation with two links and a 5 s series, opened and settled; `stop()` turns it into the stopped payload. */
@@ -510,8 +510,8 @@ describe('Dashboard (spec 29, round 2): the final charts of a stopped run stay u
       '1': fx.historySamples(0, 5, { rx_gbps: 2.5 }),
     });
     await open();
-    expect(marker(0)).not.toBeInTheDocument(); // a running link is not marked
-    expect(marker(1)).not.toBeInTheDocument();
+    expect(tabBadge(0)).toBe(''); // a running link is not marked
+    expect(tabBadge(1)).toBe('');
     const stop = async () => {
       api.getEmulation.mockResolvedValue(fx.emulation('stopped'));
       api.getStats.mockResolvedValue(stoppedStats());
@@ -520,7 +520,7 @@ describe('Dashboard (spec 29, round 2): the final charts of a stopped run stay u
     return { s, stop };
   }
 
-  it('after the stop both cards are still there, marked "Stopped", with their whole final series', async () => {
+  it('after the stop both cards are still there, unmarked (spec 54 L1), with their whole final series', async () => {
     const { stop } = await runThenStop();
     await stop();
     expectState('stopped');
@@ -580,19 +580,20 @@ describe('Dashboard (spec 29, round 2): the final charts of a stopped run stay u
   // Spec 29b item 5. Was: 'while the run is stopping the cards are still the live ones, not marked', with the stats of the
   // running emulation still mocked. The real controller answers /api/stats of a stopping emulation with no directions at
   // once (the poller only reads a running dpds), and the old page then showed no card at all until `stopped`.
-  it('while the run is stopping (the stats already empty) the cards stay, marked "Stopping"', async () => {
+  it('while the run is stopping (the stats already empty) the cards stay, unmarked (spec 54 L1)', async () => {
     await runThenStop();
     api.getEmulation.mockResolvedValue(fx.emulation('stopping'));
     api.getStats.mockResolvedValue(stoppedStats());
     await tick(2500);
     for (const d of [0, 1]) {
-      expect(tabBadge(d), `tab ${d}`).toBe('Stopping');
-      expect(marker(d), `tab ${d}`).not.toBeInTheDocument();
+      expect(tabBadge(d), `tab ${d}`).toBe('');
+      expect(marker(d), `tab ${d}`).toBeInTheDocument();
     }
     expect(rxOf(0)).toEqual(Array(5).fill(1.5));
   });
 
-  it('a new start clears them: once the state is "starting" no card is left', async () => {
+  // Spec 54 L3. Was: 'a new start clears them: once the state is "starting" no card is left'. The tabs stay (under the overlay).
+  it('a new start keeps them: once the state is "starting" the tabs are still there', async () => {
     const { s, stop } = await runThenStop();
     await stop();
     expect(hasTab(0)).toBe(true);
@@ -603,22 +604,22 @@ describe('Dashboard (spec 29, round 2): the final charts of a stopped run stay u
     api.getEmulation.mockResolvedValue(fx.emulation('starting'));
     api.getStats.mockResolvedValue(fx.stats([], { stale: true, age_ms: undefined }));
     await tick(2500);
-    expect(hasTab(0)).toBe(false);
-    expect(hasTab(1)).toBe(false);
+    expect(hasTab(0)).toBe(true);
+    expect(hasTab(1)).toBe(true);
   });
 
-  it('even when the history still holds the old run at that moment', async () => {
+  it('also when the history still holds the old run at that moment', async () => {
     const { stop } = await runThenStop();
     await stop();
     // state "starting", the server's series is still the old run's
     api.getEmulation.mockResolvedValue(fx.emulation('starting'));
     api.getStats.mockResolvedValue(fx.stats([], { stale: true, age_ms: undefined }));
     await tick(1000);
-    expect(hasTab(0)).toBe(false);
-    expect(hasTab(1)).toBe(false);
+    expect(hasTab(0)).toBe(true);
+    expect(hasTab(1)).toBe(true);
   });
 
-  it('pressing Start clears them as soon as the controller has accepted the request', async () => {
+  it('pressing Start keeps them when the controller has accepted the request', async () => {
     seedStore({ links: [fx.link(), fx.linkRev()] });
     const { stop } = await runThenStop();
     await stop();
@@ -627,7 +628,7 @@ describe('Dashboard (spec 29, round 2): the final charts of a stopped run stay u
     fireEvent.click(screen.getByRole('button', { name: /^start$/i }));
     await tick(0);
     expect(api.startEmulation).toHaveBeenCalledTimes(1);
-    expect(hasTab(0)).toBe(false);
+    expect(hasTab(0)).toBe(true);
   });
 
   it('the next run is charted from its own samples only, as live cards', async () => {
@@ -639,8 +640,8 @@ describe('Dashboard (spec 29, round 2): the final charts of a stopped run stay u
     api.getEmulation.mockResolvedValue(fx.emulation('running', { started_at: S1 + 900 }));
     api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0), fx.dirStats(1)], { elapsed_ms: 1500 }));
     await tick(3000);
-    expect(marker(0)).not.toBeInTheDocument();
-    expect(marker(1)).not.toBeInTheDocument();
+    expect(tabBadge(0)).toBe('');
+    expect(tabBadge(1)).toBe('');
     expect(rxOf(0)).toEqual([4.5, 4.5]);
     expect(rxOf(1)).toEqual([5.5, 5.5]);
   });

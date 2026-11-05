@@ -77,6 +77,9 @@ const LINK_LABELS = [
   'Histogram bins',
   'Histogram lo',
   'Histogram hi',
+  'IAT histogram bins', // spec 53 A
+  'IAT histogram lo',
+  'IAT histogram hi',
 ];
 const GE_LABELS = ['Gilbert-Elliot p', 'Gilbert-Elliot r', 'Gilbert-Elliot k', 'Gilbert-Elliot h'];
 

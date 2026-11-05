@@ -48,6 +48,8 @@ export interface ConfigDto {
   loss_model?: LossModelDto | null;
   seed?: number | null;
   histogram?: HistogramDto | null;
+  /** The departure-gap histogram, same shape; defaults: lo 0, hi 4e9 / initialization rate, 256 bins. */
+  iat_histogram?: HistogramDto | null;
   /** default true. false = the direction records no delay statistics / histogram. */
   delay_stats?: boolean;
 }

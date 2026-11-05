@@ -30,8 +30,8 @@ export class ApiError extends Error {
 export const api = {
   getOnline: vi.fn() as Mock<() => Promise<OnlineView>>,
   getInterfaces: vi.fn() as Mock<() => Promise<Interface[]>>,
-  /** GET /api/host/hints: host-only hints. */
-  getHostHints: vi.fn() as Mock<() => Promise<Hint[]>>,
+  /** GET /api/host/hints: host-only hints. Spec 55: `{ recheck: true }` (`?recheck=true`) computes them again; the first load passes no argument. */
+  getHostHints: vi.fn() as Mock<(opts?: { recheck?: boolean }) => Promise<Hint[]>>,
   /**
    * POST /api/host/hints with a start request: the hints that depend on the links. Spec 34: `{ recheck: true }` as the second
    * argument asks the controller to read the NIC firmware again (`?recheck=true`); the first load passes no second argument.

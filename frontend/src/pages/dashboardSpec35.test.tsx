@@ -597,7 +597,7 @@ describe('Dashboard (spec 35 F3): one tab per link', () => {
     fireEvent.click(tab(1));
     ended('stopped');
     await tick(2500);
-    expect(tabBadge(1)).toBe('Stopped');
+    expect(tabBadge(1)).toBe(''); // spec 54 L1: no badge
     expect(tab(1)).toHaveAttribute('aria-selected', 'true');
   });
 
@@ -643,19 +643,20 @@ describe('Dashboard (spec 35 F3): one tab per link', () => {
   });
 });
 
-describe('Dashboard (spec 35 F3): the badge of an ended run sits in the tab title', () => {
+// Spec 54 L1 (user 2026-11-05): the tab titles are only the link labels; the ended-run badge of spec 35 F3 is gone.
+describe('Dashboard (spec 35 F3, spec 54 L1): the tab of an ended run has no badge', () => {
   const BADGE = { stopping: 'Stopping', stopped: 'Stopped', failed: 'Failed' } as const;
 
   it.each(['stopping', 'stopped', 'failed'] as const)(
-    '"%s": every tab carries the badge "%s" and keeps its title',
+    '"%s": no tab carries a badge or a state text and keeps its title',
     async (state) => {
       serveHistory({ startedAt: 1762000000, samples: { '0': fx.historySamples(0, 3), '1': fx.historySamples(0, 3) } });
       ended(state);
       await open();
       await tick(1000);
       for (const d of [0, 1]) {
-        expect(tabBadge(d), `${state}: tab ${d}`).toBe(BADGE[state]);
-        expect(within(tab(d)).getByText(BADGE[state])).toBeInTheDocument();
+        expect(tabBadge(d), `${state}: tab ${d}`).toBe('');
+        expect(within(tab(d)).queryByText(BADGE[state])).not.toBeInTheDocument();
       }
       expect(tabTitle(0)).toBe('a-b: enp101s0f0 → enp101s0f1');
       expect(tabTitle(1)).toBe('b-a: enp101s0f1 → enp101s0f0');
@@ -664,30 +665,18 @@ describe('Dashboard (spec 35 F3): the badge of an ended run sits in the tab titl
     },
   );
 
-  it('the badge follows the state: none live, "Stopping", then "Stopped"; a failed run shows "Failed" instead', async () => {
+  it('no badge at any state: live, "Stopping", "Stopped", "Failed"', async () => {
     serveHistory({ startedAt: 1762000000, samples: { '0': fx.historySamples(0, 3), '1': fx.historySamples(0, 3) } });
     api.getEmulation.mockResolvedValue(fx.emulation('running'));
     api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0), fx.dirStats(1)]));
     await open();
     expect(tabBadge(0)).toBe('');
-    ended('stopping');
-    await tick(2500);
-    expect(tabBadge(0)).toBe('Stopping');
-    ended('stopped');
-    await tick(2500);
-    expect(tabBadge(0)).toBe('Stopped');
-    ended('failed');
-    await tick(2500);
-    expect(tabBadge(0)).toBe('Failed');
-  });
-
-  it('a failed badge is not styled like the others (it is a failure)', async () => {
-    serveHistory({ startedAt: 1762000000, samples: { '0': fx.historySamples(0, 3) } });
-    ended('failed');
-    await open();
-    await tick(1000);
-    const badge = must(tab(0).querySelector('.badge'), 'badge');
-    expect(badge.getAttribute('class')).toMatch(/danger/);
+    for (const state of ['stopping', 'stopped', 'failed'] as const) {
+      ended(state);
+      await tick(2500);
+      expect(tabBadge(0), state).toBe('');
+      expect(tabBadge(1), state).toBe('');
+    }
   });
 
   it('ended tabs are titled from the history\'s links; "Link <n>" only for an index the links lack', async () => {
@@ -713,7 +702,9 @@ describe('Dashboard (spec 35 F3): the badge of an ended run sits in the tab titl
     expect(screen.queryByText('Stopped', { selector: '.badge' })).not.toBeInTheDocument();
   });
 
-  it('a new start clears the tabs of the old run', async () => {
+  // Spec 54 L3. Was: 'a new start clears the tabs of the old run' (no tab while "starting"). The dashboard now stays rendered
+  // while a run starts (dashboardSpec54.test.tsx).
+  it('a start does not clear the tabs of the old run: they stay while "starting"', async () => {
     serveHistory({ startedAt: 1762000000, samples: { '0': fx.historySamples(0, 3), '1': fx.historySamples(0, 3) } });
     ended('stopped');
     await open();
@@ -722,7 +713,7 @@ describe('Dashboard (spec 35 F3): the badge of an ended run sits in the tab titl
     api.getEmulation.mockResolvedValue(fx.emulation('starting'));
     api.getStats.mockResolvedValue(fx.stats([], { stale: true, age_ms: undefined }));
     await tick(2500);
-    expect(tabs()).toHaveLength(0);
+    expect(tabs()).toHaveLength(2);
   });
 });
 

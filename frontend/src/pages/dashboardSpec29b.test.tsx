@@ -13,7 +13,7 @@ import { must } from '../test/must';
 //   4. A run is identified by `run_id` of `GET /api/stats/history`. A changed `run_id` (also null -> n and n -> null) drops the
 //      data and fetches in full again; a changed `started_at` with the same `run_id` changes nothing.
 //   5. History cards (the final charts, no live stat list) show for `stopping`, `stopped` and `failed` whenever the history has
-//      samples. Their badge is the state as text: "Stopping", "Stopped", "Failed". Their titles come from the history's `links`
+//      samples. Spec 54 L1: they carry no state badge any more (was: "Stopping", "Stopped", "Failed"). Their titles come from the history's `links`
 //      (`name: ingress → egress`, ports labelled with the netdev as everywhere), never from the stats of an earlier poll or
 //      the plan of the emulation; `Link <n>` only for an index `links` has no entry for.
 //   6. While the state is `starting`, live cards chart nothing: the history still held is the old run's.
@@ -159,7 +159,7 @@ describe('Dashboard (spec 29b item 5): history cards for stopping, stopped and f
   const BADGE = { stopping: 'Stopping', stopped: 'Stopped', failed: 'Failed' } as const;
 
   it.each(['stopping', 'stopped', 'failed'] as const)(
-    '"%s": a card per link with the final charts and the state as its badge',
+    '"%s": a card per link with the final charts and no state badge (spec 54 L1)',
     async (state) => {
       server({
         '0': fx.historySamples(0, 5, { rx_gbps: 1.5 }),
@@ -169,7 +169,7 @@ describe('Dashboard (spec 29b item 5): history cards for stopping, stopped and f
       await open();
       await tick(2500);
       for (const d of [0, 1]) {
-        expect(tabBadge(d), `${state}: tab ${d}`).toBe(BADGE[state]);
+        expect(tabBadge(d), `${state}: tab ${d}`).toBe('');
       }
       expect(rxOf(0)).toEqual(Array(5).fill(1.5));
       expect(rxOf(1)).toEqual(Array(5).fill(2.5));
@@ -226,27 +226,27 @@ describe('Dashboard (spec 29b item 5): history cards for stopping, stopped and f
     expect(screen.queryByText(BADGE[state], { selector: '.badge' })).not.toBeInTheDocument();
   });
 
-  it('a run that goes from running through stopping to stopped keeps its cards the whole way, the badge following the state', async () => {
+  it('a run that goes from running through stopping to stopped keeps its cards the whole way, never badged (spec 54 L1)', async () => {
     server({ '0': fx.historySamples(0, 5), '1': fx.historySamples(0, 5) });
     await open();
     expect(tabBadge(0)).toBe(''); // live: no state badge
     settle('stopping');
     await tick(2500);
-    expect(tabBadge(0)).toBe('Stopping');
+    expect(tabBadge(0)).toBe('');
     settle('stopped');
     await tick(2500);
-    expect(tabBadge(0)).toBe('Stopped');
+    expect(tabBadge(0)).toBe('');
     expect(rxOf(0)).toHaveLength(5);
   });
 
-  it('the badge of a failed run replaces the badge of the stopping one, the charts stay', async () => {
+  it('a failed run has no badge either, and the charts stay', async () => {
     server({ '0': fx.historySamples(0, 4), '1': fx.historySamples(0, 4) });
     settle('stopping');
     await open();
     await tick(2500);
     settle('failed');
     await tick(2500);
-    expect(tabBadge(1)).toBe('Failed');
+    expect(tabBadge(1)).toBe('');
     expect(rxOf(1)).toHaveLength(4);
   });
 

@@ -1,5 +1,5 @@
 import { useId } from 'react';
-import { OverlayTrigger, Row, Table, Tooltip } from 'react-bootstrap';
+import { OverlayTrigger, Table, Tooltip } from 'react-bootstrap';
 import { formatBits, formatFrameCount } from '../common/format';
 
 /** The live rates of a link, or of all links added up. */
@@ -38,28 +38,26 @@ function CountCell({ count }: { count: number }) {
 export function RateTable({ rates }: { rates: Rates }) {
   const { txBps, txPps, rxBps, rxPps } = rates;
   return (
-    <Row className="mb-3">
-      <div className="col-12 col-md-6 col-sm-12">
-        <Table striped bordered hover size="sm" className="mt-3 mb-3">
-          <thead className="table-dark">
-            <tr>
-              <th className="col-3">TX L1</th>
-              <th className="col-3">RX L1</th>
-              <th className="col-3">TX L2</th>
-              <th className="col-3">RX L2</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>{formatBits(txBps + L1_OVERHEAD_BITS * txPps)}</td>
-              <td>{formatBits(rxBps + L1_OVERHEAD_BITS * rxPps)}</td>
-              <td>{formatBits(txBps)}</td>
-              <td>{formatBits(rxBps)}</td>
-            </tr>
-          </tbody>
-        </Table>
-      </div>
-    </Row>
+    <div className="col-12 col-md-6">
+      <Table striped bordered hover size="sm" className="mt-3 mb-3">
+        <thead className="table-dark">
+          <tr>
+            <th className="col-3">TX L1</th>
+            <th className="col-3">RX L1</th>
+            <th className="col-3">TX L2</th>
+            <th className="col-3">RX L2</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>{formatBits(txBps + L1_OVERHEAD_BITS * txPps)}</td>
+            <td>{formatBits(rxBps + L1_OVERHEAD_BITS * rxPps)}</td>
+            <td>{formatBits(txBps)}</td>
+            <td>{formatBits(rxBps)}</td>
+          </tr>
+        </tbody>
+      </Table>
+    </div>
   );
 }
 
@@ -67,25 +65,23 @@ export function RateTable({ rates }: { rates: Rates }) {
 export function LossTable({ lost, frames }: { lost: number; frames: FrameTotals }) {
   const ratio = lost > 0 ? `${((lost * 100) / (lost + frames.forwarded)).toFixed(2)} %` : '0.00 %';
   return (
-    <Row>
-      <div className="col-12 col-sm-12 col-md-4">
-        <Table striped bordered hover size="sm" className="mt-3 mb-3">
-          <thead className="table-dark">
-            <tr>
-              <th>Lost Frames</th>
-              <th>Frame Loss Ratio</th>
-              <th>Out of Order</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <CountCell count={lost} />
-              <td>{ratio}</td>
-              <CountCell count={frames.outOfOrder} />
-            </tr>
-          </tbody>
-        </Table>
-      </div>
-    </Row>
+    <div className="col-12 col-md-6">
+      <Table striped bordered hover size="sm" className="mt-3 mb-3">
+        <thead className="table-dark">
+          <tr>
+            <th>Lost Frames</th>
+            <th>Frame Loss Ratio</th>
+            <th>Out of Order</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <CountCell count={lost} />
+            <td>{ratio}</td>
+            <CountCell count={frames.outOfOrder} />
+          </tr>
+        </tbody>
+      </Table>
+    </div>
   );
 }

@@ -66,7 +66,16 @@ describe.each(PAGES)('$name: required fields are marked', (page: ConfigPage) => 
     const user = await page.openNew();
     for (const l of bareRequired(page)) expectRequired(ctl(l));
     expect(allRequiredMarkers()).toHaveLength(bareRequired(page).length);
-    for (const l of ['Seed', 'Histogram bins', 'Histogram lo', 'Histogram hi', 'Delay statistics'])
+    for (const l of [
+      'Seed',
+      'Histogram bins',
+      'Histogram lo',
+      'Histogram hi',
+      'IAT histogram bins',
+      'IAT histogram lo',
+      'IAT histogram hi',
+      'Delay statistics',
+    ])
       expectOptional(ctl(l));
     for (const l of [
       'Mean delay',

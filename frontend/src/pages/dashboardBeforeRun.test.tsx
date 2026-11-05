@@ -34,7 +34,8 @@ import { must } from '../test/must';
 //   - once a run starts the tabs come from the run (as before); an ended run's tabs stay, the stored links only fill in
 //     the before-any-run view.
 // CHOICE: "disabled Delay histogram" is a present, disabled radio on link tabs as well (as on the Summary tab).
-// CHOICE (spec silent): "starting" shows no tabs yet, as before; stopping/stopped/failed without samples show the stored view.
+// Spec 54 L3 (was: "starting" shows no tabs, the tabs come from the run): the tabs a view has stay while a run is starting, the overlay
+// covers them (dashboardSpec54.test.tsx); stopping/stopped/failed without samples show the stored view.
 
 const LINKS = [fx.link(), fx.linkRev()];
 
@@ -113,7 +114,8 @@ describe('Dashboard before any run (spec 39): the tabs', () => {
     },
   );
 
-  it('does not show them while the run is starting, the tabs come from the run then', async () => {
+  // Spec 54 L3. Was: 'does not show them while the run is starting, the tabs come from the run then' (no tablist).
+  it('a page opened while the run is starting shows the loading overlay (spec 54 L3), not an empty page', async () => {
     api.getEmulation.mockResolvedValue(fx.emulation('starting'));
     api.getStats.mockResolvedValue(fx.stats([], { stale: true, age_ms: undefined }));
     seedStore({ links: LINKS });
@@ -121,8 +123,7 @@ describe('Dashboard before any run (spec 39): the tabs', () => {
     renderApp('/');
     await tick(0);
     await tick(0);
-    expect(allTabs()).toHaveLength(0);
-    expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
+    expect(document.querySelector('.loader-overlay')).not.toBeNull();
   });
 
   it('a running emulation takes its tabs from the run, not from the stored links', async () => {
@@ -134,21 +135,25 @@ describe('Dashboard before any run (spec 39): the tabs', () => {
     expect(hasSummary()).toBe(true);
   });
 
-  it('an ended run keeps its own tabs, badged, whatever is stored', async () => {
+  it('an ended run keeps its own tabs, unbadged (spec 54 L1), whatever is stored', async () => {
     serveHistory({ startedAt: 1762000000, samples: { '0': fx.historySamples(0, 3) } });
     serveEnded('stopped');
     seedStore({ links: [...LINKS, fx.loopLink()] });
     renderApp('/');
     await waitFor(() => expect(tabs()).toHaveLength(1));
-    await waitFor(() => expect(tabBadge(0)).toBe('Stopped'));
+    await waitFor(() => expect(tabTitle(0)).toBe('a-b: enp101s0f0 → enp101s0f1'));
+    expect(tabBadge(0)).toBe(''); // spec 54 L1
     expect(tabs()).toHaveLength(1);
   });
 
-  it('a new start replaces them: no tab while starting', async () => {
+  // Spec 54 L3. Was: 'a new start replaces them: no tab while starting'.
+  it('a new start keeps them: the tabs stay while starting', async () => {
     await open();
     expect(tabs()).toHaveLength(2);
     api.getEmulation.mockResolvedValue(fx.emulation('starting'));
-    await waitFor(() => expect(screen.queryByRole('tablist')).not.toBeInTheDocument(), { timeout: 4000 });
+    await waitFor(() => expect(document.querySelector('.loader-overlay')).not.toBeNull(), { timeout: 4000 });
+    expect(screen.getByRole('tablist')).toBeInTheDocument();
+    expect(tabs()).toHaveLength(2);
   });
 });
 

@@ -248,6 +248,65 @@ describe('Links: export links', () => {
   });
 });
 
+// ---- spec 53 A: the IAT histogram travels with the link ---------------------------------------------------------------------
+
+const IAT_LINK = (): Link =>
+  fx.link({
+    id: 7,
+    name: 'iat',
+    config: {
+      ...fx.config2(),
+      histogram: { bins: 32, lo_ns: 1000, hi_ns: 50000 },
+      iat_histogram: { bins: 64, lo_ns: 2000, hi_ns: 80000 },
+    },
+  });
+
+describe('spec 53 A: export and import carry iat_histogram', () => {
+  it('Export writes it verbatim next to the delay histogram', async () => {
+    seedStore({ links: [IAT_LINK()] });
+    const user = await open();
+    await user.click(exportBtn());
+    await waitFor(() => expect(created).toHaveLength(1));
+    const parsed = JSON.parse(await readBlob(created[0])) as { links: Link[] };
+    expect(parsed.links[0].config.iat_histogram).toEqual({ bins: 64, lo_ns: 2000, hi_ns: 80000 });
+    expect(parsed.links[0].config.histogram).toEqual({ bins: 32, lo_ns: 1000, hi_ns: 50000 });
+    expect(parsed).toEqual(linksFile([IAT_LINK()]));
+  });
+
+  it('Import stores it verbatim, and the editor of the imported link shows it', async () => {
+    const user = await open();
+    await user.upload(fileInput(), jsonFile(linksFile([IAT_LINK()])));
+    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Confirm import' }));
+    await waitFor(() => expect(storedDoc().links).toEqual([IAT_LINK()]));
+    await user.click(await screen.findByRole('link', { name: 'Edit iat' }));
+    await screen.findByRole('heading', { level: 1, name: 'Edit link' });
+    await waitFor(() => expect(screen.getByLabelText('IAT histogram bins')).toHaveValue(64));
+    expect(screen.getByLabelText('IAT histogram lo')).toHaveValue(2);
+    expect(screen.getByLabelText('IAT histogram hi')).toHaveValue(80);
+  });
+
+  it.each([
+    ['bins that is not a whole number', { bins: 1.5, lo_ns: null, hi_ns: null }, /IAT histogram bins/],
+    ['a negative lo', { bins: null, lo_ns: -1, hi_ns: null }, /IAT histogram lo/],
+    ['a negative hi', { bins: null, lo_ns: null, hi_ns: -5 }, /IAT histogram hi/],
+  ])(
+    'a link with an iat_histogram %s is refused, naming the IAT field, nothing written',
+    async (_what, iat, problem) => {
+      seedStore({ links: [fx.loopLink({ id: 9 })] });
+      const before = rawStore();
+      const user = await open();
+      await user.upload(
+        fileInput(),
+        jsonFile({ version: 1, links: [{ ...fx.link(), config: { ...fx.config(), iat_histogram: iat } }] }),
+      );
+      await waitFor(() => expect(screen.getAllByRole('alert').length).toBeGreaterThan(0));
+      expect(alertTexts()).toMatch(problem);
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      expect(rawStore()).toBe(before);
+    },
+  );
+});
+
 describe('Links: import links', () => {
   async function upload(user: Awaited<ReturnType<typeof open>>, content: unknown = linksFile()) {
     await user.upload(fileInput(), jsonFile(content));

@@ -22,10 +22,11 @@ import { must } from '../test/must';
 
 // Spec 51 T2 (user 2026-11-05: "a table below the rate diagram and above the donuts ... TX L1, RX L1, TX L2, RX L2 / Lost Frames,
 // Frame Loss Ratio, Out of Order. Same setting/UI/table as P4TG"). Source of truth: P4TG StatView.tsx ~550-680. Contract:
-//   rate row   `.row.mb-3` > `.col-12.col-md-6.col-sm-12` > `table.table.table-striped.table-bordered.table-hover.table-sm.mt-3.mb-3`,
+//   rate col   (spec 53 B: both tables sit in ONE `.row.mb-3`, rates left, loss right, each in a `.col-12.col-md-6`; they stack below md)
+//              `.col-12.col-md-6` > `table.table.table-striped.table-bordered.table-hover.table-sm.mt-3.mb-3`,
 //              `thead.table-dark`, `th.col-3` x4: TX L1, RX L1, TX L2, RX L2; one body row of formatBits(...).
 //              L2 = the link's tx_bps / rx_bps; L1 = L2 + 20 B x 8 x pps of the same side (tx_pps for TX, rx_pps for RX).
-//   loss row   `.row` > `.col-12.col-sm-12.col-md-4` > the same table style, `thead.table-dark`: Lost Frames | Frame Loss Ratio |
+//   loss col   `.col-12.col-md-6` > the same table style, `thead.table-dark`: Lost Frames | Frame Loss Ratio |
 //              Out of Order. Lost = formatFrameCount(lost) with a tooltip of the exact count, Frame Loss Ratio =
 //              lost > 0 ? (lost * 100 / (lost + forwarded)).toFixed(2) + " %" : "0.00 %", Out of Order = formatFrameCount(out_of_order)
 //              with a tooltip of the exact count. lost = the nine causes of the link (the Status's), forwarded = counters.tx_sent.
@@ -97,12 +98,13 @@ const TABLE_CLASSES = ['mb-3', 'mt-3', 'table', 'table-bordered', 'table-hover',
 // ---- the markup ---------------------------------------------------------------------------------------------------------------
 
 describe('Dashboard (spec 51 T2): the markup of the two tables, as P4TG has it', () => {
-  it('rate table: `.row.mb-3` > `.col-12.col-md-6.col-sm-12` > striped bordered hover small table with mt-3 mb-3', async () => {
+  it('rate table: in a `.col-12.col-md-6` of the one `.row.mb-3`, a striped bordered hover small table with mt-3 mb-3', async () => {
     await openLive(dir(0, {}, RATES0), dir(1, {}, RATES1));
     const t = rateTable(card(0));
     expect(classes(t)).toEqual(TABLE_CLASSES);
     const col = must(t.parentElement, 'the column');
-    expect(classes(col)).toEqual(['col-12', 'col-md-6', 'col-sm-12']);
+    expect(col).toHaveClass('col-12', 'col-md-6');
+    expect(col).not.toHaveClass('col-md-4');
     const row = must(col.parentElement, 'the row');
     expect(classes(row)).toEqual(['mb-3', 'row']);
   });
@@ -119,13 +121,14 @@ describe('Dashboard (spec 51 T2): the markup of the two tables, as P4TG has it',
     expect(t.querySelectorAll('tbody > tr > td')).toHaveLength(4);
   });
 
-  it('loss table: `.row` > `.col-12.col-sm-12.col-md-4` > the same table style, `thead.table-dark`, three headers', async () => {
+  it('loss table: in a `.col-12.col-md-6` of the same `.row.mb-3`, the same table style, `thead.table-dark`, three headers', async () => {
     await openLive(dir(0, NINE), dir(1));
     const t = lossTable(card(0));
     expect(classes(t)).toEqual(TABLE_CLASSES);
     const col = must(t.parentElement, 'the column');
-    expect(classes(col)).toEqual(['col-12', 'col-md-4', 'col-sm-12']);
-    expect(classes(must(col.parentElement, 'the row'))).toEqual(['row']);
+    expect(col).toHaveClass('col-12', 'col-md-6');
+    expect(col).not.toHaveClass('col-md-4');
+    expect(classes(must(col.parentElement, 'the row'))).toEqual(['mb-3', 'row']);
     const head = must(t.querySelector('thead'), 'thead');
     expect(classes(head)).toEqual(['table-dark']);
     expect(Array.from(head.querySelectorAll('th')).map((th) => th.textContent?.trim())).toEqual([
@@ -137,18 +140,30 @@ describe('Dashboard (spec 51 T2): the markup of the two tables, as P4TG has it',
     expect(t.querySelectorAll('tbody > tr > td')).toHaveLength(3);
   });
 
-  it('the rate row is its own row, before the loss row, which is before the donuts; both after the chart and its radios', async () => {
+  it('one row holds both tables, rates left and loss right (two columns, in this order); the row is after the chart and its radios and before the donuts', async () => {
     await openLive(dir(0, NINE, RATES0), dir(1));
     const panel = card(0);
-    const rateRow = must(rateTable(panel).closest('.row'));
-    const lossRow = must(lossTable(panel).closest('.row'));
-    expect(rateRow).not.toBe(lossRow);
+    const rateCol = must(rateTable(panel).parentElement, 'the rate column');
+    const lossCol = must(lossTable(panel).parentElement, 'the loss column');
+    const row = must(rateCol.closest('.row'), 'the row');
+    expect(must(lossCol.closest('.row'))).toBe(row);
+    expect(Array.from(row.children)).toEqual([rateCol, lossCol]);
+    expect(row.querySelectorAll('table')).toHaveLength(2);
     const follows = (a: Node, b: Node) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
     const radios = within(panel).getByRole('radiogroup', { name: 'Chart' });
     const donut = within(panel).getByRole('img', { name: LOSS_DONUT_LABEL });
-    expect(follows(radios, rateRow)).toBe(true);
-    expect(follows(rateRow, lossRow)).toBe(true);
-    expect(follows(lossRow, donut)).toBe(true);
+    expect(follows(radios, row)).toBe(true);
+    expect(follows(row, donut)).toBe(true);
+  });
+
+  it('the Summary has the same one row with both tables side by side', async () => {
+    await openLive(dir(0, NINE, RATES0), dir(1));
+    const rateCol = must(rateTable(summary()).parentElement, 'the rate column');
+    const lossCol = must(lossTable(summary()).parentElement, 'the loss column');
+    expect(rateCol).toHaveClass('col-12', 'col-md-6');
+    expect(lossCol).toHaveClass('col-12', 'col-md-6');
+    const row = must(rateCol.closest('.row'), 'the row');
+    expect(Array.from(row.children)).toEqual([rateCol, lossCol]);
   });
 
   it('in the Delay histogram view they come after the delay chart', async () => {

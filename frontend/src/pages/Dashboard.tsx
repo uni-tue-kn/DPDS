@@ -16,6 +16,7 @@ import { startPolling } from '../common/polling';
 import { usePortLabeler } from '../common/portLabel';
 import { NO_SAMPLES, sumHistories, useRunHistory } from '../common/runHistory';
 import ErrorAlert from '../components/ErrorAlert';
+import Loader from '../components/Loader';
 import LinkCharts from './LinkCharts';
 import LoadRunning from './LoadRunning';
 import { addStats, type LinkStats, NO_STATS, statsOfLive, statsOfTotals } from './linkStats';
@@ -25,8 +26,6 @@ const POLL_MS = 1000;
 
 /** The key of the Summary tab; the keys of the link tabs are their indexes. */
 const SUMMARY_TAB = 'summary';
-
-const ENDED_TEXT = { stopping: 'Stopping', stopped: 'Stopped', failed: 'Failed' } as const;
 
 const DASH = '–';
 
@@ -94,7 +93,7 @@ function totalsOf(directions: StatsView['directions']) {
 export default function Dashboard() {
   const [emulation, setEmulation] = useState<EmulationView>();
   const [stats, setStats] = useState<StatsView>();
-  const { history, links, totals: runTotalsByLink, error: historyError } = useRunHistory();
+  const { history: polledHistory, links: polledLinks, totals: polledTotals, error: historyError } = useRunHistory();
   /** The tab the user chose (the Summary or a link index); the Summary while that link is gone. */
   const [selected, setSelected] = useState<string>();
   const [pollError, setPollError] = useState<string>();
@@ -190,22 +189,38 @@ export default function Dashboard() {
     }
   };
 
+  // From the Start/Restart click until the run is up the page stays as it is, under the loader's overlay; the controller
+  // drops the old run's series when the new run begins, so the page holds what it had when the click came.
+  const covered = busy === 'start' || busy === 'restart' || state === 'starting';
+  const polled = useMemo(
+    () => ({ history: polledHistory, links: polledLinks, totals: polledTotals }),
+    [polledHistory, polledLinks, polledTotals],
+  );
+  const [held, setHeld] = useState(polled);
+  if (!covered && held !== polled) setHeld(polled);
+  const { history, links, totals: runTotalsByLink } = covered ? held : polled;
+
   const live = stats && stats.directions.length > 0 ? stats.directions : undefined;
   const plan = (dir: number) => emulation?.directions.find((p) => p.dir === dir);
   // The controller reports stale: true with no age_ms for a stopped emulation; that is not "old data".
   const showStale = state === 'running' && stats?.stale === true && stats.age_ms != null;
   // After the run ends (or while it ends) the controller keeps its series until the next start: the final charts stay.
   const ended = state === 'stopping' || state === 'stopped' || state === 'failed' ? state : undefined;
-  const finished = ended !== undefined && Object.values(history).some((list) => list.length > 0);
+  const hasHistory = Object.values(history).some((list) => list.length > 0);
+  const finished = ended !== undefined && hasHistory;
+  // While the next run starts and reports no directions yet, the old run's charts stay too.
+  const starting = state === 'starting';
+  const kept = starting && !live && hasHistory;
+
   // Like live statistics: once the run has ended the rates and the loss are 0 (the charts and donuts keep the run).
   const pills = finished ? ZERO_PILLS : live && totalsOf(live);
   const restartNeeded = pendingRestart(doc, emulation).any;
   // Before any run the stored links give the (empty) tabs, like P4TG's overview.
-  const beforeRun = !finished && !live && state !== undefined && state !== 'running' && state !== 'starting';
+  const beforeRun = !finished && !kept && !live && state !== undefined && state !== 'running';
   const storedLinks = doc.links;
   const shown = useMemo(
     () =>
-      finished
+      finished || kept
         ? Object.keys(history)
             .map(Number)
             .filter(Number.isInteger)
@@ -213,15 +228,14 @@ export default function Dashboard() {
         : beforeRun
           ? storedLinks.map((_, i) => i)
           : (live ?? []).map((d) => d.dir),
-    [finished, beforeRun, history, live, storedLinks],
+    [finished, kept, beforeRun, history, live, storedLinks],
   );
-  const starting = state === 'starting';
   const summaryHistory = useMemo(
-    () => sumHistories(shown.map((dir) => (starting ? NO_SAMPLES : (history[String(dir)] ?? NO_SAMPLES)))),
-    [shown, history, starting],
+    () => sumHistories(shown.map((dir) => (starting && live ? NO_SAMPLES : (history[String(dir)] ?? NO_SAMPLES)))),
+    [shown, history, starting, live],
   );
   const statsOf = (dir: number): LinkStats => {
-    if (finished) {
+    if (finished || kept) {
       const t = runTotalsByLink[String(dir)];
       return t ? statsOfTotals(t) : NO_STATS;
     }
@@ -234,7 +248,7 @@ export default function Dashboard() {
   const titleOf = (dir: number) => {
     const stored = storedLinks[dir];
     if (beforeRun && stored) return linkLabel(stored.name, stored.ingress, stored.egress, label);
-    if (finished) {
+    if (finished || kept) {
       const l = links[dir];
       return l ? linkLabel(l.name, l.ingress, l.egress, label) : `Link ${dir}`;
     }
@@ -329,102 +343,92 @@ export default function Dashboard() {
           )}
         </Col>
       </Row>
-      <div data-testid="notices">
-        <ErrorAlert message={actionError} />
-        <ErrorAlert message={pollError} />
-        <ErrorAlert message={emulation?.error} />
-        {statsError && statsError !== dismissed && (
-          <Alert
-            variant="warning"
-            role="status"
-            dismissible
-            onClose={() => setDismissed(statsError)}
-            data-testid="stats-warning"
-          >
-            Statistics are not updating: {statsError}
-          </Alert>
-        )}
-        {historyError && (
-          <Alert variant="warning" role="status" data-testid="history-warning">
-            The history of the charts is not updating: {historyError}
-          </Alert>
-        )}
-        {(restartNeeded || showStale) && (
-          <div className="d-flex flex-wrap gap-3 mb-3">
-            {restartNeeded && (
-              <Badge pill bg="warning" text="dark" data-testid="pending-restart">
-                Restart needed: links changed
-              </Badge>
-            )}
-            {showStale && (
-              <Badge pill bg="warning" text="dark" data-testid="stale-indicator">
-                Stale data ({((stats?.age_ms ?? 0) / 1000).toFixed(1)} s old)
-              </Badge>
-            )}
-          </div>
-        )}
-      </div>
-      <LoadRunning emulation={emulation} />
-      {state === 'failed' && emulation && emulation.log_tail.length > 0 && (
-        <details className="mb-3">
-          <summary>Show log</summary>
-          <pre className="log-tail" data-testid="log-tail">
-            {keyedLines(emulation.log_tail).map(({ key, line }) => (
-              <div key={key}>{line}</div>
-            ))}
-          </pre>
-        </details>
-      )}
-      {(shown.length > 0 || beforeRun) && (
-        <Tabs id="link-tabs" transition={false} activeKey={activeTab} onSelect={(k) => k && setSelected(k)}>
-          <Tab eventKey={SUMMARY_TAB} title="Summary">
-            <div className="pt-3">
-              <LinkCharts
-                active={activeTab === SUMMARY_TAB}
-                history={summaryHistory}
-                stats={summaryStats}
-                empty={beforeRun}
-              />
+      {/* Before the first answer the loader replaces the page; a failed first poll shows its error instead. */}
+      <Loader loaded={emulation !== undefined || pollError !== undefined} overlay={covered}>
+        <div data-testid="notices">
+          <ErrorAlert message={actionError} />
+          <ErrorAlert message={pollError} />
+          <ErrorAlert message={emulation?.error} />
+          {statsError && statsError !== dismissed && (
+            <Alert
+              variant="warning"
+              role="status"
+              dismissible
+              onClose={() => setDismissed(statsError)}
+              data-testid="stats-warning"
+            >
+              Statistics are not updating: {statsError}
+            </Alert>
+          )}
+          {historyError && (
+            <Alert variant="warning" role="status" data-testid="history-warning">
+              The history of the charts is not updating: {historyError}
+            </Alert>
+          )}
+          {(restartNeeded || showStale) && (
+            <div className="d-flex flex-wrap gap-3 mb-3">
+              {restartNeeded && (
+                <Badge pill bg="warning" text="dark" data-testid="pending-restart">
+                  Restart needed: links changed
+                </Badge>
+              )}
+              {showStale && (
+                <Badge pill bg="warning" text="dark" data-testid="stale-indicator">
+                  Stale data ({((stats?.age_ms ?? 0) / 1000).toFixed(1)} s old)
+                </Badge>
+              )}
             </div>
-          </Tab>
-          {shown.map((dir) => {
-            const s = live?.find((d) => d.dir === dir);
-            return (
-              <Tab
-                key={dir}
-                eventKey={String(dir)}
-                title={
-                  <>
-                    {titleOf(dir)}
-                    {finished && (
-                      <Badge pill bg={ended === 'failed' ? 'danger' : 'secondary'} className="ms-2">
-                        {ENDED_TEXT[ended]}
-                      </Badge>
-                    )}
-                  </>
-                }
-              >
-                <div className="pt-3">
-                  <LinkCharts
-                    dir={dir}
-                    active={String(dir) === activeTab}
-                    history={state === 'starting' ? NO_SAMPLES : (history[String(dir)] ?? NO_SAMPLES)}
-                    stats={statsOf(dir)}
-                    empty={beforeRun}
-                    // The link's stored config says whether its run had delay statistics (default: on).
-                    endedStats={finished && storedLinks[dir]?.config.delay_stats !== false}
-                    live={
-                      finished || !s
-                        ? undefined
-                        : { delayStats: s.delay_stats === true, meanNs: s.delay_mean_ns, stdNs: s.delay_std_ns }
-                    }
-                  />
-                </div>
-              </Tab>
-            );
-          })}
-        </Tabs>
-      )}
+          )}
+        </div>
+        <LoadRunning emulation={emulation} />
+        {state === 'failed' && emulation && emulation.log_tail.length > 0 && (
+          <details className="mb-3">
+            <summary>Show log</summary>
+            <pre className="log-tail" data-testid="log-tail">
+              {keyedLines(emulation.log_tail).map(({ key, line }) => (
+                <div key={key}>{line}</div>
+              ))}
+            </pre>
+          </details>
+        )}
+        {(shown.length > 0 || beforeRun) && (
+          <Tabs id="link-tabs" transition={false} activeKey={activeTab} onSelect={(k) => k && setSelected(k)}>
+            <Tab eventKey={SUMMARY_TAB} title="Summary">
+              <div className="pt-3">
+                <LinkCharts
+                  active={activeTab === SUMMARY_TAB}
+                  history={summaryHistory}
+                  stats={summaryStats}
+                  empty={beforeRun}
+                />
+              </div>
+            </Tab>
+            {shown.map((dir) => {
+              const s = live?.find((d) => d.dir === dir);
+              return (
+                <Tab key={dir} eventKey={String(dir)} title={titleOf(dir)}>
+                  <div className="pt-3">
+                    <LinkCharts
+                      dir={dir}
+                      active={String(dir) === activeTab}
+                      history={starting && live ? NO_SAMPLES : (history[String(dir)] ?? NO_SAMPLES)}
+                      stats={statsOf(dir)}
+                      empty={beforeRun}
+                      // The link's stored config says whether its run had delay statistics (default: on).
+                      endedStats={(finished || kept) && storedLinks[dir]?.config.delay_stats !== false}
+                      live={
+                        finished || kept || !s
+                          ? undefined
+                          : { delayStats: s.delay_stats === true, meanNs: s.delay_mean_ns, stdNs: s.delay_std_ns }
+                      }
+                    />
+                  </div>
+                </Tab>
+              );
+            })}
+          </Tabs>
+        )}
+      </Loader>
     </>
   );
 }

@@ -1,10 +1,10 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { Badge, Button, OverlayTrigger, Tooltip } from 'react-bootstrap';
 import * as api from '../api/client';
-import ErrorAlert from '../components/ErrorAlert';
-import { useLoad } from '../common/useLoad';
-import { startRequestOf, useLocalConfig } from '../common/localConfig';
 import type { Hint, HintLevel } from '../api/types';
+import { startRequestOf, useLocalConfig } from '../common/localConfig';
+import { useLoad } from '../common/useLoad';
+import ErrorAlert from '../components/ErrorAlert';
 
 const GROUPS: { level: HintLevel; title: string; bg: string }[] = [
   { level: 'error', title: 'Errors', bg: 'danger' },
@@ -80,10 +80,10 @@ function Commands({ hint, commands }: { hint: Hint; commands: string[] }) {
 
 export default function Hints() {
   const { doc, corrupt } = useLocalConfig();
-  // Host-only hints, plus the ones that depend on the links of this browser's configuration (nothing is started).
-  const host = useLoad(api.getHostHints);
   // Set only around the reloads of a click on Recheck, which read the loaders synchronously.
   const recheck = useRef(false);
+  // Host-only hints, plus the ones that depend on the links of this browser's configuration (nothing is started).
+  const host = useLoad(() => api.getHostHints(recheck.current ? { recheck: true } : undefined));
   const forLinks = useLoad(() =>
     corrupt || doc.links.length === 0
       ? Promise.resolve([])

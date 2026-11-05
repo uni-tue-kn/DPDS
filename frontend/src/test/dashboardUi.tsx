@@ -22,7 +22,7 @@
 //              history-warning, and every role="alert" (action error, poll error, emulation error). Never inside the top row.
 //   banner     LoadRunning (unchanged), anywhere below the top row
 //   chart area a react-bootstrap Tabs: role "tablist", one role "tab" per link (index order), titled "name: ingress → egress"
-//              (netdev labels), with the badge "Stopping" / "Stopped" / "Failed" inside the tab while the run has ended.
+//              (netdev labels), without a state badge (spec 54 L1: there used to be "Stopping" / "Stopped" / "Failed" inside the tab).
 //              Inside the active role "tabpanel": the chart (role "img" with an aria-label), centred below it the radiogroup
 //              "Chart" with the radios "Traffic rates", "Delay histogram" (only with delay_stats; spec 50 A3: also after the run ended) and "Packet loss" (spec 43 F5), in this order,
 //              then the loss donut.
@@ -57,10 +57,10 @@
 //
 // ## Spec 51 (IAT histogram, frame size donut, P4TG's rate and loss tables; spec: .git/claude-specs/spec51-iat-frame-sizes.md)
 //   order      in a link's tabpanel and in the Summary's, top to bottom: the chart, the radiogroup "Chart", [Delay histogram view:
-//              the three histogram tables above the delay bar chart], the rate table row, the loss table row, the donut row.
-//   rate row   `.row.mb-3` > `.col-12.col-md-6.col-sm-12` > `table.table.table-striped.table-bordered.table-hover.table-sm.mt-3.mb-3`,
+//              the three histogram tables above the delay bar chart], ONE row with the rate table (left) and the loss table (right) (spec 53 B), the donut row.
+//   table row  (spec 53 B) ONE `.row.mb-3` with two `.col-12.col-md-6`, rates left, loss right; below md they stack. Rate: `table.table.table-striped.table-bordered.table-hover.table-sm.mt-3.mb-3`,
 //              `thead.table-dark`, headers TX L1 | RX L1 | TX L2 | RX L2 (`th.col-3`), one body row (see rateTable()).
-//   loss row   `.row` > `.col-12.col-sm-12.col-md-4` > the same table style, headers Lost Frames | Frame Loss Ratio | Out of Order.
+//              Loss: the same table style, headers Lost Frames | Frame Loss Ratio | Out of Order.
 //   donut row  (spec 52 R1: was three columns with the IAT histogram) ONE `.row` whose two children are `.col-12.col-md-6`: the loss
 //              donut (left, its column also has the class `donut-divider`) and the frame size donut (right). Each chart sits in an
 //              element with role "img", found by its aria-label (the contract of the helpers below): "Distribution of the dropped

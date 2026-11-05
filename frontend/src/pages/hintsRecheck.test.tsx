@@ -13,8 +13,9 @@ import { expectStartBody, renderApp, seedLinks, seedRaw, seedStore } from '../te
 //   "Checking host…" (U+2026). It has the implicit status role (found with getByRole, never by attribute: Biome flags an explicit
 //   role on <output>); its spinner is aria-hidden and carries no text of its own. It is gone once every request has settled.
 // - A button named exactly "Recheck" with an `i.bi-arrow-clockwise` icon (aria-hidden), type="button". It is disabled while a
-//   check is in flight (also during the first load). Clicking it re-sends api.getHostHints() and, when the local document has
-//   links (and is not corrupt), api.getHostHintsFor(startBody, { recheck: true }). The first load passes no recheck.
+//   check is in flight (also during the first load). Clicking it re-sends api.getHostHints({ recheck: true }) and, when the local
+//   document has links (and is not corrupt), api.getHostHintsFor(startBody, { recheck: true }) (spec 55: both carry recheck=true,
+//   the controller answers a plain GET from its stored result). The first load passes no recheck to either.
 // - During a recheck the hints already shown stay visible; the icon gets the class `icon-spin` (CHOICE of the class name; the
 //   stylesheet side is pinned in assets/stylesSpec34.test.ts). When the requests have settled, the new answers replace the old
 //   ones and the icon stops spinning. Errors show as before (an alert with the message).
@@ -137,12 +138,13 @@ describe('Host hints page: the Recheck button (spec 34)', () => {
     await waitFor(() => expect(recheckButton()).toBeEnabled());
   });
 
-  it('without local links a click re-sends the GET only (no POST), as a plain call', async () => {
+  it('without local links a click re-sends the GET only (no POST), with { recheck: true } (spec 55)', async () => {
     const user = userEvent.setup();
     await loaded();
     await user.click(recheckButton());
     await waitFor(() => expect(api.getHostHints).toHaveBeenCalledTimes(2));
-    expect(api.getHostHints.mock.calls[1]).toEqual([]);
+    expect(api.getHostHints.mock.calls[0]?.[0]?.recheck ?? false, 'the first load does not recheck').toBe(false);
+    expect(api.getHostHints.mock.calls[1]).toEqual([{ recheck: true }]);
     await act(async () => {});
     expect(api.getHostHintsFor).not.toHaveBeenCalled();
   });
@@ -157,13 +159,14 @@ describe('Host hints page: the Recheck button (spec 34)', () => {
     expect(api.getHostHints).toHaveBeenCalledTimes(1);
     expect(api.getHostHintsFor).toHaveBeenCalledTimes(1);
     expect(api.getHostHintsFor.mock.calls[0][1]?.recheck ?? false, 'the first load does not recheck').toBe(false);
+    expect(api.getHostHints.mock.calls[0]?.[0]?.recheck ?? false, 'the first GET does not recheck').toBe(false);
 
     await user.click(recheckButton());
     await waitFor(() => expect(api.getHostHintsFor).toHaveBeenCalledTimes(2));
     expect(api.getHostHints).toHaveBeenCalledTimes(2);
     expectStartBody(api.getHostHintsFor.mock.calls[1][0], doc);
     expect(api.getHostHintsFor.mock.calls[1][1]).toEqual({ recheck: true });
-    expect(api.getHostHints.mock.calls[1]).toEqual([]);
+    expect(api.getHostHints.mock.calls[1]).toEqual([{ recheck: true }]);
   });
 
   it('a corrupt local document has no links to send: a click re-sends the GET only', async () => {
@@ -313,6 +316,7 @@ describe('Host hints page: the Recheck button (spec 34)', () => {
     expect(api.getHostHints).toHaveBeenCalledTimes(2);
     expect(api.getHostHintsFor).toHaveBeenCalledTimes(2);
     expect(must(api.getHostHintsFor.mock.calls[1])[1]).toEqual({ recheck: true });
+    expect(must(api.getHostHints.mock.calls[1])[0]).toEqual({ recheck: true });
   });
 
   it('once a recheck has finished, the next click rechecks again', async () => {

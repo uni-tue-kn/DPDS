@@ -152,7 +152,7 @@ describe('Summary tab (spec 36 S1): position, default and visibility', () => {
     expect(screen.getAllByRole('tabpanel', { hidden: true })).toHaveLength(1);
   });
 
-  it('after a stop the Summary tab stays, first, with the link tabs badged "Stopped" and the Summary tab not', async () => {
+  it('after a stop the Summary tab stays, first, and no tab is badged (spec 54 L1)', async () => {
     vi.useFakeTimers();
     serveRunning();
     serveHistory({ startedAt: 1762000000, samples: { '0': fx.historySamples(0, 3), '1': fx.historySamples(0, 3) } });
@@ -165,8 +165,8 @@ describe('Summary tab (spec 36 S1): position, default and visibility', () => {
     expect(allTabs()[0]).toBe(summaryTab());
     expect(summaryTab()).toHaveTextContent(/^Summary$/);
     expect(tabs()).toHaveLength(2);
-    expect(tabBadge(0)).toBe('Stopped');
-    expect(tabBadge(1)).toBe('Stopped');
+    expect(tabBadge(0)).toBe('');
+    expect(tabBadge(1)).toBe('');
     expect(summaryTab().querySelector('.badge')).toBeNull();
   });
 

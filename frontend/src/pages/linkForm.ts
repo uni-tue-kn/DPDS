@@ -1,7 +1,7 @@
 // Form model of the link editor: every number is kept as the typed string so inputs can be emptied and
 // retyped; `formToDto` validates and converts back to the wire type.
 import { errorMessage } from '../common/format';
-import type { ConfigDto, DelayerDto, Distribution, LimiterMode, LossModelDto } from '../api/types';
+import type { ConfigDto, DelayerDto, HistogramDto, Distribution, LimiterMode, LossModelDto } from '../api/types';
 import {
   PACKET_UNITS,
   PPS_UNITS,
@@ -69,6 +69,9 @@ export interface ConfigForm {
   hist_bins: string;
   hist_lo: UnitValue;
   hist_hi: UnitValue;
+  iat_bins: string;
+  iat_lo: UnitValue;
+  iat_hi: UnitValue;
   delay_stats: boolean;
 }
 
@@ -126,6 +129,9 @@ export function defaultConfigForm(): ConfigForm {
     hist_bins: '',
     hist_lo: emptyUnit(MS),
     hist_hi: emptyUnit(MS),
+    iat_bins: '',
+    iat_lo: emptyUnit(MS),
+    iat_hi: emptyUnit(MS),
     delay_stats: true,
   };
 }
@@ -148,6 +154,9 @@ export function configToForm(c: ConfigDto, frame?: number | null): ConfigForm {
     hist_bins: str(c.histogram?.bins),
     hist_lo: optUnit(c.histogram?.lo_ns, TIME_UNITS, MS),
     hist_hi: optUnit(c.histogram?.hi_ns, TIME_UNITS, MS),
+    iat_bins: str(c.iat_histogram?.bins),
+    iat_lo: optUnit(c.iat_histogram?.lo_ns, TIME_UNITS, MS),
+    iat_hi: optUnit(c.iat_histogram?.hi_ns, TIME_UNITS, MS),
     delay_stats: c.delay_stats ?? true,
   };
   const d = c.delayer;
@@ -334,10 +343,16 @@ function checkAccuracy(f: ConfigForm) {
   }
 }
 
+/** An optional histogram: null while all three fields are empty; `name` prefixes the messages ("Histogram", "IAT histogram"). */
+function histogramToDto(name: string, bins: string, lo: UnitValue, hi: UnitValue): HistogramDto | null {
+  const b = optInt(bins, `${name} bins`);
+  const lo_ns = lo.text.trim() === '' ? null : unitNum(lo, TIME_UNITS, `${name} lo`);
+  const hi_ns = hi.text.trim() === '' ? null : unitNum(hi, TIME_UNITS, `${name} hi`);
+  return b == null && lo_ns == null && hi_ns == null ? null : { bins: b, lo_ns, hi_ns };
+}
+
 function configToDto(f: ConfigForm, frame: number | null): ConfigDto {
-  const bins = optInt(f.hist_bins, 'Histogram bins');
-  const lo_ns = f.hist_lo.text.trim() === '' ? null : unitNum(f.hist_lo, TIME_UNITS, 'Histogram lo');
-  const hi_ns = f.hist_hi.text.trim() === '' ? null : unitNum(f.hist_hi, TIME_UNITS, 'Histogram hi');
+  const iat_histogram = histogramToDto('IAT histogram', f.iat_bins, f.iat_lo, f.iat_hi);
   return {
     buffer_capacity: bufferCapacity(f.buffer_capacity),
     reordering: reorderingActive(f),
@@ -345,7 +360,8 @@ function configToDto(f: ConfigForm, frame: number | null): ConfigDto {
     limiter: f.limiter_added ? limiterToDto(f, frame) : null,
     loss_model: f.dropper_added ? lossToDto(f) : null,
     seed: seed(f.seed),
-    histogram: bins == null && lo_ns == null && hi_ns == null ? null : { bins, lo_ns, hi_ns },
+    histogram: histogramToDto('Histogram', f.hist_bins, f.hist_lo, f.hist_hi),
+    ...(iat_histogram && { iat_histogram }),
     delay_stats: f.delay_stats,
   };
 }

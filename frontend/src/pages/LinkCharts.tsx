@@ -176,10 +176,10 @@ export default function LinkCharts({
         })}
       </Form.Group>
       {!empty && (
-        <>
+        <Row className="mb-3">
           <RateTable rates={stats} />
           <LossTable lost={totalDrops(stats.drops)} frames={stats} />
-        </>
+        </Row>
       )}
       <Row>
         <div className="col-12 col-md-6 donut-divider">

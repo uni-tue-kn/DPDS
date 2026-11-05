@@ -11,6 +11,7 @@
   --color-sidebar-background: #ecf0f1;
   --color-card-background: #ffffff;
   --color-border: #dfe4ea;
+  --color-background-transparent: rgba(255, 255, 255, 0.8);
   --color-text: #000000;
   --bs-link-color: #000000;
   --bs-link-hover-color: #e74c3c;
@@ -23,6 +24,7 @@
   --color-sidebar-background: #2c2c2c;
   --color-card-background: #262626;
   --color-border: #3b3b3b;
+  --color-background-transparent: rgba(30, 30, 30, 0.8);
   --color-text: #ffffff;
   --bs-link-color: #ffffff;
   --bs-link-hover-color: #e74c3c;
@@ -427,4 +429,51 @@ fieldset.config-section > legend {
   .icon-spin {
     animation: none;
   }
+}
+
+/* Loader (a port of P4TG's Loader.tsx): the block replaces the content, the overlay covers it. */
+.loader-content {
+  position: relative;
+}
+
+.loader-block {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  flex-grow: 1;
+  font-size: 2em;
+  color: var(--color-primary);
+  text-align: center;
+  height: 100%;
+}
+
+.loader-overlay {
+  position: absolute;
+  top: 0;
+  justify-content: center;
+  align-items: center;
+  flex-grow: 1;
+  font-size: 2em;
+  color: var(--color-primary);
+  text-align: center;
+  height: 100%;
+  background: var(--color-background-transparent);
+  width: 100%;
+  z-index: 1;
+  overflow-x: hidden;
+}
+
+.loader-spinner-box {
+  margin-top: calc(50vh - 150px);
+}
+
+.loader-spinner {
+  height: 50px;
+  width: 50px;
+  margin-bottom: 10px;
+}
+
+.loader-text {
+  font-weight: bold;
+  color: var(--color-primary);
 }
