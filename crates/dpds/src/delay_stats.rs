@@ -207,6 +207,14 @@ impl HistRange {
         HistRange::new(lo, (hi - lo) / HIST_BINS as f64)
     }
 
+    /// The range of a link's IAT (departure gap) histogram: `[0, hi)` in 256
+    /// bins, `hi = 4 * 1e9 / initialization_rate_pps` ns (4 mean gaps at the
+    /// expected rate), whatever the delay distribution or limiter.
+    pub fn iat_from_config(config: &Config) -> HistRange {
+        let hi = 4.0 * 1e9 / config.delayer.initialization_rate_pps;
+        HistRange::new(0.0, hi / HIST_BINS as f64)
+    }
+
     /// The range of a [`HistogramSpec`]: a missing `bins` is 256, a missing
     /// `lo_ns` / `hi_ns` the automatic one of `config`. Explicit values are
     /// used as given (the minimum width applies to the automatic range only).
@@ -258,6 +266,9 @@ pub struct DelayBatch {
     n_accepted: usize,
     popped: [u64; BURST_SIZE],
     n_popped: usize,
+    /// Send time of the last packet popped before this iteration, if any
+    /// (the IAT reference, carried across iterations).
+    prev_send_ns: Option<u64>,
 }
 #[cfg(not(feature = "telemetry"))]
 pub struct DelayBatch;
@@ -270,6 +281,7 @@ impl DelayBatch {
             n_accepted: 0,
             popped: [0; BURST_SIZE],
             n_popped: 0,
+            prev_send_ns: None,
         }
     }
 
@@ -332,6 +344,25 @@ fn store_f64(a: &AtomicU64, v: f64) {
     a.store(v.to_bits(), Ordering::Relaxed);
 }
 
+/// The counts of bins `first..end` plus underflow and overflow.
+#[cfg(feature = "telemetry")]
+fn read_page(
+    bins: &[AtomicU64],
+    underflow: &AtomicU64,
+    overflow: &AtomicU64,
+    first: usize,
+    end: usize,
+) -> (Vec<u64>, u64, u64) {
+    (
+        bins[first..end]
+            .iter()
+            .map(|b| b.load(Ordering::Relaxed))
+            .collect(),
+        underflow.load(Ordering::Relaxed),
+        overflow.load(Ordering::Relaxed),
+    )
+}
+
 /// The delay statistics and histogram of one direction: written by its worker
 /// only, read by the telemetry thread. Without the `telemetry` feature it
 /// only remembers the range and records nothing. A direction with the
@@ -340,6 +371,7 @@ fn store_f64(a: &AtomicU64, v: f64) {
 /// keys and an empty histogram.
 pub struct DelayStats {
     range: HistRange,
+    iat_range: HistRange,
     enabled: bool,
     #[cfg(feature = "telemetry")]
     live: Live,
@@ -359,6 +391,11 @@ struct Live {
     underflow: AtomicU64,
     overflow: AtomicU64,
     bins: Box<[AtomicU64]>,
+    iat_hi_ns: f64,
+    iat_inv_bin_ns: f64,
+    iat_underflow: AtomicU64,
+    iat_overflow: AtomicU64,
+    iat_bins: Box<[AtomicU64]>,
 }
 
 impl Default for DelayStats {
@@ -375,8 +412,18 @@ impl DelayStats {
 
     /// With the statistics `enabled` or not (see the type docs).
     pub fn with_enabled(range: HistRange, enabled: bool) -> DelayStats {
+        DelayStats::with_hists(range, HistRange::default(), enabled)
+    }
+
+    /// With the delay histogram `range`, the IAT histogram `iat_range` (the
+    /// departure gaps, see [`record_pops`](Self::record_pops)) and the
+    /// statistics `enabled` or not.
+    pub fn with_hists(range: HistRange, iat_range: HistRange, enabled: bool) -> DelayStats {
+        #[cfg(feature = "telemetry")]
+        let zeroed = |n: usize| (0..if enabled { n } else { 0 }).map(|_| AtomicU64::new(0));
         DelayStats {
             range,
+            iat_range,
             enabled,
             #[cfg(feature = "telemetry")]
             live: Live {
@@ -391,9 +438,12 @@ impl DelayStats {
                 late_max: AtomicU64::new(0),
                 underflow: AtomicU64::new(0),
                 overflow: AtomicU64::new(0),
-                bins: (0..if enabled { range.bins } else { 0 })
-                    .map(|_| AtomicU64::new(0))
-                    .collect(),
+                bins: zeroed(range.bins).collect(),
+                iat_hi_ns: iat_range.hi_ns(),
+                iat_inv_bin_ns: 1.0 / iat_range.bin_ns,
+                iat_underflow: AtomicU64::new(0),
+                iat_overflow: AtomicU64::new(0),
+                iat_bins: zeroed(iat_range.bins).collect(),
             },
         }
     }
@@ -445,24 +495,43 @@ impl DelayStats {
     #[inline(always)]
     pub fn record_accepts(&self, _batch: &DelayBatch, _now: f64) {}
 
-    /// Folds the lateness of the packets popped in this iteration (at `now`).
+    /// Folds the packets popped in this iteration (at `now`): their lateness
+    /// into the lateness statistics and the gap between consecutive send times
+    /// into the IAT histogram. The first packet of the run has no gap; the
+    /// previous send time is carried across iterations in `batch`, and a
+    /// negative gap (reordering) counts as 0.
     #[cfg(feature = "telemetry")]
     #[inline(always)]
-    pub fn record_pops(&self, batch: &DelayBatch, now: f64) {
+    pub fn record_pops(&self, batch: &mut DelayBatch, now: f64) {
         debug_assert!(self.enabled, "recording into switched-off delay statistics");
         let times = &batch.popped[..batch.n_popped];
-        if times.is_empty() {
-            return;
-        }
+        let Some(&last) = times.last() else { return };
+        let l = &self.live;
         let (mut sum, mut max) = (0.0, 0.0);
+        let mut prev = batch.prev_send_ns;
         for &t in times {
             let late = (now - t as f64).max(0.0);
             sum += late;
             if late > max {
                 max = late;
             }
+            if let Some(p) = prev {
+                let gap = t.saturating_sub(p) as f64;
+                match place(
+                    self.iat_range.lo_ns,
+                    l.iat_hi_ns,
+                    l.iat_inv_bin_ns,
+                    self.iat_range.bins,
+                    gap,
+                ) {
+                    Bin::Underflow => bump(&l.iat_underflow),
+                    Bin::Overflow => bump(&l.iat_overflow),
+                    Bin::Index(i) => bump(&l.iat_bins[i]),
+                }
+            }
+            prev = Some(t);
         }
-        let l = &self.live;
+        batch.prev_send_ns = Some(last);
         store_f64(&l.late_sum, load_f64(&l.late_sum) + sum);
         if max > load_f64(&l.late_max) {
             store_f64(&l.late_max, max);
@@ -471,7 +540,7 @@ impl DelayStats {
 
     #[cfg(not(feature = "telemetry"))]
     #[inline(always)]
-    pub fn record_pops(&self, _batch: &DelayBatch, _now: f64) {}
+    pub fn record_pops(&self, _batch: &mut DelayBatch, _now: f64) {}
 
     /// Chan's parallel update of `(count, mean, M2)` with a burst of `n`
     /// delays whose sums, shifted by `shift`, are `s1` and `s2`.
@@ -553,32 +622,51 @@ impl DelayStats {
     /// last one. With the statistics switched off, page 0 is empty and there is no
     /// other page.
     pub fn hist_page(&self, page: usize) -> Option<Reply> {
+        self.page_reply(self.range, page, |first, end| {
+            #[cfg(feature = "telemetry")]
+            {
+                let l = &self.live;
+                read_page(&l.bins, &l.underflow, &l.overflow, first, end)
+            }
+            #[cfg(not(feature = "telemetry"))]
+            (vec![0u64; end - first], 0, 0)
+        })
+    }
+
+    /// Page `page` of the `/dpds/iat_hist` reply: the histogram of the gaps
+    /// between consecutive send times, same keys and paging as
+    /// [`hist_page`](Self::hist_page).
+    pub fn iat_hist_page(&self, page: usize) -> Option<Reply> {
+        self.page_reply(self.iat_range, page, |first, end| {
+            #[cfg(feature = "telemetry")]
+            {
+                let l = &self.live;
+                read_page(&l.iat_bins, &l.iat_underflow, &l.iat_overflow, first, end)
+            }
+            #[cfg(not(feature = "telemetry"))]
+            (vec![0u64; end - first], 0, 0)
+        })
+    }
+
+    fn page_reply(
+        &self,
+        range: HistRange,
+        page: usize,
+        read: impl FnOnce(usize, usize) -> (Vec<u64>, u64, u64),
+    ) -> Option<Reply> {
         if !self.enabled {
             return (page == 0).then(Vec::new);
         }
         let first = page.checked_mul(PAGE_BINS)?;
-        if first >= self.range.bins {
+        if first >= range.bins {
             return None;
         }
-        let end = self.range.bins.min(first + PAGE_BINS);
-        #[cfg(feature = "telemetry")]
-        let (bins, underflow, overflow) = {
-            let l = &self.live;
-            (
-                l.bins[first..end]
-                    .iter()
-                    .map(|b| b.load(Ordering::Relaxed))
-                    .collect::<Vec<u64>>(),
-                l.underflow.load(Ordering::Relaxed),
-                l.overflow.load(Ordering::Relaxed),
-            )
-        };
-        #[cfg(not(feature = "telemetry"))]
-        let (bins, underflow, overflow) = (vec![0u64; end - first], 0, 0);
+        let end = range.bins.min(first + PAGE_BINS);
+        let (bins, underflow, overflow) = read(first, end);
         Some(vec![
-            ("lo_ns".into(), Value::Str(self.range.lo_ns.to_string())),
-            ("bin_ns".into(), Value::Str(self.range.bin_ns.to_string())),
-            ("num_bins".into(), Value::Uint(self.range.bins as u64)),
+            ("lo_ns".into(), Value::Str(range.lo_ns.to_string())),
+            ("bin_ns".into(), Value::Str(range.bin_ns.to_string())),
+            ("num_bins".into(), Value::Uint(range.bins as u64)),
             ("bins".into(), Value::UintArray(bins)),
             ("underflow".into(), Value::Uint(underflow)),
             ("overflow".into(), Value::Uint(overflow)),

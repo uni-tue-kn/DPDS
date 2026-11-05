@@ -36,9 +36,9 @@ use crate::model::{Link, RunConfig, StartLink, StartRequest, MAX_NAME_CHARS};
 use crate::nic_hints::FirmwareCache;
 use crate::sessions::SessionTracker;
 use crate::stats::{
-    compute_stats, delay_histogram, delay_stats_on, uptime_ms, Clamped, Counters, DirectionStats,
-    ExpectedModel, HistogramView, HistoryLink, HistorySample, HistoryView, Percentiles, Polled,
-    StatsView,
+    compute_stats, delay_histogram, delay_stats_on, iat_histogram, uptime_ms, Clamped, Counters,
+    DirectionStats, ExpectedModel, HistogramView, HistoryLink, HistorySample, HistoryView,
+    Percentiles, Polled, StatsView,
 };
 use crate::supervisor::{LaunchPlan, State as RunState, Supervisor};
 use crate::telemetry::TelemetrySource;
@@ -79,6 +79,8 @@ struct App {
     sessions: SessionTracker,
     /// Per link of the run, the last since-start delay histogram, served once the run ended.
     histograms: Mutex<HashMap<usize, HistogramView>>,
+    /// The same for the IAT histogram.
+    iat_histograms: Mutex<HashMap<usize, HistogramView>>,
 }
 
 type Shared = State<Arc<App>>;
@@ -633,6 +635,7 @@ async fn start(
     })
     .await??;
     lock(&app.histograms).clear();
+    lock(&app.iat_histograms).clear();
     app.deps.telemetry.set_run_links(
         config
             .links
@@ -821,6 +824,51 @@ async fn histogram(
     Ok(Json(h))
 }
 
+/// The since-start IAT (departure gap) histogram of a link, like the delay histogram without
+/// window and expected values. After the run it is the copy of the last one served or taken
+/// right before the stop.
+#[utoipa::path(
+    get, path = "/api/stats/{dir}/iat_histogram",
+    params(("dir" = u32, Path, description = "link index, in the order of the start body")),
+    responses((status = 200, body = HistogramView), (status = 404, body = ErrorBody))
+)]
+async fn iat_histogram_route(
+    State(app): Shared,
+    Path(dir): Path<String>,
+) -> Result<Json<HistogramView>, ApiError> {
+    let missing = || ApiError::not_found(format!("no IAT histogram for direction {dir}"));
+    let d: usize = dir.parse().map_err(|_| missing())?;
+    let ended = matches!(
+        app.deps.supervisor.status().state,
+        RunState::Stopped | RunState::Failed
+    );
+    if let Some(copy) = ended
+        .then(|| lock(&app.iat_histograms).get(&d).cloned())
+        .flatten()
+    {
+        return Ok(Json(copy));
+    }
+    let p = app.deps.telemetry.latest().ok_or_else(missing)?;
+    if !delay_stats_on(&p.cur.ports, d) {
+        return Err(ApiError::not_found(format!(
+            "delay statistics are off for direction {d}, so it has no IAT histogram"
+        )));
+    }
+    let h = live_iat_histogram(&p, d).ok_or_else(missing)?;
+    lock(&app.iat_histograms).insert(d, h.clone());
+    Ok(Json(h))
+}
+
+/// The IAT histogram of link `d` since the start, from the poll `p`.
+fn live_iat_histogram(p: &Polled, d: usize) -> Option<HistogramView> {
+    let mut h = iat_histogram(&p.cur, d)?;
+    h.span_ms = uptime_ms(&p.cur, d).unwrap_or_default();
+    h.age_ms = p.age_ms;
+    h.stale = p.stale;
+    h.summarise();
+    Some(h)
+}
+
 impl App {
     /// The histogram of link `d` over the last `window_s` seconds (0: since start) from the
     /// newest poll `p`, and whether it covers the whole run (a window without enough history
@@ -872,6 +920,9 @@ impl App {
             if let Some((h, _)) = self.live_histogram(&p, d, 0) {
                 lock(&self.histograms).insert(d, h);
             }
+            if let Some(h) = live_iat_histogram(&p, d) {
+                lock(&self.iat_histograms).insert(d, h);
+            }
         }
     }
 }
@@ -896,7 +947,8 @@ impl App {
         stop,
         stats,
         stats_history,
-        histogram
+        histogram,
+        iat_histogram_route
     ),
     components(schemas(
         ConfigDto,
@@ -949,6 +1001,7 @@ pub fn router_with(deps: Deps, frontend: Frontend) -> Router {
         firmware: FirmwareCache::default(),
         sessions: SessionTracker::default(),
         histograms: Mutex::default(),
+        iat_histograms: Mutex::default(),
     });
     let api = Router::new()
         .route("/api/online", get(online))
@@ -962,6 +1015,7 @@ pub fn router_with(deps: Deps, frontend: Frontend) -> Router {
         .route("/api/stats", get(stats))
         .route("/api/stats/history", get(stats_history))
         .route("/api/stats/{dir}/delay_histogram", get(histogram))
+        .route("/api/stats/{dir}/iat_histogram", get(iat_histogram_route))
         .with_state(app);
     api.merge(SwaggerUi::new("/api/docs").url("/api/openapi.json", ApiDoc::openapi()))
         .fallback(move |req: Request| {

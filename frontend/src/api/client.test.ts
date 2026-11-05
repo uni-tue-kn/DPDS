@@ -45,6 +45,7 @@ describe('api client (real module)', () => {
     ['getEmulation', () => client.getEmulation(), '/api/emulation'],
     ['getStats', () => client.getStats(), '/api/stats'],
     ['getDelayHistogram', () => client.getDelayHistogram(2), '/api/stats/2/delay_histogram'],
+    ['getIatHistogram', () => client.getIatHistogram(2), '/api/stats/2/iat_histogram'],
     // spec 29
     ['getStatsHistory', () => client.getStatsHistory(), '/api/stats/history'],
     ['getStatsHistory with since_ms', () => client.getStatsHistory(12500), '/api/stats/history?since_ms=12500'],
@@ -169,6 +170,7 @@ describe('api client (real module)', () => {
       'getEmulation',
       'getHostHints',
       'getHostHintsFor',
+      'getIatHistogram', // spec 51
       'getInterfaces',
       'getOnline',
       'getStats',

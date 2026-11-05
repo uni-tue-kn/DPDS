@@ -4,18 +4,22 @@ import { vi } from 'vitest';
 import type { EmulationState } from '../api/types';
 import {
   activePanel,
-  CAUSES,
   card,
+  CAUSES,
+  delayBar,
   expectState,
   findCard,
+  findDelayBar,
   findState,
   findTabs,
   hasTab,
+  lossDonut,
   pillText,
+  queryDelayBar,
   queryRadio,
-  RUN_BUTTONS,
   radio,
   radioNames,
+  RUN_BUTTONS,
   runButton,
   runButtonNames,
   runButtons,
@@ -431,8 +435,7 @@ describe('Dashboard (spec 37, was spec 35 F2): the pills show 0 once the run has
         }
       ).datasets.find((d) => /RX/.test(d.label))?.data;
     const donut = (panel: HTMLElement) =>
-      JSON.parse(within(panel).getByTestId('chart-doughnut').getAttribute('data-chart') ?? 'null').datasets[0]
-        .data as number[];
+      JSON.parse(lossDonut(panel).getAttribute('data-chart') ?? 'null').datasets[0].data as number[];
     // the Summary (selected by default) sums the links per sample; its donut sums the totals per cause
     expect(rx(activePanel())?.map((v) => Math.round(v * 100) / 100)).toEqual([2, 9.25]);
     expect(donut(activePanel())).toEqual([110, 120, 55, 25, 27, 13, 0, 0, 0]);
@@ -795,7 +798,7 @@ describe('Dashboard (spec 35 F3): the radios under the chart', () => {
     expect(radio(0, 'Traffic rates')).toBeChecked();
     expect(radio(0, 'Packet loss')).not.toBeChecked();
     expect(within(panel).getAllByTestId('chart-line')).toHaveLength(1);
-    expect(within(panel).queryByTestId('chart-bar')).not.toBeInTheDocument();
+    expect(queryDelayBar(panel)).not.toBeInTheDocument();
     const chart = must(within(panel).getAllByRole('img')[0], 'the chart image');
     expect(chart.getAttribute('aria-label')).toMatch(/rate/i);
     const group = within(panel).getByRole('radiogroup', { name: 'Chart' });
@@ -826,7 +829,7 @@ describe('Dashboard (spec 35 F3): the radios under the chart', () => {
     await findCard(0);
     await user.click(radio(0, 'Delay histogram'));
     const panel = card(0);
-    await within(panel).findByTestId('chart-bar');
+    await findDelayBar(panel);
     expect(within(panel).queryByTestId('chart-line')).not.toBeInTheDocument();
     expect(must(within(panel).getAllByRole('img')[0]).getAttribute('aria-label')).toMatch(/delay histogram/i);
   });
@@ -871,10 +874,10 @@ describe('Dashboard (spec 35 F3): the radios under the chart', () => {
     await tick(0);
     fireEvent.click(radio(0, 'Delay histogram'));
     await tick(1000);
-    expect(within(card(0)).getByTestId('chart-bar')).toBeInTheDocument();
+    expect(delayBar(card(0))).toBeInTheDocument();
     ended('stopped');
     await tick(2500);
-    expect(within(card(0)).getByTestId('chart-bar')).toBeInTheDocument();
+    expect(delayBar(card(0))).toBeInTheDocument();
     expect(radio(0, 'Delay histogram')).toBeChecked();
     const n = api.getDelayHistogram.mock.calls.length;
     await tick(5000);

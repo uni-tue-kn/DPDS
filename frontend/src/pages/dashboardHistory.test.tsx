@@ -1,7 +1,7 @@
 import { fireEvent, screen, within } from '@testing-library/react';
 import { vi } from 'vitest';
 import type { HistorySample, HistoryView } from '../api/types';
-import { CAUSES, card, expectState, hasTab, queryRadio, tab, tabBadge } from '../test/dashboardUi';
+import { card, CAUSES, delayBar, expectState, hasTab, queryRadio, tab, tabBadge } from '../test/dashboardUi';
 import * as fx from '../test/fixtures';
 import { renderApp, seedStore, tick } from '../test/helpers';
 import type { HistoryServer } from '../test/mockApi';
@@ -567,9 +567,9 @@ describe('Dashboard (spec 29, round 2): the final charts of a stopped run stay u
     const { stop } = await runThenStop();
     fireEvent.click(must(radioOf(0, 'Delay histogram'), 'histogram radio'));
     await tick(1000);
-    expect(within(card(0)).getByTestId('chart-bar')).toBeInTheDocument();
+    expect(delayBar(card(0))).toBeInTheDocument();
     await stop();
-    expect(within(card(0)).getByTestId('chart-bar')).toBeInTheDocument();
+    expect(delayBar(card(0))).toBeInTheDocument();
     expect(within(card(0)).queryByTestId('chart-line')).not.toBeInTheDocument();
     expect(radioOf(0, 'Delay histogram')).toBeChecked();
     const n = api.getDelayHistogram.mock.calls.length;

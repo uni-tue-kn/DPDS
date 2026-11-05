@@ -86,6 +86,8 @@ export const getStats = () => request<StatsView>('GET', '/stats');
 /** `windowS` 10 | 60 | 300 = only the last n seconds; absent = since start. */
 export const getDelayHistogram = (dir: number, windowS?: number) =>
   request<HistogramView>('GET', `/stats/${dir}/delay_histogram${windowS ? `?window_s=${windowS}` : ''}`);
+/** The departure-gap histogram of the run (delay histogram's shape, no `expected*`). */
+export const getIatHistogram = (dir: number) => request<HistogramView>('GET', `/stats/${dir}/iat_histogram`);
 /** The run's per-second series; `sinceMs` = only samples newer than that (0 is a real time), absent = everything. */
 export const getStatsHistory = (sinceMs?: number) =>
   request<HistoryView>('GET', `/stats/history${sinceMs === undefined ? '' : `?since_ms=${sinceMs}`}`);

@@ -30,8 +30,10 @@ reorder them to be emitted in send-time order.
 ### Ordering rule for equal send times
 
 In reordering mode, packets that enter at the same instant keep their entry
-order. There is no sequence number; instead every packet gets a tiny time offset
-so that it sorts the way it entered. The heap key is the send time in fixed
+order. The ordering does not use a sequence number; instead every packet gets a tiny time offset
+so that it sorts the way it entered. (Each heap entry also carries its arrival sequence number,
+only to count `Buffer::out_of_order()`: the departures whose number is below the highest one
+popped before; always 0 in FIFO mode.) The heap key is the send time in fixed
 point with 1/64 ns resolution:
 
 ```text

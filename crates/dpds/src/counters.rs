@@ -44,6 +44,16 @@ impl Counter {
         let _ = n;
     }
 
+    /// Overwrites the value (a mirror of a worker-local total, e.g. the
+    /// buffer's out-of-order count); no-op without the feature.
+    #[inline(always)]
+    pub fn set(&self, v: u64) {
+        #[cfg(feature = "telemetry")]
+        self.0.store(v, Ordering::Relaxed);
+        #[cfg(not(feature = "telemetry"))]
+        let _ = v;
+    }
+
     /// Always 0 without the feature.
     #[inline(always)]
     pub fn get(&self) -> u64 {
@@ -155,8 +165,41 @@ pub struct DpdsCounters {
     pub tx_pkts: Counter,
     pub tx_sent: Counter,
     pub tx_short_calls: Counter,
+    /// Cumulative out-of-order departures (`Buffer::out_of_order`, mirrored
+    /// once per loop iteration). Not an epoch counter.
+    pub out_of_order: Counter,
     pub tx_batch_max: MaxGauge,
     pub buffer_len_max: MaxGauge,
+}
+
+/// Number of frame size buckets (P4TG's).
+pub const FRAME_BUCKETS: usize = 8;
+
+/// The bucket of a frame of `len` bytes: [0,63], [64], [65,127], [128,255],
+/// [256,511], [512,1023], [1024,1518], [1519,inf). Branch-free: the number of
+/// lower bounds `len` reaches.
+#[inline(always)]
+pub fn frame_bucket(len: u32) -> usize {
+    (len >= 64) as usize
+        + (len >= 65) as usize
+        + (len >= 128) as usize
+        + (len >= 256) as usize
+        + (len >= 512) as usize
+        + (len >= 1024) as usize
+        + (len >= 1519) as usize
+}
+
+/// Cumulative counts of the received frames per size bucket (see
+/// [`frame_bucket`]): exactly one cache line of its own, written by the
+/// worker once per loop iteration.
+#[repr(align(64))]
+#[derive(Default)]
+pub struct FrameSizes(pub [Counter; FRAME_BUCKETS]);
+
+impl FrameSizes {
+    pub fn get(&self) -> Vec<u64> {
+        self.0.iter().map(Counter::get).collect()
+    }
 }
 
 impl DpdsCounters {

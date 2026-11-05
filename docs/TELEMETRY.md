@@ -56,6 +56,7 @@ echo '/dpds/stats,0' | dpdk-telemetry.py -f <file-prefix>
 | `/dpds/stats,<dir>` | Counters of link `<dir>`, cumulative since start, the delay statistics, plus that link's whole-run first-loss result. |
 | `/dpds/epochs,<dir>` | The same counters per epoch (deltas) and gauges per epoch (maxima), plus per-epoch first loss, for link `<dir>`. |
 | `/dpds/delay_hist,<dir>[,<page>]` | One page (500 bins) of the cumulative histogram of the intended delay of link `<dir>`; `,<dir>` alone is page 0. |
+| `/dpds/iat_hist,<dir>[,<page>]` | Cumulative histogram of the gaps between the send times of consecutive packets of link `<dir>` (256 bins, one page), same fields as `/dpds/delay_hist`. |
 | `/dpds/ports` | Static: device name and descriptor ring sizes of each port, the number of links, and the layout of each link. |
 | `/nic/hw_first_loss,<port>` | First NIC hardware drop seen by the main lcore on port `<port>` (a DPDK port id, any port of the links). |
 | `/nic/epochs,<port>` | Per-epoch NIC `rx_packets` / `imissed` / `rx_port_discards` of port `<port>`. |
@@ -92,6 +93,8 @@ atomics, cache-line aligned).
 | `tx_batch_max` (gauge) | Largest single `tx_burst` call (at most 32). |
 | `tx_pkts_per_call` | `tx_pkts / tx_calls` with two decimals, as a string (telemetry dicts have no float type); `"0.00"` with no calls. |
 | `buffer_len_max` (gauge) | The DPDS buffer's depth, sampled once per loop iteration after the pop (as in preof), so a zero-delay pass-through reads about 0. At steady state roughly `arrival_rate x delay`. Pinned at `buffer_capacity` means the buffer is the bottleneck. |
+| `frame_sizes` | Array of 8 cumulative counts of the frames received (`pkt_len` of every mbuf `rx_burst` returned, before any drop) in P4TG's buckets: 0-63, 64, 65-127, 128-255, 256-511, 512-1023, 1024-1518, 1519 and larger bytes. In every link, also with `delay_stats` off. |
+| `out_of_order` | Packets popped with an arrival sequence number below the highest one popped before (P4TG's notion); only a `reordering` link counts, always 0 otherwise. |
 | `first_loss_reason` / `first_loss_detail` / `first_loss_relative_ns` | The first loss of the whole run (see below); `"Clean"` / `""` / `0` if none yet. |
 | `delay_mean_ns`, `delay_std_ns` | Mean and (population) standard deviation of the intended delay of every accepted packet, 2-decimal strings. See [Delay statistics](#delay-statistics). |
 | `delay_min_ns`, `delay_max_ns` | Smallest and largest intended delay, uints (truncated ns). |
@@ -219,7 +222,7 @@ README). For a link with `false`:
   per-burst work, same cost as a build without the `telemetry` feature);
 - `/dpds/stats,<dir>` **does not contain** the six keys `delay_mean_ns`,
   `delay_std_ns`, `delay_min_ns`, `delay_max_ns`, `lateness_mean_ns`,
-  `lateness_max_ns` (20 keys instead of 26; they are absent, not `null` and not
+  `lateness_max_ns` (22 keys instead of 28; they are absent, not `null` and not
   0, which dicts cannot express anyway). Everything else is unchanged: the
   counters, the drop causes, the gauges, the first-loss result and the epochs;
 - `/dpds/delay_hist,<dir>` (page 0) returns an empty reply and has no page 1;
@@ -293,6 +296,15 @@ of DPDK's telemetry socket; a histogram of 4096 bins takes nine such replies.
 **Switched off.** A link with `"delay_stats": false` has no histogram:
 `/dpds/delay_hist,<dir>` (page 0) returns an empty reply, and there is no page 1,
 like for a bad `<dir>` (see [Delay statistics off](#delay-statistics-off)).
+
+## `/dpds/iat_hist,<dir>[,<page>]`
+
+The inter-arrival time (IAT) histogram of link `<dir>`: for every packet popped after the first of the run,
+`send_time - previous send_time` in ns (the send times of `dpds`' own schedule, the same ones
+the pop path collects for the lateness; the previous one is carried across bursts; a negative gap, possible
+with reordering, counts as 0). Linear bins over `[0, 4 * 1e9 / initialization_rate_pps)`, 256
+of them, plus `underflow` (never) and `overflow`. Fields, paging, bad-param and delay-statistics-off behaviour are those of
+`/dpds/delay_hist`; there is only page 0.
 
 ## First-loss reasons
 

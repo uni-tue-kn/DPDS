@@ -4,17 +4,20 @@ import { vi } from 'vitest';
 import type { EmulationState, StatsView } from '../api/types';
 import {
   card,
+  delayBar,
   expectState,
   findCard,
+  findDelayBar,
   findState,
   hasTab,
+  queryDelayBar,
   radioNames,
   RUN_BUTTONS,
   runButtonNames,
   runButtons,
   tab,
-  tabTitle,
   tabs,
+  tabTitle,
 } from '../test/dashboardUi';
 import * as fx from '../test/fixtures';
 import { deferred, expectStartBody, renderApp, seedStore, storedDoc, tick } from '../test/helpers';
@@ -381,11 +384,11 @@ describe('Dashboard: delay histogram', () => {
     await findCard(0);
     await findCard(1);
     showHistogram(0, 1);
-    const chart = await within(card(0)).findByTestId('chart-bar');
+    const chart = await findDelayBar(card(0));
     const data = JSON.parse(chart.getAttribute('data-chart') ?? 'null');
     expect(data.datasets[0].data).toEqual([1, 10, 100, 40, 2]);
     expect(data.labels).toHaveLength(5);
-    const chart1 = await within(card(1)).findByTestId('chart-bar');
+    const chart1 = await findDelayBar(card(1));
     expect(JSON.parse(chart1.getAttribute('data-chart') ?? 'null').datasets[0].data).toEqual([1, 10, 100, 40, 3]);
     expect(api.getDelayHistogram).toHaveBeenCalledWith(0);
     expect(api.getDelayHistogram).toHaveBeenCalledWith(1);
@@ -399,7 +402,7 @@ describe('Dashboard: delay histogram', () => {
     renderApp('/');
     await findCard(0);
     showHistogram(0);
-    const chart = await within(card(0)).findByTestId('chart-bar');
+    const chart = await findDelayBar(card(0));
     const data = JSON.parse(chart.getAttribute('data-chart') ?? 'null');
     expect(data.datasets[0].data).toHaveLength(500);
     expect(data.labels).toHaveLength(500);
@@ -410,7 +413,7 @@ describe('Dashboard: delay histogram', () => {
     renderApp('/');
     await findCard(0);
     showHistogram(0);
-    await within(card(0)).findByTestId('chart-bar');
+    await findDelayBar(card(0));
     expect(card(0)).not.toHaveTextContent(/Underflow|Overflow/);
   });
 
@@ -434,8 +437,8 @@ describe('Dashboard: delay histogram', () => {
     await findCard(1);
     showHistogram(0);
     expect(within(card(1)).queryByRole('radio', { name: 'Delay histogram' })).not.toBeInTheDocument(); // spec 28: no choice
-    await within(card(0)).findByTestId('chart-bar');
-    expect(within(card(1)).queryByTestId('chart-bar')).not.toBeInTheDocument();
+    await findDelayBar(card(0));
+    expect(queryDelayBar(card(1))).not.toBeInTheDocument();
     expect(api.getDelayHistogram).not.toHaveBeenCalledWith(1);
   });
 
@@ -445,7 +448,7 @@ describe('Dashboard: delay histogram', () => {
     await findCard(0);
     showHistogram(0);
     await waitFor(() => expect(api.getDelayHistogram).toHaveBeenCalled());
-    expect(within(card(0)).queryByTestId('chart-bar')).not.toBeInTheDocument();
+    expect(queryDelayBar(card(0))).not.toBeInTheDocument();
     expect(radioNames(0)).toContain('Traffic rates'); // the chart area is still there
   });
 });
@@ -622,9 +625,9 @@ describe('Dashboard: visible errors (F3)', () => {
     const note = await within(card(0)).findByTestId('histogram-error');
     expect(note).toHaveTextContent(/histogram/i);
     expect(note).toHaveTextContent('histogram read failed');
-    expect(within(card(0)).queryByTestId('chart-bar')).not.toBeInTheDocument();
+    expect(queryDelayBar(card(0))).not.toBeInTheDocument();
     // the other direction is unaffected
-    await within(card(1)).findByTestId('chart-bar');
+    await findDelayBar(card(1));
     expect(within(card(1)).queryByTestId('histogram-error')).not.toBeInTheDocument();
   });
 
@@ -652,7 +655,7 @@ describe('Dashboard: visible errors (F3)', () => {
     expect(within(card(0)).getByTestId('histogram-error')).toBeInTheDocument();
     await tick(2500);
     expect(within(card(0)).queryByTestId('histogram-error')).not.toBeInTheDocument();
-    expect(within(card(0)).getByTestId('chart-bar')).toBeInTheDocument();
+    expect(delayBar(card(0))).toBeInTheDocument();
   });
 
   it('no histogram note for a direction with delay_stats: false (nothing was fetched)', async () => {
@@ -685,9 +688,14 @@ describe('Dashboard: accessibility and labels (F4)', () => {
       ['Delay histogram', /histogram/i, 'chart-bar'],
     ] as const) {
       fireEvent.click(within(card(0)).getByRole('radio', { name: choice }));
-      const chart = await within(card(0)).findByTestId(id);
-      const img = must(within(card(0)).getAllByRole('img')[0], 'the chart image');
-      expect(within(card(0)).queryAllByTestId(/^chart-(line|bar)$/), choice).toHaveLength(1);
+      // Spec 51: the IAT bar chart and the donuts share the panel, so the chart is looked for inside the first image only.
+      const img = await waitFor(() => {
+        const first = must(within(card(0)).getAllByRole('img')[0], 'the chart image');
+        within(first).getByTestId(id);
+        return first;
+      });
+      const chart = within(img).getByTestId(id);
+      expect(within(img).queryAllByTestId(/^chart-(line|bar)$/), choice).toHaveLength(1);
       expect(img.getAttribute('aria-label')?.trim()).toBeTruthy();
       expect(img.getAttribute('aria-label')).toMatch(re);
       // the chart canvas is the content of that image

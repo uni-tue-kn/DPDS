@@ -18,21 +18,10 @@ import { NO_SAMPLES, sumHistories, useRunHistory } from '../common/runHistory';
 import ErrorAlert from '../components/ErrorAlert';
 import LinkCharts from './LinkCharts';
 import LoadRunning from './LoadRunning';
-import { type DropCounts, dropsOfCounters, dropsOfTotals, totalDrops } from './LossDonut';
+import { addStats, type LinkStats, NO_STATS, statsOfLive, statsOfTotals } from './linkStats';
+import { totalDrops } from './LossDonut';
 
 const POLL_MS = 1000;
-
-const NO_DROPS: DropCounts = {
-  loss: 0,
-  limiter: 0,
-  bufferFull: 0,
-  nicTx: 0,
-  missed: 0,
-  nombuf: 0,
-  portBuffer: 0,
-  rxPhy: 0,
-  txPhy: 0,
-};
 
 /** The key of the Summary tab; the keys of the link tabs are their indexes. */
 const SUMMARY_TAB = 'summary';
@@ -68,18 +57,6 @@ const TIME_STYLE: CSSProperties = {
 const ARROW_STYLE: CSSProperties = { paddingRight: '5px' };
 
 const ZERO_PILLS = { rxBps: 0, rxPps: 0, txBps: 0, txPps: 0 };
-
-const addDrops = (a: DropCounts, b: DropCounts): DropCounts => ({
-  loss: a.loss + b.loss,
-  limiter: a.limiter + b.limiter,
-  bufferFull: a.bufferFull + b.bufferFull,
-  nicTx: a.nicTx + b.nicTx,
-  missed: a.missed + b.missed,
-  nombuf: a.nombuf + b.nombuf,
-  portBuffer: a.portBuffer + b.portBuffer,
-  rxPhy: a.rxPhy + b.rxPhy,
-  txPhy: a.txPhy + b.txPhy,
-});
 
 /** The log lines with a React key each: the line plus its occurrence number, since a line may repeat. */
 function keyedLines(lines: string[]): { key: string; line: string }[] {
@@ -243,16 +220,16 @@ export default function Dashboard() {
     () => sumHistories(shown.map((dir) => (starting ? NO_SAMPLES : (history[String(dir)] ?? NO_SAMPLES)))),
     [shown, history, starting],
   );
-  const dropsOf = (dir: number): DropCounts => {
+  const statsOf = (dir: number): LinkStats => {
     if (finished) {
       const t = runTotalsByLink[String(dir)];
-      return t ? dropsOfTotals(t) : NO_DROPS;
+      return t ? statsOfTotals(t) : NO_STATS;
     }
     const s = live?.find((d) => d.dir === dir);
-    return s ? dropsOfCounters(s.counters) : NO_DROPS;
+    return s ? statsOfLive(s) : NO_STATS;
   };
-  const summaryDrops = shown.map(dropsOf).reduce(addDrops, NO_DROPS);
-  const lost = totalDrops(summaryDrops);
+  const summaryStats = shown.map(statsOf).reduce(addStats, NO_STATS);
+  const lost = totalDrops(summaryStats.drops);
   // A finished run is titled by the links of its own history, a live one by its stats or the plan.
   const titleOf = (dir: number) => {
     const stored = storedLinks[dir];
@@ -402,7 +379,12 @@ export default function Dashboard() {
         <Tabs id="link-tabs" transition={false} activeKey={activeTab} onSelect={(k) => k && setSelected(k)}>
           <Tab eventKey={SUMMARY_TAB} title="Summary">
             <div className="pt-3">
-              <LinkCharts active={activeTab === SUMMARY_TAB} history={summaryHistory} drops={summaryDrops} />
+              <LinkCharts
+                active={activeTab === SUMMARY_TAB}
+                history={summaryHistory}
+                stats={summaryStats}
+                empty={beforeRun}
+              />
             </div>
           </Tab>
           {shown.map((dir) => {
@@ -427,7 +409,7 @@ export default function Dashboard() {
                     dir={dir}
                     active={String(dir) === activeTab}
                     history={state === 'starting' ? NO_SAMPLES : (history[String(dir)] ?? NO_SAMPLES)}
-                    drops={dropsOf(dir)}
+                    stats={statsOf(dir)}
                     empty={beforeRun}
                     // The link's stored config says whether its run had delay statistics (default: on).
                     endedStats={finished && storedLinks[dir]?.config.delay_stats !== false}

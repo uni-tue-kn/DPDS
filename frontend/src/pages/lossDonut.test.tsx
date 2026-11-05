@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { vi } from 'vitest';
 import type { Counters, DirectionStats } from '../api/types';
 import { propsOf } from '../test/chartProps';
-import { CAUSE_HELP, CAUSES, card, findCard, radio, tab } from '../test/dashboardUi';
+import { card, CAUSE_HELP, CAUSES, findCard, lossDonut, queryLossDonut, radio, tab } from '../test/dashboardUi';
 import * as fx from '../test/fixtures';
 import { renderApp, tick } from '../test/helpers';
 import { api, serveHistory } from '../test/mockApi';
@@ -96,8 +96,8 @@ function serveLive(...dirs: DirectionStats[]) {
   api.getStats.mockResolvedValue(fx.stats(dirs));
 }
 
-const donut = (d: number) => within(card(d)).getByTestId('chart-doughnut');
-const queryDonut = (d: number) => within(card(d)).queryByTestId('chart-doughnut');
+const donut = (d: number) => lossDonut(card(d));
+const queryDonut = (d: number) => queryLossDonut(card(d));
 const legend = (d: number) => within(card(d)).getByTestId('donut-legend');
 interface DonutData {
   labels: string[];

@@ -60,11 +60,14 @@ describe('types.ts (spec 35)', () => {
         'nic_tx_phy_discards',
         'nic_tx_drops',
         'rx_pkts',
+        'tx_sent', // spec 51: the forwarded frames
+        'frame_sizes', // spec 51
+        'out_of_order', // spec 51
       ].sort(),
     );
     for (const k of keys) {
       expect(k[2], `${k[1]} is required`).toBe('');
-      expect(k[3].trim(), `${k[1]} type`).toBe('number');
+      expect(k[3].trim(), `${k[1]} type`).toBe(k[1] === 'frame_sizes' ? 'number[]' : 'number');
     }
   });
 

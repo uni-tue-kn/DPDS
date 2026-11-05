@@ -386,6 +386,7 @@ describe('no REST calls for the removed routes', () => {
       'getEmulation',
       'getHostHints',
       'getHostHintsFor',
+      'getIatHistogram', // spec 51
       'getInterfaces',
       'getOnline',
       'getStats',

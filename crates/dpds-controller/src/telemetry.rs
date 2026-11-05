@@ -15,7 +15,8 @@ use socket2::{Domain, SockAddr, Socket, Type};
 use crate::dto::MAX_HISTOGRAM_BINS;
 pub use crate::stats::Polled;
 use crate::stats::{
-    compute_stats, HistoryLink, HistorySample, HistoryTotals, HistoryView, Snapshot, StatsView,
+    compute_stats, delay_stats_on, HistoryLink, HistorySample, HistoryTotals, HistoryView,
+    Snapshot, StatsView,
 };
 use crate::supervisor::{State, Supervisor, SupervisorStatus};
 
@@ -148,21 +149,19 @@ fn check_page(page: u64, num_bins: u64, reply: &Value) -> Result<Vec<u64>, Strin
 /// A direction whose histogram is absent for this poll.
 const NO_HISTOGRAM: (Value, Vec<u64>) = (Value::Null, Vec::new());
 
-/// The delay histogram of direction `d`: page 0 without its bins, and all bins of all pages.
+/// The histogram `command` (`/dpds/delay_hist` or `/dpds/iat_hist`) of direction `d`: page 0 without its bins, and all bins of all pages.
 /// Page 0 gives the number of bins, so the pages 1.. follow in order, none past the last.
 /// A page 0 that is null or empty (delay statistics off, or a `dpds` without the feature)
 /// means no histogram, silently. Any other bad page (wrong, missing or short data, or
 /// `num_bins` out of range) also means no histogram for this poll, with a warning: a
 /// histogram is never put together from pieces that do not fit. Only a transport error is an
 /// `Err`, because it can put the replies out of step with the requests.
-fn poll_histogram(client: &mut Client, d: u64) -> io::Result<(Value, Vec<u64>)> {
+fn poll_histogram(client: &mut Client, command: &str, d: u64) -> io::Result<(Value, Vec<u64>)> {
     let broken = |page: u64, what: &str| {
-        eprintln!(
-            "dpds-controller: /dpds/delay_hist direction {d} page {page}: {what}; no histogram"
-        );
+        eprintln!("dpds-controller: {command} direction {d} page {page}: {what}; no histogram");
         NO_HISTOGRAM
     };
-    let mut page0 = match client.query_opt(&format!("/dpds/delay_hist,{d}"))? {
+    let mut page0 = match client.query_opt(&format!("{command},{d}"))? {
         None => return Ok(NO_HISTOGRAM),
         Some(v) if v.as_object().is_some_and(|o| o.is_empty()) => return Ok(NO_HISTOGRAM),
         Some(v) => v,
@@ -179,7 +178,7 @@ fn poll_histogram(client: &mut Client, d: u64) -> io::Result<(Value, Vec<u64>)> 
         Err(what) => return Ok(broken(0, &what)),
     };
     for page in 1..num_bins.div_ceil(PAGE_BINS) {
-        let Some(reply) = client.query_opt(&format!("/dpds/delay_hist,{d},{page}"))? else {
+        let Some(reply) = client.query_opt(&format!("{command},{d},{page}"))? else {
             return Ok(broken(page, "null reply"));
         };
         match check_page(page, num_bins, &reply) {
@@ -204,9 +203,17 @@ pub fn poll_once(client: &mut Client) -> io::Result<Snapshot> {
     };
     for d in 0..n_dirs {
         snap.dirs.push(client.query(&format!("/dpds/stats,{d}"))?);
-        let (hist, bins) = poll_histogram(client, d)?;
+        let (hist, bins) = poll_histogram(client, "/dpds/delay_hist", d)?;
         snap.hists.push(hist);
         snap.hist_bins.push(bins);
+        // only a link with delay statistics has an IAT histogram
+        let (hist, bins) = if delay_stats_on(&ports, d as usize) {
+            poll_histogram(client, "/dpds/iat_hist", d)?
+        } else {
+            NO_HISTOGRAM
+        };
+        snap.iat_hists.push(hist);
+        snap.iat_hist_bins.push(bins);
     }
     for p in 0..n_ports {
         snap.eth.push(client.query(&format!("/ethdev/xstats,{p}"))?);

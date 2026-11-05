@@ -1,7 +1,7 @@
 import { fireEvent, waitFor, within } from '@testing-library/react';
 import { vi } from 'vitest';
 import type { HistogramView } from '../api/types';
-import { card, findCard } from '../test/dashboardUi';
+import { card, delayBar, findCard, findDelayBar } from '../test/dashboardUi';
 import * as fx from '../test/fixtures';
 import { renderApp, tick } from '../test/helpers';
 import { api } from '../test/mockApi';
@@ -22,7 +22,7 @@ interface ChartData {
   datasets: { type?: string; label?: string; data: number[] }[];
 }
 
-const bar = (d: number) => within(card(d)).getByTestId('chart-bar');
+const bar = (d: number) => delayBar(card(d));
 const chartData = (d: number): ChartData => JSON.parse(bar(d).getAttribute('data-chart') ?? 'null');
 
 async function ready(d = 0) {
@@ -31,7 +31,7 @@ async function ready(d = 0) {
   renderApp('/');
   await findCard(1);
   for (const link of [0, 1]) fireEvent.click(within(card(link)).getByRole('radio', { name: 'Delay histogram' }));
-  await within(card(d)).findByTestId('chart-bar');
+  await findDelayBar(card(d));
 }
 
 describe('Dashboard histogram: no window, no log scale, no overlay, no percentile list (spec 35 F4)', () => {
@@ -75,7 +75,7 @@ describe('Dashboard histogram: no window, no log scale, no overlay, no percentil
     await ready(0);
     expect(chartData(0).datasets[0].data).toEqual([1, 10, 100, 40, 2]);
     card(1);
-    await within(card(1)).findByTestId('chart-bar');
+    await findDelayBar(card(1));
     expect(chartData(1).datasets[0].data).toEqual([1, 10, 100, 40, 3]);
   });
 

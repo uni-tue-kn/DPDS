@@ -9,7 +9,10 @@ import {
   CAUSES,
   expectState,
   findCard,
+  findDelayBar,
   findState,
+  lossDonut,
+  queryDelayBar,
   queryRadio,
   radio,
   RUN_BUTTONS,
@@ -548,7 +551,7 @@ async function showChart(
   name: 'Traffic rates' | 'Packet loss' | 'Delay histogram',
 ) {
   await user.click(radio(d, name));
-  return within(card(d)).findByTestId(name === 'Delay histogram' ? 'chart-bar' : 'chart-line');
+  return name === 'Delay histogram' ? findDelayBar(card(d)) : within(card(d)).findByTestId('chart-line');
 }
 
 // Spec 35 F3/F4. Was: 'radio chart selector per link' with a radio group per card (Rate, Drops, Delay histogram) and the
@@ -581,7 +584,7 @@ describe("Dashboard (spec 28, spec 35 F3): radio chart selector in each link's t
     const lines = within(card(0)).getAllByTestId('chart-line');
     expect(lines).toHaveLength(1);
     expect(imgName(lines[0])).toMatch(/rate/i);
-    expect(within(card(0)).queryByTestId('chart-bar')).not.toBeInTheDocument();
+    expect(queryDelayBar(card(0))).not.toBeInTheDocument();
   });
 
   it('choosing Loss shows only the loss chart', async () => {
@@ -592,7 +595,7 @@ describe("Dashboard (spec 28, spec 35 F3): radio chart selector in each link's t
     expect(radio(0, 'Traffic rates')).not.toBeChecked();
     expect(within(card(0)).getAllByTestId('chart-line')).toHaveLength(1);
     expect(imgName(chart)).toMatch(/loss/i);
-    expect(within(card(0)).queryByTestId('chart-bar')).not.toBeInTheDocument();
+    expect(queryDelayBar(card(0))).not.toBeInTheDocument();
   });
 
   it('choosing Delay histogram shows only the histogram, without any control of its own', async () => {
@@ -614,7 +617,7 @@ describe("Dashboard (spec 28, spec 35 F3): radio chart selector in each link's t
     await openCards();
     await showChart(user, 0, 'Delay histogram');
     await showChart(user, 0, 'Traffic rates');
-    expect(within(card(0)).queryByTestId('chart-bar')).not.toBeInTheDocument();
+    expect(queryDelayBar(card(0))).not.toBeInTheDocument();
   });
 
   it('the selection survives the next polls (the chart area is not rebuilt)', async () => {
@@ -778,7 +781,7 @@ describe('Dashboard (spec 43 F1): the loss chart plots cumulative dropped packet
     const chart = await drops();
     const colours = dataOf(chart).datasets.map((s) => s.borderColor);
     expect(new Set(colours).size).toBe(9); // spec 47: nine causes
-    const donut = JSON.parse(within(card(0)).getByTestId('chart-doughnut').getAttribute('data-chart') ?? 'null');
+    const donut = JSON.parse(lossDonut(card(0)).getAttribute('data-chart') ?? 'null');
     expect(colours).toEqual(donut.datasets[0].backgroundColor);
   });
 

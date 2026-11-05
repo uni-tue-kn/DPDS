@@ -354,6 +354,7 @@ fn run() -> Result<()> {
         ranges.push((
             HistRange::from_spec(&dir.config, &dir.histogram)
                 .map_err(|e| format!("{label}: {e}"))?,
+            HistRange::iat_from_config(&dir.config),
             dir.delay_stats,
         ));
     }
@@ -518,14 +519,13 @@ fn serve(
     mut queues: Queues,
     port_infos: Vec<PortInfo>,
     pool_sizes: &[u32],
-    ranges: Vec<(HistRange, bool)>,
+    ranges: Vec<(HistRange, HistRange, bool)>,
     num_links: usize,
 ) -> Result<()> {
     let clock = Clock::new();
     // The shared zero point of every `uptime_ns` / `relative_ns` / epoch time.
     let start_ns = clock.now_ns();
-    let stats: &'static DirectionStats =
-        Box::leak(Box::new(DirectionStats::with_delay_settings(ranges)));
+    let stats: &'static DirectionStats = Box::leak(Box::new(DirectionStats::with_hists(ranges)));
     let hw: &'static NicHwStats = Box::leak(Box::new(NicHwStats::new(port_ids.len())));
     let register = |e: dpdk::DpdkError| format!("cannot register telemetry command: {e}");
     DirectionStats::register_telemetry(stats, start_ns).map_err(register)?;

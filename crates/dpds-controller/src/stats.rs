@@ -24,6 +24,10 @@ pub struct Snapshot {
     /// `hist_bins[d]` = every bin of direction `d`, the bins of all its pages in order
     /// (`Vec<u64>`, 8 bytes a bin). A direction without bins has no histogram.
     pub hist_bins: Vec<Vec<u64>>,
+    /// Like `hists`, for `/dpds/iat_hist,<d>` (the departure-gap histogram).
+    pub iat_hists: Vec<Value>,
+    /// Like `hist_bins`, for the IAT histogram.
+    pub iat_hist_bins: Vec<Vec<u64>>,
 }
 
 /// The two latest snapshots; rates come from their difference.
@@ -48,6 +52,12 @@ pub struct Counters {
     pub tx_pkts: u64,
     pub tx_sent: u64,
     pub tx_drops: u64,
+    /// Cumulative received frames per size: [0,63], [64], [65,127], [128,255], [256,511],
+    /// [512,1023], [1024,1518], [1519,inf) bytes (P4TG's buckets), before any drop; 0s when
+    /// `dpds` does not report them.
+    pub frame_sizes: [u64; 8],
+    /// Cumulative departures out of arrival order (reordering links only; 0 otherwise).
+    pub out_of_order: u64,
     /// Cumulative `rx_missed_errors` (= `imissed`) of the ingress port; links that share an
     /// ingress port (a hairpin of one port) both report the port's counter.
     pub nic_rx_missed: u64,
@@ -214,6 +224,12 @@ impl HistorySample {
 #[derive(Debug, Clone, Copy, Serialize, ToSchema)]
 pub struct HistoryTotals {
     pub rx_pkts: u64,
+    /// `counters.tx_sent`: the frames forwarded to the egress port.
+    pub tx_sent: u64,
+    /// `counters.frame_sizes`.
+    pub frame_sizes: [u64; 8],
+    /// `counters.out_of_order`.
+    pub out_of_order: u64,
     pub loss_drops: u64,
     pub limiter_drops: u64,
     pub buffer_full_drops: u64,
@@ -230,6 +246,9 @@ impl From<&Counters> for HistoryTotals {
     fn from(c: &Counters) -> HistoryTotals {
         HistoryTotals {
             rx_pkts: c.rx_pkts,
+            tx_sent: c.tx_sent,
+            frame_sizes: c.frame_sizes,
+            out_of_order: c.out_of_order,
             loss_drops: c.loss_drops,
             limiter_drops: c.limiter_drops,
             buffer_full_drops: c.buffer_full_drops,
@@ -439,6 +458,17 @@ fn u(v: &Value, key: &str) -> u64 {
     uint(v, key).unwrap_or(0)
 }
 
+/// The `frame_sizes` array of a stats reply; 0s for a missing or short one.
+fn frame_sizes(v: &Value) -> [u64; 8] {
+    let mut out = [0; 8];
+    if let Some(a) = v.get("frame_sizes").and_then(Value::as_array) {
+        for (o, x) in out.iter_mut().zip(a) {
+            *o = x.as_u64().unwrap_or(0);
+        }
+    }
+    out
+}
+
 fn text(v: &Value, key: &str) -> Option<String> {
     v.get(key)?.as_str().map(str::to_string)
 }
@@ -511,6 +541,8 @@ pub fn compute_stats(prev: Option<&Snapshot>, cur: &Snapshot) -> StatsView {
                     tx_pkts: u(c, "tx_pkts"),
                     tx_sent: u(c, "tx_sent"),
                     tx_drops: u(c, "tx_drops"),
+                    frame_sizes: frame_sizes(c),
+                    out_of_order: u(c, "out_of_order"),
                     nic_rx_missed: rx_nic.missed,
                     nic_rx_nombuf: rx_nic.nombuf,
                     nic_rx_port_buffer_discards: rx_nic.port_buffer,
@@ -564,11 +596,29 @@ pub fn compute_stats(prev: Option<&Snapshot>, cur: &Snapshot) -> StatsView {
 /// The cumulative delay histogram of a direction with its bin edges; `None`
 /// without data or for a direction with delay statistics off.
 pub fn delay_histogram(cur: &Snapshot, dir: usize) -> Option<HistogramView> {
+    let mut h = histogram_view(cur, dir, &cur.hists, &cur.hist_bins)?;
+    h.mean_ns = cur.dirs.get(dir).and_then(|c| num(c, "delay_mean_ns"));
+    h.std_ns = cur.dirs.get(dir).and_then(|c| num(c, "delay_std_ns"));
+    Some(h)
+}
+
+/// The cumulative IAT (departure gap) histogram of a direction, like [`delay_histogram`]
+/// without the mean and standard deviation.
+pub fn iat_histogram(cur: &Snapshot, dir: usize) -> Option<HistogramView> {
+    histogram_view(cur, dir, &cur.iat_hists, &cur.iat_hist_bins)
+}
+
+fn histogram_view(
+    cur: &Snapshot,
+    dir: usize,
+    hists: &[Value],
+    hist_bins: &[Vec<u64>],
+) -> Option<HistogramView> {
     if !delay_stats_on(&cur.ports, dir) {
         return None;
     }
-    let h = cur.hists.get(dir)?;
-    let bins = cur.hist_bins.get(dir).filter(|b| !b.is_empty())?.clone();
+    let h = hists.get(dir)?;
+    let bins = hist_bins.get(dir).filter(|b| !b.is_empty())?.clone();
     let lo_ns = num(h, "lo_ns")?;
     let bin_ns = num(h, "bin_ns")?;
     let edges_ns = (0..=bins.len())
@@ -588,8 +638,8 @@ pub fn delay_histogram(cur: &Snapshot, dir: usize) -> Option<HistogramView> {
         span_ms: 0,
         count: 0,
         percentiles: Percentiles::default(),
-        mean_ns: cur.dirs.get(dir).and_then(|c| num(c, "delay_mean_ns")),
-        std_ns: cur.dirs.get(dir).and_then(|c| num(c, "delay_std_ns")),
+        mean_ns: None,
+        std_ns: None,
         expected: None,
         expected_underflow: None,
         expected_overflow: None,

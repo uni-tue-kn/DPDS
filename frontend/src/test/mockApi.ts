@@ -42,6 +42,8 @@ export const api = {
   stopEmulation: vi.fn() as Mock<() => Promise<EmulationView>>,
   getStats: vi.fn() as Mock<() => Promise<StatsView>>,
   getDelayHistogram: vi.fn() as Mock<(dir: number, windowS?: number) => Promise<HistogramView>>,
+  /** Spec 51 (C2): GET /api/stats/{dir}/iat_histogram, the departure-gap histogram (the delay histogram's shape, no `expected*`). */
+  getIatHistogram: vi.fn() as Mock<(dir: number) => Promise<HistogramView>>,
   /** Spec 29: GET /api/stats/history, `sinceMs` absent = everything (0 is a real value: samples newer than 0 ms). */
   getStatsHistory: vi.fn() as Mock<(sinceMs?: number) => Promise<HistoryView>>,
 };
@@ -63,6 +65,7 @@ export function resetApi(): void {
   api.stopEmulation.mockResolvedValue(fx.emulation('stopping'));
   api.getStats.mockResolvedValue(fx.stats([]));
   api.getDelayHistogram.mockImplementation(async (dir, windowS) => fx.histogram(dir, { window_s: windowS ?? 0 }));
+  api.getIatHistogram.mockImplementation(async (dir) => fx.iatHistogram(dir));
   api.getStatsHistory.mockResolvedValue(fx.history({}, { started_at: null, run_id: null, links: [], totals: {} })); // nothing ran
 }
 

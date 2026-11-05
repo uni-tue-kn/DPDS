@@ -656,8 +656,11 @@ fn the_readme_documents_get_api_stats_history() {
 
 // ---- spec 35: `totals` of the history and the receiving port's counters of `/api/stats` ----------
 
-const TOTALS_FIELDS: [&str; 10] = [
+const TOTALS_FIELDS: [&str; 13] = [
     "rx_pkts",
+    "tx_sent",
+    "frame_sizes",
+    "out_of_order",
     "loss_drops",
     "limiter_drops",
     "buffer_full_drops",

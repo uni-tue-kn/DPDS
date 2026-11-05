@@ -1807,6 +1807,7 @@ pub fn snapshot(dirs: [DirSample; 2], ports: [PortSample; 2]) -> Snapshot {
             "loss_drops": d.loss, "limiter_drops": d.limiter, "buffer_full_drops": d.full,
             "pops": d.tx_sent + d.tx_drops, "tx_pkts": d.tx_sent + d.tx_drops, "tx_sent": d.tx_sent,
             "tx_drops": d.tx_drops, "buffer_len_max": 777,
+            "frame_sizes": [1, 2, 3, 4, 5, 6, 7, 8], "out_of_order": 11,
             "delay_mean_ns": "10000000.25", "delay_std_ns": "1000000.50",
             "delay_min_ns": 5000000, "delay_max_ns": 15000000,
             "lateness_mean_ns": "250.75", "lateness_max_ns": 9000,
@@ -1872,6 +1873,21 @@ pub fn set_hists(snapshot: &mut Snapshot, full: Vec<Value>) {
     for (dir, h) in full.into_iter().enumerate() {
         set_hist(snapshot, dir, h);
     }
+}
+
+/// Spec 51 C2 (ASSUMPTION: the polled `Snapshot` stores the IAT histograms like the delay ones, in
+/// `iat_hists` (metadata without `bins`) and `iat_hist_bins`): direction `dir` of `snapshot` gets
+/// the IAT histogram `full`.
+pub fn set_iat_hist(snapshot: &mut Snapshot, dir: usize, full: Value) {
+    let (meta, bins) = split_hist(&full);
+    if snapshot.iat_hists.len() <= dir {
+        snapshot.iat_hists.resize(dir + 1, Value::Null);
+    }
+    if snapshot.iat_hist_bins.len() <= dir {
+        snapshot.iat_hist_bins.resize(dir + 1, Vec::new());
+    }
+    snapshot.iat_hists[dir] = meta;
+    snapshot.iat_hist_bins[dir] = bins;
 }
 
 /// The inverse of [`set_hists`]: one JSON histogram with all its `bins` per direction, what a

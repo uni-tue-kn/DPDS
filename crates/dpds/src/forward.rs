@@ -4,6 +4,7 @@ use dpdk::mbuf::{pkt_len, prefetch_header};
 use dpds_core::buffer::PushOutcome;
 
 use crate::consts::BURST_SIZE;
+use crate::counters::frame_bucket;
 use crate::delay_stats::DelayBatch;
 use crate::first_loss::{DropCause, FirstLossReason, Stage, StageLossDetail};
 use crate::io::{MbufFree, RxBurst, TxBurst};
@@ -140,11 +141,15 @@ unsafe fn run_loop<const DELAY: bool>(
             c.rx_full_bursts.inc();
         }
 
+        // Frame sizes of this burst: at most BURST_SIZE (32) per bucket, so one
+        // u64 of u8 counters on the stack, flushed once per burst.
+        let mut sizes = [0u8; 8];
         let mut rejects = 0;
         let (mut lost, mut limited, mut full) = (0u64, 0u64, 0u64);
         for &m in &batch[..received] {
             // SAFETY: valid mbuf owned by us (see above).
             let len = unsafe { pkt_len(m) };
+            sizes[frame_bucket(len)] += 1;
             let cause = match buffer.push_outcome(m.cast(), len, now) {
                 PushOutcome::Accepted { send_time_ns } => {
                     if DELAY {
@@ -171,6 +176,11 @@ unsafe fn run_loop<const DELAY: bool>(
             rejected[rejects] = m;
             rejects += 1;
         }
+        if received > 0 {
+            for (counter, &n) in stats.frame_sizes.0.iter().zip(&sizes) {
+                counter.add(n as u64);
+            }
+        }
         if rejects > 0 {
             c.dpds_rejects.add(rejects as u64);
             c.loss_drops.add(lost);
@@ -196,9 +206,10 @@ unsafe fn run_loop<const DELAY: bool>(
             popped_len += 1;
         }
         if DELAY {
-            stats.delay.record_pops(&delays, now);
+            stats.delay.record_pops(&mut delays, now);
         }
         let popped_len = popped_len.min(BURST_SIZE);
+        c.out_of_order.set(buffer.out_of_order());
         if popped_len > 0 {
             c.pops.add(popped_len as u64);
             let popped = &mut popped[..popped_len];

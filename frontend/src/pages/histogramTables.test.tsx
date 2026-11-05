@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { vi } from 'vitest';
 import type { HistogramView } from '../api/types';
 import { formatCount, formatDuration } from '../common/format';
-import { card, findTabs, radio, summary } from '../test/dashboardUi';
+import { card, delayBar, findHistTables, findTabs, histTables, radio, summary } from '../test/dashboardUi';
 import * as fx from '../test/fixtures';
 import { renderApp, tick } from '../test/helpers';
 import { api } from '../test/mockApi';
@@ -24,7 +24,7 @@ import { must } from '../test/must';
 // CHOICE: "-" (spec: "means not available") also stands for a missing mean or σ, not formatDuration's "n/a".
 // CHOICE: no tables while the histogram is unavailable (the error text shows instead).
 
-const tablesOf = (d: number) => within(card(d)).getAllByRole('table');
+const tablesOf = (d: number) => histTables(card(d));
 const headers = (t: HTMLElement) =>
   within(t)
     .getAllByRole('columnheader')
@@ -42,7 +42,7 @@ async function ready(d = 0, dirs = [fx.dirStats(0), fx.dirStats(1)]) {
   renderApp('/');
   await findTabs(2);
   fireEvent.click(radio(d, 'Delay histogram'));
-  await within(card(d)).findAllByRole('table');
+  await findHistTables(card(d));
 }
 
 describe('Histogram tables (spec 36 S2): layout', () => {
@@ -69,7 +69,7 @@ describe('Histogram tables (spec 36 S2): layout', () => {
     expect(row).toHaveClass('row');
     expect(cols.map((c) => c.parentElement)).toEqual([row, row, row]);
     expect(Array.from(row.children).filter((c) => c.classList.contains('col-md-4'))).toEqual(cols);
-    const chart = within(card(0)).getByTestId('chart-bar');
+    const chart = delayBar(card(0));
     expect(row.compareDocumentPosition(chart) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(row.contains(chart)).toBe(false);
   });
@@ -100,12 +100,12 @@ describe('Histogram tables (spec 36 S2): layout', () => {
   it('are only in the "Delay histogram" view of a link: not under Rate or Loss, not in the Summary', async () => {
     await ready();
     fireEvent.click(radio(0, 'Traffic rates'));
-    expect(within(card(0)).queryAllByRole('table')).toHaveLength(0);
+    expect(histTables(card(0))).toHaveLength(0);
     fireEvent.click(radio(0, 'Packet loss'));
-    expect(within(card(0)).queryAllByRole('table')).toHaveLength(0);
+    expect(histTables(card(0))).toHaveLength(0);
     fireEvent.click(radio(0, 'Delay histogram'));
-    expect(await within(card(0)).findAllByRole('table')).toHaveLength(3);
-    expect(within(summary()).queryAllByRole('table')).toHaveLength(0);
+    expect(await findHistTables(card(0))).toHaveLength(3);
+    expect(histTables(summary())).toHaveLength(0);
   });
 
   it('are not shown when the histogram is unavailable', async () => {
@@ -116,7 +116,7 @@ describe('Histogram tables (spec 36 S2): layout', () => {
     await findTabs(2);
     fireEvent.click(radio(0, 'Delay histogram'));
     expect(await within(card(0)).findByTestId('histogram-error')).toBeInTheDocument();
-    expect(within(card(0)).queryAllByRole('table')).toHaveLength(0);
+    expect(histTables(card(0))).toHaveLength(0);
   });
 });
 
@@ -220,7 +220,7 @@ describe('Histogram tables (spec 36 S2): the cells', () => {
     renderApp('/');
     await findTabs(2);
     fireEvent.click(radio(0, 'Delay histogram'));
-    await within(card(0)).findAllByRole('table');
+    await findHistTables(card(0));
     const row = cells(must(tablesOf(0)[VALUES]));
     expect(row.slice(0, 2)).toEqual(['-', '-']);
   });
@@ -258,7 +258,7 @@ describe('Histogram tables (spec 36 S2): the cells', () => {
     await ready(0, [fx.dirStats(0), fx.dirStats(1, { delay_mean_ns: 2_500_000_000, delay_std_ns: 800 })]);
     expect(within(card(0)).queryByText(/→/)).not.toBeInTheDocument();
     fireEvent.click(radio(1, 'Delay histogram'));
-    await within(card(1)).findAllByRole('table');
+    await findHistTables(card(1));
     expect(cells(must(tablesOf(1)[VALUES]))).toEqual(['2.50 s', '800.00 ns', '10', '164']); // count 163 + dir
     for (const t of tablesOf(1)) expect(within(t).queryByText(/→/)).not.toBeInTheDocument();
   });
@@ -295,7 +295,7 @@ describe('Histogram tables (spec 36 S2): the cells', () => {
 describe('Histogram tables (spec 36 S2): the chart keeps its bars and loses its title line', () => {
   it('the bar chart is still there with the bars of the reply and its percentile annotation lines', async () => {
     await ready();
-    const chart = within(card(0)).getByTestId('chart-bar');
+    const chart = delayBar(card(0));
     const data = JSON.parse(chart.getAttribute('data-chart') ?? 'null');
     expect(data.datasets[0].data).toEqual([1, 10, 100, 40, 2]);
     const options = JSON.parse(chart.getAttribute('data-options') ?? 'null');
@@ -304,7 +304,7 @@ describe('Histogram tables (spec 36 S2): the chart keeps its bars and loses its 
 
   it('has no "Mean ... · Jitter (σ) ..." title: not in the options, not in the page', async () => {
     await ready();
-    const chart = within(card(0)).getByTestId('chart-bar');
+    const chart = delayBar(card(0));
     const options = JSON.parse(chart.getAttribute('data-options') ?? 'null');
     expect(options.plugins?.title?.display).not.toBe(true);
     expect(JSON.stringify(options.plugins?.title ?? {})).not.toMatch(/Mean|Jitter/);

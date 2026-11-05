@@ -674,6 +674,9 @@ async fn recording_the_series_asks_dpds_for_nothing_extra() {
         "/dpds/stats,1",
         "/dpds/delay_hist,0",
         "/dpds/delay_hist,1",
+        // spec 51 C2: page 0 of the IAT histogram of each link
+        "/dpds/iat_hist,0",
+        "/dpds/iat_hist,1",
         "/ethdev/xstats,0",
         "/ethdev/xstats,1",
     ];
@@ -1853,7 +1856,8 @@ const COUNT_STEP_NS: u64 = 100_000_000;
 /// Packets per poll of link 0 and link 1 (`EXPECT`'s rates times 100 ms).
 const RX_PER_POLL: [u64; 2] = [200_000, 100_000];
 
-const TOTALS_FIELDS: [&str; 10] = [
+/// Spec 51 C1/T1 added `out_of_order` (an integer) and `frame_sizes` (an array of 8 integers).
+const TOTALS_FIELDS: [&str; 12] = [
     "rx_pkts",
     "loss_drops",
     "limiter_drops",
@@ -1864,7 +1868,17 @@ const TOTALS_FIELDS: [&str; 10] = [
     "nic_rx_port_buffer_discards",
     "nic_rx_phy_discards",
     "nic_tx_phy_discards",
+    "out_of_order",
+    "tx_sent",
 ];
+
+/// `TOTALS_FIELDS` and the array `frame_sizes`.
+fn all_totals_fields() -> Vec<&'static str> {
+    let mut v = TOTALS_FIELDS.to_vec();
+    v.push("frame_sizes");
+    v.sort_unstable();
+    v
+}
 
 /// A fake `dpds` whose uptime advances by [`COUNT_STEP_NS`] with every `/dpds/ports` query: the
 /// k-th poll sees the counters of `at(k * COUNT_STEP_NS)`.
@@ -1956,6 +1970,9 @@ fn totals_after(k: u64, link: usize) -> Value {
         "nic_rx_port_buffer_discards": prio_sum(port),
         "nic_rx_phy_discards": port["rx_phy_discard_packets"],
         "nic_tx_phy_discards": egress["tx_phy_discard_packets"],
+        "out_of_order": d["out_of_order"],
+        "tx_sent": d["tx_sent"],
+        "frame_sizes": d["frame_sizes"],
     })
 }
 
@@ -1976,12 +1993,11 @@ fn check_totals(v: &Value) -> u64 {
             .unwrap_or_else(|| panic!("totals[{key}] is not an object in {v}"));
         let mut fields: Vec<&str> = o.keys().map(String::as_str).collect();
         fields.sort_unstable();
-        let mut want = TOTALS_FIELDS.to_vec();
-        want.sort_unstable();
-        assert_eq!(fields, want, "exactly the ten fields: {t}");
+        assert_eq!(fields, all_totals_fields(), "exactly these fields: {t}");
         for f in TOTALS_FIELDS {
             assert!(t[f].is_u64(), "{f} is a u64 in {t}");
         }
+        assert_eq!(t["frame_sizes"].as_array().map(Vec::len), Some(8), "{t}");
         let k = poll_of(i, t["rx_pkts"].as_u64().unwrap(), v);
         assert_eq!(
             *t,
@@ -2010,6 +2026,10 @@ fn stats_poll(stats: &Value) -> u64 {
         assert_eq!(
             c["nic_rx_nombuf"], want["nic_rx_nombuf"],
             "link {i}: the receiving port's rx_mbuf_allocation_errors: {c}"
+        );
+        assert_eq!(
+            c["tx_sent"], want["tx_sent"],
+            "link {i}: totals' tx_sent is counters.tx_sent: {c}"
         );
         for key in [
             "nic_rx_port_buffer_discards",
@@ -2244,12 +2264,15 @@ async fn openapi_documents_the_totals() {
         .unwrap_or_else(|| panic!("the values of totals have no properties: {totals}"));
     let mut names: Vec<&str> = item_props.keys().map(String::as_str).collect();
     names.sort_unstable();
-    let mut want = TOTALS_FIELDS.to_vec();
-    want.sort_unstable();
-    assert_eq!(names, want, "{item}");
+    assert_eq!(names, all_totals_fields(), "{item}");
     for (name, schema) in item_props {
         let schema = resolve(&doc, schema);
-        assert_eq!(schema["type"], "integer", "{name}: {schema}");
+        let want = if name == "frame_sizes" {
+            "array"
+        } else {
+            "integer"
+        };
+        assert_eq!(schema["type"], want, "{name}: {schema}");
     }
 }
 

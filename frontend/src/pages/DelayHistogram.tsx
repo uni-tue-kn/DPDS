@@ -20,7 +20,7 @@ const PERCENTILES: [string, 'p50' | 'p90' | 'p99' | 'p999'][] = [
 ];
 
 /** One vertical line per percentile at its place on the category axis (bin i is centred on i), if it has a value. */
-function percentileLines(hist: HistogramView, textColor: string) {
+export function percentileLines(hist: HistogramView, textColor: string) {
   const p = hist.percentiles;
   const lines: Record<string, unknown> = {};
   if (!p) return lines;

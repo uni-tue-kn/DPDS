@@ -79,6 +79,8 @@ impl Ord for TimeToPacket {
 #[derive(Copy, Clone)]
 struct HeapEntry {
     key: u64,
+    /// Arrival sequence number (per buffer, assigned at push).
+    seq: u64,
     packet_ptr: *mut c_void,
 }
 
@@ -119,8 +121,9 @@ impl HeapEntry {
 /// whatever their send times. The send time is truncated to whole ns.
 ///
 /// With `reordering: true` packets leave in send-time order, and packets that
-/// enter at the same instant keep their entry order. There is no sequence
-/// number: every entry's send time is kept in fixed point with 1/64 ns
+/// enter at the same instant keep their entry order. The order does not use
+/// the arrival sequence number (kept only for [`Buffer::out_of_order`]): every
+/// entry's send time is kept in fixed point with 1/64 ns
 /// resolution (`key = floor(t * 64) + tie`, `t` the send time in ns) and `tie`
 /// counts the packets accepted since the last push with a different
 /// `current_time_ns`, so each packet entering at the same instant sorts 1/64 ns
@@ -143,6 +146,12 @@ pub struct Buffer {
     tie_instant_ns: f64,
     /// Number of packets accepted at `tie_instant_ns` so far.
     tie: u64,
+    /// Arrival sequence number of the next accepted reordering push.
+    next_seq: u64,
+    /// Highest arrival sequence number popped so far plus one (0: none yet).
+    popped_seq_end: u64,
+    /// Departures with a lower arrival sequence number than an earlier one.
+    out_of_order: u64,
 }
 
 impl Buffer {
@@ -235,6 +244,9 @@ impl Buffer {
             dropper,
             tie_instant_ns: f64::NAN,
             tie: 0,
+            next_seq: 0,
+            popped_seq_end: 0,
+            out_of_order: 0,
         })
     }
 
@@ -313,7 +325,13 @@ impl Buffer {
                 // `as u64` truncates (= floor for t >= 0) and saturates.
                 let key = ((send_time_ns * TIE_SCALE) as u64).saturating_add(self.tie);
                 self.tie = self.tie.saturating_add(1);
-                h.push(Reverse(HeapEntry { key, packet_ptr }));
+                let seq = self.next_seq;
+                self.next_seq += 1;
+                h.push(Reverse(HeapEntry {
+                    key,
+                    seq,
+                    packet_ptr,
+                }));
                 PushOutcome::Accepted {
                     send_time_ns: key >> TIE_FRAC_BITS,
                 }
@@ -326,7 +344,11 @@ impl Buffer {
     pub fn pop(&mut self) -> Option<*mut c_void> {
         match &mut self.inner {
             InnerBuffer::Queue(q) => q.pop_front().map(|t| t.packet_ptr),
-            InnerBuffer::Heap(h) => h.pop().map(|t| t.0.packet_ptr),
+            InnerBuffer::Heap(h) => {
+                let entry = h.pop()?.0;
+                self.count_departure(entry.seq);
+                Some(entry.packet_ptr)
+            }
         }
     }
 
@@ -346,7 +368,9 @@ impl Buffer {
             InnerBuffer::Heap(h) => {
                 let head = h.peek_mut()?;
                 if head.0.time_ns() <= now_ns {
-                    Some(PeekMut::pop(head).0.packet_ptr)
+                    let entry = PeekMut::pop(head).0;
+                    self.count_departure(entry.seq);
+                    Some(entry.packet_ptr)
                 } else {
                     None
                 }
@@ -373,12 +397,33 @@ impl Buffer {
                 let head = h.peek_mut()?;
                 if head.0.time_ns() <= now_ns {
                     let entry = PeekMut::pop(head).0;
+                    self.count_departure(entry.seq);
                     Some((entry.packet_ptr, entry.key >> TIE_FRAC_BITS))
                 } else {
                     None
                 }
             }
         }
+    }
+
+    /// Counts a departing reordering-heap packet: out of order when its arrival
+    /// sequence number is below the highest one popped before it.
+    #[inline]
+    fn count_departure(&mut self, seq: u64) {
+        if seq < self.popped_seq_end {
+            self.out_of_order += 1;
+        } else {
+            self.popped_seq_end = seq + 1;
+        }
+    }
+
+    /// Cumulative number of out-of-order departures: popped packets whose
+    /// arrival sequence number (0, 1, 2, ... in push order, accepted pushes
+    /// only) is lower than the highest one popped before them. Always 0 without
+    /// `reordering` (a FIFO never reorders, and counts nothing per packet).
+    #[inline]
+    pub fn out_of_order(&self) -> u64 {
+        self.out_of_order
     }
 
     /// Returns the send time (in ns) of the head packet, or `None` if the buffer is empty.

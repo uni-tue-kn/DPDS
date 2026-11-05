@@ -6,12 +6,14 @@ import { propsOf } from '../test/chartProps';
 import {
   activePanel,
   allTabs,
+  card,
   CAUSE_HELP,
   CAUSES,
-  card,
   findTabs,
   hasSummary,
+  lossDonut,
   panelOf,
+  queryDelayBar,
   summary,
   summaryRadio,
   summaryTab,
@@ -69,7 +71,7 @@ async function open(samples: Record<string, HistorySample[]>, dirs?: DirectionSt
 
 /** Like lossDonut.test.tsx: calls the tooltip label callback of the donut stub for segment `i`. */
 function hoverText(panel: HTMLElement, i: number): string {
-  const props = propsOf(within(panel).getByTestId('chart-doughnut'));
+  const props = propsOf(lossDonut(panel));
   const data = props.data as { labels: string[]; datasets: { data: number[] }[] };
   const options = props.options as {
     plugins?: { tooltip?: { callbacks?: { label?: (c: unknown) => string | string[] } } };
@@ -89,8 +91,7 @@ function hoverText(panel: HTMLElement, i: number): string {
   return Array.isArray(out) ? out.join(' ') : out;
 }
 const donutValues = (panel: HTMLElement) =>
-  JSON.parse(within(panel).getByTestId('chart-doughnut').getAttribute('data-chart') ?? 'null').datasets[0]
-    .data as number[];
+  JSON.parse(lossDonut(panel).getAttribute('data-chart') ?? 'null').datasets[0].data as number[];
 
 const counters = (over: Partial<Counters>) =>
   fx.counters({
@@ -246,7 +247,7 @@ describe('Summary tab (spec 36 S1): the radios', () => {
     await open({ '0': [sample(1000)], '1': [sample(1000)] });
     fireEvent.click(summaryRadio('Delay histogram'));
     expect(summaryRadio('Traffic rates')).toBeChecked();
-    expect(within(summary()).queryByTestId('chart-bar')).not.toBeInTheDocument();
+    expect(queryDelayBar(summary())).not.toBeInTheDocument();
     expect(api.getDelayHistogram).not.toHaveBeenCalled();
   });
 
@@ -274,7 +275,7 @@ describe('Summary tab (spec 36 S1): the radios', () => {
     const panel = summary();
     const chart = within(panel).getByTestId('chart-line');
     const group = within(panel).getByRole('radiogroup', { name: 'Chart' });
-    const donut = within(panel).getByTestId('chart-doughnut');
+    const donut = lossDonut(panel);
     expect(chart.compareDocumentPosition(group) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(group.compareDocumentPosition(donut) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
@@ -306,7 +307,7 @@ describe('Summary tab (spec 36 S1): no delay histogram polling', () => {
     const before = api.getDelayHistogram.mock.calls.length;
     await tick(5000);
     expect(api.getDelayHistogram.mock.calls.length).toBe(before);
-    expect(within(summary()).queryByTestId('chart-bar')).not.toBeInTheDocument();
+    expect(queryDelayBar(summary())).not.toBeInTheDocument();
   });
 });
 
@@ -429,7 +430,7 @@ describe('Summary tab (spec 36 S1, spec 43 F1): the loss chart', () => {
     await show({ '0': [sample(1000)], '1': [sample(1000)] });
     const chart = lineOf(summary());
     expect(chart.datasets.map((s) => s.label)).toEqual([...CAUSES]);
-    const donut = JSON.parse(within(summary()).getByTestId('chart-doughnut').getAttribute('data-chart') ?? 'null');
+    const donut = JSON.parse(lossDonut(summary()).getAttribute('data-chart') ?? 'null');
     expect(chart.datasets.map((s) => s.borderColor)).toEqual(donut.datasets[0].backgroundColor);
   });
 
@@ -504,7 +505,7 @@ describe('Summary tab (spec 36 S1): the loss donut', () => {
     );
     renderApp('/');
     await findTabs(2);
-    const data = JSON.parse(within(summary()).getByTestId('chart-doughnut').getAttribute('data-chart') ?? 'null');
+    const data = JSON.parse(lossDonut(summary()).getAttribute('data-chart') ?? 'null');
     expect(data.labels).toEqual([...CAUSES]);
     expect(data.datasets).toHaveLength(1);
     expect(data.datasets[0].data).toEqual([42, 30, 29, 5, 4, 4, 6, 8, 8]);
@@ -549,7 +550,7 @@ describe('Summary tab (spec 36 S1): the loss donut', () => {
     renderApp('/');
     await findTabs(2);
     const panel = summary();
-    const data = JSON.parse(within(panel).getByTestId('chart-doughnut').getAttribute('data-chart') ?? 'null');
+    const data = JSON.parse(lossDonut(panel).getAttribute('data-chart') ?? 'null');
     expect(data.datasets).toHaveLength(1);
     expect(data.datasets[0].data).toHaveLength(1);
     expect(data.datasets[0].data[0]).toBeGreaterThan(0);

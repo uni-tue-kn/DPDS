@@ -2,7 +2,7 @@ import { fireEvent, within } from '@testing-library/react';
 import { vi } from 'vitest';
 import type { HistogramView } from '../api/types';
 import { propsOf } from '../test/chartProps';
-import { card, summary } from '../test/dashboardUi';
+import { card, delayBar, lossDonut, summary } from '../test/dashboardUi';
 import * as fx from '../test/fixtures';
 import { renderApp, tick } from '../test/helpers';
 import { api, serveHistory } from '../test/mockApi';
@@ -19,7 +19,9 @@ type Opts = {
 };
 
 const optionsOf = (el: HTMLElement): Opts => propsOf(el).options as Opts;
-const chart = (scope: HTMLElement, id: 'chart-line' | 'chart-bar' | 'chart-doughnut') => within(scope).getByTestId(id);
+// Spec 51: a panel holds several Bar / Doughnut stubs (delay and IAT, loss and frame sizes), so they are picked by their image box.
+const chart = (scope: HTMLElement, id: 'chart-line' | 'chart-bar' | 'chart-doughnut') =>
+  id === 'chart-bar' ? delayBar(scope) : id === 'chart-doughnut' ? lossDonut(scope) : within(scope).getByTestId(id);
 
 function reduceMotion(reduce: boolean): void {
   const base = window.matchMedia;

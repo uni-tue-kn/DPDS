@@ -507,9 +507,10 @@ Build with `--features telemetry` to register the commands:
 
 | command | what |
 | --- | --- |
-| `/dpds/stats,<dir>` | Packet counters of link `<dir>` (its index in the [links file](#several-links-in-one-process---links); 0 or 1 with `--config*`) since start (`rx_pkts`, `dpds_rejects` and its causes `loss_drops` / `limiter_drops` / `buffer_full_drops`, `pops`, `tx_sent`, `tx_drops`, ...), gauges, delay statistics (`delay_mean_ns`, `delay_std_ns`, `delay_min_ns`, `delay_max_ns`, `lateness_mean_ns`, `lateness_max_ns`; absent for a link with `delay_stats` off), first-loss result. |
+| `/dpds/stats,<dir>` | Packet counters of link `<dir>` (its index in the [links file](#several-links-in-one-process---links); 0 or 1 with `--config*`) since start (`rx_pkts`, `dpds_rejects` and its causes `loss_drops` / `limiter_drops` / `buffer_full_drops`, `pops`, `tx_sent`, `tx_drops`, `out_of_order`, `frame_sizes` ...), gauges, delay statistics (`delay_mean_ns`, `delay_std_ns`, `delay_min_ns`, `delay_max_ns`, `lateness_mean_ns`, `lateness_max_ns`; absent for a link with `delay_stats` off), first-loss result. |
 | `/dpds/epochs,<dir>` | The same per epoch (a burst of traffic, closed after 500 ms of silence). |
 | `/dpds/delay_hist,<dir>[,<page>]` | Cumulative histogram of the intended delay of the accepted packets, up to 4096 bins, read in pages of at most 500 bins (`<page>` from 0, default 0; each page has `lo_ns`, `bin_ns`, `num_bins`, `underflow`, `overflow`, `page`, `first_bin` and its `bins`; empty page 0 for a link with `delay_stats` off). See [docs/TELEMETRY.md](docs/TELEMETRY.md). |
+| `/dpds/iat_hist,<dir>[,<page>]` | Cumulative histogram of the IAT of link `<dir>`: the gap between the send times of consecutive packets that left the buffer (the departure gap `dpds` schedules, not a measured RX gap), exactly one `lo_ns` ... `bins` page like `/dpds/delay_hist`, always 256 bins over `[0, 4 / initialization_rate_pps)` (4 mean gaps at the link's expected rate); empty for a link with `delay_stats` off. See [docs/TELEMETRY.md](docs/TELEMETRY.md). |
 | `/dpds/ports` | Port names, descriptor ring sizes (applied and requested), the number of links, and per link its name, ports (ids and device names), lcore, config path, pool size, free path and whether its delay statistics are on (`3 + 5 * ports + 10 * links` keys, at most 256). |
 | `/nic/hw_first_loss,<port>` | First NIC hardware drop (`imissed`, `rx_nombuf`, ...) seen by the main lcore. |
 | `/nic/epochs,<port>` | Per-epoch NIC `rx_packets` / `imissed` / `rx_port_discards`. |
@@ -773,6 +774,11 @@ without internet access, means no notice.
   `rx_phy_in_range_len_errors`) are shown but counted in no loss total. Two links that share a port (a hairpin of one
   port) both report that port's counters, unsplit. `nic_rx_pct` is the share of the window's received packets lost to the
   four RX-side NIC causes, `nic_tx_pct` the share lost to `tx_drops` plus `nic_tx_phy_discards`.
+  `counters.frame_sizes` is an array of 8 cumulative counts of the frames the link received (their
+  packet length, before any drop) in P4TG's buckets 0-63, 64, 65-127, 128-255, 256-511, 512-1023,
+  1024-1518 and 1519 and larger bytes; `counters.out_of_order` is the cumulative number of packets
+  that left before an earlier arrival (P4TG's notion, relative to arrival order; always 0 on a link
+  without `reordering`). Both are cumulative passthroughs of `dpds` (0 when it reports none).
 - **Chart history** (`GET /api/stats/history`, optionally with `?since_ms=<t>`): the answer is `{started_at, run_id,
   links, samples}`. `samples` has, per link index (the order of the start body), the series of the
   run, oldest first. Each sample is `{t_ms, rx_gbps, tx_gbps, rx_mpps, tx_mpps, loss_drops,
@@ -786,7 +792,8 @@ without internet access, means no notice.
   with every new run the controller sees and null before any run; `links` is
   `[{name, ingress, egress}]` of that run in link order, `[]` before any run, so a client can title
   the charts of a finished run. The answer also has `totals`, per link index (like `samples`) an object
-  of `rx_pkts`, `loss_drops`, `limiter_drops`, `buffer_full_drops`, `nic_tx_drops`,
+  of `rx_pkts`, `tx_sent` (the frames forwarded, `counters.tx_sent`), `frame_sizes`, `out_of_order`,
+  `loss_drops`, `limiter_drops`, `buffer_full_drops`, `nic_tx_drops`,
   `nic_rx_missed`, `nic_rx_nombuf`, `nic_rx_port_buffer_discards`, `nic_rx_phy_discards` and
   `nic_tx_phy_discards`: the cumulative counters since the `dpds` process started, taken from the last
   poll of the run (not from the newest once-a-second sample), so a finished run's drops by cause
@@ -805,6 +812,14 @@ without internet access, means no notice.
   instance").
 - **REST API**: served by the controller on port 8100 (`/api/...`), the same port as the frontend.
   The interactive OpenAPI documentation is at `http://<host>:8100/api/docs`.
+- **IAT histogram** (`GET /api/stats/{dir}/iat_histogram`): the histogram of the gap between the
+  send times `dpds` schedules for consecutive packets of the link (the departure gap, exact per
+  packet; recorded only for a link with delay statistics), 256 bins over `[0, hi)` with
+  `hi = 4 * 1e9 / initialization_rate_pps` ns. The reply has the shape of the delay histogram's
+  (`lo_ns`, `bin_ns`, `bins`, `underflow`, `overflow`, `edges_ns`, `count`, `percentiles`) since the
+  start, without `expected*` and `window_s`; 404 without data or for a link without delay
+  statistics. Like the delay histogram it is answered from a copy after the stop (refreshed while
+  served and right before the stop, cleared at the next start).
 - **Delay histogram extras** (`GET /api/stats/{dir}/delay_histogram`): `?window_s=10|60|300` returns
   only the samples of the last n seconds (difference to the poll that is at least n seconds old;
   `window_s` absent or 0 and runs younger than n seconds give the counts since start; `span_ms` is

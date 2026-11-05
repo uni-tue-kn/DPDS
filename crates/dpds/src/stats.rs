@@ -8,7 +8,7 @@
 //! `docs/TELEMETRY.md` for the wire semantics.
 
 use crate::counters::{
-    epochs_reply, DpdsCounters, DpdsEpochLog, EpochDriver, EpochFirstLoss, NicEpochLog,
+    epochs_reply, DpdsCounters, DpdsEpochLog, EpochDriver, EpochFirstLoss, FrameSizes, NicEpochLog,
     NicEpochTracker,
 };
 use crate::delay_stats::{DelayStats, HistRange};
@@ -22,6 +22,8 @@ use crate::reply::{Reply, Value};
 pub struct Stats {
     pub first_loss: StageLossTracker,
     pub counters: DpdsCounters,
+    /// Received frames per size bucket, cumulative.
+    pub frame_sizes: FrameSizes,
     pub epochs: DpdsEpochLog,
     /// Intended delay / lateness statistics and the delay histogram.
     pub delay: DelayStats,
@@ -51,12 +53,25 @@ impl Stats {
     /// direction records no delay statistics, its `/dpds/stats` has no delay
     /// keys and its histogram reply is empty.
     pub fn with_delay_stats(range: HistRange, delay_stats: bool) -> Stats {
+        Stats::with_hists(range, HistRange::default(), delay_stats)
+    }
+
+    /// As [`with_delay_stats`](Self::with_delay_stats), with the range of the
+    /// IAT histogram (recorded exactly when `delay_stats` is on).
+    pub fn with_hists(range: HistRange, iat_range: HistRange, delay_stats: bool) -> Stats {
         Stats {
             first_loss: StageLossTracker::new(),
             counters: DpdsCounters::default(),
+            frame_sizes: FrameSizes::default(),
             epochs: DpdsEpochLog::default(),
-            delay: DelayStats::with_enabled(range, delay_stats),
+            delay: DelayStats::with_hists(range, iat_range, delay_stats),
         }
+    }
+
+    /// Page 0 of the `/dpds/iat_hist` reply: the cumulative histogram of the
+    /// gaps between consecutive send times.
+    pub fn iat_hist_reply(&self) -> Reply {
+        self.delay.iat_hist_page(0).unwrap_or_default()
     }
 
     /// Page 0 of the `/dpds/delay_hist` reply: the cumulative histogram of the
@@ -104,6 +119,11 @@ impl Stats {
                 "buffer_len_max",
                 self.epochs.aggregate_gauge_max(1, c.buffer_len_max.get()),
             ),
+            (
+                "frame_sizes".to_string(),
+                Value::UintArray(self.frame_sizes.get()),
+            ),
+            uint("out_of_order", c.out_of_order.get()),
             string("first_loss_reason", fields.reason),
             string("first_loss_detail", fields.detail),
             uint("first_loss_relative_ns", fields.relative_ns),
@@ -136,6 +156,17 @@ fn index_param(param: &str) -> Option<usize> {
     param.parse().ok()
 }
 
+/// `<dir>` or `<dir>,<page>`, plain decimal numbers.
+fn dir_and_page(param: &str) -> Option<(usize, usize)> {
+    let mut parts = param.split(',');
+    let dir = index_param(parts.next()?)?;
+    let page = parts.next().map_or(Some(0), index_param)?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((dir, page))
+}
+
 impl DirectionStats {
     pub fn new(num_directions: usize) -> DirectionStats {
         DirectionStats::with_ranges(vec![HistRange::default(); num_directions])
@@ -148,10 +179,20 @@ impl DirectionStats {
 
     /// One direction per `(range, delay_stats)`.
     pub fn with_delay_settings(settings: Vec<(HistRange, bool)>) -> DirectionStats {
+        DirectionStats::with_hists(
+            settings
+                .into_iter()
+                .map(|(range, on)| (range, HistRange::default(), on))
+                .collect(),
+        )
+    }
+
+    /// One direction per `(delay range, IAT range, delay_stats)`.
+    pub fn with_hists(settings: Vec<(HistRange, HistRange, bool)>) -> DirectionStats {
         DirectionStats {
             stats: settings
                 .into_iter()
-                .map(|(range, on)| Stats::with_delay_stats(range, on))
+                .map(|(range, iat, on)| Stats::with_hists(range, iat, on))
                 .collect(),
         }
     }
@@ -173,16 +214,18 @@ impl DirectionStats {
     /// decimal numbers. `None` for a bad param, a direction that does not exist
     /// or a page past the last one.
     pub fn delay_hist_reply(&self, param: &str) -> Option<Reply> {
-        let mut parts = param.split(',');
-        let dir = index_param(parts.next()?)?;
-        let page = parts.next().map_or(Some(0), index_param)?;
-        if parts.next().is_some() {
-            return None;
-        }
+        let (dir, page) = dir_and_page(param)?;
         self.stats.get(dir)?.delay_hist_page(page)
     }
 
-    /// Registers `/dpds/stats`, `/dpds/epochs` and `/dpds/delay_hist` (no-op
+    /// `/dpds/iat_hist,<param>`: like [`delay_hist_reply`](Self::delay_hist_reply),
+    /// for the histogram of the gaps between consecutive send times.
+    pub fn iat_hist_reply(&self, param: &str) -> Option<Reply> {
+        let (dir, page) = dir_and_page(param)?;
+        self.stats.get(dir)?.delay.iat_hist_page(page)
+    }
+
+    /// Registers `/dpds/stats`, `/dpds/epochs`, `/dpds/delay_hist` and `/dpds/iat_hist` (no-op
     /// without the feature). `start_ns` is the shared `now_ns()` zero point. A bad param
     /// yields an empty dict, like `/nic/epochs`.
     #[cfg(not(feature = "telemetry"))]
@@ -222,6 +265,15 @@ impl DirectionStats {
             "One page of the cumulative histogram of the intended delay of one direction (query with ,<dir>,<page>)",
             move |param, d| {
                 if let Some(reply) = stats.delay_hist_reply(param) {
+                    fill(d, reply);
+                }
+            },
+        )?;
+        dpdk::telemetry::register_command(
+            "/dpds/iat_hist",
+            "One page of the cumulative histogram of the departure gaps (IAT) of one direction (query with ,<dir>,<page>)",
+            move |param, d| {
+                if let Some(reply) = stats.iat_hist_reply(param) {
                     fill(d, reply);
                 }
             },

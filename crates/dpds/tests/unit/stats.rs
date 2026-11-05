@@ -251,7 +251,7 @@ mod with_feature {
 
     // ── /dpds/stats ──────────────────────────────────────────────────
 
-    const STATS_KEYS: [&str; 26] = [
+    const STATS_KEYS: [&str; 28] = [
         "uptime_ns",
         "polls",
         "rx_pkts",
@@ -269,6 +269,8 @@ mod with_feature {
         "tx_batch_max",
         "tx_pkts_per_call",
         "buffer_len_max",
+        "frame_sizes",
+        "out_of_order",
         "first_loss_reason",
         "first_loss_detail",
         "first_loss_relative_ns",
@@ -292,6 +294,10 @@ mod with_feature {
                 | "delay_mean_ns" | "delay_std_ns" | "lateness_mean_ns" => {
                     assert!(matches!(get(&r, k), Value::Str(_)), "{k} is a string")
                 }
+                "frame_sizes" => assert!(
+                    matches!(get(&r, k), Value::UintArray(a) if a.len() == 8),
+                    "{k} is an array of 8"
+                ),
                 _ => assert!(matches!(get(&r, k), Value::Uint(_)), "{k} is a uint"),
             }
         }
@@ -308,6 +314,7 @@ mod with_feature {
                 }
                 "first_loss_reason" => assert_eq!(string(&r, k), "Clean"),
                 "first_loss_detail" => assert_eq!(string(&r, k), ""),
+                "frame_sizes" => assert_eq!(get(&r, k), &Value::UintArray(vec![0; 8])),
                 _ => assert_eq!(uint(&r, k), 0, "{k}"),
             }
         }
@@ -592,7 +599,7 @@ mod with_feature {
             // same 26 keys as the per-direction Stats builder
             let direct = ds.stats[param.parse::<usize>().unwrap()].stats_reply(99);
             assert_eq!(r, direct);
-            assert_eq!(r.len(), 26);
+            assert_eq!(r.len(), 28);
         }
     }
 

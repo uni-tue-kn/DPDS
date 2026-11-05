@@ -55,6 +55,22 @@
 //   the six-cause legend. getDelayHistogram is never called. While "starting" there are no tabs (as before); a running or ended run
 //   takes its tabs from the run (live stats / history), never from the stored links.
 //
+// ## Spec 51 (IAT histogram, frame size donut, P4TG's rate and loss tables; spec: .git/claude-specs/spec51-iat-frame-sizes.md)
+//   order      in a link's tabpanel and in the Summary's, top to bottom: the chart, the radiogroup "Chart", [Delay histogram view:
+//              the three histogram tables above the delay bar chart], the rate table row, the loss table row, the donut row.
+//   rate row   `.row.mb-3` > `.col-12.col-md-6.col-sm-12` > `table.table.table-striped.table-bordered.table-hover.table-sm.mt-3.mb-3`,
+//              `thead.table-dark`, headers TX L1 | RX L1 | TX L2 | RX L2 (`th.col-3`), one body row (see rateTable()).
+//   loss row   `.row` > `.col-12.col-sm-12.col-md-4` > the same table style, headers Lost Frames | Frame Loss Ratio | Out of Order.
+//   donut row  ONE `.row` whose three children are `.col-12.col-md-4` (they stack below md): the loss donut, the frame size donut and
+//              the IAT histogram. Each chart sits in an element with role "img", found by its aria-label (the contract of the helpers
+//              below): "Distribution of the dropped packets by cause" (loss, as before), "Distribution of the received frames by
+//              size" (frame sizes, CHOICE), "IAT histogram of link <dir>" (IAT, like "Delay histogram of link <dir>").
+//              The IAT column exists only for a link with delay statistics (live `delay_stats`, or the stored config of an ended run)
+//              and not before any run; the Summary has the IAT column too, holding the text "IAT histograms are per link; select a
+//              link tab." (CHOICE) and no chart. Everything else about the donut row is below, per test file.
+//              Several `chart-doughnut` / `chart-bar` stubs now share a panel: tests pick one through lossDonut(), frameDonut(),
+//              delayBar() or iatBar(), never by test id alone.
+//
 // ## Helpers
 // `tabs()`, `tab(d)`, `hasTab(d)`, `card(d)` and the other helpers below address the LINK tabs only (the Summary tab is not counted),
 // so the indexes of the existing tests are unchanged. `summaryTab()`, `summary()` and `summaryRadio()` address the Summary tab.
@@ -133,6 +149,81 @@ export async function findCard(d: number): Promise<HTMLElement> {
   await waitFor(() => expect(tabs().length).toBeGreaterThan(d));
   return card(d);
 }
+
+/** The labels of the role "img" boxes around the donuts and the bar charts (spec 51). */
+export const LOSS_DONUT_LABEL = 'Distribution of the dropped packets by cause';
+export const FRAME_DONUT_LABEL = 'Distribution of the received frames by size';
+export const DELAY_BAR_LABEL = /^Delay histogram of link \d+$/;
+export const IAT_BAR_LABEL = /^IAT histogram of link \d+$/;
+
+/** The chart stub inside the role "img" box `name` of `scope`; throws when there is no such box or no chart in it. */
+const stubIn = (scope: HTMLElement, name: string | RegExp, testId: string) =>
+  within(within(scope).getByRole('img', { name })).getByTestId(testId);
+const queryStubIn = (scope: HTMLElement, name: string | RegExp, testId: string) =>
+  within(scope).queryByRole('img', { name }) === null ? null : stubIn(scope, name, testId);
+
+/** The loss donut's Doughnut stub in `scope` (a tabpanel). */
+export const lossDonut = (scope: HTMLElement) => stubIn(scope, LOSS_DONUT_LABEL, 'chart-doughnut');
+export const queryLossDonut = (scope: HTMLElement) => queryStubIn(scope, LOSS_DONUT_LABEL, 'chart-doughnut');
+/** The frame size donut's Doughnut stub in `scope`. */
+export const frameDonut = (scope: HTMLElement) => stubIn(scope, FRAME_DONUT_LABEL, 'chart-doughnut');
+export const queryFrameDonut = (scope: HTMLElement) => queryStubIn(scope, FRAME_DONUT_LABEL, 'chart-doughnut');
+/** The delay histogram's Bar stub in `scope` (present only in the "Delay histogram" view). */
+export const delayBar = (scope: HTMLElement) => stubIn(scope, DELAY_BAR_LABEL, 'chart-bar');
+export const queryDelayBar = (scope: HTMLElement) => queryStubIn(scope, DELAY_BAR_LABEL, 'chart-bar');
+export const findDelayBar = (scope: HTMLElement) => waitFor(() => delayBar(scope));
+/** The IAT histogram's Bar stub in `scope`. */
+export const iatBar = (scope: HTMLElement) => stubIn(scope, IAT_BAR_LABEL, 'chart-bar');
+export const queryIatBar = (scope: HTMLElement) => queryStubIn(scope, IAT_BAR_LABEL, 'chart-bar');
+export const findIatBar = (scope: HTMLElement) => waitFor(() => iatBar(scope));
+
+const headersOf = (t: HTMLElement) =>
+  within(t)
+    .queryAllByRole('columnheader')
+    .map((h) => (h.textContent ?? '').trim());
+
+/** Spec 51 T2: the headers of the two tables that are not histogram tables. */
+export const RATE_HEADERS = ['TX L1', 'RX L1', 'TX L2', 'RX L2'];
+export const LOSS_HEADERS = ['Lost Frames', 'Frame Loss Ratio', 'Out of Order'];
+
+const tablesWith = (scope: HTMLElement, headers: string[]) =>
+  within(scope)
+    .queryAllByRole('table')
+    .filter((t) => headersOf(t).join('|') === headers.join('|'));
+
+/** The rate table (TX L1, RX L1, TX L2, RX L2) of `scope`; exactly one. */
+export const rateTable = (scope: HTMLElement): HTMLElement => {
+  const found = tablesWith(scope, RATE_HEADERS);
+  if (found.length !== 1) throw new Error(`expected one rate table, found ${found.length}`);
+  return found[0];
+};
+/** The loss table (Lost Frames, Frame Loss Ratio, Out of Order) of `scope`; exactly one. */
+export const lossTable = (scope: HTMLElement): HTMLElement => {
+  const found = tablesWith(scope, LOSS_HEADERS);
+  if (found.length !== 1) throw new Error(`expected one loss table, found ${found.length}`);
+  return found[0];
+};
+/** The cells of the one body row of `t`, trimmed text. */
+export const bodyCells = (t: HTMLElement): string[] =>
+  Array.from(must(within(t).getAllByRole('row')[1], 'the body row').children).map((c) =>
+    (c.textContent ?? '').replace(/\s+/g, ' ').trim(),
+  );
+
+/** The histogram tables of spec 36 in `scope`: every table that is neither the rate table nor the loss table. */
+export const histTables = (scope: HTMLElement): HTMLElement[] =>
+  within(scope)
+    .queryAllByRole('table')
+    .filter((t) => {
+      const h = headersOf(t).join('|');
+      return h !== RATE_HEADERS.join('|') && h !== LOSS_HEADERS.join('|');
+    });
+/** Waits until `scope` has histogram tables, then returns them. */
+export const findHistTables = (scope: HTMLElement) =>
+  waitFor(() => {
+    const t = histTables(scope);
+    expect(t.length).toBeGreaterThan(0);
+    return t;
+  });
 
 /** The radio `name` of link `d`'s chart area. */
 export const radio = (d: number, name: string) => within(card(d)).getByRole('radio', { name });

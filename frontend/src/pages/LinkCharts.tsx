@@ -1,5 +1,5 @@
 import { Fragment, useId, useMemo, useState } from 'react';
-import { Form, OverlayTrigger, Tooltip } from 'react-bootstrap';
+import { Form, OverlayTrigger, Row, Tooltip } from 'react-bootstrap';
 import { Line } from 'react-chartjs-2';
 import type { HistorySample } from '../api/types';
 import { secondsToTime } from '../common/format';
@@ -8,8 +8,11 @@ import { useTheme } from '../common/theme';
 import { chartOptions, RX_COLOR, RX_FILL, TX_COLOR, TX_FILL } from '../components/charts';
 import ChartBox from './ChartBox';
 import DelayHistogram from './DelayHistogram';
-import type { DropCounts } from './LossDonut';
-import LossDonut, { CAUSES } from './LossDonut';
+import FrameDonut from './FrameDonut';
+import IatHistogram from './IatHistogram';
+import { LossTable, RateTable } from './LinkTables';
+import type { LinkStats } from './linkStats';
+import LossDonut, { CAUSES, totalDrops } from './LossDonut';
 
 type View = 'rate' | 'histogram' | 'loss';
 
@@ -38,17 +41,18 @@ const COUNTS = [
 ];
 
 /**
- * The chart area of one link: the chart, the radios below it and the loss donut. `live` carries the live delay numbers; a
+ * The chart area of one link: the chart, the radios below it, P4TG's rate and loss tables and a row of the loss donut, the frame
+ * size donut and the IAT histogram. `live` carries the live delay numbers; a
  * link of an ended run has none, but keeps its histogram (the controller answers the run's last one) when `endedStats` says
  * the run had delay statistics. A link with delay statistics off has no histogram.
- * Without `dir` it is the Summary of all links: `history` and `drops` are their aggregates, and the histogram radio is
- * there but disabled (a histogram is per link).
+ * Without `dir` it is the Summary of all links: `history` and `stats` are their aggregates, and the histogram radio is
+ * there but disabled (a histogram is per link); its IAT column holds a note instead of the chart.
  */
 export default function LinkCharts({
   dir,
   active,
   history,
-  drops,
+  stats,
   live,
   empty = false,
   endedStats = false,
@@ -57,8 +61,8 @@ export default function LinkCharts({
   /** Whether the link's tab is shown: react-bootstrap keeps hidden panes mounted, and a hidden histogram must not poll. */
   active: boolean;
   history: HistorySample[];
-  drops: DropCounts;
-  /** Before any run: the link has no telemetry, so its histogram radio is there but disabled, like the Summary's. */
+  stats: LinkStats;
+  /** Before any run: no telemetry, so the histogram radio is there but disabled, like the Summary's, and there are no tables. */
   empty?: boolean;
   /** An ended run whose link had delay statistics: the histogram stays, from the controller's copy. */
   endedStats?: boolean;
@@ -166,7 +170,30 @@ export default function LinkCharts({
           );
         })}
       </Form.Group>
-      <LossDonut drops={drops} />
+      {!empty && (
+        <>
+          <RateTable rates={stats} />
+          <LossTable lost={totalDrops(stats.drops)} frames={stats} />
+        </>
+      )}
+      <Row>
+        <div className="col-12 col-md-4">
+          <LossDonut drops={stats.drops} />
+        </div>
+        <div className="col-12 col-md-4">
+          <FrameDonut counts={stats.frameSizes} />
+        </div>
+        {summary && (
+          <div className="col-12 col-md-4">
+            <p className="text-center text-body-secondary">IAT histograms are per link; select a link tab.</p>
+          </div>
+        )}
+        {dir !== undefined && active && hasHistogram && (
+          <div className="col-12 col-md-4">
+            <IatHistogram dir={dir} />
+          </div>
+        )}
+      </Row>
     </>
   );
 }

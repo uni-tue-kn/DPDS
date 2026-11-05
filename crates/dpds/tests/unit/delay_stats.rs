@@ -108,7 +108,7 @@
 //!   - `Stats::stats_reply` / `DirectionStats::stats_reply`: the six keys `delay_mean_ns`,
 //!     `delay_std_ns`, `delay_min_ns`, `delay_max_ns`, `lateness_mean_ns`, `lateness_max_ns`
 //!     are ABSENT (not zero, not null: a telemetry dict has no null); every other key is
-//!     present and unchanged, in the same order (so the reply has 20 keys instead of 26);
+//!     present and unchanged, in the same order (so the reply has 22 keys instead of 28);
 //!   - `delay_hist_reply` is EMPTY: no bins (`bins` absent or an empty array, `num_bins`
 //!     absent or 0, `underflow`/`overflow` absent or 0), but it is still `Some(..)` for
 //!     `DirectionStats::delay_hist_reply` of an existing direction (a bad direction param
@@ -1014,12 +1014,12 @@ fn delay_stats_off_drops_exactly_the_six_delay_keys_from_the_stats_reply() {
     let range = HistRange::default();
     let on = Stats::with_range(range).stats_reply(123);
     let off = Stats::with_delay_stats(range, false).stats_reply(123);
-    assert_eq!(on.len(), 26, "the documented stats reply");
+    assert_eq!(on.len(), 28, "the documented stats reply");
     for k in DELAY_KEYS {
         assert!(has_key(&on, k), "{k} present when on");
         assert!(!has_key(&off, k), "{k} must be absent when off: {off:?}");
     }
-    assert_eq!(off.len(), 20);
+    assert_eq!(off.len(), 22);
     let expected: Vec<&str> = key_list(&on)
         .into_iter()
         .filter(|k| !DELAY_KEYS.contains(k))

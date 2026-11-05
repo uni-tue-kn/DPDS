@@ -156,6 +156,10 @@ export interface Counters {
   nic_rx_crc_errors: number;
   nic_rx_symbol_errors: number;
   nic_rx_length_errors: number;
+  /** Frames received per size bucket (P4TG's eight: 0-63, 64, 65-127, 128-255, 256-511, 512-1023, 1024-1518, 1519 and up). */
+  frame_sizes: number[];
+  /** Departures that overtook an earlier arrival. */
+  out_of_order: number;
 }
 
 export interface DirectionStats {
@@ -236,6 +240,10 @@ export interface HistoryTotals {
   nic_rx_port_buffer_discards: number;
   nic_rx_phy_discards: number;
   nic_tx_phy_discards: number;
+  /** Frames the link forwarded (the Frame Loss Ratio's denominator). */
+  tx_sent: number;
+  frame_sizes: number[];
+  out_of_order: number;
 }
 
 /**

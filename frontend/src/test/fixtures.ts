@@ -284,6 +284,10 @@ export function counters(over: Partial<Counters> = {}): Counters {
     nic_rx_crc_errors: 0,
     nic_rx_symbol_errors: 0,
     nic_rx_length_errors: 0,
+    // spec 51: frames received by the link per size bucket (P4TG's 8: 0-63, 64, 65-127, 128-255, 256-511, 512-1023, 1024-1518,
+    // 1519+), all distinct, summing to the 1000 received packets; and the cumulative out-of-order departures (T1)
+    frame_sizes: [10, 20, 30, 40, 100, 150, 250, 400],
+    out_of_order: 7,
     ...over,
   };
 }
@@ -353,6 +357,35 @@ export function histogram(dir: number, over: Partial<HistogramView> = {}): Histo
     expected_underflow: 2.5,
     expected_overflow: 6.5,
     expected_model: 'exact',
+    ...over,
+  };
+}
+
+/**
+ * Spec 51 (C2): `GET /api/stats/{dir}/iat_histogram`, the delay histogram's shape without the `expected*` fields. Deliberately
+ * different from `histogram()` in every number (5 bins of 2000 ns from 0, so an IAT chart cannot be mistaken for the delay one):
+ * `count` is 91 + dir (the bins 87 + dir plus the 4 overflow), the percentiles are distinct and none is clamped.
+ */
+export function iatHistogram(dir: number, over: Partial<HistogramView> = {}): HistogramView {
+  return {
+    dir,
+    lo_ns: 0,
+    bin_ns: 2000,
+    bins: [5, 50, 20, 10, 2 + dir],
+    underflow: 0,
+    overflow: 4,
+    edges_ns: [0, 2000, 4000, 6000, 8000, 10000],
+    count: 91 + dir,
+    percentiles: {
+      p50: 3000,
+      p90: 5000,
+      p99: 7000,
+      p999: 9000,
+      p50_clamped: null,
+      p90_clamped: null,
+      p99_clamped: null,
+      p999_clamped: null,
+    },
     ...over,
   };
 }
@@ -447,6 +480,11 @@ export function totals(over: Partial<HistoryTotals> = {}): HistoryTotals {
     nic_rx_port_buffer_discards: 0,
     nic_rx_phy_discards: 0,
     nic_tx_phy_discards: 0,
+    // spec 51: the forwarded (sent) frames: rx_pkts 10000 less the 100 drops above; frames received per size bucket (sum =
+    // rx_pkts 10000) and the cumulative out-of-order departures
+    tx_sent: 9900,
+    frame_sizes: [100, 200, 300, 400, 1000, 1500, 2500, 4000],
+    out_of_order: 9,
     ...over,
   };
 }

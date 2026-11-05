@@ -4,9 +4,10 @@ import type { EmulationState, Link } from '../api/types';
 import {
   activePanel,
   allTabs,
-  CAUSES,
   card,
+  CAUSES,
   hasSummary,
+  lossDonut,
   panelOf,
   queryRadio,
   radioNames,
@@ -97,7 +98,7 @@ describe('Dashboard before any run (spec 39): the tabs', () => {
     expect(tabs()).toHaveLength(0);
     expect(screen.getAllByRole('tablist')).toHaveLength(1);
     expect(within(summary()).getByTestId('chart-line')).toBeInTheDocument();
-    expect(within(summary()).getByTestId('chart-doughnut')).toBeInTheDocument();
+    expect(lossDonut(summary())).toBeInTheDocument();
   });
 
   it.each(['stopped', 'stopping', 'failed'] as const)(
@@ -192,7 +193,7 @@ describe('Dashboard before any run (spec 39): the empty diagrams', () => {
   it.each(VIEWS)('%s, the donut is the grey "No drops" ring with the nine-cause legend', async (_name, d) => {
     await open();
     const panel = panelFor(d);
-    const donut = JSON.parse(within(panel).getByTestId('chart-doughnut').getAttribute('data-chart') ?? 'null');
+    const donut = JSON.parse(lossDonut(panel).getAttribute('data-chart') ?? 'null');
     expect(donut.datasets).toHaveLength(1);
     expect(donut.datasets[0].data).toHaveLength(1);
     expect(donut.datasets[0].data[0]).toBeGreaterThan(0);

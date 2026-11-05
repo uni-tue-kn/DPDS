@@ -2,7 +2,7 @@ import { fireEvent, within } from '@testing-library/react';
 import { vi } from 'vitest';
 import type { HistogramView } from '../api/types';
 import { formatCount, formatDuration } from '../common/format';
-import { card, hasTab, queryRadio, radioNames, tab } from '../test/dashboardUi';
+import { card, delayBar, hasTab, histTables, queryRadio, radioNames, tab } from '../test/dashboardUi';
 import * as fx from '../test/fixtures';
 import { renderApp, seedLinks, tick } from '../test/helpers';
 import { ApiError, api, serveHistory } from '../test/mockApi';
@@ -59,7 +59,7 @@ async function open() {
   return view;
 }
 
-const tablesOf = (d: number) => within(card(d)).getAllByRole('table');
+const tablesOf = (d: number) => histTables(card(d));
 const cells = (t: HTMLElement) =>
   Array.from(must(within(t).getAllByRole('row')[1], 'the body row').children).map((c) =>
     (c.textContent ?? '').replace(/\s+/g, ' ').trim(),
@@ -85,10 +85,10 @@ describe.each(['stopped', 'failed'] as const)('Dashboard (spec 50 A3): the histo
     await open();
     fireEvent.click(must(queryRadio(0, 'Delay histogram')));
     await tick(1000);
-    expect(within(card(0)).getByTestId('chart-bar')).toBeInTheDocument();
+    expect(delayBar(card(0))).toBeInTheDocument();
     expect(tablesOf(0)).toHaveLength(3);
     expect(api.getDelayHistogram).toHaveBeenCalledWith(0);
-    const bars = JSON.parse(within(card(0)).getByTestId('chart-bar').getAttribute('data-chart') ?? 'null');
+    const bars = JSON.parse(delayBar(card(0)).getAttribute('data-chart') ?? 'null');
     expect(bars.datasets[0].data).toEqual(fx.histogram(0).bins);
   });
 
