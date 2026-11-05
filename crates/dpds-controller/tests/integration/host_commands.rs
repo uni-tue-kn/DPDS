@@ -1220,6 +1220,99 @@ fn firmware_pending_a_reset_is_info_without_commands() {
     assert_level(&h, &fw_id(), "info", "info");
     assert_no_commands(&h, &fw_id());
     assert!(detail_has(&h, &fw_id(), "reset"), "{h}");
+    let detail = fw_hint_detail(&h);
+    assert!(
+        detail.contains("MAX_ACC_OUT_READ=0 (next boot 256)"),
+        "{detail}"
+    );
+    assert!(!detail.contains("clamped"), "{detail}");
+}
+
+fn fw_hint_detail(h: &Value) -> String {
+    hint(h, &fw_id())["detail"].as_str().unwrap().to_string()
+}
+
+#[test]
+fn firmware_that_clamped_max_acc_out_read_to_a_nonzero_value_is_ok() {
+    // ConnectX-5: next boot 256, running 58 (the device maximum), the expected tuned state
+    let host = FakeHost::bare_metal();
+    let exec = host.exec();
+    fake_mst(
+        &exec,
+        "mstconfig",
+        BDF0,
+        MstState {
+            max_cur: 58,
+            ..MstState::tuned()
+        },
+    );
+    let h = hints_json(&host, &link_on(NIC0));
+    assert_level(&h, &fw_id(), "ok", "ok");
+    assert_no_commands(&h, &fw_id());
+    let detail = fw_hint_detail(&h);
+    for word in ["tuned", "58", "maximum"] {
+        assert!(detail.contains(word), "{word} in the detail: {detail}");
+    }
+}
+
+#[test]
+fn firmware_with_cqe_compression_not_yet_running_is_info_naming_only_that_parameter() {
+    let host = FakeHost::bare_metal();
+    let exec = host.exec();
+    fake_mst(
+        &exec,
+        "mstconfig",
+        BDF0,
+        MstState {
+            cqe_cur: 0,
+            ..MstState::tuned()
+        },
+    );
+    let h = hints_json(&host, &link_on(NIC0));
+    assert_level(&h, &fw_id(), "info", "info");
+    assert_no_commands(&h, &fw_id());
+    let detail = fw_hint_detail(&h);
+    assert!(
+        detail.contains("CQE_COMPRESSION=0 (next boot 1)"),
+        "{detail}"
+    );
+    assert!(
+        !detail.contains("MAX_ACC_OUT_READ=256 (next boot"),
+        "{detail}"
+    );
+    assert!(
+        !detail.contains("ADVANCED_PCI_SETTINGS=1 (next boot"),
+        "{detail}"
+    );
+    assert!(!detail.contains("clamped"), "{detail}");
+}
+
+#[test]
+fn firmware_with_advanced_settings_not_yet_running_is_info_even_if_max_acc_out_read_runs() {
+    let host = FakeHost::bare_metal();
+    let exec = host.exec();
+    fake_mst(
+        &exec,
+        "mstconfig",
+        BDF0,
+        MstState {
+            adv_cur: 0,
+            max_cur: 58,
+            ..MstState::tuned()
+        },
+    );
+    let h = hints_json(&host, &link_on(NIC0));
+    assert_level(&h, &fw_id(), "info", "info");
+    assert_no_commands(&h, &fw_id());
+    let detail = fw_hint_detail(&h);
+    assert!(
+        detail.contains("ADVANCED_PCI_SETTINGS=0 (next boot 1)"),
+        "{detail}"
+    );
+    assert!(
+        !detail.contains("MAX_ACC_OUT_READ=58 (next boot"),
+        "{detail}"
+    );
 }
 
 #[test]

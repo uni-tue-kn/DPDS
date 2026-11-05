@@ -700,29 +700,48 @@ fn firmware_hint(ctx: &Ctx, nic: &Interface, label: &str, tool: &str, fw: &Firmw
     let title = format!("NIC firmware {label}");
     let bdf = function_zero(&nic.pci);
     let targets = [
-        (&fw.advanced, 1),
-        (&fw.max_acc_out_read, FW_MAX_ACC_OUT_READ),
-        (&fw.cqe_compression, FW_CQE_COMPRESSION),
+        ("ADVANCED_PCI_SETTINGS", &fw.advanced, 1),
+        (
+            "MAX_ACC_OUT_READ",
+            &fw.max_acc_out_read,
+            FW_MAX_ACC_OUT_READ,
+        ),
+        ("CQE_COMPRESSION", &fw.cqe_compression, FW_CQE_COMPRESSION),
     ];
-    let next_tuned = targets.iter().all(|(p, t)| p.next == Some(*t));
-    if next_tuned {
-        let behind = targets
+    if targets.iter().all(|(_, p, t)| p.next == Some(*t)) {
+        // the firmware clamps MAX_ACC_OUT_READ to the device maximum, so any
+        // running value above 0 is in effect; the others must match exactly
+        let in_effect = |name: &str, p: &FwParam, t: u64| match p.current {
+            Some(c) if name == "MAX_ACC_OUT_READ" => c > 0,
+            Some(c) => c == t,
+            None => true,
+        };
+        let behind: Vec<String> = targets
             .iter()
-            .any(|(p, t)| p.current.is_some_and(|c| c != *t));
-        return if behind {
+            .filter(|(n, p, t)| !in_effect(n, p, *t))
+            .map(|(n, p, t)| format!("{n}={} (next boot {t})", p.current.unwrap_or_default()))
+            .collect();
+        return if behind.is_empty() {
+            let max = fw
+                .max_acc_out_read
+                .current
+                .filter(|c| *c < FW_MAX_ACC_OUT_READ);
+            let note = max.map_or_else(String::new, |c| {
+                format!(" (MAX_ACC_OUT_READ runs at {c}, the device maximum for the {FW_MAX_ACC_OUT_READ} set)")
+            });
             hint(
                 &id,
-                Level::Info,
+                Level::Ok,
                 &title,
-                format!("the next-boot firmware settings of {label} are set (ADVANCED_PCI_SETTINGS=1, MAX_ACC_OUT_READ={FW_MAX_ACC_OUT_READ}, CQE_COMPRESSION={FW_CQE_COMPRESSION}) but the running firmware uses other values: it is pending a firmware reset, or the firmware clamped a value{}", hypervisor_note(ctx)),
+                format!("the firmware settings of {label} are tuned{note}"),
                 "",
             )
         } else {
             hint(
                 &id,
-                Level::Ok,
+                Level::Info,
                 &title,
-                format!("the firmware settings of {label} are tuned"),
+                format!("the next-boot firmware settings of {label} are set but not in effect yet: {}; the firmware needs a reset to load them{}", behind.join(", "), hypervisor_note(ctx)),
                 "",
             )
         };
