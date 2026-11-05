@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { vi } from 'vitest';
 import type { Counters, DirectionStats } from '../api/types';
 import { propsOf } from '../test/chartProps';
-import { card, CAUSE_HELP, CAUSES, findCard, lossDonut, queryLossDonut, radio, tab } from '../test/dashboardUi';
+import { CAUSE_HELP, CAUSES, card, findCard, lossDonut, queryLossDonut, radio, tab } from '../test/dashboardUi';
 import * as fx from '../test/fixtures';
 import { renderApp, tick } from '../test/helpers';
 import { api, serveHistory } from '../test/mockApi';
@@ -566,18 +566,13 @@ describe('Loss donut (spec 35 F5): the hover text', () => {
 
 // ---- colours -----------------------------------------------------------------------------------------------------------------------
 
-describe('Loss donut (spec 35 F5): neutral for the loss model, warm for the overload causes', () => {
+// User 2026-11-05 replaced spec 35 F5's "warm for the overload causes" (the reds were too alike): the colours are a soft
+// palette of clearly different colours with one red only, pinned in lossColors.test.ts; the loss model stays blue.
+describe('Loss donut colours: the loss model is blue, the nine are different', () => {
   it('the loss model is grey or blue', async () => {
     await openLive(live(0, HUNDRED));
     const { h, s } = hsv(dataOf(0).datasets[0].backgroundColor[0]);
     expect(s < 0.25 || (h >= 180 && h <= 270), `hue ${h}, saturation ${s}`).toBe(true);
-  });
-
-  it.each([1, 2, 3, 4, 5, 6, 7, 8])('segment %i (an overload cause) is amber, orange or red', async (i) => {
-    await openLive(live(0, HUNDRED));
-    const { h, s } = hsv(dataOf(0).datasets[0].backgroundColor[i]);
-    expect(h <= 50 || h >= 340, `${CAUSES[i]}: hue ${h}`).toBe(true);
-    expect(s, `${CAUSES[i]}: saturation`).toBeGreaterThanOrEqual(0.5);
   });
 
   it('the nine colours are all different', async () => {

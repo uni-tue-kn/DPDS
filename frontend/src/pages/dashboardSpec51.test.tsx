@@ -43,17 +43,18 @@ import { must } from '../test/must';
 //   - the IAT is polled by the function `getIatHistogram(dir)` of the API client (the one-argument form, no window), every second
 //     like the delay histogram, only while the "IAT histogram" radio is chosen and the link's tab is shown.
 
-/** P4TG's frame size labels and colours (Configuration GUI/src/components/Visuals.tsx, frame_size_data). */
+/** P4TG's frame size labels (Configuration GUI/src/components/Visuals.tsx, frame_size_data). */
 const FRAME_LABELS = ['0-63', '64', '65-127', '128-255', '256-511', '512-1023', '1024-1518', '1519-21519'];
+// User 2026-11-05: the frame sizes take the loss donut's soft palette, without its red, instead of P4TG's colours.
 const FRAME_COLOURS: [number, number, number][] = [
-  [255, 99, 132],
-  [54, 162, 235],
-  [255, 205, 86],
-  [18, 194, 0],
-  [178, 0, 255],
-  [255, 104, 42],
-  [0, 0, 0],
-  [164, 0, 0],
+  [0x6c, 0x8e, 0xbf],
+  [0x00, 0xce, 0xc9],
+  [0x55, 0xef, 0xc4],
+  [0xf6, 0xb7, 0x3c],
+  [0xe6, 0x7e, 0x22],
+  [0xfd, 0x79, 0xa8],
+  [0xa2, 0x9b, 0xfe],
+  [0x63, 0x6e, 0x72],
 ];
 
 /** "rgb(255, 99, 132)", "rgb(255,99,132)" or "#ff6384" as [r, g, b]. */

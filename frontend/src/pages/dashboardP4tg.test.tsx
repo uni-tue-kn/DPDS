@@ -5,8 +5,8 @@ import userEvent from '@testing-library/user-event';
 import { vi } from 'vitest';
 import type { EmulationState } from '../api/types';
 import {
-  card,
   CAUSES,
+  card,
   expectState,
   findCard,
   findDelayBar,
@@ -14,8 +14,8 @@ import {
   lossDonut,
   queryDelayBar,
   queryRadio,
-  radio,
   RUN_BUTTONS,
+  radio,
   runButtonNames,
   runButtons,
 } from '../test/dashboardUi';
@@ -564,16 +564,16 @@ describe("Dashboard (spec 28, spec 35 F3): radio chart selector in each link's t
     api.getStats.mockResolvedValue(twoDirections());
   });
 
-  it('every link has a radio group "Chart" with Rate, Delay histogram, IAT histogram (spec 52) and Loss, in this order', async () => {
+  it('every link has a radio group "Chart" with Rate, Loss, Delay histogram and IAT histogram, in this order (user: loss right after rates)', async () => {
     await openCards();
     for (const d of [0, 1]) {
       const group = within(card(d)).getByRole('radiogroup', { name: /chart/i });
       const all = within(group).getAllByRole('radio');
       expect(all).toHaveLength(4);
       expect(all[0]).toBe(radio(d, 'Traffic rates'));
-      expect(all[1]).toBe(radio(d, 'Delay histogram'));
-      expect(all[2]).toBe(radio(d, 'IAT histogram'));
-      expect(all[3]).toBe(radio(d, 'Packet loss'));
+      expect(all[1]).toBe(radio(d, 'Packet loss'));
+      expect(all[2]).toBe(radio(d, 'Delay histogram'));
+      expect(all[3]).toBe(radio(d, 'IAT histogram'));
     }
   });
 

@@ -6,7 +6,7 @@ import type { Counters, HistoryTotals } from '../api/types';
 import { formatCount } from '../common/format';
 import { useTheme } from '../common/theme';
 
-/** One segment per cause, in this order; the loss model is neutral (it is intended), the overload causes are warm. */
+/** One segment per cause, in this order, in a soft palette of clearly different colours (one red only; the frame size donut uses it without the red). */
 export const CAUSES = [
   {
     label: 'Loss model',
@@ -25,32 +25,32 @@ export const CAUSES = [
   },
   {
     label: 'NIC TX ring full',
-    color: '#e74c3c',
+    color: '#c0392b',
     help: 'Packets the NIC would not accept for sending because its transmit ring was full (tx_drops).',
   },
   {
     label: 'NIC RX missed',
-    color: '#c0392b',
+    color: '#a29bfe',
     help: 'Packets the NIC dropped because its receive queues were full (rx_missed_errors).',
   },
   {
     label: 'RX buffers exhausted',
-    color: '#8e2b1f',
+    color: '#fd79a8',
     help: 'Packets lost because no packet buffer (mbuf) was free to receive them (rx_mbuf_allocation_errors).',
   },
   {
     label: 'NIC RX port buffer full',
-    color: '#a93226',
+    color: '#00cec9',
     help: "Packets the NIC's port buffer discarded because it was full or congested, summed over all priorities (rx_prio*_buf_discard_packets, rx_prio*_cong_discard_packets).",
   },
   {
     label: 'NIC RX port discards',
-    color: '#7b241c',
+    color: '#55efc4',
     help: 'Packets the NIC port discarded on receive because it had no buffers left (rx_phy_discard_packets).',
   },
   {
     label: 'NIC TX port discards',
-    color: '#d35400',
+    color: '#636e72',
     help: 'Packets the NIC accepted for sending but dropped before they reached the wire (tx_phy_discard_packets).',
   },
 ] as const;

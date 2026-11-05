@@ -4,16 +4,16 @@ import { Doughnut } from 'react-chartjs-2';
 import { formatCount } from '../common/format';
 import { useTheme } from '../common/theme';
 
-/** P4TG's frame size buckets and their colours (Visuals.tsx, frame_size_data). */
+/** P4TG's frame size buckets (Visuals.tsx, frame_size_data), in the loss donut's soft palette without its red. */
 const SIZES = [
-  { label: '0-63', color: 'rgb(255, 99, 132)' },
-  { label: '64', color: 'rgb(54, 162, 235)' },
-  { label: '65-127', color: 'rgb(255, 205, 86)' },
-  { label: '128-255', color: 'rgb(18, 194, 0)' },
-  { label: '256-511', color: 'rgb(178, 0, 255)' },
-  { label: '512-1023', color: 'rgb(255, 104, 42)' },
-  { label: '1024-1518', color: 'rgb(0, 0, 0)' },
-  { label: '1519-21519', color: 'rgb(164, 0, 0)' },
+  { label: '0-63', color: '#6c8ebf' },
+  { label: '64', color: '#00cec9' },
+  { label: '65-127', color: '#55efc4' },
+  { label: '128-255', color: '#f6b73c' },
+  { label: '256-511', color: '#e67e22' },
+  { label: '512-1023', color: '#fd79a8' },
+  { label: '1024-1518', color: '#a29bfe' },
+  { label: '1519-21519', color: '#636e72' },
 ] as const;
 
 /** The one neutral segment shown instead of the buckets when no frame was received. */

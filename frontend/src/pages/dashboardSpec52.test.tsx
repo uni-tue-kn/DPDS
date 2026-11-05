@@ -141,7 +141,7 @@ const radiosOf = (panel: HTMLElement) =>
 describe('Spec 52 R2: the "IAT histogram" radio', () => {
   it('a live link with delay statistics has the four radios in order, IAT enabled like Delay histogram', async () => {
     await openLive();
-    expect(radioNames(0)).toEqual(['Traffic rates', 'Delay histogram', 'IAT histogram', 'Packet loss']);
+    expect(radioNames(0)).toEqual(['Traffic rates', 'Packet loss', 'Delay histogram', 'IAT histogram']);
     expect(radioNames(1)).toEqual(CHART_RADIOS);
     expect(radio(0, 'Delay histogram')).toBeEnabled();
     expect(radio(0, 'IAT histogram')).toBeEnabled();

@@ -69,7 +69,7 @@
 //              panel: tests pick one through lossDonut(), frameDonut(), delayBar() or iatBar(), never by test id alone.
 //
 // ## Spec 52 (donut row in two centred columns, IAT histogram as a chart radio; spec: .git/claude-specs/spec52-donut-row-iat-radio.md)
-//   radios     "Traffic rates", "Delay histogram", "IAT histogram", "Packet loss" (CHART_RADIOS), in this order; "IAT histogram" is present,
+//   radios     "Traffic rates", "Packet loss", "Delay histogram", "IAT histogram" (CHART_RADIOS; user: loss right after rates), in this order; "IAT histogram" is present,
 //              enabled and disabled exactly where "Delay histogram" is (delay statistics on, also after the stop; disabled in the
 //              Summary and before any run; absent for a link without delay statistics). The Summary has no IAT placeholder text.
 //   IAT view   chosen "IAT histogram": the three histogram tables (histTables(), headers IAT_TABLE_HEADERS) above the bar chart,
@@ -177,7 +177,7 @@ export const delayBar = (scope: HTMLElement) => stubIn(scope, DELAY_BAR_LABEL, '
 export const queryDelayBar = (scope: HTMLElement) => queryStubIn(scope, DELAY_BAR_LABEL, 'chart-bar');
 export const findDelayBar = (scope: HTMLElement) => waitFor(() => delayBar(scope));
 /** The radios of a chart area that has a histogram, in order (spec 52 R2). A link without delay statistics has the first and the last only. */
-export const CHART_RADIOS = ['Traffic rates', 'Delay histogram', 'IAT histogram', 'Packet loss'];
+export const CHART_RADIOS = ['Traffic rates', 'Packet loss', 'Delay histogram', 'IAT histogram'];
 /** Spec 52 R2b: the headers of the IAT view's three tables (the delay ones with "IAT" in place of "Delay"). */
 export const IAT_TABLE_HEADERS = [
   ['Bin Range', '#Bins', 'Bin Width'],

@@ -77,13 +77,13 @@ export default function LinkCharts({
   const view = (chosen === 'histogram' || chosen === 'iat') && !hasHistogram ? 'rate' : chosen;
   const views: [View, string][] = [
     ['rate', 'Traffic rates'],
+    ['loss', 'Packet loss'],
     ...(hasHistogram || noHistogram
       ? ([
           ['histogram', 'Delay histogram'],
           ['iat', 'IAT histogram'],
         ] as [View, string][])
       : []),
-    ['loss', 'Packet loss'],
   ];
   // The history stays complete; the time charts plot at most MAX_POINTS of it.
   const points = useMemo(() => selectTimeKeys(history, MAX_POINTS), [history]);
