@@ -70,6 +70,8 @@ export default function DelayHistogram({
   kind = 'delay',
   meanNs,
   stdNs,
+  hidden,
+  onToggle,
 }: {
   dir: number;
   /** Whether the link's tab is shown: a hidden histogram keeps what it has but does not poll. */
@@ -77,10 +79,14 @@ export default function DelayHistogram({
   kind?: 'delay' | 'iat';
   meanNs?: number | null;
   stdNs?: number | null;
+  /** The percentile keys whose line is switched off; the owner keeps them so that they outlive this view and the tab. */
+  hidden: ReadonlySet<string>;
+  onToggle: (key: string) => void;
 }) {
   const iat = kind === 'iat';
   const name = iat ? 'IAT' : 'Delay';
   const theme = useTheme();
+  const ink = chartInk(theme).text;
   const [hist, setHist] = useState<HistogramView | null>(null);
   const [error, setError] = useState<string>();
 
@@ -134,7 +140,7 @@ export default function DelayHistogram({
   }, [hist, iat, unit]);
   const options = useMemo(() => {
     if (!hist) return null;
-    const ink = chartInk(theme).text;
+    const lines = Object.fromEntries(Object.entries(percentileLines(hist, ink)).filter(([key]) => !hidden.has(key)));
     const base = iat
       ? chartOptions<'bar'>(theme, `IAT (${unit.name})`, '#Packets', false)
       : chartOptions<'bar'>(theme, 'Delay', 'Packets', false);
@@ -143,10 +149,10 @@ export default function DelayHistogram({
       plugins: {
         ...base.plugins,
         ...(iat ? { title: { display: true, text: 'IAT', color: ink } } : {}),
-        annotation: { annotations: percentileLines(hist, ink) },
+        annotation: { annotations: lines },
       },
     } as ChartOptions<'bar'>;
-  }, [hist, theme, iat, unit]);
+  }, [hist, theme, ink, iat, unit, hidden]);
 
   if (error) {
     return (
@@ -160,6 +166,26 @@ export default function DelayHistogram({
   return (
     <>
       <HistogramTables hist={hist} name={name} meanNs={stats.mean} stdNs={stats.std} />
+      <div className="d-flex justify-content-center gap-3 mt-3">
+        {PERCENTILES.filter(([, key]) => hist.percentiles?.[key] != null).map(([label, key]) => {
+          const shown = !hidden.has(key);
+          return (
+            <button
+              key={key}
+              type="button"
+              className="btn btn-link btn-sm p-0 text-reset text-decoration-none"
+              aria-pressed={shown}
+              onClick={() => onToggle(key)}
+            >
+              <span
+                className="d-inline-block me-1 align-middle"
+                style={{ width: 32, height: 10, backgroundColor: ink }}
+              />
+              <span style={{ textDecoration: shown ? 'none' : 'line-through' }}>{label}</span>
+            </button>
+          );
+        })}
+      </div>
       <ChartBox label={`${name} histogram of link ${dir}`}>
         <Bar data={data} options={options} />
       </ChartBox>

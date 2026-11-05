@@ -70,6 +70,17 @@ export default function LinkCharts({
   const theme = useTheme();
   const [chosen, setChosen] = useState<View>('rate');
   const id = useId();
+  // Which percentile lines are switched off, per histogram view: here so that they outlive the view and the tab.
+  const [hiddenLines, setHiddenLines] = useState<Record<'histogram' | 'iat', ReadonlySet<string>>>({
+    histogram: new Set(),
+    iat: new Set(),
+  });
+  const toggleLine = (v: 'histogram' | 'iat') => (key: string) =>
+    setHiddenLines((h) => {
+      const next = new Set(h[v]);
+      if (!next.delete(key)) next.add(key);
+      return { ...h, [v]: next };
+    });
   const summary = dir === undefined;
   const of = summary ? 'all links' : `link ${dir}`;
   const noHistogram = summary || empty;
@@ -144,9 +155,17 @@ export default function LinkCharts({
         </ChartBox>
       )}
       {view === 'histogram' && active && dir !== undefined && (
-        <DelayHistogram dir={dir} meanNs={live?.meanNs} stdNs={live?.stdNs} />
+        <DelayHistogram
+          dir={dir}
+          meanNs={live?.meanNs}
+          stdNs={live?.stdNs}
+          hidden={hiddenLines.histogram}
+          onToggle={toggleLine('histogram')}
+        />
       )}
-      {view === 'iat' && dir !== undefined && <DelayHistogram dir={dir} active={active} kind="iat" />}
+      {view === 'iat' && dir !== undefined && (
+        <DelayHistogram dir={dir} active={active} kind="iat" hidden={hiddenLines.iat} onToggle={toggleLine('iat')} />
+      )}
       <Form.Group role="radiogroup" aria-label="Chart" className="text-center my-3">
         {views.map(([v, text]) => {
           const radio = (
