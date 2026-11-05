@@ -2,7 +2,7 @@ import { Fragment, useId, useMemo, useState } from 'react';
 import { Form, OverlayTrigger, Row, Tooltip } from 'react-bootstrap';
 import { Line } from 'react-chartjs-2';
 import type { HistorySample } from '../api/types';
-import { secondsToTime } from '../common/format';
+import { l1Gbps, secondsToTime } from '../common/format';
 import { selectTimeKeys } from '../common/selectTimeKeys';
 import { useTheme } from '../common/theme';
 import { chartOptions, RX_COLOR, RX_FILL, TX_COLOR, TX_FILL } from '../components/charts';
@@ -101,7 +101,10 @@ export default function LinkCharts({
   const labels = useMemo(() => points.map((s) => secondsToTime(Math.floor(s.t_ms / 1000))), [points]);
   // The y axis shows one unit, like P4TG's "Gbit/s"; a link slower than that gets the largest unit its peak reaches.
   const rateUnit = useMemo(() => {
-    const peak = Math.max(0, ...points.map((s) => Math.max(s.rx_gbps, s.tx_gbps)));
+    const peak = Math.max(
+      0,
+      ...points.map((s) => Math.max(l1Gbps(s.rx_gbps, s.rx_mpps), l1Gbps(s.tx_gbps, s.tx_mpps))),
+    );
     if (peak === 0) return RATE_AXIS_UNITS[0];
     return RATE_AXIS_UNITS.find((u) => peak * u.perGbit >= 1) ?? RATE_AXIS_UNITS[RATE_AXIS_UNITS.length - 1];
   }, [points]);
@@ -111,14 +114,14 @@ export default function LinkCharts({
       datasets: [
         {
           label: 'TX rate',
-          data: points.map((s) => s.tx_gbps * rateUnit.perGbit),
+          data: points.map((s) => l1Gbps(s.tx_gbps, s.tx_mpps) * rateUnit.perGbit),
           borderColor: TX_COLOR,
           backgroundColor: TX_FILL,
           fill: true,
         },
         {
           label: 'RX rate',
-          data: points.map((s) => s.rx_gbps * rateUnit.perGbit),
+          data: points.map((s) => l1Gbps(s.rx_gbps, s.rx_mpps) * rateUnit.perGbit),
           borderColor: RX_COLOR,
           backgroundColor: RX_FILL,
           fill: true,

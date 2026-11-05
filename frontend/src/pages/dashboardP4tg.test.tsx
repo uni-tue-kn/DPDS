@@ -663,11 +663,12 @@ describe('Dashboard (spec 28): rate chart in the P4TG look', () => {
       `${re} dataset`,
     );
 
-  it('has an RX and a TX dataset with the values in Gbit/s', async () => {
+  it('has an RX and a TX dataset with the L1 values in Gbit/s', async () => {
     const chart = await rate();
     expect(dataOf(chart).datasets).toHaveLength(2);
-    expect(series(chart, /RX/).data.at(-1)).toBeCloseTo(9.5, 6);
-    expect(series(chart, /TX/).data.at(-1)).toBeCloseTo(8.25, 6);
+    // fixture sample: L2 9.5 / 8.25 Gbit/s at 1.234567 / 1.2 Mpps, L1 = L2 + Mpps * 0.16
+    expect(series(chart, /RX/).data.at(-1)).toBeCloseTo(9.69753072, 6);
+    expect(series(chart, /TX/).data.at(-1)).toBeCloseTo(8.442, 6);
   });
 
   it('TX is P4TG blue rgb(53,162,235), RX orange-brown rgb(183,85,40)', async () => {

@@ -12,7 +12,9 @@ import { api, serveHistory } from '../test/mockApi';
 const N = 250;
 const POSITIONS = Array.from({ length: 100 }, (_, j) => Math.floor((j * (N - 1)) / 99));
 const samples = () =>
-  Array.from({ length: N }, (_, i) => fx.historySample(i * 1000, { rx_gbps: i, tx_gbps: i, loss_drops: i }));
+  Array.from({ length: N }, (_, i) =>
+    fx.historySample(i * 1000, { ...fx.NO_PPS, rx_gbps: i, tx_gbps: i, loss_drops: i }),
+  );
 
 interface Chart {
   labels: string[];

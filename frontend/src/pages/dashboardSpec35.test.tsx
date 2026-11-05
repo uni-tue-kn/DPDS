@@ -447,11 +447,13 @@ describe('Dashboard (spec 37, was spec 35 F2): the pills show 0 once the run has
     const donut = (panel: HTMLElement) =>
       JSON.parse(lossDonut(panel).getAttribute('data-chart') ?? 'null').datasets[0].data as number[];
     // the Summary (selected by default) sums the links per sample; its donut sums the totals per cause
-    expect(rx(activePanel())?.map((v) => Math.round(v * 100) / 100)).toEqual([2, 9.25]);
+    expect(rx(activePanel())?.map((v) => Math.round(v * 100) / 100)).toEqual([2.16, 10.42]);
     expect(donut(activePanel())).toEqual([110, 120, 55, 25, 27, 13, 0, 0, 0]);
-    expect(rx(card(0))).toEqual([1, 6.1]);
+    // L1 = L2 + Mpps x 0.16; the Summary above is their sum
+    const r2 = (v: number[] | undefined) => v?.map((x) => Math.round(x * 100) / 100);
+    expect(r2(rx(card(0)))).toEqual([1.08, 6.84]);
     expect(donut(card(0))).toEqual([10, 20, 5, 5, 7, 3, 0, 0, 0]);
-    expect(rx(card(1))).toEqual([1, 3.15]);
+    expect(r2(rx(card(1)))).toEqual([1.08, 3.58]);
     expect(donut(card(1))).toEqual([100, 100, 50, 20, 20, 10, 0, 0, 0]);
     // and the pills beside them say 0 all along
     expect(pillText('pill-rx')).toBe(ZERO_RX);
@@ -543,7 +545,10 @@ describe('Dashboard (spec 35 F3): one tab per link', () => {
   it('clicking a tab shows the chart area of that link', async () => {
     serveHistory({
       startedAt: 1762000000,
-      samples: { '0': [fx.historySample(1000, { rx_gbps: 1.5 })], '1': [fx.historySample(1000, { rx_gbps: 7.5 })] },
+      samples: {
+        '0': [fx.historySample(1000, { ...fx.NO_PPS, rx_gbps: 1.5 })],
+        '1': [fx.historySample(1000, { ...fx.NO_PPS, rx_gbps: 7.5 })],
+      },
     });
     renderApp('/');
     await findCard(1);
@@ -585,7 +590,10 @@ describe('Dashboard (spec 35 F3): one tab per link', () => {
     vi.useFakeTimers();
     serveHistory({
       startedAt: 1762000000,
-      samples: { '0': [fx.historySample(1000, { rx_gbps: 1.5 })], '1': [fx.historySample(1000, { rx_gbps: 7.5 })] },
+      samples: {
+        '0': [fx.historySample(1000, { ...fx.NO_PPS, rx_gbps: 1.5 })],
+        '1': [fx.historySample(1000, { ...fx.NO_PPS, rx_gbps: 7.5 })],
+      },
     });
     renderApp('/');
     await tick(0);

@@ -417,6 +417,9 @@ export function runningEmulation(
   return emulation(state, { config });
 }
 
+/** Spec: the rate chart plots L1 (rx_gbps + rx_mpps * 0.16); tests about something else than the L1 overhead set both Mpps to 0, so L1 = L2 and the plotted value is the rx_gbps given. */
+export const NO_PPS = { rx_mpps: 0, tx_mpps: 0 } as const;
+
 /**
  * Spec 29: one sample of `GET /api/stats/history` (`t_ms`: whole milliseconds since the run started). The defaults are the rates of `dirStats()` in the units of the
  * series (Gbit/s, Mpps) and cumulative drop counts (spec 43), so a chart built from the history shows what the stats cards show.

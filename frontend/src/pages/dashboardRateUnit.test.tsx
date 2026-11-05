@@ -1,3 +1,4 @@
+// The rate chart plots L1 like P4TG (tx_rate_l1 / rx_rate_l1): gbps + mpps * 0.16 per sample (20 B * 8 bit per frame); the unit is picked from the L1 peak.
 // User 2026-11-05: the rate chart's y axis is titled with the unit only, "Gbit/s" like P4TG (Visuals.tsx: y title 'Gbit/s'),
 // and "if it is only Mbit/s we show a lower unit". Contract:
 //   - the unit is the largest of Gbit/s, Mbit/s, kbit/s, bit/s in which the chart's largest RX or TX value is >= 1;
@@ -34,7 +35,8 @@ async function open(samples: Record<string, HistorySample[]>) {
   await tick(0);
 }
 
-const at = (t: number, rx: number, tx: number) => fx.historySample(t, { rx_gbps: rx, tx_gbps: tx });
+// Mpps 0: these tests are about the unit, so L1 = L2 and the plotted value is the rx/tx given (the L1 overhead is tested below).
+const at = (t: number, rx: number, tx: number) => fx.historySample(t, { ...fx.NO_PPS, rx_gbps: rx, tx_gbps: tx });
 
 beforeEach(() => {
   api.getEmulation.mockResolvedValue(fx.emulation('running'));
@@ -73,6 +75,19 @@ describe('rate chart unit (P4TG "Gbit/s", a lower unit for slow links)', () => {
     expect(series(0, /RX/)[0]).toBeCloseTo(1.5, 9);
     expect(yTitle(1)).toBe('bit/s');
     expect(series(1, /RX/)[0]).toBeCloseTo(0.5, 9);
+  });
+
+  it('the unit is picked from the L1 peak: L2 0.5 Gbit/s at 10 Mpps is L1 2.1 Gbit/s, so "Gbit/s"', async () => {
+    await open({
+      '0': [fx.historySample(1000, { rx_gbps: 0.5, tx_gbps: 0.25, rx_mpps: 10, tx_mpps: 0 })],
+      '1': [fx.historySample(1000, { rx_gbps: 0, tx_gbps: 0, rx_mpps: 1, tx_mpps: 0 })],
+    });
+    expect(yTitle(0)).toBe('Gbit/s');
+    expect(series(0, /RX/)[0]).toBeCloseTo(2.1, 9);
+    expect(series(0, /TX/)[0]).toBeCloseTo(0.25, 9);
+    // no L2 rate at all, but 1 Mpps is L1 0.16 Gbit/s = 160 Mbit/s
+    expect(yTitle(1)).toBe('Mbit/s');
+    expect(series(1, /RX/)[0]).toBeCloseTo(160, 9);
   });
 
   it('no traffic (zeros) and no samples: "Gbit/s"', async () => {

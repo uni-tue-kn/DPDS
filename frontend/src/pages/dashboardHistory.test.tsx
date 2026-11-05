@@ -1,7 +1,7 @@
 import { fireEvent, screen, within } from '@testing-library/react';
 import { vi } from 'vitest';
 import type { HistorySample, HistoryView } from '../api/types';
-import { card, CAUSES, delayBar, expectState, hasTab, queryRadio, tab, tabBadge } from '../test/dashboardUi';
+import { CAUSES, card, delayBar, expectState, hasTab, queryRadio, tab, tabBadge } from '../test/dashboardUi';
 import * as fx from '../test/fixtures';
 import { renderApp, seedStore, tick } from '../test/helpers';
 import type { HistoryServer } from '../test/mockApi';
@@ -167,26 +167,40 @@ describe('Dashboard (spec 29): the charts show the whole run with elapsed-time l
     expect(o.scales.x.title.text).toMatch(/time/i);
   });
 
-  it('the rate chart plots rx_gbps and tx_gbps as they are, per link', async () => {
+  // The rate chart plots L1 like P4TG (tx_rate_l1 / rx_rate_l1): L1 Gbit/s = gbps + mpps * 0.16 (20 B * 8 bit per frame), per sample.
+  it('the rate chart plots the L1 rates (gbps + mpps * 0.16), per link', async () => {
     server({
       '0': [
-        fx.historySample(1000, { rx_gbps: 1.5, tx_gbps: 1.25 }),
-        fx.historySample(2000, { rx_gbps: 2.5, tx_gbps: 2.25 }),
+        fx.historySample(1000, { rx_gbps: 1.5, tx_gbps: 1.25, rx_mpps: 10, tx_mpps: 5 }),
+        fx.historySample(2000, { rx_gbps: 2.5, tx_gbps: 2.25, rx_mpps: 0, tx_mpps: 2.5 }),
       ],
-      '1': [fx.historySample(1000, { rx_gbps: 7.5, tx_gbps: 6.25 })],
+      '1': [fx.historySample(1000, { rx_gbps: 7.5, tx_gbps: 6.25, rx_mpps: 25, tx_mpps: 12.5 })],
     });
     await open();
-    expect(dataset(chartOf(0), /RX/).data).toEqual([1.5, 2.5]);
-    expect(dataset(chartOf(0), /TX/).data).toEqual([1.25, 2.25]);
-    expect(dataset(chartOf(1), /RX/).data).toEqual([7.5]);
-    expect(dataset(chartOf(1), /TX/).data).toEqual([6.25]);
+    const closeTo = (actual: number[], expected: number[]) => {
+      expect(actual).toHaveLength(expected.length);
+      expected.forEach((v, i) => {
+        expect(actual[i]).toBeCloseTo(v, 9);
+      });
+    };
+    closeTo(dataset(chartOf(0), /RX/).data, [3.1, 2.5]);
+    closeTo(dataset(chartOf(0), /TX/).data, [2.05, 2.65]);
+    closeTo(dataset(chartOf(1), /RX/).data, [11.5]);
+    closeTo(dataset(chartOf(1), /TX/).data, [8.25]);
+  });
+
+  it('with the default Mpps of the fixture the rate chart is above the L2 gbps by mpps * 0.16', async () => {
+    server({ '0': [fx.historySample(1000)], '1': [] });
+    await open();
+    expect(dataset(chartOf(0), /RX/).data[0]).toBeCloseTo(9.5 + 1.234567 * 0.16, 9);
+    expect(dataset(chartOf(0), /TX/).data[0]).toBeCloseTo(8.25 + 1.2 * 0.16, 9);
   });
 
   it('a link is charted from the samples under its own index, not by position', async () => {
     // the cards are links 0 and 1; samples of link 1 come first in the object
     server({
-      '1': [fx.historySample(1000, { rx_gbps: 7.5 })],
-      '0': [fx.historySample(1000, { rx_gbps: 1.5 })],
+      '1': [fx.historySample(1000, { ...fx.NO_PPS, rx_gbps: 7.5 })],
+      '0': [fx.historySample(1000, { ...fx.NO_PPS, rx_gbps: 1.5 })],
     });
     await open();
     expect(rxOf(0)).toEqual([1.5]);
@@ -284,12 +298,17 @@ describe('Dashboard (spec 29): increments are appended', () => {
   it('new samples are added after the old ones: nothing lost, nothing twice', async () => {
     const s = server({ '0': fx.historySamples(0, 3), '1': fx.historySamples(0, 3) });
     await open();
-    s.samples['0'].push(fx.historySample(3000, { rx_gbps: 3.5 }), fx.historySample(4000, { rx_gbps: 4.5 }));
-    s.samples['1'].push(fx.historySample(3000, { rx_gbps: 13.5 }));
+    s.samples['0'].push(
+      fx.historySample(3000, { ...fx.NO_PPS, rx_gbps: 3.5 }),
+      fx.historySample(4000, { ...fx.NO_PPS, rx_gbps: 4.5 }),
+    );
+    s.samples['1'].push(fx.historySample(3000, { ...fx.NO_PPS, rx_gbps: 13.5 }));
     await tick(1000);
     await tick(1000);
-    expect(rxOf(0)).toEqual([9.5, 9.5, 9.5, 3.5, 4.5]);
-    expect(rxOf(1)).toEqual([9.5, 9.5, 9.5, 13.5]);
+    // the first three are the fixture's defaults, plotted as L1: 9.5 + 1.234567 x 0.16 = 9.69753072 Gbit/s
+    const r6 = (v: number[]) => v.map((x) => Math.round(x * 1e6) / 1e6);
+    expect(r6(rxOf(0))).toEqual([9.697531, 9.697531, 9.697531, 3.5, 4.5]);
+    expect(r6(rxOf(1))).toEqual([9.697531, 9.697531, 9.697531, 13.5]);
     expect(labelsOf(0)).toEqual(['0h 0m 0s', '0h 0m 1s', '0h 0m 2s', '0h 0m 3s', '0h 0m 4s']);
     // polls with nothing new change nothing
     await tick(3000);
@@ -301,7 +320,7 @@ describe('Dashboard (spec 29): increments are appended', () => {
     const s = server({ '0': fx.historySamples(0, 2) });
     await open();
     expect(rxOf(1)).toEqual([]);
-    s.samples['1'] = [fx.historySample(2000, { rx_gbps: 5.5 })];
+    s.samples['1'] = [fx.historySample(2000, { ...fx.NO_PPS, rx_gbps: 5.5 })];
     await tick(1000);
     await tick(1000);
     expect(rxOf(1)).toEqual([5.5]);
@@ -311,15 +330,15 @@ describe('Dashboard (spec 29): increments are appended', () => {
 describe('Dashboard (spec 29): leaving the dashboard and coming back, and reload', () => {
   it('unmounting and mounting again shows the same data, including what happened meanwhile, without a gap', async () => {
     const s = server({
-      '0': fx.historySamples(0, 5, { rx_gbps: 1.5 }),
-      '1': fx.historySamples(0, 5, { rx_gbps: 2.5 }),
+      '0': fx.historySamples(0, 5, { ...fx.NO_PPS, rx_gbps: 1.5 }),
+      '1': fx.historySamples(0, 5, { ...fx.NO_PPS, rx_gbps: 2.5 }),
     });
     const first = await open();
     const before = rxOf(0).length;
     first.unmount();
     // the run goes on while the dashboard is not on screen
-    s.samples['0'].push(...fx.historySamples(5, 4, { rx_gbps: 1.75 }));
-    s.samples['1'].push(...fx.historySamples(5, 4, { rx_gbps: 2.75 }));
+    s.samples['0'].push(...fx.historySamples(5, 4, { ...fx.NO_PPS, rx_gbps: 1.75 }));
+    s.samples['1'].push(...fx.historySamples(5, 4, { ...fx.NO_PPS, rx_gbps: 2.75 }));
     const calls = api.getStatsHistory.mock.calls.length;
     renderApp('/');
     await tick(0);
@@ -386,15 +405,18 @@ describe('Dashboard (spec 29): leaving the dashboard and coming back, and reload
 describe('Dashboard (spec 29): a new run replaces the old data', () => {
   it('a changed run_id discards the data held and loads the new run in full', async () => {
     const s = server({
-      '0': fx.historySamples(0, 6, { rx_gbps: 1.5 }),
-      '1': fx.historySamples(0, 6, { rx_gbps: 2.5 }),
+      '0': fx.historySamples(0, 6, { ...fx.NO_PPS, rx_gbps: 1.5 }),
+      '1': fx.historySamples(0, 6, { ...fx.NO_PPS, rx_gbps: 2.5 }),
     });
     await open();
     expect(rxOf(0)).toHaveLength(6);
     // the next run: its clock starts at 0 again, so an incremental request (since_ms = 5000) finds nothing newer
     s.runId = 2;
     s.startedAt = S1 + 900;
-    s.samples = { '0': fx.historySamples(0, 2, { rx_gbps: 4.5 }), '1': fx.historySamples(0, 2, { rx_gbps: 5.5 }) };
+    s.samples = {
+      '0': fx.historySamples(0, 2, { ...fx.NO_PPS, rx_gbps: 4.5 }),
+      '1': fx.historySamples(0, 2, { ...fx.NO_PPS, rx_gbps: 5.5 }),
+    };
     const calls = api.getStatsHistory.mock.calls.length;
     await tick(1000);
     await tick(1000);
@@ -417,18 +439,18 @@ describe('Dashboard (spec 29): a new run replaces the old data', () => {
     const later = sinceArgs().slice(calls);
     expect(later.length).toBeGreaterThanOrEqual(2);
     expect(later.every((a) => a === 1000)).toBe(true);
-    s.samples['0'].push(fx.historySample(2000, { rx_gbps: 8.5 }));
+    s.samples['0'].push(fx.historySample(2000, { ...fx.NO_PPS, rx_gbps: 8.5 }));
     await tick(2000);
     expect(rxOf(0).at(-1)).toBe(8.5);
     expect(rxOf(0)).toHaveLength(3);
   });
 
   it('samples of the old run are never mixed with the new run, even when the new run is already longer', async () => {
-    const s = server({ '0': fx.historySamples(0, 3, { rx_gbps: 1.5 }), '1': [] });
+    const s = server({ '0': fx.historySamples(0, 3, { ...fx.NO_PPS, rx_gbps: 1.5 }), '1': [] });
     await open();
     s.runId = 2;
     s.startedAt = S1 + 900;
-    s.samples = { '0': fx.historySamples(0, 8, { rx_gbps: 4.5 }), '1': [] };
+    s.samples = { '0': fx.historySamples(0, 8, { ...fx.NO_PPS, rx_gbps: 4.5 }), '1': [] };
     await tick(3000);
     expect(rxOf(0)).toEqual(Array(8).fill(4.5));
   });
@@ -456,7 +478,7 @@ describe('Dashboard (spec 29): a failing history request', () => {
     await tick(3000);
     expect(rxOf(0)).toHaveLength(4); // the card and its chart are still there
     expect(api.getStatsHistory.mock.calls.length).toBeGreaterThanOrEqual(3);
-    s.samples['0'].push(fx.historySample(4000, { rx_gbps: 6.5 }));
+    s.samples['0'].push(fx.historySample(4000, { ...fx.NO_PPS, rx_gbps: 6.5 }));
     api.getStatsHistory.mockImplementation(must(ok, 'the mock implementation'));
     await tick(2000);
     expect(rxOf(0)).toHaveLength(5);
@@ -506,8 +528,8 @@ describe('Dashboard (spec 29, round 2): the final charts of a stopped run stay u
   /** A running emulation with two links and a 5 s series, opened and settled; `stop()` turns it into the stopped payload. */
   async function runThenStop() {
     const s = server({
-      '0': fx.historySamples(0, 5, { rx_gbps: 1.5 }),
-      '1': fx.historySamples(0, 5, { rx_gbps: 2.5 }),
+      '0': fx.historySamples(0, 5, { ...fx.NO_PPS, rx_gbps: 1.5 }),
+      '1': fx.historySamples(0, 5, { ...fx.NO_PPS, rx_gbps: 2.5 }),
     });
     await open();
     expect(tabBadge(0)).toBe(''); // a running link is not marked
@@ -636,7 +658,10 @@ describe('Dashboard (spec 29, round 2): the final charts of a stopped run stay u
     await stop();
     s.runId = 2;
     s.startedAt = S1 + 900;
-    s.samples = { '0': fx.historySamples(0, 2, { rx_gbps: 4.5 }), '1': fx.historySamples(0, 2, { rx_gbps: 5.5 }) };
+    s.samples = {
+      '0': fx.historySamples(0, 2, { ...fx.NO_PPS, rx_gbps: 4.5 }),
+      '1': fx.historySamples(0, 2, { ...fx.NO_PPS, rx_gbps: 5.5 }),
+    };
     api.getEmulation.mockResolvedValue(fx.emulation('running', { started_at: S1 + 900 }));
     api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0), fx.dirStats(1)], { elapsed_ms: 1500 }));
     await tick(3000);
@@ -647,7 +672,10 @@ describe('Dashboard (spec 29, round 2): the final charts of a stopped run stay u
   });
 
   it('after a reload (a fresh mount) of a stopped controller the final charts are shown the same way', async () => {
-    server({ '0': fx.historySamples(0, 5, { rx_gbps: 1.5 }), '1': fx.historySamples(0, 5, { rx_gbps: 2.5 }) });
+    server({
+      '0': fx.historySamples(0, 5, { ...fx.NO_PPS, rx_gbps: 1.5 }),
+      '1': fx.historySamples(0, 5, { ...fx.NO_PPS, rx_gbps: 2.5 }),
+    });
     api.getEmulation.mockResolvedValue(fx.emulation('stopped'));
     api.getStats.mockResolvedValue(stoppedStats());
     await open();

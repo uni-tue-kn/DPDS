@@ -315,22 +315,44 @@ describe('Summary tab (spec 36 S1): no delay histogram polling', () => {
 // ---- rate view ----------------------------------------------------------------------------------------------------------------
 
 describe('Summary tab (spec 36 S1): the rate chart', () => {
-  it('sums RX and TX (Gbit/s) of all links per sample time, labelled like the per-link chart', async () => {
+  // L1 like P4TG: per link and sample gbps + mpps * 0.16, summed over the links. RX: 1.5+10*.16=3.1, 2.5; 7.5+25*.16=11.5, 4+5*.16=4.8.
+  // TX: 1.25+5*.16=2.05, 0.25+2.5*.16=0.65; 0.5+12.5*.16=2.5, 2.
+  it('sums the L1 RX and TX (Gbit/s) of all links per sample time, labelled like the per-link chart', async () => {
     await open({
-      '0': [sample(1000, { rx_gbps: 1.5, tx_gbps: 1.25 }), sample(2000, { rx_gbps: 2.5, tx_gbps: 0.25 })],
-      '1': [sample(1000, { rx_gbps: 7.5, tx_gbps: 0.5 }), sample(2000, { rx_gbps: 4, tx_gbps: 2 })],
+      '0': [
+        sample(1000, { rx_gbps: 1.5, tx_gbps: 1.25, rx_mpps: 10, tx_mpps: 5 }),
+        sample(2000, { rx_gbps: 2.5, tx_gbps: 0.25, rx_mpps: 0, tx_mpps: 2.5 }),
+      ],
+      '1': [
+        sample(1000, { rx_gbps: 7.5, tx_gbps: 0.5, rx_mpps: 25, tx_mpps: 12.5 }),
+        sample(2000, { rx_gbps: 4, tx_gbps: 2, rx_mpps: 5, tx_mpps: 0 }),
+      ],
     });
     await waitFor(() => expect(dataset(summary(), 'RX rate')).toHaveLength(2));
-    expect(dataset(summary(), 'RX rate')).toEqual([9, 6.5]);
-    expect(dataset(summary(), 'TX rate')).toEqual([1.75, 2.25]);
+    const rx = dataset(summary(), 'RX rate');
+    const tx = dataset(summary(), 'TX rate');
+    [14.6, 7.3].forEach((v, i) => {
+      expect(rx[i]).toBeCloseTo(v, 9);
+    });
+    [4.55, 2.65].forEach((v, i) => {
+      expect(tx[i]).toBeCloseTo(v, 9);
+    });
     expect(lineOf(summary()).labels).toEqual(['0h 0m 1s', '0h 0m 2s']);
     expect(lineOf(card(0)).labels).toEqual(lineOf(summary()).labels); // same time axis as a link's chart
   });
 
   it('covers only the times at which every link has a sample', async () => {
     await open({
-      '0': [sample(1000, { rx_gbps: 1 }), sample(2000, { rx_gbps: 2 }), sample(3000, { rx_gbps: 3 })],
-      '1': [sample(2000, { rx_gbps: 10 }), sample(3000, { rx_gbps: 20 }), sample(4000, { rx_gbps: 30 })],
+      '0': [
+        sample(1000, { ...fx.NO_PPS, rx_gbps: 1 }),
+        sample(2000, { ...fx.NO_PPS, rx_gbps: 2 }),
+        sample(3000, { ...fx.NO_PPS, rx_gbps: 3 }),
+      ],
+      '1': [
+        sample(2000, { ...fx.NO_PPS, rx_gbps: 10 }),
+        sample(3000, { ...fx.NO_PPS, rx_gbps: 20 }),
+        sample(4000, { ...fx.NO_PPS, rx_gbps: 30 }),
+      ],
     });
     await waitFor(() => expect(dataset(summary(), 'RX rate')).toHaveLength(2));
     expect(dataset(summary(), 'RX rate')).toEqual([12, 23]);
@@ -347,7 +369,11 @@ describe('Summary tab (spec 36 S1): the rate chart', () => {
   it('with three links sums all three', async () => {
     const dirs = [fx.dirStats(0), fx.dirStats(1), fx.dirStats(2, { link: 'c', rx: 'net_null0', tx: 'net_null1' })];
     await open(
-      { '0': [sample(1000, { rx_gbps: 1 })], '1': [sample(1000, { rx_gbps: 2 })], '2': [sample(1000, { rx_gbps: 4 })] },
+      {
+        '0': [sample(1000, { ...fx.NO_PPS, rx_gbps: 1 })],
+        '1': [sample(1000, { ...fx.NO_PPS, rx_gbps: 2 })],
+        '2': [sample(1000, { ...fx.NO_PPS, rx_gbps: 4 })],
+      },
       dirs,
     );
     await waitFor(() => expect(dataset(summary(), 'RX rate')).toEqual([7]));
@@ -357,10 +383,10 @@ describe('Summary tab (spec 36 S1): the rate chart', () => {
     vi.useFakeTimers();
     const server = {
       startedAt: 1762000000,
-      samples: { '0': [sample(1000, { rx_gbps: 1 })], '1': [sample(1000, { rx_gbps: 2 })] } as Record<
-        string,
-        HistorySample[]
-      >,
+      samples: {
+        '0': [sample(1000, { ...fx.NO_PPS, rx_gbps: 1 })],
+        '1': [sample(1000, { ...fx.NO_PPS, rx_gbps: 2 })],
+      } as Record<string, HistorySample[]>,
     };
     serveRunning();
     serveHistory(server);
@@ -369,8 +395,8 @@ describe('Summary tab (spec 36 S1): the rate chart', () => {
     await tick(0);
     expect(dataset(summary(), 'RX rate')).toEqual([3]);
     server.samples = {
-      '0': [sample(1000, { rx_gbps: 1 }), sample(2000, { rx_gbps: 5 })],
-      '1': [sample(1000, { rx_gbps: 2 }), sample(2000, { rx_gbps: 6 })],
+      '0': [sample(1000, { ...fx.NO_PPS, rx_gbps: 1 }), sample(2000, { ...fx.NO_PPS, rx_gbps: 5 })],
+      '1': [sample(1000, { ...fx.NO_PPS, rx_gbps: 2 }), sample(2000, { ...fx.NO_PPS, rx_gbps: 6 })],
     };
     serveHistory(server);
     await tick(2500);
@@ -382,8 +408,8 @@ describe('Summary tab (spec 36 S1): the rate chart', () => {
     serveHistory({
       startedAt: 1762000000,
       samples: {
-        '0': [sample(1000, { rx_gbps: 1.5 }), sample(2000, { rx_gbps: 2.5 })],
-        '1': [sample(1000, { rx_gbps: 7.5 }), sample(2000, { rx_gbps: 0.5 })],
+        '0': [sample(1000, { ...fx.NO_PPS, rx_gbps: 1.5 }), sample(2000, { ...fx.NO_PPS, rx_gbps: 2.5 })],
+        '1': [sample(1000, { ...fx.NO_PPS, rx_gbps: 7.5 }), sample(2000, { ...fx.NO_PPS, rx_gbps: 0.5 })],
       },
     });
     api.getEmulation.mockResolvedValue(fx.emulation('stopped', { directions: [] }));

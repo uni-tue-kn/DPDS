@@ -66,13 +66,13 @@ beforeEach(() => {
 describe('Dashboard (spec 29b item 4): a run is its run_id, not its started_at', () => {
   it('a changed started_at with the same run_id is not a new run: the data stays and the polls stay incremental', async () => {
     const s = server({
-      '0': fx.historySamples(0, 5, { rx_gbps: 1.5 }),
-      '1': fx.historySamples(0, 5, { rx_gbps: 2.5 }),
+      '0': fx.historySamples(0, 5, { ...fx.NO_PPS, rx_gbps: 1.5 }),
+      '1': fx.historySamples(0, 5, { ...fx.NO_PPS, rx_gbps: 2.5 }),
     });
     await open();
     // the controller reports another start time for the same run (display data only)
     s.startedAt = S1 + 900;
-    s.samples['0'].push(fx.historySample(5000, { rx_gbps: 3.5 }));
+    s.samples['0'].push(fx.historySample(5000, { ...fx.NO_PPS, rx_gbps: 3.5 }));
     const calls = api.getStatsHistory.mock.calls.length;
     await tick(3000);
     expect(sinceArgs().slice(calls)).not.toContain(undefined); // no full request: nothing was dropped
@@ -82,14 +82,17 @@ describe('Dashboard (spec 29b item 4): a run is its run_id, not its started_at',
 
   it('a changed run_id with the same started_at is a new run: the data is dropped and the new run loaded in full', async () => {
     const s = server({
-      '0': fx.historySamples(0, 6, { rx_gbps: 1.5 }),
-      '1': fx.historySamples(0, 6, { rx_gbps: 2.5 }),
+      '0': fx.historySamples(0, 6, { ...fx.NO_PPS, rx_gbps: 1.5 }),
+      '1': fx.historySamples(0, 6, { ...fx.NO_PPS, rx_gbps: 2.5 }),
     });
     await open();
     expect(rxOf(0)).toHaveLength(6);
     // two runs within the same second: the start time cannot tell them apart, the id does
     s.runId = 2;
-    s.samples = { '0': fx.historySamples(0, 2, { rx_gbps: 4.5 }), '1': fx.historySamples(0, 2, { rx_gbps: 5.5 }) };
+    s.samples = {
+      '0': fx.historySamples(0, 2, { ...fx.NO_PPS, rx_gbps: 4.5 }),
+      '1': fx.historySamples(0, 2, { ...fx.NO_PPS, rx_gbps: 5.5 }),
+    };
     const calls = api.getStatsHistory.mock.calls.length;
     await tick(3000);
     expect(sinceArgs().slice(calls)).toContain(undefined);
@@ -98,10 +101,10 @@ describe('Dashboard (spec 29b item 4): a run is its run_id, not its started_at',
   });
 
   it('a new run whose answer to the incremental request is empty is still loaded: the id changed', async () => {
-    const s = server({ '0': fx.historySamples(0, 6, { rx_gbps: 1.5 }), '1': [] });
+    const s = server({ '0': fx.historySamples(0, 6, { ...fx.NO_PPS, rx_gbps: 1.5 }), '1': [] });
     await open();
     s.runId = 2;
-    s.samples = { '0': [fx.historySample(0, { rx_gbps: 7.5 })], '1': [] }; // nothing newer than since_ms = 5000
+    s.samples = { '0': [fx.historySample(0, { ...fx.NO_PPS, rx_gbps: 7.5 })], '1': [] }; // nothing newer than since_ms = 5000
     await tick(3000);
     expect(rxOf(0)).toEqual([7.5]);
   });
@@ -117,7 +120,7 @@ describe('Dashboard (spec 29b item 4): a run is its run_id, not its started_at',
     const later = sinceArgs().slice(calls);
     expect(later.length).toBeGreaterThanOrEqual(2);
     expect(later.every((a) => a === 1000)).toBe(true);
-    s.samples['0'].push(fx.historySample(2000, { rx_gbps: 8.5 }));
+    s.samples['0'].push(fx.historySample(2000, { ...fx.NO_PPS, rx_gbps: 8.5 }));
     await tick(2000);
     expect(rxOf(0).at(-1)).toBe(8.5);
     expect(rxOf(0)).toHaveLength(3);
@@ -162,8 +165,8 @@ describe('Dashboard (spec 29b item 5): history cards for stopping, stopped and f
     '"%s": a card per link with the final charts and no state badge (spec 54 L1)',
     async (state) => {
       server({
-        '0': fx.historySamples(0, 5, { rx_gbps: 1.5 }),
-        '1': fx.historySamples(0, 5, { rx_gbps: 2.5 }),
+        '0': fx.historySamples(0, 5, { ...fx.NO_PPS, rx_gbps: 1.5 }),
+        '1': fx.historySamples(0, 5, { ...fx.NO_PPS, rx_gbps: 2.5 }),
       });
       settle(state);
       await open();
@@ -194,8 +197,8 @@ describe('Dashboard (spec 29b item 5): history cards for stopping, stopped and f
         ],
       });
       server({
-        '0': fx.historySamples(0, 5, { rx_gbps: 1.5 }),
-        '1': fx.historySamples(0, 5, { rx_gbps: 2.5 }),
+        '0': fx.historySamples(0, 5, { ...fx.NO_PPS, rx_gbps: 1.5 }),
+        '1': fx.historySamples(0, 5, { ...fx.NO_PPS, rx_gbps: 2.5 }),
       });
       settle(state);
       api.getDelayHistogram.mockImplementation(async (dir) => {
@@ -359,7 +362,10 @@ describe('Dashboard (spec 29b item 5): history cards for stopping, stopped and f
 
 describe('Dashboard (spec 29b item 6): while the emulation is starting, live cards get no history', () => {
   it('live cards of a starting emulation chart nothing although the history still holds the old run', async () => {
-    server({ '0': fx.historySamples(0, 5, { rx_gbps: 1.5 }), '1': fx.historySamples(0, 5, { rx_gbps: 2.5 }) });
+    server({
+      '0': fx.historySamples(0, 5, { ...fx.NO_PPS, rx_gbps: 1.5 }),
+      '1': fx.historySamples(0, 5, { ...fx.NO_PPS, rx_gbps: 2.5 }),
+    });
     api.getEmulation.mockResolvedValue(fx.emulation('starting'));
     api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0), fx.dirStats(1)]));
     await open();
@@ -373,8 +379,8 @@ describe('Dashboard (spec 29b item 6): while the emulation is starting, live car
 
   it('once the run is running and the controller serves the new run, its own samples are charted, none of the old ones', async () => {
     const s = server({
-      '0': fx.historySamples(0, 5, { rx_gbps: 1.5 }),
-      '1': fx.historySamples(0, 5, { rx_gbps: 2.5 }),
+      '0': fx.historySamples(0, 5, { ...fx.NO_PPS, rx_gbps: 1.5 }),
+      '1': fx.historySamples(0, 5, { ...fx.NO_PPS, rx_gbps: 2.5 }),
     });
     api.getEmulation.mockResolvedValue(fx.emulation('starting'));
     api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0), fx.dirStats(1)]));
@@ -382,7 +388,10 @@ describe('Dashboard (spec 29b item 6): while the emulation is starting, live car
     await tick(2500);
     s.runId = 2;
     s.startedAt = S1 + 900;
-    s.samples = { '0': fx.historySamples(0, 2, { rx_gbps: 4.5 }), '1': fx.historySamples(0, 2, { rx_gbps: 5.5 }) };
+    s.samples = {
+      '0': fx.historySamples(0, 2, { ...fx.NO_PPS, rx_gbps: 4.5 }),
+      '1': fx.historySamples(0, 2, { ...fx.NO_PPS, rx_gbps: 5.5 }),
+    };
     api.getEmulation.mockResolvedValue(fx.emulation('running', { started_at: S1 + 900 }));
     await tick(3000);
     expect(rxOf(0)).toEqual([4.5, 4.5]);
@@ -390,7 +399,10 @@ describe('Dashboard (spec 29b item 6): while the emulation is starting, live car
   });
 
   it('a running emulation charts the history as before (control)', async () => {
-    server({ '0': fx.historySamples(0, 5, { rx_gbps: 1.5 }), '1': fx.historySamples(0, 5, { rx_gbps: 2.5 }) });
+    server({
+      '0': fx.historySamples(0, 5, { ...fx.NO_PPS, rx_gbps: 1.5 }),
+      '1': fx.historySamples(0, 5, { ...fx.NO_PPS, rx_gbps: 2.5 }),
+    });
     await open();
     expect(rxOf(0)).toEqual(Array(5).fill(1.5));
     expect(rxOf(1)).toEqual(Array(5).fill(2.5));
@@ -412,7 +424,7 @@ describe('Dashboard (spec 29b item 6): while the emulation is starting, live car
 describe('Dashboard (spec 29b item 7): the client keeps at most 86400 samples per link, dropping the oldest', () => {
   /** `count` samples a second apart from t = `from` seconds, `rx_gbps` = the sample's own number of seconds. */
   const numbered = (from: number, count: number): HistorySample[] =>
-    Array.from({ length: count }, (_, i) => fx.historySample((from + i) * 1000, { rx_gbps: from + i }));
+    Array.from({ length: count }, (_, i) => fx.historySample((from + i) * 1000, { ...fx.NO_PPS, rx_gbps: from + i }));
 
   // Spec 50 G: a time chart plots at most 100 points, the first and the last of the history the page holds. So the cap of 86400
   // samples is seen at the chart's FIRST point (the oldest sample the page still holds) and its last one (the newest).
@@ -510,7 +522,7 @@ describe('Dashboard (spec 29b item 8): a failing history request shows a warning
     expect(rxOf(0)).toHaveLength(4); // the charts keep their data
     expect(rxOf(1)).toHaveLength(4);
     // the next success removes it and the series goes on
-    s.samples['0'].push(fx.historySample(4000, { rx_gbps: 6.5 }));
+    s.samples['0'].push(fx.historySample(4000, { ...fx.NO_PPS, rx_gbps: 6.5 }));
     api.getStatsHistory.mockImplementation(must(ok, 'the mock implementation'));
     await tick(2500);
     expect(warning()).not.toBeInTheDocument();

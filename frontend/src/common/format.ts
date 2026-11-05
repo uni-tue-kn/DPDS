@@ -99,3 +99,6 @@ export const L1_OVERHEAD_BITS = 20 * 8;
 
 /** The L1 bit rate of an L2 bit rate `bps` at `pps` frames per second. */
 export const l1Bps = (bps: number, pps: number) => bps + pps * L1_OVERHEAD_BITS;
+
+/** The L1 rate in Gbit/s of a chart sample's L2 `gbps` at `mpps` million frames per second (P4TG's charts plot L1). */
+export const l1Gbps = (gbps: number, mpps: number) => gbps + (mpps * 1e6 * L1_OVERHEAD_BITS) / 1e9;

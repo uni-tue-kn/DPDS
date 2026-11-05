@@ -86,7 +86,10 @@ async function through(before: Snapshot, covered: boolean, what: string, steps =
 const runsWithHistory = () =>
   serveHistory({
     startedAt: 1762000000,
-    samples: { '0': fx.historySamples(0, 5, { rx_gbps: 1.5 }), '1': fx.historySamples(0, 5, { rx_gbps: 2.5 }) },
+    samples: {
+      '0': fx.historySamples(0, 5, { ...fx.NO_PPS, rx_gbps: 1.5 }),
+      '1': fx.historySamples(0, 5, { ...fx.NO_PPS, rx_gbps: 2.5 }),
+    },
   });
 
 beforeEach(() => {
