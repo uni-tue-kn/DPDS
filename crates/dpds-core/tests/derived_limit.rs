@@ -52,6 +52,11 @@ fn config(capacity: usize, mode: LimiterMode, rate_bps: f64, reordering: bool) -
     }
 }
 
+/// Reordering works only with the token bucket (spec 45): the Spacer runs in FIFO mode only.
+fn allowed(mode: LimiterMode, reordering: bool) -> bool {
+    !(reordering && matches!(mode, LimiterMode::Spacer))
+}
+
 fn pkt(i: usize) -> *mut c_void {
     i as *mut c_void
 }
@@ -82,6 +87,9 @@ fn admitted_at_once(capacity: usize, mode: LimiterMode, reordering: bool, len: u
 fn the_limit_is_capacity_times_1542_bytes_for_both_modes() {
     for mode in MODES {
         for reordering in [false, true] {
+            if !allowed(mode, reordering) {
+                continue;
+            }
             for capacity in [1usize, 2, 3, 10, 64] {
                 assert_eq!(
                     admitted_at_once(capacity, mode, reordering, SLOT_LEN),
@@ -102,6 +110,9 @@ fn exactly_capacity_maximum_frames_fit_and_the_next_one_finds_the_buffer_full() 
     // (checked first), not by the limiter.
     for mode in MODES {
         for reordering in [false, true] {
+            if !allowed(mode, reordering) {
+                continue;
+            }
             for capacity in [1usize, 2, 5, 16] {
                 let mut b = Buffer::new(config(capacity, mode, 1e9, reordering));
                 for i in 0..capacity {
@@ -154,6 +165,9 @@ fn a_single_packet_is_judged_against_the_whole_derived_limit() {
     // (c * 12336 bit), one byte more is rejected, in both modes.
     for mode in MODES {
         for reordering in [false, true] {
+            if !allowed(mode, reordering) {
+                continue;
+            }
             for capacity in [1usize, 2, 3, 10] {
                 let largest = (1542 * capacity - 24) as u32;
                 let mut b = Buffer::new(config(capacity, mode, 1e9, reordering));
@@ -216,31 +230,29 @@ fn the_limit_does_not_depend_on_the_current_buffer_content() {
     }
 }
 
+/// FIFO only: reordering does not work with the Spacer (spec 45).
 #[test]
 fn spacer_offsets_grow_by_one_slot_up_to_the_derived_limit() {
-    for reordering in [false, true] {
-        let mut b = Buffer::new(config(3, LimiterMode::Spacer, 1e9, reordering));
-        for k in 0..3u64 {
-            assert_eq!(
-                b.push_outcome(pkt(k as usize + 1), SLOT_LEN, 0.0),
-                PushOutcome::Accepted {
-                    send_time_ns: k * 12_336
-                },
-                "reordering={reordering}"
-            );
-            b.pop();
-        }
+    let mut b = Buffer::new(config(3, LimiterMode::Spacer, 1e9, false));
+    for k in 0..3u64 {
         assert_eq!(
-            b.push_outcome(pkt(4), SLOT_LEN, 0.0),
-            PushOutcome::LimiterDrop
+            b.push_outcome(pkt(k as usize + 1), SLOT_LEN, 0.0),
+            PushOutcome::Accepted {
+                send_time_ns: k * 12_336
+            }
         );
-        // after one slot of time (12336 ns) exactly one slot is free again
-        assert!(is_accepted(b.push_outcome(pkt(5), SLOT_LEN, 12_336.0)));
-        assert_eq!(
-            b.push_outcome(pkt(6), SLOT_LEN, 12_336.0),
-            PushOutcome::LimiterDrop
-        );
+        b.pop();
     }
+    assert_eq!(
+        b.push_outcome(pkt(4), SLOT_LEN, 0.0),
+        PushOutcome::LimiterDrop
+    );
+    // after one slot of time (12336 ns) exactly one slot is free again
+    assert!(is_accepted(b.push_outcome(pkt(5), SLOT_LEN, 12_336.0)));
+    assert_eq!(
+        b.push_outcome(pkt(6), SLOT_LEN, 12_336.0),
+        PushOutcome::LimiterDrop
+    );
 }
 
 #[test]

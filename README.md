@@ -448,11 +448,11 @@ complete example in
 | Option                             | Valid Values                                                                                                                  |
 | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
 | `buffer_capacity`                  | Integer: maximum number of packets held at once; pushes beyond this are dropped                                               |
-| `reordering`                       | `false` (FIFO) · `true` (send-time order)                                                                                     |
+| `reordering`                       | `false` (FIFO) · `true` (send-time order); not with `delayer.activate_correlation` and not with an active `Spacer` limiter (use `TokenBucketFilter`) |
 | `seed`                             | Optional integer; absent: seeded from system entropy                                                                          |
 | `delayer.distribution`             | `DeterministicDistribution` · `NormalDistribution` · `LogNormalDistribution` · `GammaDistribution` · `UniformDistribution`    |
 | `delayer.mean_ns`, `delayer.std_ns` | Mean and standard deviation of the delay in ns (`std_ns` is ignored for `DeterministicDistribution`)                          |
-| `delayer.activate_correlation`     | `true` · `false`: autocorrelation of successive delays                                                                        |
+| `delayer.activate_correlation`     | `true` · `false`: autocorrelation of successive delays; not with `reordering`                                                |
 | `delayer.half_life_period_ns`      | Correlation half-life in ns (finite, not negative; not absurdly long)                                                                        |
 | `delayer.initialization_rate_pps`  | Required, no default: expected packet rate of the link in packets per second (finite, at least 1); the correlated delay starts with it until the first 1 ms rate estimate. About 8.1 Mpps for 100 Gb/s with 1518 byte frames |
 | `limiter.mode`                     | `Spacer` · `TokenBucketFilter`                                                                                                |
@@ -479,7 +479,13 @@ and enqueue.
 Two fields matter for reproducible runs:
 
 - **`reordering`**: with `false` packets leave in arrival order (FIFO); with
-  `true` they leave in send-time order. In reordering mode packets with equal
+  `true` they leave in send-time order. Reordering and correlation are both
+  settings for how accurately the configured mean delay and jitter are
+  reproduced; reordering does not emulate a reordering characteristic of a
+  network. It cannot be combined with `delayer.activate_correlation` and works
+  only with the `TokenBucketFilter` limiter, not with an active `Spacer`; such a
+  config is rejected ("reordering cannot be combined with correlation",
+  "reordering works only with the TokenBucketFilter limiter, not Spacer"). In reordering mode packets with equal
   send times keep their entry order: every packet that enters at the same
   instant sorts 1/64 ns after the previous one, so a constant delay never
   reorders. Caveat across instants: a burst of `n` packets at one instant

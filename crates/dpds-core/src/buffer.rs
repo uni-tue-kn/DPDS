@@ -5,7 +5,11 @@ use std::{
 };
 
 use crate::{
-    delayer::Delayer, derived_limit_bit, dropper::Dropper, limiter::Limiter, BuildError, Config,
+    delayer::Delayer,
+    derived_limit_bit,
+    dropper::Dropper,
+    limiter::{Limiter, LimiterMode},
+    BuildError, Config,
 };
 
 /// Fractional bits of the reordering heap key: send times are kept in 1/64 ns.
@@ -156,10 +160,20 @@ impl Buffer {
     /// or infinite (0 is valid) or, with correlation, so long that its
     /// smoothing weight is not below 1, an `initialization_rate_pps` that is
     /// not finite or below 1, or an unallocatable `buffer_capacity`
-    /// instead of panicking. Only the initial parameters are validated: the
+    /// instead of panicking. Also rejects `reordering` combined with
+    /// correlation or with an active Spacer limiter. Only the initial parameters are validated: the
     /// correlated delay re-derives its distribution from the measured packet
     /// rate, which a huge finite half-life can still push out of range later.
     pub fn try_new(config: Config) -> Result<Buffer, BuildError> {
+        if config.reordering && config.delayer.activate_correlation {
+            return Err(BuildError::ReorderingWithCorrelation);
+        }
+        if config.reordering
+            && config.limiter.activate
+            && matches!(config.limiter.mode, LimiterMode::Spacer)
+        {
+            return Err(BuildError::ReorderingWithSpacer);
+        }
         let initialization_rate_pps = config.delayer.initialization_rate_pps;
 
         let capacity_error =

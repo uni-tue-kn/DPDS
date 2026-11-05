@@ -247,7 +247,7 @@ in [`config.example.json`](config.example.json):
 | Field             | Type    | Meaning                                                                 |
 | ----------------- | ------- | ----------------------------------------------------------------------- |
 | `buffer_capacity` | integer | Maximum number of packets held at once; pushes beyond this are dropped. Also sets the limiter's limit: `buffer_capacity x 1542 B x 8` bit. |
-| `reordering`      | bool    | `false` = FIFO; `true` = emit in send-time order (min-heap), equal send times keep entry order (see above). |
+| `reordering`      | bool    | `false` = FIFO; `true` = emit in send-time order (min-heap), equal send times keep entry order (see above). Not with `activate_correlation` and not with an active `Spacer` limiter; `Buffer::try_new` rejects both. |
 | `seed`            | integer or `null` | Optional. Seeds the delay and loss RNGs deterministically; absent = entropy (see Seeding). |
 
 **`delayer`**

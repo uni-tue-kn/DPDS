@@ -22,7 +22,8 @@
 //!
 //! Each of the three states is isolated in one scenario (only the delayer is
 //! stochastic, only the limiter is active, only the dropper is stochastic), and
-//! one scenario switches everything on. All run in FIFO and reordering mode.
+//! one scenario switches everything on. All run in FIFO and reordering mode, except those with the
+//! correlated delayer or the Spacer, which run in FIFO mode only (spec 45: reordering excludes them).
 
 use std::ffi::c_void;
 
@@ -229,16 +230,15 @@ fn a_full_buffer_push_does_not_sample_the_delayer() {
 fn a_full_buffer_push_does_not_advance_the_correlated_delayer() {
     // The extra pushes are 1.5 ms apart: every one would refresh the rate
     // estimate (every > 1 ms) and move the correlation weight and the EMA.
-    for reordering in MODES {
-        let s = Scenario {
-            delay: Delay::Correlated,
-            extra_gap_ns: 1_500_000.0,
-            tail_pad_ns: 1_500_000.0,
-            tail_step_ns: 10_000.0,
-            ..Scenario::base(reordering)
-        };
-        check("correlated delayer", s);
-    }
+    // FIFO only: reordering cannot be combined with correlation (spec 45).
+    let s = Scenario {
+        delay: Delay::Correlated,
+        extra_gap_ns: 1_500_000.0,
+        tail_pad_ns: 1_500_000.0,
+        tail_step_ns: 10_000.0,
+        ..Scenario::base(false)
+    };
+    check("correlated delayer", s);
 }
 
 #[test]
@@ -246,18 +246,17 @@ fn a_full_buffer_push_does_not_account_bits_in_the_spacer() {
     // The extra pushes (12336 bit each) sit at the same instants as the tail;
     // accounting them would push the tail's spacing offsets up and its limit
     // drops earlier.
-    for reordering in MODES {
-        let s = Scenario {
-            limiter: Some(LimiterMode::Spacer),
-            ..Scenario::base(reordering)
-        };
-        check("spacer", s);
-        let t = trace(s, Extra::None);
-        assert!(
-            count(&t, |o| *o == PushOutcome::LimiterDrop) > 10,
-            "spacer limit reached"
-        );
-    }
+    // FIFO only: reordering works only with the token bucket (spec 45).
+    let s = Scenario {
+        limiter: Some(LimiterMode::Spacer),
+        ..Scenario::base(false)
+    };
+    check("spacer", s);
+    let t = trace(s, Extra::None);
+    assert!(
+        count(&t, |o| *o == PushOutcome::LimiterDrop) > 10,
+        "spacer limit reached"
+    );
 }
 
 #[test]
@@ -302,16 +301,15 @@ fn a_full_buffer_push_does_not_step_the_gilbert_elliot_chain() {
 
 #[test]
 fn a_full_buffer_push_leaves_every_stage_untouched_when_all_are_active() {
-    for reordering in MODES {
-        for mode in [LimiterMode::Spacer, LimiterMode::TokenBucketFilter] {
-            let s = Scenario {
-                delay: Delay::Correlated,
-                limiter: Some(mode),
-                loss: LossModel::GilbertElliot(0.2, 0.4, 0.95, 0.3, true),
-                ..Scenario::base(reordering)
-            };
-            check(&format!("everything, {mode:?}"), s);
-        }
+    // FIFO only: reordering cannot be combined with correlation (spec 45).
+    for mode in [LimiterMode::Spacer, LimiterMode::TokenBucketFilter] {
+        let s = Scenario {
+            delay: Delay::Correlated,
+            limiter: Some(mode),
+            loss: LossModel::GilbertElliot(0.2, 0.4, 0.95, 0.3, true),
+            ..Scenario::base(false)
+        };
+        check(&format!("everything, {mode:?}"), s);
     }
 }
 
@@ -323,6 +321,9 @@ fn a_buffer_full_push_reports_buffer_full_whatever_the_stages_would_say() {
     // buffer: the limiter would reject it, but it is never consulted.
     for reordering in MODES {
         for mode in [LimiterMode::Spacer, LimiterMode::TokenBucketFilter] {
+            if reordering && matches!(mode, LimiterMode::Spacer) {
+                continue; // reordering works only with the token bucket (spec 45)
+            }
             let mut cfg = Scenario {
                 limiter: Some(mode),
                 ..Scenario::base(reordering)

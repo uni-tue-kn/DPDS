@@ -187,28 +187,27 @@ fn lost_is_reported_by_the_loss_model_and_nothing_is_queued() {
 
 #[test]
 fn limiter_drop_of_the_spacer_and_its_recovery_by_draining() {
-    for reordering in MODES {
-        // capacity 2: derived limit 2 * 12336 = exactly two len-1518 packets
-        let mut b = Cfg::new(2, reordering).spacer().build();
-        assert_eq!(b.push_outcome(pkt(1), LEN_FULL, 0.0), accepted(0)); // fill 12336
-        assert_eq!(b.pop_due(0.0), Some(pkt(1))); // the buffer keeps room
-        assert_eq!(b.push_outcome(pkt(2), LEN_FULL, 0.0), accepted(12336)); // fill 24672 == limit: ok
-        assert_eq!(
-            b.push_outcome(pkt(3), LEN_FULL, 0.0),
-            PushOutcome::LimiterDrop,
-            "24672 + 12336 > 24672, reordering={reordering}"
-        );
-        assert_eq!(
-            b.push_outcome(pkt(4), LEN_FULL, 0.0),
-            PushOutcome::LimiterDrop,
-            "a rejected packet is not added to the fill"
-        );
-        assert_eq!(b.len(), 1, "a limiter drop is not queued");
-        // 12336 ns later 12336 bit have drained: fill 12336, one packet fits
-        // again, offset = fill / rate = 12336 -> leaves at 12336 + 12336
-        assert_eq!(b.push_outcome(pkt(5), LEN_FULL, 12_336.0), accepted(24_672));
-        assert_eq!(b.len(), 2);
-    }
+    // FIFO only: reordering works only with the token bucket, not the Spacer (spec 45).
+    // capacity 2: derived limit 2 * 12336 = exactly two len-1518 packets
+    let mut b = Cfg::new(2, false).spacer().build();
+    assert_eq!(b.push_outcome(pkt(1), LEN_FULL, 0.0), accepted(0)); // fill 12336
+    assert_eq!(b.pop_due(0.0), Some(pkt(1))); // the buffer keeps room
+    assert_eq!(b.push_outcome(pkt(2), LEN_FULL, 0.0), accepted(12336)); // fill 24672 == limit: ok
+    assert_eq!(
+        b.push_outcome(pkt(3), LEN_FULL, 0.0),
+        PushOutcome::LimiterDrop,
+        "24672 + 12336 > 24672"
+    );
+    assert_eq!(
+        b.push_outcome(pkt(4), LEN_FULL, 0.0),
+        PushOutcome::LimiterDrop,
+        "a rejected packet is not added to the fill"
+    );
+    assert_eq!(b.len(), 1, "a limiter drop is not queued");
+    // 12336 ns later 12336 bit have drained: fill 12336, one packet fits
+    // again, offset = fill / rate = 12336 -> leaves at 12336 + 12336
+    assert_eq!(b.push_outcome(pkt(5), LEN_FULL, 12_336.0), accepted(24_672));
+    assert_eq!(b.len(), 2);
 }
 
 #[test]
@@ -266,6 +265,9 @@ const LEN_OVER_LIMIT_CAP8: u32 = 12_400;
 fn precedence_buffer_full_before_loss_before_limiter() {
     for reordering in MODES {
         for tbf in [false, true] {
+            if reordering && !tbf {
+                continue; // reordering works only with the token bucket (spec 45)
+            }
             let with_limiter = |c: Cfg| if tbf { c.tbf() } else { c.spacer() };
 
             // sanity: without loss the oversized packet is a limiter drop
@@ -304,7 +306,12 @@ fn precedence_buffer_full_before_loss_before_limiter() {
         // by the limiter, but it is BufferFull. Alternating GE (p=r=1, k=1,
         // h=0): Good keeps, Bad drops.
         let ge = LossModel::GilbertElliot(1.0, 1.0, 1.0, 0.0, true);
-        let mut b = Cfg::new(1, reordering).spacer().loss(ge).build();
+        let limited = if reordering {
+            Cfg::new(1, reordering).tbf() // reordering works only with the token bucket (spec 45)
+        } else {
+            Cfg::new(1, reordering).spacer()
+        };
+        let mut b = limited.loss(ge).build();
         assert!(matches!(
             b.push_outcome(pkt(1), LEN, 0.0),
             PushOutcome::Accepted { .. }
@@ -323,35 +330,25 @@ fn a_lost_packet_still_consumes_limiter_budget() {
     // drops (u > k = 0), moves to Bad for good (p = 1, r = 0), where nothing is
     // dropped (u > h = 1 is impossible): exactly the first packet is lost.
     let ge = LossModel::GilbertElliot(1.0, 0.0, 0.0, 1.0, true);
-    for reordering in MODES {
-        let mut b = Cfg::new(8, reordering).spacer().loss(ge).build();
-        assert_eq!(b.push_outcome(pkt(1), LEN, 0.0), PushOutcome::Lost);
-        // the lost packet was accounted by the limiter (fill 992): the next one
-        // waits for it, offset 992 (not 0)
-        assert_eq!(
-            b.push_outcome(pkt(2), LEN, 0.0),
-            accepted(992),
-            "reordering={reordering}"
-        );
-        assert_eq!(b.push_outcome(pkt(3), LEN, 0.0), accepted(1984));
-        assert_eq!(b.len(), 2);
-    }
+    // FIFO only: reordering works only with the token bucket, not the Spacer (spec 45).
+    let mut b = Cfg::new(8, false).spacer().loss(ge).build();
+    assert_eq!(b.push_outcome(pkt(1), LEN, 0.0), PushOutcome::Lost);
+    // the lost packet was accounted by the limiter (fill 992): the next one
+    // waits for it, offset 992 (not 0)
+    assert_eq!(b.push_outcome(pkt(2), LEN, 0.0), accepted(992), "fifo");
+    assert_eq!(b.push_outcome(pkt(3), LEN, 0.0), accepted(1984));
+    assert_eq!(b.len(), 2);
 }
 
 #[test]
 fn a_buffer_full_packet_does_not_consume_limiter_budget() {
-    for reordering in MODES {
-        let mut b = Cfg::new(1, reordering).spacer().build();
-        assert_eq!(b.push_outcome(pkt(1), LEN, 0.0), accepted(0)); // fill 992
-        assert_eq!(b.push_outcome(pkt(2), LEN, 0.0), PushOutcome::BufferFull); // fill stays 992
-        assert_eq!(b.pop_due(0.0), Some(pkt(1)));
-        // the full-buffer packet was not accounted: offset 992, not 1984
-        assert_eq!(
-            b.push_outcome(pkt(3), LEN, 0.0),
-            accepted(992),
-            "reordering={reordering}"
-        );
-    }
+    // FIFO only: reordering works only with the token bucket, not the Spacer (spec 45).
+    let mut b = Cfg::new(1, false).spacer().build();
+    assert_eq!(b.push_outcome(pkt(1), LEN, 0.0), accepted(0)); // fill 992
+    assert_eq!(b.push_outcome(pkt(2), LEN, 0.0), PushOutcome::BufferFull); // fill stays 992
+    assert_eq!(b.pop_due(0.0), Some(pkt(1)));
+    // the full-buffer packet was not accounted: offset 992, not 1984
+    assert_eq!(b.push_outcome(pkt(3), LEN, 0.0), accepted(992), "fifo");
 }
 
 // ── send_time_ns == the whole-ns front_time of the entry ────────────
@@ -437,6 +434,9 @@ fn script(seed: u64, steps: usize) -> Vec<(f64, Vec<u32>, f64)> {
 fn push_is_bit_identical_to_push_outcome_accepted() {
     for mode in [LimiterMode::Spacer, LimiterMode::TokenBucketFilter] {
         for reordering in MODES {
+            if reordering && matches!(mode, LimiterMode::Spacer) {
+                continue; // reordering works only with the token bucket (spec 45)
+            }
             for seed in [1u64, 2, 3] {
                 let cfg = busy(mode, reordering, seed);
                 let (mut a, mut b) = (Buffer::new(cfg), Buffer::new(cfg));
@@ -490,6 +490,9 @@ fn push_is_bit_identical_to_push_outcome_accepted() {
 fn accepted_send_time_is_what_pop_due_with_time_and_front_time_report() {
     for mode in [LimiterMode::Spacer, LimiterMode::TokenBucketFilter] {
         for reordering in MODES {
+            if reordering && matches!(mode, LimiterMode::Spacer) {
+                continue; // reordering works only with the token bucket (spec 45)
+            }
             let cfg = busy(mode, reordering, 99);
             let mut buf = Buffer::new(cfg);
             let mut expected: HashMap<usize, u64> = HashMap::new();
@@ -556,22 +559,24 @@ fn pop_due_with_time_pops_exactly_at_the_send_time_and_returns_it() {
 
 #[test]
 fn pop_due_with_time_returns_the_limiter_shifted_time() {
-    for reordering in MODES {
-        let mut b = Cfg::new(8, reordering).spacer().build();
-        for i in 0..3 {
-            assert!(b.push(pkt(i + 1), LEN, 0.0)); // send times 0, 992, 1984
-        }
-        assert_eq!(b.pop_due_with_time(0.0), Some((pkt(1), 0)));
-        assert_eq!(b.pop_due_with_time(991.0), None);
-        assert_eq!(b.pop_due_with_time(5_000.0), Some((pkt(2), 992)));
-        assert_eq!(b.pop_due_with_time(5_000.0), Some((pkt(3), 1984)));
+    // FIFO only: reordering works only with the token bucket, not the Spacer (spec 45).
+    let mut b = Cfg::new(8, false).spacer().build();
+    for i in 0..3 {
+        assert!(b.push(pkt(i + 1), LEN, 0.0)); // send times 0, 992, 1984
     }
+    assert_eq!(b.pop_due_with_time(0.0), Some((pkt(1), 0)));
+    assert_eq!(b.pop_due_with_time(991.0), None);
+    assert_eq!(b.pop_due_with_time(5_000.0), Some((pkt(2), 992)));
+    assert_eq!(b.pop_due_with_time(5_000.0), Some((pkt(3), 1984)));
 }
 
 #[test]
 fn pop_due_with_time_pops_the_same_pointers_in_the_same_order_as_pop_due() {
     for mode in [LimiterMode::Spacer, LimiterMode::TokenBucketFilter] {
         for reordering in MODES {
+            if reordering && matches!(mode, LimiterMode::Spacer) {
+                continue; // reordering works only with the token bucket (spec 45)
+            }
             let cfg = busy(mode, reordering, 5);
             let (mut a, mut b) = (Buffer::new(cfg), Buffer::new(cfg));
             let mut next_ptr = 1usize;

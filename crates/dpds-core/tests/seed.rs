@@ -64,6 +64,9 @@ const N: usize = 2000;
 fn same_seed_gives_identical_results_for_every_loss_model_and_mode() {
     for reordering in [false, true] {
         for correlation in [false, true] {
+            if reordering && correlation {
+                continue; // reordering cannot be combined with correlation (spec 45)
+            }
             for loss in [
                 LossModel::Random(0.3),
                 LossModel::GilbertElliot(0.1, 0.3, 0.95, 0.4, true),

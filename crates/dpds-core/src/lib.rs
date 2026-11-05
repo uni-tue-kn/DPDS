@@ -218,6 +218,10 @@ pub enum BuildError {
     InitializationRate { initialization_rate_pps: f64 },
     /// The buffer of `buffer_capacity` packets cannot be allocated.
     BufferCapacity { capacity: usize, reason: String },
+    /// `reordering` is combined with `activate_correlation`.
+    ReorderingWithCorrelation,
+    /// `reordering` is combined with an active limiter in the Spacer mode.
+    ReorderingWithSpacer,
 }
 
 impl fmt::Display for BuildError {
@@ -247,6 +251,13 @@ impl fmt::Display for BuildError {
             BuildError::BufferCapacity { capacity, reason } => write!(
                 f,
                 "cannot allocate buffer_capacity = {capacity} packets ({reason})"
+            ),
+            BuildError::ReorderingWithCorrelation => {
+                write!(f, "reordering cannot be combined with correlation")
+            }
+            BuildError::ReorderingWithSpacer => write!(
+                f,
+                "reordering works only with the TokenBucketFilter limiter, not Spacer"
             ),
         }
     }

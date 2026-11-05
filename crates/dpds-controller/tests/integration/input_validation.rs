@@ -18,7 +18,7 @@
 
 use crate::common::*;
 use dpds_controller::dto::ConfigDto;
-use serde_json::json;
+use serde_json::{json, Value};
 
 fn app() -> TestApp {
     TestApp::new(FakeHost::bare_metal())
@@ -317,4 +317,98 @@ fn the_dto_rejects_a_buffer_capacity_above_two_to_the_31() {
     let dto: ConfigDto = dto_from(c);
     let e = dto.to_core().unwrap_err().to_string();
     assert!(e.contains("buffer_capacity"), "{e}");
+}
+
+// ---- delay accuracy mode (spec 45 B1) -----------------------------------------
+
+/// A link config with `reordering`, the delayer's correlation and an optional limiter mode.
+fn accuracy_link(name: &str, reordering: bool, correlation: bool, limiter: Option<&str>) -> Value {
+    let mut c = cfg_json(1.0e6, 1.0e5);
+    c["reordering"] = json!(reordering);
+    c["delayer"]["activate_correlation"] = json!(correlation);
+    if let Some(mode) = limiter {
+        c["limiter"] = json!({ "mode": mode, "rate_bps": 1.0e9 });
+    }
+    link_cfg(name, "net_null0", "net_null0", c)
+}
+
+#[tokio::test]
+async fn reordering_with_correlation_is_a_400_naming_the_combination_on_start_and_validate() {
+    let a = app();
+    let s = setup(vec![accuracy_link("l", true, true, None)]);
+    for (route, r) in [
+        ("start", a.start(&s).await),
+        ("validate", a.validate(&s).await),
+    ] {
+        assert_eq!(r.status, 400, "{route}: {}", r.text());
+        let m = r.message();
+        assert!(
+            m.contains("reordering") && m.contains("correlation"),
+            "{route}: {m}"
+        );
+    }
+    assert!(a.supervisor.plans().is_empty());
+}
+
+#[tokio::test]
+async fn reordering_with_the_spacer_limiter_is_a_400_naming_the_combination_on_start_and_validate()
+{
+    let a = app();
+    let s = setup(vec![accuracy_link("l", true, false, Some("Spacer"))]);
+    for (route, r) in [
+        ("start", a.start(&s).await),
+        ("validate", a.validate(&s).await),
+    ] {
+        assert_eq!(r.status, 400, "{route}: {}", r.text());
+        let m = r.message();
+        assert!(
+            m.contains("reordering") && m.contains("TokenBucketFilter") && m.contains("Spacer"),
+            "{route}: {m}"
+        );
+    }
+    assert!(a.supervisor.plans().is_empty());
+}
+
+#[tokio::test]
+async fn the_allowed_delay_accuracy_combinations_validate_and_start() {
+    for (i, (reordering, correlation, limiter)) in [
+        (false, false, None),
+        (false, true, None),
+        (false, false, Some("Spacer")),
+        (false, true, Some("Spacer")),
+        (false, true, Some("TokenBucketFilter")),
+        (true, false, None),
+        (true, false, Some("TokenBucketFilter")),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let a = app();
+        let s = setup(vec![accuracy_link(
+            &format!("l{i}"),
+            reordering,
+            correlation,
+            limiter,
+        )]);
+        let why =
+            format!("reordering {reordering}, correlation {correlation}, limiter {limiter:?}");
+        let r = a.validate(&s).await;
+        assert_eq!(r.status, 200, "validate {why}: {}", r.text());
+        let r = a.start(&s).await;
+        assert_eq!(r.status, 202, "start {why}: {}", r.text());
+    }
+}
+
+#[test]
+fn the_dto_rejects_the_two_reordering_combinations_naming_them() {
+    let mut c = cfg_json(1.0e6, 0.0);
+    c["reordering"] = json!(true);
+    c["delayer"]["activate_correlation"] = json!(true);
+    let e = dto_from(c).to_core().unwrap_err().to_string();
+    assert!(e.contains("reordering") && e.contains("correlation"), "{e}");
+
+    let mut c = cfg_full(1.0e6, 0.0, 1.0e9); // Spacer
+    c["reordering"] = json!(true);
+    let e = dto_from(c).to_core().unwrap_err().to_string();
+    assert!(e.contains("reordering") && e.contains("Spacer"), "{e}");
 }
