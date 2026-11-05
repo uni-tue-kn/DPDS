@@ -6,7 +6,7 @@
 // implementation that sets them on a state selector of `.btn-outline-primary` is accepted as well (the last declaration wins).
 // No Bootstrap blue (#0d6efd, rgb 13, 110, 253) may remain in the app's stylesheet.
 // Spec 50 E (user 2026-11-05: "make the diagram for the rate, histogram and so on bigger (higher). They are currently really dense"):
-// `.chart-box`, which holds every line and bar chart, is 200px high (user: 400px was too high, "make it half that size"); the donut keeps its 220px.
+// `.chart-box`, which holds every line and bar chart, is 250px high (user: 400px was too high, then 1.25 x 200px); the donut keeps its 220px.
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { must } from '../test/must';
@@ -89,10 +89,9 @@ describe('no Bootstrap blue in the stylesheet (spec 50 C)', () => {
 describe('taller charts (spec 50 E)', () => {
   const flat = css.replace(/\s+/g, ' ');
 
-  it('.chart-box is 200px high (half of the 400px the user found too high)', () => {
+  it('.chart-box is 250px high (1.25 x 200px)', () => {
     const rule = must(/\.chart-box \{([^}]*)\}/.exec(flat), 'the .chart-box rule')[1];
-    expect(rule).toMatch(/(?:^|[;\s])height: 200px;/);
-    expect(rule).not.toMatch(/height: 400px/);
+    expect(rule).toMatch(/(?:^|[;\s])height: 250px;/);
   });
 
   it('the donut keeps its size: .donut-box is 220px by 220px', () => {
