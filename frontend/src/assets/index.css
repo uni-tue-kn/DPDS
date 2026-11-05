@@ -3,6 +3,7 @@
   --color-primary: #e74c3c;
   --color-primary-light: #ff9e93;
   --color-okay: #27ae60;
+  --color-okay-hover: #20864b;
   --color-yellow: #ffc107;
   --color-secondary: #2c3e50;
   --color-secondary-light: #7a8c9e;
@@ -137,23 +138,29 @@ body {
   color: #ffffff;
 }
 
+/* Like P4TG (its index.scss): primary buttons are green, danger buttons have the P4TG red background and keep
+   Bootstrap's border, hover and disabled colours. */
 .btn-primary,
 .btn-primary:disabled {
+  --bs-btn-bg: var(--color-okay);
+  --bs-btn-border-color: var(--color-okay);
+  --bs-btn-hover-bg: var(--color-okay-hover);
+  --bs-btn-hover-border-color: var(--color-okay-hover);
+  --bs-btn-active-bg: var(--color-okay-hover);
+  --bs-btn-active-border-color: var(--color-okay-hover);
+  --bs-btn-disabled-bg: var(--color-okay);
+  --bs-btn-disabled-border-color: var(--color-okay);
+}
+
+.btn-danger {
   --bs-btn-bg: var(--color-primary);
-  --bs-btn-border-color: var(--color-primary);
-  --bs-btn-hover-bg: #c0392b;
-  --bs-btn-hover-border-color: #c0392b;
-  --bs-btn-active-bg: #c0392b;
-  --bs-btn-active-border-color: #c0392b;
-  --bs-btn-disabled-bg: var(--color-primary);
-  --bs-btn-disabled-border-color: var(--color-primary);
 }
 
 .btn-success {
   --bs-btn-bg: var(--color-okay);
   --bs-btn-border-color: var(--color-okay);
-  --bs-btn-hover-bg: #20864b;
-  --bs-btn-hover-border-color: #20864b;
+  --bs-btn-hover-bg: var(--color-okay-hover);
+  --bs-btn-hover-border-color: var(--color-okay-hover);
   --bs-btn-disabled-bg: var(--color-okay);
   --bs-btn-disabled-border-color: var(--color-okay);
 }
@@ -332,7 +339,7 @@ fieldset.config-section > legend {
   color: var(--color-yellow);
 }
 
-.status-pill-active i {
+.status-pill-tx i {
   color: var(--color-okay);
 }
 

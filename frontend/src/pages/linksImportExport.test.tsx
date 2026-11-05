@@ -136,7 +136,7 @@ describe('Links: the Import / Export toolbar (spec27, moved by spec41)', () => {
     expect(rightAligned(box)).toBe(true);
   });
 
-  it("Import uses the green button colour and Export the red one (btn-success / btn-danger; this theme's primary is red)", async () => {
+  it("Import uses the green button colour and Export the red one (btn-success / btn-danger; the primary is green like P4TG's)", async () => {
     await open();
     expect(importBtn()).toHaveClass('btn-success');
     expect(exportBtn()).toHaveClass('btn-danger');

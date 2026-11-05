@@ -232,7 +232,7 @@ export default function Dashboard() {
             <i className="bi bi-arrow-down-circle-fill" aria-hidden="true" />
             RX {pills ? formatRatePill(pills.rxBps, pills.rxPps) : DASH}
           </span>
-          <span className={`status-pill ${state === 'running' ? 'status-pill-active' : ''}`} data-testid="pill-tx">
+          <span className="status-pill status-pill-tx" data-testid="pill-tx">
             <i className="bi bi-arrow-up-circle-fill" aria-hidden="true" />
             TX {pills ? formatRatePill(pills.txBps, pills.txPps) : DASH}
           </span>

@@ -8,8 +8,8 @@ import { api } from '../test/mockApi';
 import { must } from '../test/must';
 
 // Spec 43 (user 2026-11-05), the frontend parts that have no home in an older test file:
-//   F4  the RX pill's arrow is always the yellow/orange one (`--color-yellow`), also while running; the TX pill's arrow is green
-//       (`--color-okay`) while running and yellow otherwise. jsdom renders no CSS, so the colour that applies to the arrow `<i>` is
+//   F4  (amended by the user 2026-11-05: "no matter if the DPDS is started or stopped") the RX pill's arrow is always the
+//       yellow/orange one (`--color-yellow`) and the TX pill's arrow always the green one (`--color-okay`), in every state. jsdom renders no CSS, so the colour that applies to the arrow `<i>` is
 //       worked out from the stylesheet: every top-level rule of index.css whose selector matches the element (or an ancestor, for
 //       inheritance), the one with the highest specificity (later wins a tie) sets `color`. This does not care which class names the
 //       implementation uses. CHOICE: the value is `var(--color-yellow)` / `var(--color-okay)` or the literal hex of the variable.
@@ -93,17 +93,14 @@ describe('Dashboard (spec 43 F4): the arrows of the RX and TX pills', () => {
     expect(variable('--color-okay')).toMatch(/^#[0-9a-f]{6}$/);
   });
 
-  it('while running the RX arrow is yellow and the TX arrow green', async () => {
-    const { rx, tx } = await arrows('running');
-    expect(isVariable(arrowColor(rx), '--color-yellow'), `RX arrow: ${arrowColor(rx)}`).toBe(true);
-    expect(isVariable(arrowColor(tx), '--color-okay'), `TX arrow: ${arrowColor(tx)}`).toBe(true);
-  });
-
-  it.each(['stopped', 'stopping', 'failed', 'starting'] as const)('"%s": both arrows are yellow', async (state) => {
-    const { rx, tx } = await arrows(state);
-    expect(isVariable(arrowColor(rx), '--color-yellow'), `RX arrow: ${arrowColor(rx)}`).toBe(true);
-    expect(isVariable(arrowColor(tx), '--color-yellow'), `TX arrow: ${arrowColor(tx)}`).toBe(true);
-  });
+  it.each(['running', 'stopped', 'stopping', 'failed', 'starting'] as const)(
+    '"%s": the RX arrow is yellow and the TX arrow green',
+    async (state) => {
+      const { rx, tx } = await arrows(state);
+      expect(isVariable(arrowColor(rx), '--color-yellow'), `RX arrow: ${arrowColor(rx)}`).toBe(true);
+      expect(isVariable(arrowColor(tx), '--color-okay'), `TX arrow: ${arrowColor(tx)}`).toBe(true);
+    },
+  );
 
   it('the arrows keep their icons (RX down, TX up)', async () => {
     const { rx, tx } = await arrows('running');
