@@ -136,18 +136,21 @@ describe('Dashboard (spec 46): the TX and RX pills', () => {
     dir(1, { rx_bps: 3.15e9, tx_bps: 2.2e9, rx_pps: 2.71e6, tx_pps: 2.41e6 }),
   ];
 
-  it('read "<formatBits> (<formatPacketRate>)" of the sums, with no "RX"/"TX" label', async () => {
+  // User 2026-11-05: P4TG's pills show the live L1 rates (SendReceiveMonitor: tx_rate_l1 / rx_rate_l1), so DPDS shows
+  // L1 = L2 + 20 B x 8 x pps too: RX 9.25e9 + 7.31e6 x 160 = 10.4196e9, TX 7.25e9 + 6.31e6 x 160 = 8.2596e9.
+  it('read "<formatBits> (<formatPacketRate>)" of the summed L1 rates, with no "RX"/"TX" label', async () => {
     await runWith(LIVE);
-    await waitFor(() => expect(pillText('pill-rx')).toBe('9.25 Gbit/s (7.31 Mpps)'));
-    expect(pillText('pill-tx')).toBe('7.25 Gbit/s (6.31 Mpps)');
+    await waitFor(() => expect(pillText('pill-rx')).toBe('10.42 Gbit/s (7.31 Mpps)'));
+    expect(pillText('pill-tx')).toBe('8.26 Gbit/s (6.31 Mpps)');
     expect(el('pill-rx').textContent).not.toMatch(/RX|TX/);
     expect(el('pill-tx').textContent).not.toMatch(/RX|TX/);
   });
 
   it('use P4TG units: Kbit/s and Kpps with a capital K, no trailing zeros, no unit padding', async () => {
     await runWith([dir(0, { rx_bps: 1000, rx_pps: 1000, tx_bps: 1500, tx_pps: 1500 })]);
-    await waitFor(() => expect(pillText('pill-rx')).toBe('1 Kbit/s (1 Kpps)'));
-    expect(pillText('pill-tx')).toBe('1.5 Kbit/s (1.5 Kpps)');
+    // L1: 1000 + 1000 x 160 = 161000 and 1500 + 1500 x 160 = 241500
+    await waitFor(() => expect(pillText('pill-rx')).toBe('161 Kbit/s (1 Kpps)'));
+    expect(pillText('pill-tx')).toBe('241.5 Kbit/s (1.5 Kpps)');
   });
 
   it('a stopped emulation shows 0 Bit/s (0 Pps) after a run, "–" before any run', async () => {

@@ -1,6 +1,6 @@
 import { useId } from 'react';
 import { OverlayTrigger, Table, Tooltip } from 'react-bootstrap';
-import { formatBits, formatFrameCount } from '../common/format';
+import { formatBits, formatFrameCount, L1_OVERHEAD_BITS } from '../common/format';
 
 /** The live rates of a link, or of all links added up. */
 export interface Rates {
@@ -16,12 +16,6 @@ export interface FrameTotals {
   forwarded: number;
   outOfOrder: number;
 }
-
-/**
- * Preamble and inter-frame gap per frame, in bits: P4TG's L1 is L2 plus 20 B per frame. Whether DPDK's byte counters include the
- * 4 B FCS is unverified; it is not added here.
- */
-const L1_OVERHEAD_BITS = 20 * 8;
 
 function CountCell({ count }: { count: number }) {
   const id = useId();

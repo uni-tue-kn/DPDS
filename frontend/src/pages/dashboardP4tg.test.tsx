@@ -308,13 +308,13 @@ describe('Dashboard (spec 28): status pills', () => {
   it('shows the total RX rate as "Gbit/s (Mpps)", summed over the directions', async () => {
     renderApp('/');
     const pill = await screen.findByTestId('pill-rx');
-    await waitFor(() => expect(pill).toHaveTextContent(/9\.25 Gbit\/s \(7\.31 Mpps\)/));
+    await waitFor(() => expect(pill).toHaveTextContent(/10\.42 Gbit\/s \(7\.31 Mpps\)/));
   });
 
   it('shows the total TX rate the same way', async () => {
     renderApp('/');
     const pill = await screen.findByTestId('pill-tx');
-    await waitFor(() => expect(pill).toHaveTextContent(/7\.25 Gbit\/s \(6\.31 Mpps\)/));
+    await waitFor(() => expect(pill).toHaveTextContent(/8\.26 Gbit\/s \(6\.31 Mpps\)/));
   });
 
   // Spec 46. Was: 'RX and TX are told apart in the pills (RX first)', with the labels "RX" and "TX" in the text. P4TG has no
@@ -335,12 +335,12 @@ describe('Dashboard (spec 28): status pills', () => {
     renderApp('/');
     await tick(0);
     await tick(0);
-    expect(screen.getByTestId('pill-rx')).toHaveTextContent(/9\.25 Gbit\/s/);
+    expect(screen.getByTestId('pill-rx')).toHaveTextContent(/10\.42 Gbit\/s/); // L1
     api.getStats.mockResolvedValue(
       fx.stats([fx.dirStats(0, { rx_bps: 1.5e9, rx_pps: 1.25e6, tx_bps: 1.5e9, tx_pps: 1.25e6 })]),
     );
     await tick(2500);
-    expect(screen.getByTestId('pill-rx')).toHaveTextContent(/1\.5 Gbit\/s \(1\.25 Mpps\)/);
+    expect(screen.getByTestId('pill-rx')).toHaveTextContent(/1\.7 Gbit\/s \(1\.25 Mpps\)/);
   });
 
   // Spec 43 F3. Was: 'the state pill stays (same test id and live region)'.
@@ -670,15 +670,15 @@ describe('Dashboard (spec 28): rate chart in the P4TG look', () => {
     expect(series(chart, /TX/).data.at(-1)).toBeCloseTo(8.25, 6);
   });
 
-  it('RX is P4TG blue rgb(53,162,235), TX orange-brown rgb(183,85,40)', async () => {
+  it('TX is P4TG blue rgb(53,162,235), RX orange-brown rgb(183,85,40)', async () => {
     const chart = await rate();
     const rx = series(chart, /RX/);
     const tx = series(chart, /TX/);
-    expect(rx.borderColor?.replace(/\s/g, '')).toBe('rgb(53,162,235)');
-    expect(tx.borderColor?.replace(/\s/g, '')).toBe('rgb(183,85,40)');
-    // the fill is a translucent version of the line colour, not another colour
-    expect(rx.backgroundColor?.replace(/\s/g, '')).toMatch(/^rgba?\(53,162,235/);
-    expect(tx.backgroundColor?.replace(/\s/g, '')).toMatch(/^rgba?\(183,85,40/);
+    expect(tx.borderColor?.replace(/\s/g, '')).toBe('rgb(53,162,235)');
+    expect(rx.borderColor?.replace(/\s/g, '')).toBe('rgb(183,85,40)');
+    // the fill is a translucent version of the line colour (P4TG: rgba(53,162,235,0.5) / rgba(250,122,64,0.5))
+    expect(tx.backgroundColor?.replace(/\s/g, '')).toBe('rgba(53,162,235,0.5)');
+    expect(rx.backgroundColor?.replace(/\s/g, '')).toBe('rgba(250,122,64,0.5)');
   });
 
   it('both rate datasets are filled', async () => {
@@ -1017,11 +1017,11 @@ describe('Dashboard (spec 28): chart text and grid colours follow dark mode', ()
     await waitFor(() => expect(brightness(optsOf(chart()).scales?.y?.ticks?.color, 'light again')).toBeLessThan(0.4));
   });
 
-  it('the series colours are the same in both themes (RX blue, TX orange-brown)', async () => {
+  it('the series colours are the same in both themes (TX blue, RX orange-brown)', async () => {
     setPrefersDark(true);
     await openCards();
-    const rx = dataOf(within(card(0)).getByTestId('chart-line')).datasets.find((s) => /RX/.test(s.label ?? ''));
-    expect(rx?.borderColor?.replace(/\s/g, '')).toBe('rgb(53,162,235)');
+    const tx = dataOf(within(card(0)).getByTestId('chart-line')).datasets.find((s) => /TX/.test(s.label ?? ''));
+    expect(tx?.borderColor?.replace(/\s/g, '')).toBe('rgb(53,162,235)');
   });
 });
 

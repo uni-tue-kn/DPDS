@@ -42,8 +42,8 @@ describe('Dashboard (spec 50 G): 100 points per time chart', () => {
     await open();
     const c = lineOf(card(0));
     expect(c.labels).toHaveLength(100);
-    expect(dataset(c, 'RX')).toEqual(POSITIONS);
-    expect(dataset(c, 'TX')).toEqual(POSITIONS);
+    expect(dataset(c, 'RX rate')).toEqual(POSITIONS);
+    expect(dataset(c, 'TX rate')).toEqual(POSITIONS);
     expect(c.labels[0]).toBe('0h 0m 0s');
     expect(c.labels[99]).toBe('0h 4m 9s');
   });
@@ -89,6 +89,6 @@ describe('Dashboard (spec 50 G): 100 points per time chart', () => {
     await tick(0);
     await tick(0);
     const c = lineOf(card(0));
-    expect(dataset(c, 'RX')).toEqual(Array.from({ length: 100 }, (_, i) => i));
+    expect(dataset(c, 'RX rate')).toEqual(Array.from({ length: 100 }, (_, i) => i));
   });
 });

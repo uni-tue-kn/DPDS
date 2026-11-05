@@ -7,10 +7,10 @@
 import { within } from '@testing-library/react';
 import { vi } from 'vitest';
 import type { HistorySample } from '../api/types';
-import * as fx from '../test/fixtures';
-import { api, serveHistory } from '../test/mockApi';
-import { renderApp, tick } from '../test/helpers';
 import { card } from '../test/dashboardUi';
+import * as fx from '../test/fixtures';
+import { renderApp, tick } from '../test/helpers';
+import { api, serveHistory } from '../test/mockApi';
 import { must } from '../test/must';
 
 interface ChartData {
@@ -79,5 +79,22 @@ describe('rate chart unit (P4TG "Gbit/s", a lower unit for slow links)', () => {
     await open({ '0': [at(1000, 0, 0)], '1': [] });
     expect(yTitle(0)).toBe('Gbit/s');
     expect(yTitle(1)).toBe('Gbit/s');
+  });
+});
+
+// User 2026-11-05: "the colors of the TX and RX are the wrong way in DPDS compared to P4TG. TX has to be the first in
+// blue and RX the second in red." P4TG Visuals.tsx rateDatasets: 'TX rate' rgb(53, 162, 235) / rgba(53, 162, 235, 0.5),
+// then 'RX rate' rgb(183,85,40) / rgb(250,122,64, 0.5).
+describe('rate chart datasets like P4TG', () => {
+  it('TX rate first in blue, RX rate second in red', async () => {
+    await open({ '0': [at(1000, 9.5, 9.25)], '1': [] });
+    const sets = (
+      JSON.parse(chartEl(0).getAttribute('data-chart') ?? 'null') as {
+        datasets: { label: string; borderColor: string; backgroundColor: string }[];
+      }
+    ).datasets;
+    expect(sets.map((s) => s.label)).toEqual(['TX rate', 'RX rate']);
+    expect(sets[0]).toMatchObject({ borderColor: 'rgb(53, 162, 235)', backgroundColor: 'rgba(53, 162, 235, 0.5)' });
+    expect(sets[1]).toMatchObject({ borderColor: 'rgb(183, 85, 40)', backgroundColor: 'rgba(250, 122, 64, 0.5)' });
   });
 });

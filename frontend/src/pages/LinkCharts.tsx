@@ -110,17 +110,17 @@ export default function LinkCharts({
       labels,
       datasets: [
         {
-          label: 'RX',
-          data: points.map((s) => s.rx_gbps * rateUnit.perGbit),
-          borderColor: RX_COLOR,
-          backgroundColor: RX_FILL,
-          fill: true,
-        },
-        {
-          label: 'TX',
+          label: 'TX rate',
           data: points.map((s) => s.tx_gbps * rateUnit.perGbit),
           borderColor: TX_COLOR,
           backgroundColor: TX_FILL,
+          fill: true,
+        },
+        {
+          label: 'RX rate',
+          data: points.map((s) => s.rx_gbps * rateUnit.perGbit),
+          borderColor: RX_COLOR,
+          backgroundColor: RX_FILL,
           fill: true,
         },
       ],

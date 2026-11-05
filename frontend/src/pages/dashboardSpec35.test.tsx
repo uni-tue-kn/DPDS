@@ -35,6 +35,15 @@ import { deferred, renderApp, seedRaw, seedStore, tick } from '../test/helpers';
 import { ApiError, api, fakeController, serveHistory } from '../test/mockApi';
 import { must } from '../test/must';
 
+/** The "RX rate" series of a rate chart element, found by label (the TX series comes first since the P4TG order). */
+const rxData = (chart: HTMLElement): number[] =>
+  must(
+    (
+      JSON.parse(chart.getAttribute('data-chart') ?? 'null') as { datasets: { label: string; data: number[] }[] }
+    ).datasets.find((d) => /RX/.test(d.label)),
+    'RX dataset',
+  ).data;
+
 // Spec 35 (user 2026-11-05): minimal, P4TG-like dashboard. Spec: scratchpad/spec35-dashboard.md, items F1 to F7. The loss donut
 // (F5) is in lossDonut.test.tsx, the NIC ports table is gone from /interfaces too (spec 43 F6, interfacesNoStats.test.tsx). Layout contract and
 // test ids: the header of src/test/dashboardUi.tsx. Tester's choices where the spec is silent are marked CHOICE.
@@ -118,8 +127,8 @@ describe('Dashboard (spec 35 F1): the top row, pills left and buttons right like
       ),
     );
     renderApp('/');
-    await waitFor(() => expect(pillText('pill-rx')).toBe('9.25 Gbit/s (7.31 Mpps)'));
-    expect(pillText('pill-tx')).toBe('7.25 Gbit/s (6.31 Mpps)');
+    await waitFor(() => expect(pillText('pill-rx')).toBe('10.42 Gbit/s (7.31 Mpps)'));
+    expect(pillText('pill-tx')).toBe('8.26 Gbit/s (6.31 Mpps)');
     expect(pillText('pill-elapsed')).toBe('0h 3m 12s');
     // spec 43 F2, spec 46: the default counters of each link drop 4 + 3 + 3 packets, so 20 over the two links
     expect(pillText('pill-status')).toBe('Status: Error. Lost 20.00 frames.');
@@ -406,7 +415,7 @@ describe('Dashboard (spec 37, was spec 35 F2): the pills show 0 once the run has
       }),
     );
     await open();
-    expect(pillText('pill-rx')).toBe('2 Gbit/s (200 Kpps)');
+    expect(pillText('pill-rx')).toBe('2.03 Gbit/s (200 Kpps)');
     expect(pillText('pill-status')).toBe('Status: Error. Lost 20.00 frames.'); // live counters
     ended('stopped', 9000);
     await tick(2500);
@@ -540,10 +549,10 @@ describe('Dashboard (spec 35 F3): one tab per link', () => {
     await findCard(1);
     await waitFor(() => {
       const chart = within(card(0)).getByTestId('chart-line');
-      expect(JSON.parse(chart.getAttribute('data-chart') ?? 'null').datasets[0].data).toEqual([1.5]);
+      expect(rxData(chart)).toEqual([1.5]);
     });
     const chart1 = within(card(1)).getByTestId('chart-line');
-    expect(JSON.parse(chart1.getAttribute('data-chart') ?? 'null').datasets[0].data).toEqual([7.5]);
+    expect(rxData(chart1)).toEqual([7.5]);
     expect(tab(1)).toHaveAttribute('aria-selected', 'true');
     expect(tab(0)).toHaveAttribute('aria-selected', 'false');
   });
@@ -585,7 +594,7 @@ describe('Dashboard (spec 35 F3): one tab per link', () => {
     await tick(5000);
     expect(tab(1)).toHaveAttribute('aria-selected', 'true');
     const chart = within(activePanel()).getByTestId('chart-line');
-    expect(JSON.parse(chart.getAttribute('data-chart') ?? 'null').datasets[0].data).toEqual([7.5]);
+    expect(rxData(chart)).toEqual([7.5]);
   });
 
   it('the selected tab stays selected when the run ends (the ended tabs are the same links)', async () => {

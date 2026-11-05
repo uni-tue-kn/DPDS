@@ -32,7 +32,7 @@ const restartBtn = () => screen.getByRole('button', { name: /^restart$/i });
 const rxOf = (panel: HTMLElement): number[] => {
   const data = JSON.parse(within(panel).getByTestId('chart-line').getAttribute('data-chart') ?? 'null');
   return must(
-    data.datasets.find((s: { label: string }) => s.label === 'RX'),
+    data.datasets.find((s: { label: string }) => s.label === 'RX rate'),
     'RX dataset',
   ).data;
 };

@@ -1,3 +1,4 @@
+import type { ChartOptions } from 'chart.js';
 import {
   ArcElement,
   BarElement,
@@ -13,7 +14,6 @@ import {
   Title,
   Tooltip,
 } from 'chart.js';
-import type { ChartOptions } from 'chart.js';
 import Annotation from 'chartjs-plugin-annotation';
 import type { Theme } from '../common/theme';
 
@@ -34,11 +34,11 @@ ChartJS.register(
   Tooltip,
 );
 
-/** The colours of the P4TG charts: RX blue, TX orange-brown. The fill is the same colour, translucent. */
-export const RX_COLOR = 'rgb(53, 162, 235)';
-export const RX_FILL = 'rgba(53, 162, 235, 0.5)';
-export const TX_COLOR = 'rgb(183, 85, 40)';
-export const TX_FILL = 'rgba(183, 85, 40, 0.5)';
+/** The colours of P4TG's rate chart (Visuals.tsx rateDatasets): TX blue, RX orange-red, each with its translucent fill. */
+export const TX_COLOR = 'rgb(53, 162, 235)';
+export const TX_FILL = 'rgba(53, 162, 235, 0.5)';
+export const RX_COLOR = 'rgb(183, 85, 40)';
+export const RX_FILL = 'rgba(250, 122, 64, 0.5)';
 
 /** Text and grid colours that read on the page background of the theme. */
 export const chartInk = (theme: Theme) =>

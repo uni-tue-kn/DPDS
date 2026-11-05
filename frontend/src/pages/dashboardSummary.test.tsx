@@ -259,7 +259,7 @@ describe('Summary tab (spec 36 S1): the radios', () => {
     renderApp('/');
     await tick(0);
     await tick(0);
-    expect(lineOf(summary()).datasets.map((s) => s.label)).toEqual(['RX', 'TX']);
+    expect(lineOf(summary()).datasets.map((s) => s.label)).toEqual(['TX rate', 'RX rate']);
     fireEvent.click(summaryRadio('Packet loss'));
     expect(summaryRadio('Packet loss')).toBeChecked();
     expect(lineOf(summary()).datasets.map((s) => s.label)).toEqual([...CAUSES]);
@@ -267,7 +267,7 @@ describe('Summary tab (spec 36 S1): the radios', () => {
     await tick(3000);
     expect(summaryRadio('Packet loss')).toBeChecked();
     fireEvent.click(summaryRadio('Traffic rates'));
-    expect(lineOf(summary()).datasets.map((s) => s.label)).toEqual(['RX', 'TX']);
+    expect(lineOf(summary()).datasets.map((s) => s.label)).toEqual(['TX rate', 'RX rate']);
     expect(must(within(summary()).getAllByRole('img')[0]).getAttribute('aria-label')).toMatch(/rate/i);
   });
 
@@ -320,9 +320,9 @@ describe('Summary tab (spec 36 S1): the rate chart', () => {
       '0': [sample(1000, { rx_gbps: 1.5, tx_gbps: 1.25 }), sample(2000, { rx_gbps: 2.5, tx_gbps: 0.25 })],
       '1': [sample(1000, { rx_gbps: 7.5, tx_gbps: 0.5 }), sample(2000, { rx_gbps: 4, tx_gbps: 2 })],
     });
-    await waitFor(() => expect(dataset(summary(), 'RX')).toHaveLength(2));
-    expect(dataset(summary(), 'RX')).toEqual([9, 6.5]);
-    expect(dataset(summary(), 'TX')).toEqual([1.75, 2.25]);
+    await waitFor(() => expect(dataset(summary(), 'RX rate')).toHaveLength(2));
+    expect(dataset(summary(), 'RX rate')).toEqual([9, 6.5]);
+    expect(dataset(summary(), 'TX rate')).toEqual([1.75, 2.25]);
     expect(lineOf(summary()).labels).toEqual(['0h 0m 1s', '0h 0m 2s']);
     expect(lineOf(card(0)).labels).toEqual(lineOf(summary()).labels); // same time axis as a link's chart
   });
@@ -332,8 +332,8 @@ describe('Summary tab (spec 36 S1): the rate chart', () => {
       '0': [sample(1000, { rx_gbps: 1 }), sample(2000, { rx_gbps: 2 }), sample(3000, { rx_gbps: 3 })],
       '1': [sample(2000, { rx_gbps: 10 }), sample(3000, { rx_gbps: 20 }), sample(4000, { rx_gbps: 30 })],
     });
-    await waitFor(() => expect(dataset(summary(), 'RX')).toHaveLength(2));
-    expect(dataset(summary(), 'RX')).toEqual([12, 23]);
+    await waitFor(() => expect(dataset(summary(), 'RX rate')).toHaveLength(2));
+    expect(dataset(summary(), 'RX rate')).toEqual([12, 23]);
     expect(lineOf(summary()).labels).toEqual(['0h 0m 2s', '0h 0m 3s']);
   });
 
@@ -341,7 +341,7 @@ describe('Summary tab (spec 36 S1): the rate chart', () => {
     await open({ '0': [sample(1000), sample(2000)], '1': [] });
     await waitFor(() => expect(lineOf(card(0)).labels).toHaveLength(2)); // the history has arrived
     expect(lineOf(summary()).labels).toEqual([]);
-    expect(dataset(summary(), 'RX')).toEqual([]);
+    expect(dataset(summary(), 'RX rate')).toEqual([]);
   });
 
   it('with three links sums all three', async () => {
@@ -350,7 +350,7 @@ describe('Summary tab (spec 36 S1): the rate chart', () => {
       { '0': [sample(1000, { rx_gbps: 1 })], '1': [sample(1000, { rx_gbps: 2 })], '2': [sample(1000, { rx_gbps: 4 })] },
       dirs,
     );
-    await waitFor(() => expect(dataset(summary(), 'RX')).toEqual([7]));
+    await waitFor(() => expect(dataset(summary(), 'RX rate')).toEqual([7]));
   });
 
   it('follows the next poll of the history', async () => {
@@ -367,14 +367,14 @@ describe('Summary tab (spec 36 S1): the rate chart', () => {
     renderApp('/');
     await tick(0);
     await tick(0);
-    expect(dataset(summary(), 'RX')).toEqual([3]);
+    expect(dataset(summary(), 'RX rate')).toEqual([3]);
     server.samples = {
       '0': [sample(1000, { rx_gbps: 1 }), sample(2000, { rx_gbps: 5 })],
       '1': [sample(1000, { rx_gbps: 2 }), sample(2000, { rx_gbps: 6 })],
     };
     serveHistory(server);
     await tick(2500);
-    expect(dataset(summary(), 'RX')).toEqual([3, 11]);
+    expect(dataset(summary(), 'RX rate')).toEqual([3, 11]);
   });
 
   it('after a stop it shows the history of the ended run, summed', async () => {
@@ -392,7 +392,7 @@ describe('Summary tab (spec 36 S1): the rate chart', () => {
     await tick(0);
     await tick(1000);
     expect(summaryTab()).toHaveAttribute('aria-selected', 'true');
-    expect(dataset(summary(), 'RX')).toEqual([9, 3]);
+    expect(dataset(summary(), 'RX rate')).toEqual([9, 3]);
   });
 
   it('while the emulation is starting it plots no sample, like the link charts', async () => {

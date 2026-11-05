@@ -90,3 +90,12 @@ export function formatFrameCount(packets: number, decimals = 2): string {
 export function secondsToTime(seconds: number): string {
   return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m ${Math.floor((seconds % 3600) % 60)}s`;
 }
+
+/**
+ * Preamble and inter-frame gap per frame, in bits: P4TG's L1 is L2 plus 20 B per frame. Whether DPDK's byte counters include the
+ * 4 B FCS is unverified; it is not added here.
+ */
+export const L1_OVERHEAD_BITS = 20 * 8;
+
+/** The L1 bit rate of an L2 bit rate `bps` at `pps` frames per second. */
+export const l1Bps = (bps: number, pps: number) => bps + pps * L1_OVERHEAD_BITS;

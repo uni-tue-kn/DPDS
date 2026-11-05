@@ -1,10 +1,10 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { vi } from 'vitest';
+import { expectState, runButtons } from '../test/dashboardUi';
 import * as fx from '../test/fixtures';
 import { expectStartBody, renderApp, seedStore, storedDoc, tick } from '../test/helpers';
 import { ApiError, api, fakeController, serveHistory } from '../test/mockApi';
 import { must } from '../test/must';
-import { expectState, runButtons } from '../test/dashboardUi';
 
 // Spec 28b: fixes from the review of bcca62b (items 1, 3, 4 and 5 here; item 2 is dashboardMemo.test.tsx, item 6 is
 // histogramHintsSpec28b.test.tsx). Spec: scratchpad/spec28b.md. The tester's choices where it is silent are marked "CHOICE".
@@ -215,8 +215,8 @@ describe("Dashboard (spec 28b item 3, spec 46): the pills use P4TG's formatBits 
     );
     renderApp('/');
     const rx = await screen.findByTestId('pill-rx');
-    await waitFor(() => expect(rx).toHaveTextContent('1.5 Mbit/s (2.5 Kpps)'));
-    expect(screen.getByTestId('pill-tx')).toHaveTextContent('999.6 Bit/s (999.6 Pps)');
+    await waitFor(() => expect(rx).toHaveTextContent('1.9 Mbit/s (2.5 Kpps)'));
+    expect(screen.getByTestId('pill-tx')).toHaveTextContent('160.94 Kbit/s (999.6 Pps)');
   });
 });
 
@@ -325,11 +325,11 @@ describe('Dashboard (spec 28b item 4, spec 37): RX and TX pills when the stats h
       totals: { '0': fx.totals() },
     });
     api.getEmulation.mockResolvedValue(fx.emulation('running'));
-    api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0)])); // 9.5 Gbit/s, 1.23 Mpps
+    api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0)])); // L2 9.5 Gbit/s at 1.23 Mpps, so L1 9.7 Gbit/s
     renderApp('/');
     await tick(0);
     await tick(0);
-    expect(screen.getByTestId('pill-rx')).toHaveTextContent('9.5 Gbit/s (1.23 Mpps)');
+    expect(screen.getByTestId('pill-rx')).toHaveTextContent('9.7 Gbit/s (1.23 Mpps)');
     api.getEmulation.mockResolvedValue(fx.emulation('stopped'));
     api.getStats.mockResolvedValue(fx.stats([], { stale: true, age_ms: undefined, elapsed_ms: 4000 }));
     await tick(2500);

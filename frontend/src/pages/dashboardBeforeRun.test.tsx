@@ -164,7 +164,7 @@ describe('Dashboard before any run (spec 39): the empty diagrams', () => {
     expect(within(panel).getByRole('img', { name: /^(Rate|Traffic rates) chart/ })).toBeInTheDocument();
     const data = line(panel);
     expect(data.labels).toEqual([]);
-    expect(data.datasets.map((s) => s.label)).toEqual(['RX', 'TX']);
+    expect(data.datasets.map((s) => s.label)).toEqual(['TX rate', 'RX rate']);
     for (const s of data.datasets) expect(s.data).toEqual([]);
     const options = JSON.parse(within(panel).getByTestId('chart-line').getAttribute('data-options') ?? 'null');
     expect(options.scales.x.title.text).toBe('Time');

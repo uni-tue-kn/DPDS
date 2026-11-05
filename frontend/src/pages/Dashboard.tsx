@@ -7,6 +7,7 @@ import {
   formatBits,
   formatFrameCount,
   formatPacketRate,
+  l1Bps,
   linkLabel,
   secondsToTime,
 } from '../common/format';
@@ -19,8 +20,8 @@ import ErrorAlert from '../components/ErrorAlert';
 import Loader from '../components/Loader';
 import LinkCharts from './LinkCharts';
 import LoadRunning from './LoadRunning';
-import { addStats, type LinkStats, NO_STATS, statsOfLive, statsOfTotals } from './linkStats';
 import { totalDrops } from './LossDonut';
+import { addStats, type LinkStats, NO_STATS, statsOfLive, statsOfTotals } from './linkStats';
 
 const POLL_MS = 1000;
 
@@ -55,7 +56,7 @@ const TIME_STYLE: CSSProperties = {
 };
 const ARROW_STYLE: CSSProperties = { paddingRight: '5px' };
 
-const ZERO_PILLS = { rxBps: 0, rxPps: 0, txBps: 0, txPps: 0 };
+const ZERO_PILLS = { rxBps: 0, rxPps: 0, txBps: 0, txPps: 0, rxL2: 0, txL2: 0 };
 
 /** The log lines with a React key each: the line plus its occurrence number, since a line may repeat. */
 function keyedLines(lines: string[]): { key: string; line: string }[] {
@@ -75,19 +76,23 @@ function storedRequest() {
   return startRequestOf(stored.doc);
 }
 
-/** Total RX and TX rate over all links. */
+/** Total RX and TX rates over all links: L1 for the pills (P4TG's pills show the live L1 rates), L2 for the loss share. */
 function totalsOf(directions: StatsView['directions']) {
   let rxBps = 0;
   let rxPps = 0;
   let txBps = 0;
   let txPps = 0;
+  let rxL2 = 0;
+  let txL2 = 0;
   for (const d of directions) {
-    rxBps += d.rx_bps;
+    rxBps += l1Bps(d.rx_bps, d.rx_pps);
     rxPps += d.rx_pps;
-    txBps += d.tx_bps;
+    txBps += l1Bps(d.tx_bps, d.tx_pps);
     txPps += d.tx_pps;
+    rxL2 += d.rx_bps;
+    txL2 += d.tx_bps;
   }
-  return { rxBps, rxPps, txBps, txPps };
+  return { rxBps, rxPps, txBps, txPps, rxL2, txL2 };
 }
 
 export default function Dashboard() {
@@ -304,10 +309,10 @@ export default function Dashboard() {
               {secondsToTime(Math.floor(stats.elapsed_ms / 1000))}
             </span>
           )}
-          {pills && pills.rxBps > 0 && 1 - pills.txBps / pills.rxBps > 0.001 && (
+          {pills && pills.rxL2 > 0 && 1 - pills.txL2 / pills.rxL2 > 0.001 && (
             <span data-testid="loss-pct">
               <i className="bi bi-exclamation-circle-fill text-danger" aria-hidden="true" />{' '}
-              {(100 * (1 - pills.txBps / pills.rxBps)).toFixed(2)} %
+              {(100 * (1 - pills.txL2 / pills.rxL2)).toFixed(2)} %
             </span>
           )}
         </Col>
