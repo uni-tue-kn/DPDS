@@ -136,9 +136,7 @@ pub(crate) fn nic_hints(ctx: &Ctx) -> Vec<Hint> {
             flow_control(nic, label, pause.as_ref()),
             maxreadreq(ctx, nic, label),
         ];
-        let mlx5 = nic.vendor_id.as_deref() == Some("0x15b3")
-            && nic.driver.as_deref() == Some("mlx5_core");
-        if mlx5 {
+        if is_mlx5(nic) {
             set.push(port_buffer(ctx, nic, label, pause.as_ref()));
             set.push(firmware(ctx, nic, label));
         }
@@ -156,6 +154,25 @@ pub(crate) fn nic_hints(ctx: &Ctx) -> Vec<Hint> {
         hints.extend(set);
     }
     hints
+}
+
+fn is_mlx5(nic: &Interface) -> bool {
+    nic.vendor_id.as_deref() == Some("0x15b3") && nic.driver.as_deref() == Some("mlx5_core")
+}
+
+/// Queries the firmware settings of every mlx5 NIC of `nics` into the cache, which is what a
+/// link on each of them would query; the hints are dropped. With `recheck` (and tools allowed)
+/// the cached results of all of them are dropped first.
+pub(crate) fn warm_firmware(ctx: &Ctx, nics: &[Interface]) {
+    let mlx5: Vec<&Interface> = nics.iter().filter(|n| is_mlx5(n)).collect();
+    if let (Some(cache), true) = (ctx.cache, ctx.recheck && ctx.run_tools) {
+        for nic in &mlx5 {
+            cache.drop_card(&function_zero(&nic.pci));
+        }
+    }
+    for nic in mlx5 {
+        firmware(ctx, nic, &nic_label(nic));
+    }
 }
 
 /// The info hint for a state that could not be read, with the install command when the tool is

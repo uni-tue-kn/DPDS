@@ -18,7 +18,7 @@ use axum::{Json, Router};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::json;
-use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::{watch, Mutex as AsyncMutex};
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use utoipa::{OpenApi, ToSchema};
 use utoipa_swagger_ui::SwaggerUi;
@@ -29,7 +29,9 @@ use crate::dto::{
 };
 use crate::eal::{drain_timeout, eal_argv, links_file_json, EalInput, EalPort};
 use crate::frontend::Frontend;
-use crate::hints::{compute_hints_cached, hugepage_bytes, link_need, mib, Hint, Level};
+use crate::hints::{
+    compute_hints_cached, hugepage_bytes, link_need, mib, warm_firmware, Hint, Level,
+};
 use crate::host::HostRoots;
 use crate::lcores::{assign_lcores, DirectionPlan};
 use crate::model::{Link, RunConfig, StartLink, StartRequest, MAX_NAME_CHARS};
@@ -75,6 +77,10 @@ struct App {
     lifecycle: AsyncMutex<()>,
     /// The firmware query results of the hints, until the controller restarts or a recheck.
     firmware: FirmwareCache,
+    /// The stored host hints once the startup task (`router_with_startup`) has computed them;
+    /// `None` until then. Without the task, `warm` is false and a GET computes on demand.
+    host_hints: watch::Sender<Option<Vec<Hint>>>,
+    warm: bool,
     /// The GUI sessions that polled `/api/online` lately.
     sessions: SessionTracker,
     /// Per link of the run, the last since-start delay histogram, served once the run ended.
@@ -512,13 +518,47 @@ async fn interfaces(State(app): Shared) -> Result<Json<Vec<Interface>>, ApiError
     Ok(Json(blocking(move || discover(&app.deps.roots)).await?))
 }
 
-/// The hints that depend on the host only.
+/// The hints that depend on the host only: the result the controller computed in the background
+/// when it started, or, with `recheck=true`, computed now.
 #[utoipa::path(
     get, path = "/api/host/hints",
-    responses((status = 200, body = Vec<Hint>), (status = 500, body = ErrorBody))
+    params(("recheck" = Option<bool>, Query, description = "true: compute the host hints and read the firmware settings of all NICs again, replacing the stored result (default false: the result computed at startup, waiting for it if it is still running); any other value is a 400")),
+    responses((status = 200, body = Vec<Hint>), (status = 400, body = ErrorBody), (status = 500, body = ErrorBody))
 )]
-async fn host_hints(State(app): Shared) -> Result<Json<Vec<Hint>>, ApiError> {
-    hints_of(app, RunConfig::default(), false).await
+async fn host_hints(
+    State(app): Shared,
+    RawQuery(query): RawQuery,
+) -> Result<Json<Vec<Hint>>, ApiError> {
+    let recheck = parse_recheck(query.as_deref())?;
+    if !app.warm {
+        return hints_of(app, RunConfig::default(), recheck).await;
+    }
+    if recheck {
+        let a = app.clone();
+        let hints = blocking(move || compute_host_hints(&a, true)).await?;
+        app.host_hints.send_replace(Some(hints.clone()));
+        return Ok(Json(hints));
+    }
+    let mut rx = app.host_hints.subscribe();
+    let stored = rx
+        .wait_for(Option::is_some)
+        .await
+        .map_err(|e| ApiError::internal(format!("host hints unavailable: {e}")))?;
+    Ok(Json(stored.clone().unwrap_or_default()))
+}
+
+/// The host hints after the firmware of every NIC was queried into the cache (all NICs again
+/// with `recheck`). The emulation state is read once: no tool runs while one is busy.
+fn compute_host_hints(app: &App, recheck: bool) -> Vec<Hint> {
+    let tools = tools_may_run(app);
+    warm_firmware(&app.deps.roots, tools, &app.firmware, recheck);
+    compute_hints_cached(
+        &app.deps.roots,
+        &RunConfig::default(),
+        tools,
+        &app.firmware,
+        false,
+    )
 }
 
 /// The host hints plus the ones that depend on the links of a configuration. The body is
@@ -990,8 +1030,19 @@ pub fn router(deps: Deps) -> Router {
     router_with(deps, Frontend::embedded())
 }
 
-/// The API, and `frontend` for every GET and HEAD outside `/api`.
+/// The API, and `frontend` for every GET and HEAD outside `/api`. `GET /api/host/hints` computes
+/// on demand.
 pub fn router_with(deps: Deps, frontend: Frontend) -> Router {
+    build(deps, frontend, false)
+}
+
+/// `router_with` plus the startup task: a blocking task of the current tokio runtime computes the
+/// host hints and queries the firmware of every NIC, and `GET /api/host/hints` serves the result.
+pub fn router_with_startup(deps: Deps, frontend: Frontend) -> Router {
+    build(deps, frontend, true)
+}
+
+fn build(deps: Deps, frontend: Frontend, warm: bool) -> Router {
     let site = frontend.clone();
     let app = Arc::new(App {
         deps,
@@ -999,10 +1050,19 @@ pub fn router_with(deps: Deps, frontend: Frontend) -> Router {
         run: Mutex::new(None),
         lifecycle: AsyncMutex::new(()),
         firmware: FirmwareCache::default(),
+        host_hints: watch::channel(None).0,
+        warm,
         sessions: SessionTracker::default(),
         histograms: Mutex::default(),
         iat_histograms: Mutex::default(),
     });
+    if warm {
+        let app = app.clone();
+        tokio::task::spawn_blocking(move || {
+            let hints = compute_host_hints(&app, false);
+            app.host_hints.send_replace(Some(hints));
+        });
+    }
     let api = Router::new()
         .route("/api/online", get(online))
         .route("/api/version", get(version))

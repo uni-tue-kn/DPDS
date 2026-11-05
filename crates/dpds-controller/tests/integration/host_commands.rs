@@ -136,8 +136,8 @@
 //!   posted links before computing, and stores the new one. While no tool may run the stored result
 //!   stays and is used. The query is `recheck=true`, `recheck=false` (like absent) or absent:
 //!   anything else (`1`, `yes`, `True`, empty, a repeated key, any other key) is a 400 naming
-//!   `recheck`, before anything is read or dropped. `GET /api/host/hints` ignores its query as
-//!   before and never touches the store. OpenAPI documents `recheck` on the POST only.
+//!   `recheck`, before anything is read or dropped. Spec 55: `GET /api/host/hints` takes the same query
+//!   (see `spec55.rs`); OpenAPI documents `recheck` on the GET and the POST.
 //! - `dpds-controller check` is another process without a store; it has no `--recheck`.
 //!
 //! ## Sources
@@ -3568,39 +3568,7 @@ async fn bad_recheck_values_are_a_400_naming_recheck_before_anything_runs() {
     assert_eq!(fw_queries(&exec, BDF0), 1, "the cache survived the 400s");
 }
 
-#[tokio::test]
-async fn get_hints_ignores_its_query_and_never_touches_the_cache() {
-    let (a, exec, _) = fw_app();
-    let s = link_on(NIC0);
-    let plain = a.get(HINTS).await;
-    assert_eq!(plain.status, 200);
-    for q in [
-        "?recheck=true",
-        "?recheck=false",
-        "?recheck=banana",
-        "?x=1",
-        "?recheck",
-    ] {
-        let r = a.get(&format!("{HINTS}{q}")).await;
-        assert_eq!(r.status, 200, "GET {q}: {}", r.text());
-        assert_eq!(r.json(), plain.json(), "GET {q}");
-    }
-    assert!(
-        exec.calls().is_empty(),
-        "GET has no NIC hints: {:?}",
-        exec.calls()
-    );
-    hints_at(&a, "", &s).await;
-    assert_eq!(fw_queries(&exec, BDF0), 1);
-    let r = a.get(&format!("{HINTS}?recheck=true")).await;
-    assert_eq!(r.status, 200);
-    hints_at(&a, "", &s).await;
-    assert_eq!(
-        fw_queries(&exec, BDF0),
-        1,
-        "GET ?recheck=true drops nothing"
-    );
-}
+// spec 55: `GET /api/host/hints` takes `recheck` too, see `spec55.rs`.
 
 // ---- while an emulation starts, runs or stops ------------------------------------------------
 
@@ -3715,35 +3683,7 @@ async fn cards_do_not_share_entries() {
 
 // ---- OpenAPI, the CLI, the real binary ---------------------------------------------------------------
 
-#[tokio::test]
-async fn openapi_documents_recheck_on_the_hints_post_only() {
-    let a = TestApp::new(FakeHost::bare_metal());
-    let doc = a.get("/api/openapi.json").await.json();
-    let params = |method: &str| -> Vec<Value> {
-        doc["paths"][HINTS][method]["parameters"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default()
-    };
-    let post = params("post");
-    let recheck = post
-        .iter()
-        .find(|p| p["name"] == "recheck")
-        .unwrap_or_else(|| panic!("no `recheck` parameter on POST {HINTS}: {post:?}"));
-    assert_eq!(recheck["in"], "query", "{recheck}");
-    assert_ne!(recheck["required"], json!(true), "{recheck}");
-    assert!(
-        recheck["description"]
-            .as_str()
-            .is_some_and(|d| !d.trim().is_empty()),
-        "described: {recheck}"
-    );
-    assert!(
-        params("get").iter().all(|p| p["name"] != "recheck"),
-        "GET takes no query: {:?}",
-        params("get")
-    );
-}
+// spec 55: OpenAPI documents `recheck` on the GET as well, see `spec55.rs`.
 
 #[test]
 fn check_has_no_recheck_and_prints_no_cache_note() {
@@ -3801,26 +3741,35 @@ fn the_real_binary_caches_the_firmware_query_until_a_recheck() {
         assert_eq!(st, 200, "{v}");
         v
     };
+    // spec 55 H1: the startup task queries the firmware of both NICs of the host once; a GET waits for it
+    let (st, v) = http(&c.addr, "GET", HINTS, None).unwrap();
+    assert_eq!(st, 200, "{v}");
+    let warm = runs();
+    assert_eq!(warm, 2, "the startup task queried both NICs");
     let first = post("");
-    assert_eq!(runs(), 1);
+    assert_eq!(runs(), warm, "the first POST reads the warm cache");
     assert_eq!(commands_of(&first, &fw_id()), fw_untuned_commands());
     let second = post("");
-    assert_eq!(runs(), 1, "the second request reads the cache");
+    assert_eq!(runs(), warm, "the second request reads the cache");
     assert!(
         age_note(&fw_detail(&second, &fw_id())).is_some(),
         "{second}"
     );
     post("?recheck=true");
-    assert_eq!(runs(), 2);
+    assert_eq!(
+        runs(),
+        warm + 1,
+        "a recheck queries the posted link's NIC again"
+    );
     post("");
-    assert_eq!(runs(), 2);
+    assert_eq!(runs(), warm + 1);
     let (st, v) = http(&c.addr, "POST", &format!("{HINTS}?recheck=1"), Some(&body)).unwrap();
     assert_eq!(st, 400, "{v}");
     assert!(v["message"]
         .as_str()
         .unwrap_or_default()
         .contains("recheck"));
-    assert_eq!(runs(), 2);
+    assert_eq!(runs(), warm + 1);
 }
 
 // ---- the sources -----------------------------------------------------------------------------

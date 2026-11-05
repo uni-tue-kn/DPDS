@@ -155,6 +155,23 @@ pub fn compute_hints_cached(
     compute(roots, config, run_tools, Some(cache), recheck)
 }
 
+/// Queries the firmware settings of every mlx5 NIC of the host into `cache`, as a link on each
+/// would (tools only when `run_tools`); with `recheck` the cached results are dropped first.
+pub fn warm_firmware(roots: &HostRoots, run_tools: bool, cache: &FirmwareCache, recheck: bool) {
+    let config = RunConfig::default();
+    let ctx = Ctx {
+        roots,
+        run_tools,
+        started: roots.exec.now(),
+        cache: Some(cache),
+        recheck,
+        config: &config,
+        interfaces: discover(roots),
+        assignment: assign_lcores(roots, &config),
+    };
+    crate::nic_hints::warm_firmware(&ctx, &ctx.interfaces);
+}
+
 fn compute(
     roots: &HostRoots,
     config: &RunConfig,

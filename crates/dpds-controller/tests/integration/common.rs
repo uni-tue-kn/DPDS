@@ -1399,7 +1399,7 @@ fn mst_value(name: &str, v: u32) -> Value {
     }
 }
 
-fn mst_json(bdf: &str, s: &MstState) -> Value {
+pub fn mst_json(bdf: &str, s: &MstState) -> Value {
     let entry = |name: &str, next: u32, cur: u32| {
         json!({
             "read_only": false,

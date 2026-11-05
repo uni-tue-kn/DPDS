@@ -884,14 +884,20 @@ without internet access, means no notice.
   (`port_buffer:<pci>`, needs `dcb` from the `iproute2` package) and the firmware settings
   (`firmware:<pci>`, needs `mstconfig` from the `mstflint` package; `mlxconfig` of the NVIDIA MFT
   works too). `GET /api/host/hints` serves the hints that depend on the host only and the frontend
-  shows them on its Host hints page. `POST /api/host/hints` takes a start body, validated like the
+  shows them on its Host hints page. The controller computes them in a background task right
+  after it starts serving (startup is not delayed), together with the firmware settings of every
+  mlx5 NIC of the host; the GET answers that stored result without recomputing, and waits for the
+  task while it still runs. `GET /api/host/hints?recheck=true` computes the host hints and queries
+  the firmware of all NICs again, replaces the stored result and answers it (same query rules as
+  the POST's `recheck`). `POST /api/host/hints` takes a start body, validated like the
   start body (400 naming the field, 409 for a duplicate name or reused port), and adds the
   link-dependent hints, which need the links to know the NICs (NUMA locality, hugepages for the
   links, NIC interrupts (`irq_affinity`), host uplink, drain timeout, MTU and the per-NIC hints of
   the used NICs); the frontend calls it with its current configuration. The firmware query is slow,
   so its successful result is kept in a cache per card (function 0) until the controller restarts,
   or until a recheck drops it with `POST /api/host/hints?recheck=true` (the frontend's Recheck
-  button); `recheck=false` or no query is the normal behaviour, and any other value or query key is
+  button, which also sends `GET ?recheck=true`; the first load on opening the page sends neither);
+  `recheck=false` or no query is the normal behaviour, and any other value or query key is
   a 400 naming `recheck`, before anything runs. A cached result runs no tool and costs no budget
   time. It is used while an emulation is starting, running or stopping, also with `recheck=true`,
   and a NIC without a cached result stays "not checked while an emulation is running". The detail

@@ -219,24 +219,15 @@ fn serve(a: ServeArgs) -> Result<ExitCode, String> {
         );
     }
     let frontend = Frontend::embedded();
-    let router = api::router_with(
-        Deps {
-            roots,
-            supervisor: supervisor.clone(),
-            telemetry,
-            dpds_bin: a.dpds_bin,
-            runtime_dir: a.runtime_dir,
-            dpds_has_telemetry,
-            // SAFETY: geteuid has no preconditions.
-            is_root: unsafe { libc::geteuid() } == 0,
-        },
-        frontend.clone(),
-    );
-    let router = api::with_host_guard(router, &a.allowed_host);
-    let router = if origins.is_empty() {
-        router
-    } else {
-        api::with_cors(router, origins)
+    let deps = Deps {
+        roots,
+        supervisor: supervisor.clone(),
+        telemetry,
+        dpds_bin: a.dpds_bin,
+        runtime_dir: a.runtime_dir,
+        dpds_has_telemetry,
+        // SAFETY: geteuid has no preconditions.
+        is_root: unsafe { libc::geteuid() } == 0,
     };
 
     tokio::runtime::Builder::new_multi_thread()
@@ -248,6 +239,14 @@ fn serve(a: ServeArgs) -> Result<ExitCode, String> {
                 .await
                 .map_err(|e| format!("cannot listen on {}: {e}", a.bind))?;
             eprintln!("dpds-controller: listening on {}", a.bind);
+            // inside the runtime: the router starts the background host hints task
+            let router = api::router_with_startup(deps, frontend.clone());
+            let router = api::with_host_guard(router, &a.allowed_host);
+            let router = if origins.is_empty() {
+                router
+            } else {
+                api::with_cors(router, origins)
+            };
             if frontend.kind() == "bundled" {
                 eprintln!("dpds-controller: serving the bundled frontend at /");
             } else {
