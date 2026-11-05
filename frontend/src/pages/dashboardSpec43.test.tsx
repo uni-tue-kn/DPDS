@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { screen, within } from '@testing-library/react';
-import { card, CAUSES, findCard, summary } from '../test/dashboardUi';
+import { CAUSES, CHART_RADIOS, card, findCard, summary } from '../test/dashboardUi';
 import * as fx from '../test/fixtures';
 import { renderApp, seedStore } from '../test/helpers';
 import { api } from '../test/mockApi';
@@ -74,13 +74,13 @@ describe('Dashboard (spec 43 F5): the radio names', () => {
   it('a link tab: "Traffic rates", "Delay histogram", "Packet loss", in this order', async () => {
     renderApp('/');
     await findCard(1);
-    expect(names(card(0))).toEqual(['Traffic rates', 'Delay histogram', 'Packet loss']);
+    expect(names(card(0))).toEqual(CHART_RADIOS);
   });
 
   it('the Summary tab has the same three', async () => {
     renderApp('/');
     await findCard(1);
-    expect(names(summary())).toEqual(['Traffic rates', 'Delay histogram', 'Packet loss']);
+    expect(names(summary())).toEqual(CHART_RADIOS);
   });
 
   it('the old names "Rate" and "Loss" are not used for any radio', async () => {

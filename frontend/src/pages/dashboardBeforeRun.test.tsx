@@ -4,8 +4,9 @@ import type { EmulationState, Link } from '../api/types';
 import {
   activePanel,
   allTabs,
-  card,
   CAUSES,
+  CHART_RADIOS,
+  card,
   hasSummary,
   lossDonut,
   panelOf,
@@ -173,7 +174,7 @@ describe('Dashboard before any run (spec 39): the empty diagrams', () => {
     const names = within(panel)
       .getAllByRole('radio')
       .map((r) => (r as HTMLInputElement).labels?.[0]?.textContent?.trim());
-    expect(names).toEqual(['Traffic rates', 'Delay histogram', 'Packet loss']);
+    expect(names).toEqual(CHART_RADIOS);
     expect(within(panel).getByRole('radio', { name: 'Traffic rates' })).toBeChecked();
     expect(within(panel).getByRole('radio', { name: 'Delay histogram' })).toBeDisabled();
     expect(within(panel).getByRole('radio', { name: 'Packet loss' })).toBeEnabled();
@@ -186,7 +187,7 @@ describe('Dashboard before any run (spec 39): the empty diagrams', () => {
 
   it('a link tab has the same radios as a live link without delay statistics plus the disabled histogram', async () => {
     await open();
-    expect(radioNames(0)).toEqual(['Traffic rates', 'Delay histogram', 'Packet loss']);
+    expect(radioNames(0)).toEqual(CHART_RADIOS);
     expect(must(queryRadio(0, 'Delay histogram'), 'Delay histogram radio')).toBeDisabled();
   });
 

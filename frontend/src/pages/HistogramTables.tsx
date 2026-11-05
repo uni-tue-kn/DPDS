@@ -46,13 +46,15 @@ function StatTable({
   );
 }
 
-/** The numbers of a link's delay histogram in rows, like P4TG's histogram tables. `meanNs` and `stdNs` are the link's live stats. */
+/** The numbers of a link's delay (or, with `name`, IAT) histogram in rows, like P4TG's histogram tables. `meanNs` and `stdNs` are its mean and σ. */
 export default function HistogramTables({
   hist,
+  name = 'Delay',
   meanNs,
   stdNs,
 }: {
   hist: HistogramView;
+  name?: 'Delay' | 'IAT';
   meanNs?: number | null;
   stdNs?: number | null;
 }) {
@@ -73,8 +75,8 @@ export default function HistogramTables({
       />
       <StatTable
         tip="Values calculated from histogram data"
-        heads={['Delay', 'σ(Delay)', 'Outlier', 'Total #Packets']}
-        overlined="Delay"
+        heads={[name, `σ(${name})`, 'Outlier', 'Total #Packets']}
+        overlined={name}
         cells={[duration(meanNs), duration(stdNs), formatCount(outliers), formatCount(total)]}
       />
       <StatTable

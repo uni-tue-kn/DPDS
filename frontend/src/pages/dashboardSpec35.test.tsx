@@ -4,8 +4,9 @@ import { vi } from 'vitest';
 import type { EmulationState } from '../api/types';
 import {
   activePanel,
-  card,
   CAUSES,
+  CHART_RADIOS,
+  card,
   delayBar,
   expectState,
   findCard,
@@ -17,9 +18,9 @@ import {
   pillText,
   queryDelayBar,
   queryRadio,
+  RUN_BUTTONS,
   radio,
   radioNames,
-  RUN_BUTTONS,
   runButton,
   runButtonNames,
   runButtons,
@@ -736,7 +737,7 @@ describe('Dashboard (spec 35 F3): the radios under the chart', () => {
     await findCard(1);
     for (const d of [0, 1]) {
       expect(within(card(d)).getByRole('radiogroup', { name: 'Chart' })).toBeInTheDocument();
-      expect(radioNames(d)).toEqual(['Traffic rates', 'Delay histogram', 'Packet loss']);
+      expect(radioNames(d)).toEqual(CHART_RADIOS);
     }
   });
 
@@ -754,7 +755,7 @@ describe('Dashboard (spec 35 F3): the radios under the chart', () => {
     renderApp('/');
     await findCard(1);
     expect(radioNames(1)).toEqual(['Traffic rates', 'Packet loss']);
-    expect(radioNames(0)).toEqual(['Traffic rates', 'Delay histogram', 'Packet loss']);
+    expect(radioNames(0)).toEqual(CHART_RADIOS);
     await new Promise((r) => setTimeout(r, 50));
     expect(api.getDelayHistogram).not.toHaveBeenCalledWith(1);
   });
@@ -769,7 +770,7 @@ describe('Dashboard (spec 35 F3): the radios under the chart', () => {
       await open();
       await tick(1000);
       for (const d of [0, 1]) {
-        expect(radioNames(d), `${state}: link ${d}`).toEqual(['Traffic rates', 'Delay histogram', 'Packet loss']);
+        expect(radioNames(d), `${state}: link ${d}`).toEqual(CHART_RADIOS);
       }
     },
   );
@@ -786,7 +787,7 @@ describe('Dashboard (spec 35 F3): the radios under the chart', () => {
       });
       await open();
       await tick(1000);
-      expect(radioNames(0), `${state}: link 0`).toEqual(['Traffic rates', 'Delay histogram', 'Packet loss']);
+      expect(radioNames(0), `${state}: link 0`).toEqual(CHART_RADIOS);
       expect(radioNames(1), `${state}: link 1`).toEqual(['Traffic rates', 'Packet loss']);
     },
   );

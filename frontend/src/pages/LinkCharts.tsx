@@ -9,12 +9,11 @@ import { chartOptions, RX_COLOR, RX_FILL, TX_COLOR, TX_FILL } from '../component
 import ChartBox from './ChartBox';
 import DelayHistogram from './DelayHistogram';
 import FrameDonut from './FrameDonut';
-import IatHistogram from './IatHistogram';
 import { LossTable, RateTable } from './LinkTables';
-import type { LinkStats } from './linkStats';
 import LossDonut, { CAUSES, totalDrops } from './LossDonut';
+import type { LinkStats } from './linkStats';
 
-type View = 'rate' | 'histogram' | 'loss';
+type View = 'rate' | 'histogram' | 'iat' | 'loss';
 
 /** The most points a time chart plots, like P4TG's `time_statistics?limit=100`. */
 const MAX_POINTS = 100;
@@ -41,12 +40,12 @@ const COUNTS = [
 ];
 
 /**
- * The chart area of one link: the chart, the radios below it, P4TG's rate and loss tables and a row of the loss donut, the frame
- * size donut and the IAT histogram. `live` carries the live delay numbers; a
+ * The chart area of one link: the chart, the radios below it, P4TG's rate and loss tables and a row of the loss donut and the frame
+ * size donut. `live` carries the live delay numbers; a
  * link of an ended run has none, but keeps its histogram (the controller answers the run's last one) when `endedStats` says
- * the run had delay statistics. A link with delay statistics off has no histogram.
+ * the run had delay statistics. A link with delay statistics off has no histogram (delay or IAT).
  * Without `dir` it is the Summary of all links: `history` and `stats` are their aggregates, and the histogram radio is
- * there but disabled (a histogram is per link); its IAT column holds a note instead of the chart.
+ * there but disabled (a histogram is per link), like the IAT one.
  */
 export default function LinkCharts({
   dir,
@@ -75,10 +74,15 @@ export default function LinkCharts({
   const of = summary ? 'all links' : `link ${dir}`;
   const noHistogram = summary || empty;
   const hasHistogram = live?.delayStats === true || endedStats;
-  const view = chosen === 'histogram' && !hasHistogram ? 'rate' : chosen;
+  const view = (chosen === 'histogram' || chosen === 'iat') && !hasHistogram ? 'rate' : chosen;
   const views: [View, string][] = [
     ['rate', 'Traffic rates'],
-    ...(hasHistogram || noHistogram ? ([['histogram', 'Delay histogram']] as [View, string][]) : []),
+    ...(hasHistogram || noHistogram
+      ? ([
+          ['histogram', 'Delay histogram'],
+          ['iat', 'IAT histogram'],
+        ] as [View, string][])
+      : []),
     ['loss', 'Packet loss'],
   ];
   // The history stays complete; the time charts plot at most MAX_POINTS of it.
@@ -142,6 +146,7 @@ export default function LinkCharts({
       {view === 'histogram' && active && dir !== undefined && (
         <DelayHistogram dir={dir} meanNs={live?.meanNs} stdNs={live?.stdNs} />
       )}
+      {view === 'iat' && dir !== undefined && <DelayHistogram dir={dir} active={active} kind="iat" />}
       <Form.Group role="radiogroup" aria-label="Chart" className="text-center my-3">
         {views.map(([v, text]) => {
           const radio = (
@@ -153,11 +158,11 @@ export default function LinkCharts({
               id={`chart-${id}-${v}`}
               label={text}
               checked={view === v}
-              disabled={noHistogram && v === 'histogram'}
+              disabled={noHistogram && (v === 'histogram' || v === 'iat')}
               onChange={() => setChosen(v)}
             />
           );
-          return summary && v === 'histogram' ? (
+          return summary && (v === 'histogram' || v === 'iat') ? (
             <OverlayTrigger
               key={v}
               placement="top"
@@ -177,22 +182,12 @@ export default function LinkCharts({
         </>
       )}
       <Row>
-        <div className="col-12 col-md-4">
+        <div className="col-12 col-md-6 donut-divider">
           <LossDonut drops={stats.drops} />
         </div>
-        <div className="col-12 col-md-4">
+        <div className="col-12 col-md-6">
           <FrameDonut counts={stats.frameSizes} />
         </div>
-        {summary && (
-          <div className="col-12 col-md-4">
-            <p className="text-center text-body-secondary">IAT histograms are per link; select a link tab.</p>
-          </div>
-        )}
-        {dir !== undefined && active && hasHistogram && (
-          <div className="col-12 col-md-4">
-            <IatHistogram dir={dir} />
-          </div>
-        )}
       </Row>
     </>
   );

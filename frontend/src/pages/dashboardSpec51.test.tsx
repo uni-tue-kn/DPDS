@@ -4,17 +4,21 @@ import type { Counters, DirectionStats } from '../api/types';
 import { formatCount } from '../common/format';
 import { propsOf } from '../test/chartProps';
 import {
+  CHART_RADIOS,
   card,
+  delayBar,
+  FRAME_DONUT_LABEL,
   findCard,
   findIatBar,
-  FRAME_DONUT_LABEL,
   frameDonut,
   iatBar,
   LOSS_DONUT_LABEL,
   lossDonut,
+  queryDelayBar,
   queryFrameDonut,
   queryIatBar,
   radio,
+  showIat,
   summary,
   tab,
 } from '../test/dashboardUi';
@@ -25,7 +29,9 @@ import { must } from '../test/must';
 
 // Spec 51 F1/F2 (user 2026-11-05: "generate and show an IAT histogram and frame size donut right next to the loss donut").
 // Spec: .git/claude-specs/spec51-iat-frame-sizes.md. The header of src/test/dashboardUi.tsx has the contract of the DOM (the three
-// boxes with role "img" and their aria-labels, the row of three `.col-12.col-md-4`); CHOICEs of the tester where the spec is silent:
+// boxes with role "img" and their aria-labels). SPEC 52 CHANGED THIS FILE: the donut row has two columns (the IAT histogram left it,
+// pinned in dashboardSpec52.test.tsx) and the IAT histogram is the chart radio "IAT histogram", polled only while it is chosen and
+// the tab is shown; no Summary placeholder. CHOICEs of the tester where the spec is silent:
 //   - the frame size donut's box is labelled "Distribution of the received frames by size";
 //   - its hover text carries the label, `formatCount(count)` and the share with two decimals and a percent sign (like the loss
 //     donut's "<label>: <count> packets (<share> % of drops)", the wording after the count is free);
@@ -33,9 +39,9 @@ import { must } from '../test/must';
 //     eight), the text "No frames" below it, and the hover text says "No frames" (no NaN, no %);
 //   - the IAT box is labelled "IAT histogram of link <dir>"; the chart is a Bar with one dataset whose data are the response's
 //     `bins`, one label per bin, the chart title "IAT" (`plugins.title`), the y axis "#Packets", an x axis whose title names a
-//     time unit (ns, µs, ms or s); the Summary's IAT column reads "IAT histograms are per link; select a link tab." and has no chart;
+//     time unit (ns, µs, ms or s); the title line is not pinned any more (spec 52 R2b: the tables carry the numbers);
 //   - the IAT is polled by the function `getIatHistogram(dir)` of the API client (the one-argument form, no window), every second
-//     like the delay histogram, only while the link's tab is shown, whatever radio is chosen.
+//     like the delay histogram, only while the "IAT histogram" radio is chosen and the link's tab is shown.
 
 /** P4TG's frame size labels and colours (Configuration GUI/src/components/Visuals.tsx, frame_size_data). */
 const FRAME_LABELS = ['0-63', '64', '65-127', '128-255', '256-511', '512-1023', '1024-1518', '1519-21519'];
@@ -109,42 +115,37 @@ async function openLive(...dirs: DirectionStats[]) {
 
 // ---- the row ------------------------------------------------------------------------------------------------------------------
 
-describe('Dashboard (spec 51 F1): the donut row of a link', () => {
-  it('holds the loss donut, the frame size donut and the IAT histogram, in this order, in one row of three columns', async () => {
+describe('Dashboard (spec 51 F1, spec 52 R1/R2): the donut row of a link', () => {
+  it('holds the loss donut and the frame size donut, in this order, in one row of two columns, and no IAT chart', async () => {
     await openLive(live(0), live(1));
     const panel = card(0);
-    await findIatBar(panel);
     const boxes = [
       within(panel).getByRole('img', { name: LOSS_DONUT_LABEL }),
       within(panel).getByRole('img', { name: FRAME_DONUT_LABEL }),
-      within(panel).getByRole('img', { name: 'IAT histogram of link 0' }),
     ];
-    const cols = boxes.map((b) => must(b.closest('.col-md-4'), 'the column of a chart') as HTMLElement);
+    const cols = boxes.map((b) => must(b.closest('.col-md-6'), 'the column of a chart') as HTMLElement);
     const row = must(cols[0].parentElement, 'the row');
     expect(row).toHaveClass('row');
     for (const [i, col] of cols.entries()) {
       expect(col.parentElement, `column ${i}`).toBe(row);
-      expect(col, `column ${i}`).toHaveClass('col-12', 'col-md-4'); // stacks below md
+      expect(col, `column ${i}`).toHaveClass('col-12', 'col-md-6'); // stacks below md
     }
-    expect(Array.from(row.children).filter((c) => cols.includes(c as HTMLElement))).toEqual(cols); // DOM order
-    expect(row.children).toHaveLength(3);
+    expect(Array.from(row.children)).toEqual(cols); // DOM order, nothing else in the row
+    expect(within(panel).queryByRole('img', { name: /^IAT/ })).not.toBeInTheDocument();
   });
 
-  it('has a Doughnut in the loss box and the frame box and a Bar in the IAT box, each in its own box', async () => {
+  it('has a Doughnut in the loss box and in the frame box, each in its own box', async () => {
     await openLive(live(0), live(1));
     const panel = card(0);
-    await findIatBar(panel);
     expect(lossDonut(panel)).toBeInTheDocument();
     expect(frameDonut(panel)).toBeInTheDocument();
     expect(lossDonut(panel)).not.toBe(frameDonut(panel));
     expect(donutOf(lossDonut(panel)).labels).toHaveLength(9); // the loss donut is the one of spec 35 / 47, unchanged
-    expect(iatBar(panel)).toHaveAttribute('data-testid', 'chart-bar');
   });
 
   it('sits below the radios, the rate table row and the loss table row', async () => {
     await openLive(live(0), live(1));
     const panel = card(0);
-    await findIatBar(panel);
     const radios = within(panel).getByRole('radiogroup', { name: 'Chart' });
     const tables = within(panel).getAllByRole('table');
     expect(tables).toHaveLength(2); // TX L1... and Lost Frames... (no histogram tables in the rate view)
@@ -155,20 +156,16 @@ describe('Dashboard (spec 51 F1): the donut row of a link', () => {
     expect(follows(tables[1], donuts)).toBe(true);
   });
 
-  it.each(['Traffic rates', 'Delay histogram', 'Packet loss'])(
-    'stays in place under the radio "%s"',
-    async (choice) => {
-      await openLive(live(0), live(1));
-      fireEvent.click(radio(0, choice));
-      const panel = card(0);
-      await findIatBar(panel);
-      expect(lossDonut(panel)).toBeInTheDocument();
-      expect(frameDonut(panel)).toBeInTheDocument();
-      expect(iatBar(panel)).toBeInTheDocument();
-    },
-  );
+  it.each(CHART_RADIOS)('stays in place under the radio "%s"', async (choice) => {
+    await openLive(live(0), live(1));
+    fireEvent.click(radio(0, choice));
+    const panel = card(0);
+    if (choice === 'IAT histogram') await findIatBar(panel);
+    expect(lossDonut(panel)).toBeInTheDocument();
+    expect(frameDonut(panel)).toBeInTheDocument();
+  });
 
-  it('has no IAT histogram, polls none and keeps both donuts for a link without delay statistics', async () => {
+  it('has no IAT radio, no IAT chart, polls none and keeps both donuts for a link without delay statistics', async () => {
     vi.useFakeTimers();
     serveLive(live(0, {}, { delay_stats: false }), live(1));
     renderApp('/');
@@ -176,6 +173,7 @@ describe('Dashboard (spec 51 F1): the donut row of a link', () => {
     await tick(0);
     await tick(3000);
     expect(queryIatBar(card(0))).toBeNull();
+    expect(within(card(0)).queryByRole('radio', { name: 'IAT histogram' })).not.toBeInTheDocument();
     expect(within(card(0)).queryByRole('img', { name: /^IAT/ })).not.toBeInTheDocument();
     expect(frameDonut(card(0))).toBeInTheDocument();
     expect(lossDonut(card(0))).toBeInTheDocument();
@@ -183,8 +181,8 @@ describe('Dashboard (spec 51 F1): the donut row of a link', () => {
   });
 });
 
-describe('Dashboard (spec 51 F1): the donut row of the Summary', () => {
-  it('shows the loss and the frame size donut and an IAT placeholder text with no chart', async () => {
+describe('Dashboard (spec 51 F1, spec 52 R1/R2): the donut row of the Summary', () => {
+  it('shows the loss and the frame size donut in two columns, no IAT chart and no IAT placeholder text', async () => {
     await openLive(live(0), live(1));
     const panel = summary();
     expect(lossDonut(panel)).toBeInTheDocument();
@@ -192,25 +190,23 @@ describe('Dashboard (spec 51 F1): the donut row of the Summary', () => {
     expect(within(panel).queryByRole('img', { name: /^IAT/ })).not.toBeInTheDocument();
     expect(queryIatBar(panel)).toBeNull();
     expect(within(panel).queryAllByTestId('chart-bar')).toHaveLength(0);
-    const text = within(panel).getByText('IAT histograms are per link; select a link tab.');
-    const col = must(text.closest('.col-md-4'), 'the column of the placeholder') as HTMLElement;
-    const row = must(col.parentElement);
-    expect(row).toHaveClass('row');
-    expect(col).toHaveClass('col-12', 'col-md-4');
-    // one row: the loss donut, the frame size donut, the placeholder
-    const boxes = [LOSS_DONUT_LABEL, FRAME_DONUT_LABEL].map((n) =>
-      must(within(panel).getByRole('img', { name: n }).closest('.col-md-4')),
+    expect(within(panel).queryByText(/IAT histograms are per link/)).not.toBeInTheDocument();
+    const cols = [LOSS_DONUT_LABEL, FRAME_DONUT_LABEL].map(
+      (n) => must(within(panel).getByRole('img', { name: n }).closest('.col-md-6')) as HTMLElement,
     );
-    for (const b of boxes) expect(b.parentElement).toBe(row);
+    const row = must(cols[0].parentElement);
+    expect(row).toHaveClass('row');
+    expect(Array.from(row.children)).toEqual(cols);
   });
 
-  it('does not poll the IAT of any link while the Summary is shown', async () => {
+  it('has the "IAT histogram" radio disabled, and does not poll the IAT of any link while the Summary is shown', async () => {
     vi.useFakeTimers();
     serveLive(live(0), live(1));
     renderApp('/');
     await tick(0);
     await tick(0);
     await tick(3000);
+    expect(within(summary()).getByRole('radio', { name: 'IAT histogram' })).toBeDisabled();
     expect(api.getIatHistogram).not.toHaveBeenCalled();
   });
 });
@@ -231,6 +227,7 @@ describe('Dashboard (spec 51 F1): before any run', () => {
       expect(ring.datasets[0].data).toHaveLength(1);
       expect(ring.datasets[0].data[0]).toBeGreaterThan(0);
       expect(queryIatBar(panel)).toBeNull();
+      expect(within(panel).getByRole('radio', { name: 'IAT histogram' })).toBeDisabled();
     }
     expect(api.getIatHistogram).not.toHaveBeenCalled();
   });
@@ -437,7 +434,7 @@ const iatCalls = (dir: number) => api.getIatHistogram.mock.calls.filter(([d]) =>
 describe('Dashboard (spec 51 F1): the IAT histogram chart', () => {
   it('draws the bins of the controller as bars, one label per bin', async () => {
     await openLive(live(0), live(1));
-    await findIatBar(card(0));
+    await showIat(0);
     const h = fx.iatHistogram(0);
     expect(barsOf(card(0)).datasets).toHaveLength(1);
     expect(barsOf(card(0)).datasets[0].data).toEqual(h.bins);
@@ -447,32 +444,30 @@ describe('Dashboard (spec 51 F1): the IAT histogram chart', () => {
 
   it('is the link’s own: link 1 shows the bins of dir 1', async () => {
     await openLive(live(0), live(1));
-    await findIatBar(card(1));
+    await showIat(1);
     expect(barsOf(card(1)).datasets[0].data).toEqual(fx.iatHistogram(1).bins);
     expect(barsOf(card(1)).datasets[0].data).not.toEqual(fx.iatHistogram(0).bins);
   });
 
-  it('has the title "IAT", the y axis "#Packets" and an x axis in a time unit', async () => {
+  it('has the y axis "#Packets" and an x axis in a time unit', async () => {
     await openLive(live(0), live(1));
-    await findIatBar(card(0));
+    await showIat(0);
     const o = optionsOf(card(0));
-    expect(o.plugins?.title?.display).toBe(true);
-    expect(o.plugins?.title?.text).toBe('IAT');
     expect(o.scales?.y?.title?.text).toBe('#Packets');
     expect(o.scales?.x?.title?.text).toMatch(/(^|[^a-zA-Zµ])(ns|µs|us|ms|s)([^a-zA-Zµ]|$)/);
   });
 
-  it('is not the delay histogram: the delay view shows both charts, with their own data', async () => {
+  it('is not the delay histogram: each view shows only its own chart, with its own data (spec 52 R2)', async () => {
     await openLive(live(0), live(1));
     fireEvent.click(radio(0, 'Delay histogram'));
-    await findIatBar(card(0));
-    await waitFor(() => expect(within(card(0)).getAllByTestId('chart-bar')).toHaveLength(2));
-    const delay = JSON.parse(
-      within(within(card(0)).getByRole('img', { name: 'Delay histogram of link 0' }))
-        .getByTestId('chart-bar')
-        .getAttribute('data-chart') ?? 'null',
-    ) as Bars;
-    expect(delay.datasets[0].data).toEqual(fx.histogram(0).bins);
+    await waitFor(() => expect(within(card(0)).getAllByTestId('chart-bar')).toHaveLength(1));
+    expect(JSON.parse(delayBar(card(0)).getAttribute('data-chart') ?? 'null').datasets[0].data).toEqual(
+      fx.histogram(0).bins,
+    );
+    expect(queryIatBar(card(0))).toBeNull();
+    await showIat(0);
+    expect(within(card(0)).getAllByTestId('chart-bar')).toHaveLength(1);
+    expect(queryDelayBar(card(0))).toBeNull();
     expect(barsOf(card(0)).datasets[0].data).toEqual(fx.iatHistogram(0).bins);
   });
 
@@ -482,7 +477,7 @@ describe('Dashboard (spec 51 F1): the IAT histogram chart', () => {
     renderApp('/');
     await tick(0);
     await tick(0);
-    fireEvent.click(tab(0)); // the tab is shown: the first fetch starts
+    fireEvent.click(radio(0, 'IAT histogram')); // chosen on the shown tab: the first fetch starts
     await tick(0);
     await tick(0);
     expect(barsOf(card(0)).datasets[0].data).toEqual(fx.iatHistogram(0).bins);
@@ -494,6 +489,7 @@ describe('Dashboard (spec 51 F1): the IAT histogram chart', () => {
   it('is absent, with no crash and both donuts, when the controller answers 404', async () => {
     api.getIatHistogram.mockRejectedValue(new ApiError(404, 'no delay statistics'));
     await openLive(live(0), live(1));
+    fireEvent.click(radio(0, 'IAT histogram'));
     await waitFor(() => expect(api.getIatHistogram).toHaveBeenCalled());
     await waitFor(() => expect(api.getIatHistogram.mock.settledResults.length).toBeGreaterThan(0));
     expect(queryIatBar(card(0))).toBeNull();
@@ -502,7 +498,7 @@ describe('Dashboard (spec 51 F1): the IAT histogram chart', () => {
   });
 });
 
-describe('Dashboard (spec 51 F2): polling the IAT', () => {
+describe('Dashboard (spec 51 F2, spec 52 R2): polling the IAT', () => {
   async function open() {
     vi.useFakeTimers();
     serveLive(live(0), live(1));
@@ -513,7 +509,7 @@ describe('Dashboard (spec 51 F2): polling the IAT', () => {
 
   it('polls the visible link once per second with the one-argument form, and no other link', async () => {
     await open();
-    fireEvent.click(tab(0));
+    fireEvent.click(radio(0, 'IAT histogram'));
     await tick(0);
     const n = iatCalls(0).length;
     expect(n).toBeGreaterThanOrEqual(1);
@@ -523,11 +519,11 @@ describe('Dashboard (spec 51 F2): polling the IAT', () => {
     for (const call of api.getIatHistogram.mock.calls) expect(call).toEqual([call[0]]);
   });
 
-  it('follows the tab: the other link is polled after the switch and the first one stops', async () => {
+  it('follows the tab: the other link is polled after the switch (its radio chosen) and the first one stops', async () => {
     await open();
-    fireEvent.click(tab(0));
+    fireEvent.click(radio(0, 'IAT histogram'));
     await tick(2000);
-    fireEvent.click(tab(1));
+    fireEvent.click(radio(1, 'IAT histogram')); // selects tab 1, so tab 0 is hidden
     await tick(0);
     await tick(1000);
     const first = iatCalls(0).length;
@@ -538,13 +534,33 @@ describe('Dashboard (spec 51 F2): polling the IAT', () => {
     expect(iatCalls(1).length).toBeGreaterThanOrEqual(second + 3);
   });
 
-  it('polls whatever radio is chosen, also the rate view that is the default', async () => {
+  it('polls nothing in the rate view that is the default, nor under the other radios', async () => {
     await open();
     fireEvent.click(tab(0));
     await tick(0);
     expect(within(card(0)).getByRole('radio', { name: 'Traffic rates' })).toBeChecked();
+    await tick(3000);
+    expect(api.getIatHistogram).not.toHaveBeenCalled();
+    for (const name of ['Delay histogram', 'Packet loss']) {
+      fireEvent.click(radio(0, name));
+      await tick(3000);
+    }
+    expect(api.getIatHistogram).not.toHaveBeenCalled();
+  });
+
+  it('stops polling when another radio is chosen, and resumes when "IAT histogram" is chosen again', async () => {
+    await open();
+    fireEvent.click(radio(0, 'IAT histogram'));
     await tick(2000);
-    expect(iatCalls(0).length).toBeGreaterThanOrEqual(2);
+    fireEvent.click(radio(0, 'Packet loss'));
+    await tick(0);
+    const n = iatCalls(0).length;
+    expect(n).toBeGreaterThanOrEqual(2);
+    await tick(3000);
+    expect(iatCalls(0).length).toBe(n);
+    fireEvent.click(radio(0, 'IAT histogram'));
+    await tick(3000);
+    expect(iatCalls(0).length).toBeGreaterThanOrEqual(n + 3);
   });
 
   describe('after the stop (F2: it stays)', () => {
@@ -576,7 +592,8 @@ describe('Dashboard (spec 51 F2): polling the IAT', () => {
         renderApp('/');
         await tick(0);
         await tick(0);
-        fireEvent.click(tab(0));
+        expect(within(card(0)).getByRole('radio', { name: 'IAT histogram' })).toBeEnabled();
+        fireEvent.click(radio(0, 'IAT histogram'));
         await tick(1000);
         expect(barsOf(card(0)).datasets[0].data).toEqual(fx.iatHistogram(0).bins);
         const n = iatCalls(0).length;
@@ -586,7 +603,7 @@ describe('Dashboard (spec 51 F2): polling the IAT', () => {
       },
     );
 
-    it('shows no IAT chart, and still both donuts, for a link whose run had no delay statistics', async () => {
+    it('has no IAT radio and no chart, and still both donuts, for a link whose run had no delay statistics', async () => {
       storedLinks(false);
       ended('stopped');
       api.getIatHistogram.mockImplementation(async (dir) => {
@@ -599,6 +616,7 @@ describe('Dashboard (spec 51 F2): polling the IAT', () => {
       await tick(0);
       fireEvent.click(tab(1));
       await tick(3000);
+      expect(within(card(1)).queryByRole('radio', { name: 'IAT histogram' })).not.toBeInTheDocument();
       expect(queryIatBar(card(1))).toBeNull();
       expect(frameDonut(card(1))).toBeInTheDocument();
       expect(lossDonut(card(1))).toBeInTheDocument();
@@ -612,7 +630,7 @@ describe('Dashboard (spec 51 F2): polling the IAT', () => {
       renderApp('/');
       await tick(0);
       await tick(0);
-      fireEvent.click(tab(0));
+      fireEvent.click(radio(0, 'IAT histogram'));
       await tick(1000);
       expect(barsOf(card(0)).datasets[0].data).toEqual(fx.iatHistogram(0).bins);
       ended('stopped');

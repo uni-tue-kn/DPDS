@@ -1,11 +1,11 @@
 import { screen, within } from '@testing-library/react';
 import { vi } from 'vitest';
 import type { HistorySample } from '../api/types';
+import { CHART_RADIOS, card, hasTab, radioNames, tab, tabBadge, tabs, tabTitle } from '../test/dashboardUi';
 import * as fx from '../test/fixtures';
-import { ApiError, api, serveHistory } from '../test/mockApi';
-import type { HistoryServer } from '../test/mockApi';
 import { renderApp, seedStore, tick } from '../test/helpers';
-import { card, hasTab, radioNames, tab, tabBadge, tabTitle, tabs } from '../test/dashboardUi';
+import type { HistoryServer } from '../test/mockApi';
+import { ApiError, api, serveHistory } from '../test/mockApi';
 import { must } from '../test/must';
 
 // Spec 29b (fixes from the review of c4e3fd6 and f0c921d), frontend items 4 to 8. Item 9 (the `elapsed_ms` type) is pinned in
@@ -174,7 +174,7 @@ describe('Dashboard (spec 29b item 5): history cards for stopping, stopped and f
       expect(rxOf(0)).toEqual(Array(5).fill(1.5));
       expect(rxOf(1)).toEqual(Array(5).fill(2.5));
       // spec 50 A3 (was: the final charts only, no histogram): no stored config says delay_stats is off, so the histogram stays
-      expect(radioNames(0)).toEqual(['Traffic rates', 'Delay histogram', 'Packet loss']);
+      expect(radioNames(0)).toEqual(CHART_RADIOS);
     },
   );
 
@@ -204,7 +204,7 @@ describe('Dashboard (spec 29b item 5): history cards for stopping, stopped and f
       });
       await open();
       await tick(2500);
-      expect(radioNames(0)).toEqual(['Traffic rates', 'Delay histogram', 'Packet loss']);
+      expect(radioNames(0)).toEqual(CHART_RADIOS);
       expect(radioNames(1)).toEqual(['Traffic rates', 'Packet loss']);
     },
   );

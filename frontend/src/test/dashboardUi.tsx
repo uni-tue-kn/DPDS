@@ -61,15 +61,19 @@
 //   rate row   `.row.mb-3` > `.col-12.col-md-6.col-sm-12` > `table.table.table-striped.table-bordered.table-hover.table-sm.mt-3.mb-3`,
 //              `thead.table-dark`, headers TX L1 | RX L1 | TX L2 | RX L2 (`th.col-3`), one body row (see rateTable()).
 //   loss row   `.row` > `.col-12.col-sm-12.col-md-4` > the same table style, headers Lost Frames | Frame Loss Ratio | Out of Order.
-//   donut row  ONE `.row` whose three children are `.col-12.col-md-4` (they stack below md): the loss donut, the frame size donut and
-//              the IAT histogram. Each chart sits in an element with role "img", found by its aria-label (the contract of the helpers
-//              below): "Distribution of the dropped packets by cause" (loss, as before), "Distribution of the received frames by
-//              size" (frame sizes, CHOICE), "IAT histogram of link <dir>" (IAT, like "Delay histogram of link <dir>").
-//              The IAT column exists only for a link with delay statistics (live `delay_stats`, or the stored config of an ended run)
-//              and not before any run; the Summary has the IAT column too, holding the text "IAT histograms are per link; select a
-//              link tab." (CHOICE) and no chart. Everything else about the donut row is below, per test file.
-//              Several `chart-doughnut` / `chart-bar` stubs now share a panel: tests pick one through lossDonut(), frameDonut(),
-//              delayBar() or iatBar(), never by test id alone.
+//   donut row  (spec 52 R1: was three columns with the IAT histogram) ONE `.row` whose two children are `.col-12.col-md-6`: the loss
+//              donut (left, its column also has the class `donut-divider`) and the frame size donut (right). Each chart sits in an
+//              element with role "img", found by its aria-label (the contract of the helpers below): "Distribution of the dropped
+//              packets by cause" (loss), "Distribution of the received frames by size" (frame sizes, CHOICE), "IAT histogram of
+//              link <dir>" (IAT, like "Delay histogram of link <dir>"). Several `chart-doughnut` / `chart-bar` stubs can share a
+//              panel: tests pick one through lossDonut(), frameDonut(), delayBar() or iatBar(), never by test id alone.
+//
+// ## Spec 52 (donut row in two centred columns, IAT histogram as a chart radio; spec: .git/claude-specs/spec52-donut-row-iat-radio.md)
+//   radios     "Traffic rates", "Delay histogram", "IAT histogram", "Packet loss" (CHART_RADIOS), in this order; "IAT histogram" is present,
+//              enabled and disabled exactly where "Delay histogram" is (delay statistics on, also after the stop; disabled in the
+//              Summary and before any run; absent for a link without delay statistics). The Summary has no IAT placeholder text.
+//   IAT view   chosen "IAT histogram": the three histogram tables (histTables(), headers IAT_TABLE_HEADERS) above the bar chart,
+//              iatBar() in a `.chart-box`; polls getIatHistogram(dir) only while that radio is chosen and the tab is shown.
 //
 // ## Helpers
 // `tabs()`, `tab(d)`, `hasTab(d)`, `card(d)` and the other helpers below address the LINK tabs only (the Summary tab is not counted),
@@ -172,10 +176,24 @@ export const queryFrameDonut = (scope: HTMLElement) => queryStubIn(scope, FRAME_
 export const delayBar = (scope: HTMLElement) => stubIn(scope, DELAY_BAR_LABEL, 'chart-bar');
 export const queryDelayBar = (scope: HTMLElement) => queryStubIn(scope, DELAY_BAR_LABEL, 'chart-bar');
 export const findDelayBar = (scope: HTMLElement) => waitFor(() => delayBar(scope));
+/** The radios of a chart area that has a histogram, in order (spec 52 R2). A link without delay statistics has the first and the last only. */
+export const CHART_RADIOS = ['Traffic rates', 'Delay histogram', 'IAT histogram', 'Packet loss'];
+/** Spec 52 R2b: the headers of the IAT view's three tables (the delay ones with "IAT" in place of "Delay"). */
+export const IAT_TABLE_HEADERS = [
+  ['Bin Range', '#Bins', 'Bin Width'],
+  ['IAT', 'σ(IAT)', 'Outlier', 'Total #Packets'],
+  ['p50', 'p90', 'p99', 'p99.9'],
+];
 /** The IAT histogram's Bar stub in `scope`. */
 export const iatBar = (scope: HTMLElement) => stubIn(scope, IAT_BAR_LABEL, 'chart-bar');
 export const queryIatBar = (scope: HTMLElement) => queryStubIn(scope, IAT_BAR_LABEL, 'chart-bar');
 export const findIatBar = (scope: HTMLElement) => waitFor(() => iatBar(scope));
+/** Chooses the "IAT histogram" radio of link `d`, waits for its bar chart and returns the link's tabpanel. */
+export async function showIat(d: number): Promise<HTMLElement> {
+  fireEvent.click(radio(d, 'IAT histogram'));
+  await findIatBar(card(d));
+  return card(d);
+}
 
 const headersOf = (t: HTMLElement) =>
   within(t)

@@ -6,9 +6,10 @@ import { propsOf } from '../test/chartProps';
 import {
   activePanel,
   allTabs,
-  card,
   CAUSE_HELP,
   CAUSES,
+  CHART_RADIOS,
+  card,
   findTabs,
   hasSummary,
   lossDonut,
@@ -213,7 +214,7 @@ describe('Summary tab (spec 36 S1): the radios', () => {
 
   it('are Rate, Delay histogram, Loss in this order, in the radiogroup "Chart", Rate checked', async () => {
     await open({ '0': [sample(1000)], '1': [sample(1000)] });
-    expect(names()).toEqual(['Traffic rates', 'Delay histogram', 'Packet loss']);
+    expect(names()).toEqual(CHART_RADIOS);
     expect(within(summary()).getByRole('radiogroup', { name: 'Chart' })).toBeInTheDocument();
     expect(summaryRadio('Traffic rates')).toBeChecked();
     expect(summaryRadio('Packet loss')).not.toBeChecked();
@@ -228,7 +229,7 @@ describe('Summary tab (spec 36 S1): the radios', () => {
 
   it('"Delay histogram" is there and disabled also when no link has delay statistics', async () => {
     await open({ '0': [sample(1000)] }, [fx.dirStats(0, { delay_stats: false })]);
-    expect(names()).toEqual(['Traffic rates', 'Delay histogram', 'Packet loss']);
+    expect(names()).toEqual(CHART_RADIOS);
     expect(summaryRadio('Delay histogram')).toBeDisabled();
   });
 

@@ -46,6 +46,9 @@ async function runWith(dirs: ReturnType<typeof fx.dirStats>[], over: Partial<Ret
   api.getStats.mockResolvedValue(fx.stats(dirs, over));
   renderApp('/');
   await screen.findByTestId('pill-tx');
+  // the TX pill renders before the first /emulation answer; the Status shows once "running" is known (reading
+  // pill-status right after pill-tx was flaky under load)
+  await screen.findByTestId('pill-status');
 }
 
 const ZERO_TOTALS = {

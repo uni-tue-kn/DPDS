@@ -12,6 +12,7 @@ import HistogramTables from './HistogramTables';
 
 const POLL_MS = 1000;
 const BAR_COLOR = '#e74c3c';
+const IAT_BAR_COLOR = '#3498db';
 const PERCENTILES: [string, 'p50' | 'p90' | 'p99' | 'p999'][] = [
   ['p50', 'p50'],
   ['p90', 'p90'],
@@ -41,26 +42,55 @@ export function percentileLines(hist: HistogramView, textColor: string) {
   return lines;
 }
 
-/** The delay histogram of the whole run of link `dir`: its numbers in tables above the bars. */
+/** The unit of the IAT's x axis: the largest one the histogram's upper edge reaches. */
+const UNITS = [
+  { name: 'ns', ns: 1 },
+  { name: 'µs', ns: 1e3 },
+  { name: 'ms', ns: 1e6 },
+  { name: 's', ns: 1e9 },
+] as const;
+
+/** Mean and standard deviation (population) from the bin centres weighted by the counts, under/overflow excluded; null without a sample. */
+function binStats(hist: HistogramView) {
+  const n = hist.bins.reduce((a, b) => a + b, 0);
+  if (n === 0) return { mean: null, std: null };
+  const centre = (i: number) => hist.lo_ns + (i + 0.5) * hist.bin_ns;
+  const mean = hist.bins.reduce((a, c, i) => a + c * centre(i), 0) / n;
+  const variance = hist.bins.reduce((a, c, i) => a + c * (centre(i) - mean) ** 2, 0) / n;
+  return { mean, std: Math.sqrt(variance) };
+}
+
+/**
+ * The delay histogram of the whole run of link `dir`: its numbers in tables above the bars. With `kind="iat"` it is the
+ * IAT histogram of the link instead (blue bars, time-unit axis, mean and σ from the bins, no live stats).
+ */
 export default function DelayHistogram({
   dir,
+  active = true,
+  kind = 'delay',
   meanNs,
   stdNs,
 }: {
   dir: number;
+  /** Whether the link's tab is shown: a hidden histogram keeps what it has but does not poll. */
+  active?: boolean;
+  kind?: 'delay' | 'iat';
   meanNs?: number | null;
   stdNs?: number | null;
 }) {
+  const iat = kind === 'iat';
+  const name = iat ? 'IAT' : 'Delay';
   const theme = useTheme();
   const [hist, setHist] = useState<HistogramView | null>(null);
   const [error, setError] = useState<string>();
 
   useEffect(() => {
+    if (!active) return;
     let alive = true;
     const stop = startPolling(
       async () => {
         try {
-          const h = await api.getDelayHistogram(dir);
+          const h = await (iat ? api.getIatHistogram(dir) : api.getDelayHistogram(dir));
           if (!alive) return;
           setHist(h);
           setError(undefined);
@@ -77,39 +107,60 @@ export default function DelayHistogram({
       alive = false;
       stop();
     };
-  }, [dir]);
+  }, [dir, iat, active]);
 
+  const unit = useMemo(() => {
+    const top = hist ? hist.lo_ns + hist.bins.length * hist.bin_ns : 0;
+    return [...UNITS].reverse().find((u) => top >= u.ns) ?? UNITS[0];
+  }, [hist]);
   const data = useMemo(() => {
     if (!hist) return null;
-    const labels = hist.bins.map((_, i) => formatDuration(hist.edges_ns[i] ?? hist.lo_ns + i * hist.bin_ns));
+    const edge = (i: number) => hist.edges_ns[i] ?? hist.lo_ns + i * hist.bin_ns;
+    const labels = hist.bins.map((_, i) =>
+      iat ? `${Number((edge(i) / unit.ns).toFixed(2))}` : formatDuration(edge(i)),
+    );
     return {
       labels,
       datasets: [
-        { label: 'Packets', data: hist.bins, backgroundColor: BAR_COLOR, barPercentage: 1, categoryPercentage: 1 },
+        {
+          label: 'Packets',
+          data: hist.bins,
+          backgroundColor: iat ? IAT_BAR_COLOR : BAR_COLOR,
+          barPercentage: 1,
+          categoryPercentage: 1,
+        },
       ],
     } as ChartData<'bar'>;
-  }, [hist]);
+  }, [hist, iat, unit]);
   const options = useMemo(() => {
     if (!hist) return null;
-    const base = chartOptions<'bar'>(theme, 'Delay', 'Packets', false);
+    const ink = chartInk(theme).text;
+    const base = iat
+      ? chartOptions<'bar'>(theme, `IAT (${unit.name})`, '#Packets', false)
+      : chartOptions<'bar'>(theme, 'Delay', 'Packets', false);
     return {
       ...base,
-      plugins: { ...base.plugins, annotation: { annotations: percentileLines(hist, chartInk(theme).text) } },
+      plugins: {
+        ...base.plugins,
+        ...(iat ? { title: { display: true, text: 'IAT', color: ink } } : {}),
+        annotation: { annotations: percentileLines(hist, ink) },
+      },
     } as ChartOptions<'bar'>;
-  }, [hist, theme]);
+  }, [hist, theme, iat, unit]);
 
   if (error) {
     return (
-      <small className="d-block mt-3 text-danger" data-testid="histogram-error">
-        Delay histogram unavailable: {error}
+      <small className="d-block mt-3 text-danger" data-testid={iat ? 'iat-error' : 'histogram-error'}>
+        {name} histogram unavailable: {error}
       </small>
     );
   }
   if (!hist || !data || !options) return null;
+  const stats = iat ? binStats(hist) : { mean: meanNs ?? hist.mean_ns, std: stdNs ?? hist.std_ns };
   return (
     <>
-      <HistogramTables hist={hist} meanNs={meanNs ?? hist.mean_ns} stdNs={stdNs ?? hist.std_ns} />
-      <ChartBox label={`Delay histogram of link ${dir}`}>
+      <HistogramTables hist={hist} name={name} meanNs={stats.mean} stdNs={stats.std} />
+      <ChartBox label={`${name} histogram of link ${dir}`}>
         <Bar data={data} options={options} />
       </ChartBox>
     </>

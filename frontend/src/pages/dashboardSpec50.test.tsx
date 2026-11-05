@@ -2,7 +2,7 @@ import { fireEvent, within } from '@testing-library/react';
 import { vi } from 'vitest';
 import type { HistogramView } from '../api/types';
 import { formatCount, formatDuration } from '../common/format';
-import { card, delayBar, hasTab, histTables, queryRadio, radioNames, tab } from '../test/dashboardUi';
+import { CHART_RADIOS, card, delayBar, hasTab, histTables, queryRadio, radioNames, tab } from '../test/dashboardUi';
 import * as fx from '../test/fixtures';
 import { renderApp, seedLinks, tick } from '../test/helpers';
 import { ApiError, api, serveHistory } from '../test/mockApi';
@@ -75,8 +75,8 @@ describe.each(['stopped', 'failed'] as const)('Dashboard (spec 50 A3): the histo
     endedRun(state);
     await open();
     await tick(1000);
-    expect(radioNames(0)).toEqual(['Traffic rates', 'Delay histogram', 'Packet loss']);
-    expect(radioNames(1)).toEqual(['Traffic rates', 'Delay histogram', 'Packet loss']);
+    expect(radioNames(0)).toEqual(CHART_RADIOS);
+    expect(radioNames(1)).toEqual(CHART_RADIOS);
     for (const d of [0, 1]) expect(must(queryRadio(d, 'Delay histogram'), `radio ${d}`)).toBeEnabled();
   });
 
@@ -148,7 +148,7 @@ describe('Dashboard (spec 50 A3): which links keep a histogram', () => {
     });
     await open();
     await tick(1000);
-    expect(radioNames(0)).toEqual(['Traffic rates', 'Delay histogram', 'Packet loss']);
+    expect(radioNames(0)).toEqual(CHART_RADIOS);
     expect(radioNames(1)).toEqual(['Traffic rates', 'Packet loss']);
   });
 
