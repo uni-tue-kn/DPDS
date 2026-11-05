@@ -46,7 +46,7 @@ async function open() {
 /** The rate, loss and histogram chart of link 0, in this order. */
 async function linkCharts(): Promise<Record<'rate' | 'loss' | 'histogram', HTMLElement>> {
   const rate = chart(card(0), 'chart-line');
-  fireEvent.click(within(card(0)).getByRole('radio', { name: 'Loss' }));
+  fireEvent.click(within(card(0)).getByRole('radio', { name: 'Packet loss' }));
   const loss = chart(card(0), 'chart-line');
   fireEvent.click(within(card(0)).getByRole('radio', { name: 'Delay histogram' }));
   await tick(0);

@@ -240,7 +240,7 @@ describe('Loss donut (spec 35 F5): what it plots', () => {
     expect(valuesOf(0)).toEqual([40, 30, 20, 5, 4, 1]);
   });
 
-  it.each(['Rate', 'Delay histogram', 'Loss'])(
+  it.each(['Traffic rates', 'Delay histogram', 'Packet loss'])(
     'the donut is under the chart whichever radio is chosen (%s)',
     async (choice) => {
       await openLive(live(0, HUNDRED));
@@ -370,7 +370,7 @@ describe('Loss donut (spec 35 F5): no drops, the donut is still there', () => {
 
   it('CHOICE: the ring and "No drops" are shown below every chart choice', async () => {
     await openLive(live(0, ZERO));
-    for (const choice of ['Loss', 'Delay histogram', 'Rate']) {
+    for (const choice of ['Packet loss', 'Delay histogram', 'Traffic rates']) {
       fireEvent.click(radio(0, choice));
       expect(within(card(0)).getByText('No drops'), choice).toBeInTheDocument();
       expect(queryDonut(0), choice).toBeInTheDocument();

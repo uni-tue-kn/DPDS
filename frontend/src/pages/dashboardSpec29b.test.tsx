@@ -173,7 +173,7 @@ describe('Dashboard (spec 29b item 5): history cards for stopping, stopped and f
       }
       expect(rxOf(0)).toEqual(Array(5).fill(1.5));
       expect(rxOf(1)).toEqual(Array(5).fill(2.5));
-      expect(radioNames(0)).toEqual(['Rate', 'Loss']); // the final charts only, no live histogram
+      expect(radioNames(0)).toEqual(['Traffic rates', 'Packet loss']); // the final charts only, no live histogram
     },
   );
 

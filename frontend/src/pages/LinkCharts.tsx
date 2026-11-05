@@ -8,12 +8,19 @@ import { chartOptions, RX_COLOR, RX_FILL, TX_COLOR, TX_FILL } from '../component
 import ChartBox from './ChartBox';
 import DelayHistogram from './DelayHistogram';
 import type { DropCounts } from './LossDonut';
-import LossDonut from './LossDonut';
+import LossDonut, { CAUSES } from './LossDonut';
 
 type View = 'rate' | 'histogram' | 'loss';
 
-const MODEL_COLOR = '#27ae60';
-const OVERLOAD_COLOR = '#e74c3c';
+/** The cumulative count of each cause, in the order of the donut's `CAUSES`. */
+const COUNTS = [
+  (s: HistorySample) => s.loss_drops,
+  (s: HistorySample) => s.limiter_drops,
+  (s: HistorySample) => s.buffer_full_drops,
+  (s: HistorySample) => s.nic_tx_drops,
+  (s: HistorySample) => s.nic_rx_imissed,
+  (s: HistorySample) => s.nic_rx_nombuf,
+];
 
 /**
  * The chart area of one link: the chart, the radios below it and the loss donut. `live` carries the live delay numbers; a
@@ -47,9 +54,9 @@ export default function LinkCharts({
   const hasHistogram = live?.delayStats === true;
   const view = chosen === 'histogram' && !hasHistogram ? 'rate' : chosen;
   const views: [View, string][] = [
-    ['rate', 'Rate'],
+    ['rate', 'Traffic rates'],
     ...(hasHistogram || noHistogram ? ([['histogram', 'Delay histogram']] as [View, string][]) : []),
-    ['loss', 'Loss'],
+    ['loss', 'Packet loss'],
   ];
   const labels = useMemo(() => history.map((s) => formatElapsed(s.t_ms)), [history]);
   const rateData = useMemo(
@@ -74,29 +81,20 @@ export default function LinkCharts({
     }),
     [history, labels],
   );
-  // The loss model is intended in an emulator; everything else is the emulator running out of room.
   const lossData = useMemo(
     () => ({
       labels,
-      datasets: [
-        {
-          label: 'Model loss %',
-          data: history.map((s) => s.loss_pct),
-          borderColor: MODEL_COLOR,
-          backgroundColor: MODEL_COLOR,
-        },
-        {
-          label: 'Overload drops %',
-          data: history.map((s) => s.limiter_pct + s.buffer_full_pct + s.nic_tx_pct + s.nic_rx_pct),
-          borderColor: OVERLOAD_COLOR,
-          backgroundColor: OVERLOAD_COLOR,
-        },
-      ],
+      datasets: CAUSES.map((c, i) => ({
+        label: c.label,
+        data: history.map(COUNTS[i]),
+        borderColor: c.color,
+        backgroundColor: c.color,
+      })),
     }),
     [history, labels],
   );
   const rateOptions = useMemo(() => chartOptions<'line'>(theme, 'Time', 'Rate (Gbit/s)'), [theme]);
-  const lossOptions = useMemo(() => chartOptions<'line'>(theme, 'Time', 'Dropped packets (%)'), [theme]);
+  const lossOptions = useMemo(() => chartOptions<'line'>(theme, 'Time', 'Dropped packets'), [theme]);
 
   return (
     <>

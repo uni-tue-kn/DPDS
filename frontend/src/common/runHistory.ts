@@ -12,6 +12,33 @@ export const MAX_SAMPLES = 86400;
 export type History = Record<string, HistorySample[]>;
 export const NO_SAMPLES: HistorySample[] = [];
 
+const SUMMED = [
+  'rx_gbps',
+  'tx_gbps',
+  'rx_mpps',
+  'tx_mpps',
+  'loss_drops',
+  'limiter_drops',
+  'buffer_full_drops',
+  'nic_tx_drops',
+  'nic_rx_imissed',
+  'nic_rx_nombuf',
+] as const;
+
+const ZERO_SAMPLE: HistorySample = {
+  t_ms: 0,
+  rx_gbps: 0,
+  tx_gbps: 0,
+  rx_mpps: 0,
+  tx_mpps: 0,
+  loss_drops: 0,
+  limiter_drops: 0,
+  buffer_full_drops: 0,
+  nic_tx_drops: 0,
+  nic_rx_imissed: 0,
+  nic_rx_nombuf: 0,
+};
+
 /** The newest `MAX_SAMPLES` of `list`. */
 const capped = (list: HistorySample[]) => (list.length > MAX_SAMPLES ? list.slice(-MAX_SAMPLES) : list);
 
@@ -97,40 +124,25 @@ export function useRunHistory(): {
 }
 
 /**
- * The aggregate of several links' series, at the times every link has a sample: rates are summed, and each drop share is
- * averaged weighted by the link's received rate. The four overload shares are one, in `limiter_pct`. The result has the shape
- * of a link's series, so it is drawn by the same charts. Empty without links or when one link has no sample.
+ * The aggregate of several links' series, at the times every link has a sample: rates and cumulative drop counts are
+ * summed. The result has the shape of a link's series, so it is drawn by the same charts. Empty without links or when one
+ * link has no sample.
  */
 export function sumHistories(lists: HistorySample[][]): HistorySample[] {
-  const sums = new Map<number, { n: number; s: HistorySample; lossW: number; overW: number }>();
+  const sums = new Map<number, { n: number; s: HistorySample }>();
   for (const list of lists) {
     for (const x of list) {
       let acc = sums.get(x.t_ms);
       if (!acc) {
-        const zero = { rx_gbps: 0, tx_gbps: 0, rx_mpps: 0, tx_mpps: 0, loss_pct: 0, limiter_pct: 0 };
-        acc = {
-          n: 0,
-          s: { t_ms: x.t_ms, ...zero, buffer_full_pct: 0, nic_tx_pct: 0, nic_rx_pct: 0 },
-          lossW: 0,
-          overW: 0,
-        };
+        acc = { n: 0, s: { ...ZERO_SAMPLE, t_ms: x.t_ms } };
         sums.set(x.t_ms, acc);
       }
       acc.n += 1;
-      acc.s.rx_gbps += x.rx_gbps;
-      acc.s.tx_gbps += x.tx_gbps;
-      acc.s.rx_mpps += x.rx_mpps;
-      acc.s.tx_mpps += x.tx_mpps;
-      acc.lossW += x.loss_pct * x.rx_mpps;
-      acc.overW += (x.limiter_pct + x.buffer_full_pct + x.nic_tx_pct + x.nic_rx_pct) * x.rx_mpps;
+      for (const key of SUMMED) acc.s[key] += x[key];
     }
   }
   return [...sums.values()]
     .filter((a) => a.n === lists.length)
-    .map(({ s, lossW, overW }) => ({
-      ...s,
-      loss_pct: s.rx_mpps > 0 ? lossW / s.rx_mpps : 0,
-      limiter_pct: s.rx_mpps > 0 ? overW / s.rx_mpps : 0,
-    }))
+    .map((a) => a.s)
     .sort((a, b) => a.t_ms - b.t_ms);
 }

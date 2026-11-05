@@ -154,7 +154,7 @@ describe('Dashboard before any run (spec 39): the empty diagrams', () => {
   it.each(VIEWS)('%s, the Rate chart is there, empty, with titled axes and the legend', async (_name, d) => {
     await open();
     const panel = panelFor(d);
-    expect(within(panel).getByRole('img', { name: /^Rate chart/ })).toBeInTheDocument();
+    expect(within(panel).getByRole('img', { name: /^(Rate|Traffic rates) chart/ })).toBeInTheDocument();
     const data = line(panel);
     expect(data.labels).toEqual([]);
     expect(data.datasets.map((s) => s.label)).toEqual(['RX', 'TX']);
@@ -172,20 +172,20 @@ describe('Dashboard before any run (spec 39): the empty diagrams', () => {
     const names = within(panel)
       .getAllByRole('radio')
       .map((r) => (r as HTMLInputElement).labels?.[0]?.textContent?.trim());
-    expect(names).toEqual(['Rate', 'Delay histogram', 'Loss']);
-    expect(within(panel).getByRole('radio', { name: 'Rate' })).toBeChecked();
+    expect(names).toEqual(['Traffic rates', 'Delay histogram', 'Packet loss']);
+    expect(within(panel).getByRole('radio', { name: 'Traffic rates' })).toBeChecked();
     expect(within(panel).getByRole('radio', { name: 'Delay histogram' })).toBeDisabled();
-    expect(within(panel).getByRole('radio', { name: 'Loss' })).toBeEnabled();
-    fireEvent.click(within(panel).getByRole('radio', { name: 'Loss' }));
-    expect(within(panel).getByRole('img', { name: /^Loss chart/ })).toBeInTheDocument();
+    expect(within(panel).getByRole('radio', { name: 'Packet loss' })).toBeEnabled();
+    fireEvent.click(within(panel).getByRole('radio', { name: 'Packet loss' }));
+    expect(within(panel).getByRole('img', { name: /^(Loss|Packet loss) chart/ })).toBeInTheDocument();
     const data = line(panel);
-    expect(data.datasets.map((s) => s.label)).toEqual(['Model loss %', 'Overload drops %']);
+    expect(data.datasets.map((s) => s.label)).toEqual([...CAUSES]); // spec 43 F1: one line per cause
     for (const s of data.datasets) expect(s.data).toEqual([]);
   });
 
   it('a link tab has the same radios as a live link without delay statistics plus the disabled histogram', async () => {
     await open();
-    expect(radioNames(0)).toEqual(['Rate', 'Delay histogram', 'Loss']);
+    expect(radioNames(0)).toEqual(['Traffic rates', 'Delay histogram', 'Packet loss']);
     expect(must(queryRadio(0, 'Delay histogram'), 'Delay histogram radio')).toBeDisabled();
   });
 

@@ -5,7 +5,7 @@ import * as fx from '../test/fixtures';
 import { api, serveHistory } from '../test/mockApi';
 import type { HistoryServer } from '../test/mockApi';
 import { renderApp, seedStore, tick } from '../test/helpers';
-import { card, hasTab, queryRadio, tab, tabBadge } from '../test/dashboardUi';
+import { card, CAUSES, expectState, hasTab, queryRadio, tab, tabBadge } from '../test/dashboardUi';
 import { must } from '../test/must';
 
 // Spec 29 (user 2026-11-04, "Server-side series"): the dashboard charts are built from the controller's series,
@@ -17,8 +17,8 @@ import { must } from '../test/must';
 //   - a changed `run_id` is a new run (spec 29b item 4; the first round used `started_at`): the data held is dropped and the
 //     history is fetched in full again, because the new run's t_ms start at 0 again and an incremental answer would be empty.
 //     `started_at` is display data and no longer decides anything (see dashboardSpec29b.test.tsx).
-//   - the card of link d (its `dir`) charts samples[String(d)]: rate = rx_gbps / tx_gbps as they are, drops = loss_pct and
-//     limiter + buffer_full + nic_tx + nic_rx; x labels = formatElapsed(t_ms / 1000), e.g. t_ms 192000 -> "0h 3m 12s".
+//   - the card of link d (its `dir`) charts samples[String(d)]: rate = rx_gbps / tx_gbps as they are, drops = the six cumulative counts (spec 43);
+//     x labels = formatElapsed(t_ms / 1000), e.g. t_ms 192000 -> "0h 3m 12s".
 //   - no cap: the 120-sample client buffer is gone, a run of any length is shown whole.
 // (Spec 29, round 2 and spec 29b: after a stop, and while stopping or after a failure, the cards of the run stay, see the
 // last sections of this file and dashboardSpec29b.test.tsx.)
@@ -193,26 +193,37 @@ describe('Dashboard (spec 29): the charts show the whole run with elapsed-time l
     expect(rxOf(1)).toEqual([7.5]);
   });
 
-  it('the drops chart plots loss_pct and the sum of the four overload causes', async () => {
+  // Spec 43 F1. Was: loss_pct and the sum of the four overload shares (percent).
+  it('the loss chart plots the six cumulative counts, one line per cause in the donut order', async () => {
     server({
       '0': [
         fx.historySample(1000, {
-          loss_pct: 0.5,
-          limiter_pct: 1,
-          buffer_full_pct: 2,
-          nic_tx_pct: 0.25,
-          nic_rx_pct: 0.125,
+          loss_drops: 1,
+          limiter_drops: 2,
+          buffer_full_drops: 3,
+          nic_tx_drops: 4,
+          nic_rx_imissed: 5,
+          nic_rx_nombuf: 6,
         }),
-        fx.historySample(2000, { loss_pct: 0, limiter_pct: 0, buffer_full_pct: 0, nic_tx_pct: 0, nic_rx_pct: 4 }),
+        fx.historySample(2000, {
+          loss_drops: 10,
+          limiter_drops: 20,
+          buffer_full_drops: 30,
+          nic_tx_drops: 40,
+          nic_rx_imissed: 50,
+          nic_rx_nombuf: 60,
+        }),
       ],
       '1': [],
     });
     await open();
-    fireEvent.click(within(card(0)).getByRole('radio', { name: 'Loss' }));
+    fireEvent.click(within(card(0)).getByRole('radio', { name: 'Packet loss' }));
     await tick(0);
     const c = chartOf(0);
-    expect(dataset(c, /model loss/i).data).toEqual([0.5, 0]);
-    expect(dataset(c, /overload/i).data).toEqual([3.375, 4]);
+    expect(c.datasets.map((d) => d.label)).toEqual([...CAUSES]);
+    CAUSES.forEach((label, i) => {
+      expect(dataset(c, new RegExp(`^${label.replace(/[()]/g, '\\$&')}$`)).data, label).toEqual([i + 1, (i + 1) * 10]);
+    });
     expect(c.labels).toEqual(['0h 0m 1s', '0h 0m 2s']);
   });
 
@@ -502,7 +513,7 @@ describe('Dashboard (spec 29, round 2): the final charts of a stopped run stay u
   it('after the stop both cards are still there, marked "Stopped", with their whole final series', async () => {
     const { stop } = await runThenStop();
     await stop();
-    expect(screen.getByTestId('state-badge')).toHaveAttribute('data-state', 'stopped');
+    expectState('stopped');
     for (const d of [0, 1]) expect(marker(d), `card ${d}`).toBeInTheDocument();
     expect(rxOf(0)).toEqual(Array(5).fill(1.5));
     expect(rxOf(1)).toEqual(Array(5).fill(2.5));
@@ -521,15 +532,15 @@ describe('Dashboard (spec 29, round 2): the final charts of a stopped run stay u
   it('the Loss chart of a stopped link works too, and Rate comes back', async () => {
     const { s, stop } = await runThenStop();
     s.samples['0'].push(
-      fx.historySample(5000, { loss_pct: 2, limiter_pct: 0, buffer_full_pct: 0, nic_tx_pct: 0, nic_rx_pct: 3 }),
-      fx.historySample(6000, { loss_pct: 4, limiter_pct: 0, buffer_full_pct: 0, nic_tx_pct: 0, nic_rx_pct: 0 }),
+      fx.historySample(5000, { loss_drops: 2, nic_tx_drops: 0, nic_rx_imissed: 3 }),
+      fx.historySample(6000, { loss_drops: 4, nic_tx_drops: 0, nic_rx_imissed: 3 }),
     );
     await stop();
-    fireEvent.click(must(radioOf(0, 'Loss'), 'Drops radio'));
+    fireEvent.click(must(radioOf(0, 'Packet loss'), 'Drops radio'));
     await tick(0);
-    expect(dataset(chartOf(0), /model loss/i).data.slice(-2)).toEqual([2, 4]);
-    expect(dataset(chartOf(0), /overload/i).data.slice(-2)).toEqual([3, 0]);
-    fireEvent.click(must(radioOf(0, 'Rate'), 'Rate radio'));
+    expect(dataset(chartOf(0), /^Loss model$/).data.slice(-2)).toEqual([2, 4]);
+    expect(dataset(chartOf(0), /^NIC RX missed/).data.slice(-2)).toEqual([3, 3]);
+    fireEvent.click(must(radioOf(0, 'Traffic rates'), 'Rate radio'));
     await tick(0);
     expect(rxOf(0)).toHaveLength(7);
   });
@@ -552,7 +563,7 @@ describe('Dashboard (spec 29, round 2): the final charts of a stopped run stay u
     await stop();
     expect(within(card(0)).queryByTestId('chart-bar')).not.toBeInTheDocument();
     expect(within(card(0)).getByTestId('chart-line')).toBeInTheDocument();
-    expect(radioOf(0, 'Rate')).toBeChecked();
+    expect(radioOf(0, 'Traffic rates')).toBeChecked();
     const n = api.getDelayHistogram.mock.calls.length;
     await tick(5000);
     expect(api.getDelayHistogram.mock.calls.length).toBe(n);

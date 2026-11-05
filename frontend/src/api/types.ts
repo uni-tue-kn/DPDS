@@ -179,22 +179,8 @@ export interface DirectionStats {
   counters: Counters;
 }
 
-export interface PortStats {
-  port: number;
-  name?: string | null;
-  ipackets: number;
-  opackets: number;
-  ibytes: number;
-  obytes: number;
-  imissed: number;
-  ierrors: number;
-  oerrors: number;
-  rx_nombuf: number;
-}
-
 export interface StatsView {
   directions: DirectionStats[];
-  ports: PortStats[];
   /** milliseconds since the last successful telemetry poll (null: never). */
   age_ms?: number | null;
   /** the data is old (poll failures); after 5 failures `directions` is empty. */
@@ -210,12 +196,13 @@ export interface HistorySample {
   tx_gbps: number;
   rx_mpps: number;
   tx_mpps: number;
-  /** Drop shares in percent of the packets received. */
-  loss_pct: number;
-  limiter_pct: number;
-  buffer_full_pct: number;
-  nic_tx_pct: number;
-  nic_rx_pct: number;
+  /** The link's cumulative drop counters at this sample, by cause. */
+  loss_drops: number;
+  limiter_drops: number;
+  buffer_full_drops: number;
+  nic_tx_drops: number;
+  nic_rx_imissed: number;
+  nic_rx_nombuf: number;
 }
 
 /** A link of the run, as the controller ran it. */

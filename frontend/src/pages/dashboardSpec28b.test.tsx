@@ -5,12 +5,13 @@ import * as fx from '../test/fixtures';
 import { expectStartBody, renderApp, seedStore, storedDoc, tick } from '../test/helpers';
 import { ApiError, api, fakeController, serveHistory } from '../test/mockApi';
 import { must } from '../test/must';
+import { expectState, runButtons } from '../test/dashboardUi';
 
 // Spec 28b: fixes from the review of bcca62b (items 1, 3, 4 and 5 here; item 2 is dashboardMemo.test.tsx, item 6 is
 // histogramHintsSpec28b.test.tsx). Spec: scratchpad/spec28b.md. The tester's choices where it is silent are marked "CHOICE".
 //
-// Spec 35 (2026-11-05) changed this file: Restart is always in the button group (disabled, not absent), so the "Restarting…"
-// block now expects it disabled; the "no RX/TX pills while stopped" block is inverted (the pills stay, "–" before a run, the
+// Spec 43 F8 changed the "Restarting…" block: no such button or spinner any more, the run buttons are just disabled while it waits.
+// Spec 35 (2026-11-05) changed this file: Restart was always in the button group (disabled, not absent); the "no RX/TX pills while stopped" block is inverted (the pills stay, "–" before a run, the
 // final values after one); the per-card histogram settings block (item 5) is removed with the controls it was about.
 //
 // Item 1 is about a mismatch between the mocks and the controller: the controller answers `POST /api/emulation/stop` with
@@ -21,7 +22,6 @@ import { must } from '../test/must';
 const startBtn = () => screen.queryByRole('button', { name: /^start$/i });
 const stopBtn = () => screen.queryByRole('button', { name: /^stop$/i });
 const restartBtn = () => screen.queryByRole('button', { name: /^restart$/i });
-const stoppingBtn = () => screen.queryByRole('button', { name: /^stopping…$/i });
 const restartingBtn = () => screen.queryByRole('button', { name: 'Restarting…' });
 
 async function openRunning() {
@@ -43,28 +43,28 @@ describe('Dashboard (spec 28b item 1): Restart waits until the stop has finished
     seedStore({ links: [fx.link(), fx.linkRev()] });
   });
 
-  it('the stop request is sent at once and the button area shows a disabled "Restarting…" with a spinner', async () => {
+  // Spec 43 F8. Was: a disabled "Restarting…" button with a spinner and no Start/Stop/"Stopping…" while the restart waits. P4TG
+  // has no such state: no spinner and no "Restarting…"; while the restart's request is in flight (busy) the buttons are disabled.
+  it('the stop request is sent at once and the run buttons are disabled, without a spinner or "Restarting…"', async () => {
     await openRunning();
     await clickRestart();
     expect(api.stopEmulation).toHaveBeenCalledTimes(1);
-    const b = must(restartingBtn(), 'the Restarting… button');
-    expect(b).toBeDisabled();
-    const spinner = must(b.querySelector('.spinner-border'), 'spinner');
-    expect(spinner).toHaveAttribute('aria-hidden', 'true'); // so the accessible name is exactly "Restarting…"
-    expect(b).toHaveAccessibleName('Restarting…');
+    expect(runButtons().length).toBeGreaterThan(0);
+    for (const b of runButtons()) expect(b).toBeDisabled();
+    expect(restartingBtn()).not.toBeInTheDocument();
+    expect(screen.getByTestId('run-buttons').querySelector('.spinner-border')).toBeNull();
   });
 
-  it('while it waits there is no Start, Stop or "Stopping…" button and Restart is disabled, whatever the polls report', async () => {
+  it('while it waits every run button stays disabled, whatever the polls report, and no Start is offered', async () => {
     const { c } = await openRunning();
     await clickRestart();
     for (const state of ['stopping', 'stopping', 'running'] as const) {
       c.state = state; // "running" = a lagging poll
       await tick(1000);
-      expect(restartingBtn(), state).toBeInTheDocument();
+      expect(runButtons().length, state).toBeGreaterThan(0);
+      for (const b of runButtons()) expect(b, state).toBeDisabled();
       expect(startBtn(), state).not.toBeInTheDocument();
-      expect(stopBtn(), state).not.toBeInTheDocument();
-      expect(restartBtn(), state).toBeDisabled(); // spec 35 F1. Was: not in the document
-      expect(stoppingBtn(), state).not.toBeInTheDocument();
+      expect(restartingBtn(), state).not.toBeInTheDocument();
     }
   });
 
@@ -113,7 +113,7 @@ describe('Dashboard (spec 28b item 1): Restart waits until the stop has finished
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
-  it('then "Restarting…" goes away and the Stop button of the new run is shown', async () => {
+  it('then the buttons of the new run are shown: Stop and Restart, enabled', async () => {
     const { c } = await openRunning();
     await clickRestart();
     c.state = 'stopped';
@@ -141,8 +141,8 @@ describe('Dashboard (spec 28b item 1): Restart waits until the stop has finished
   it('a second click while it waits does nothing: one stop, one start', async () => {
     const { c } = await openRunning();
     await clickRestart();
-    fireEvent.click(must(restartingBtn()));
-    fireEvent.click(must(restartingBtn()));
+    fireEvent.click(must(restartBtn(), 'the disabled Restart button'));
+    fireEvent.click(must(restartBtn(), 'the disabled Restart button'));
     await tick(0);
     c.state = 'stopped';
     await tick(2500);
@@ -173,7 +173,7 @@ describe('Dashboard (spec 28b item 1): Restart waits until the stop has finished
     expect(api.startEmulation).not.toHaveBeenCalled();
   });
 
-  it('a start refused after the wait shows the controller message and ends the "Restarting…" state', async () => {
+  it('a start refused after the wait shows the controller message and puts Start back (enabled)', async () => {
     const { c } = await openRunning();
     await clickRestart();
     api.startEmulation.mockRejectedValue(new ApiError(409, 'port 0000:17:00.0 is a host uplink'));
@@ -335,7 +335,7 @@ describe('Dashboard (spec 28b item 4, spec 37): RX and TX pills when the stats h
     await tick(0);
     await tick(0);
     await tick(2500);
-    expect(screen.getByTestId('state-badge')).toHaveAttribute('data-state', 'stopped');
+    expectState('stopped');
     expect(screen.getByTestId('pill-rx')).toHaveTextContent(/^RX\s+–$/);
     expect(screen.getByTestId('pill-tx')).toHaveTextContent(/^TX\s+–$/);
     expect(screen.queryByText(/0 bit\/s/)).not.toBeInTheDocument();

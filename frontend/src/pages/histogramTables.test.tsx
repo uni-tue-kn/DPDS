@@ -99,9 +99,9 @@ describe('Histogram tables (spec 36 S2): layout', () => {
 
   it('are only in the "Delay histogram" view of a link: not under Rate or Loss, not in the Summary', async () => {
     await ready();
-    fireEvent.click(radio(0, 'Rate'));
+    fireEvent.click(radio(0, 'Traffic rates'));
     expect(within(card(0)).queryAllByRole('table')).toHaveLength(0);
-    fireEvent.click(radio(0, 'Loss'));
+    fireEvent.click(radio(0, 'Packet loss'));
     expect(within(card(0)).queryAllByRole('table')).toHaveLength(0);
     fireEvent.click(radio(0, 'Delay histogram'));
     expect(await within(card(0)).findAllByRole('table')).toHaveLength(3);

@@ -29,10 +29,11 @@ import { must } from '../test/must';
 // Spec 36 S1 (user 2026-11-05: "one summary tab which displays the aggregates of all links"). Contract: header of
 // src/test/dashboardUi.tsx. The tests below pin, per the spec:
 //   - the Summary tab is first, titled "Summary", selected by default; the link tabs keep titles and badges;
-//   - radios Rate / Delay histogram / Loss, "Delay histogram" disabled with the tooltip
+//   - radios Traffic rates / Delay histogram / Packet loss, "Delay histogram" disabled with the tooltip
 //     "Delay histograms are per link; select a link tab.", and nothing in the Summary polls getDelayHistogram;
 //   - Rate: RX and TX in Gbit/s summed per t_ms over the times at which every link has a sample;
-//   - Loss: "Model loss %" / "Overload drops %", each link's percentage weighted by its rx_mpps, 0 when the weights sum to 0;
+//   - Loss (spec 43 F1, was "Model loss %" / "Overload drops %" weighted by rx_mpps): one line per cause of the donut, in its order, each
+//     the plain sum over the links of the cumulative count at the sample time;
 //   - donut: counters (live) or totals (ended) summed per cause; legend, hover and "No drops" as for a link;
 //   - shown whenever a link tab is shown (also after a stop), absent without link tabs; the selection persists across polls.
 // CHOICE (spec silent): the spec says RX and TX are summed "in both Gbit/s and Mpps, like the per-link chart", but the per-link chart
@@ -45,7 +46,7 @@ const sample = (t: number, over: Partial<HistorySample> = {}) => fx.historySampl
 
 interface LineData {
   labels: string[];
-  datasets: { label: string; data: number[] }[];
+  datasets: { label: string; data: number[]; borderColor?: string }[];
 }
 const lineOf = (panel: HTMLElement): LineData =>
   JSON.parse(within(panel).getByTestId('chart-line').getAttribute('data-chart') ?? 'null');
@@ -209,22 +210,22 @@ describe('Summary tab (spec 36 S1): the radios', () => {
 
   it('are Rate, Delay histogram, Loss in this order, in the radiogroup "Chart", Rate checked', async () => {
     await open({ '0': [sample(1000)], '1': [sample(1000)] });
-    expect(names()).toEqual(['Rate', 'Delay histogram', 'Loss']);
+    expect(names()).toEqual(['Traffic rates', 'Delay histogram', 'Packet loss']);
     expect(within(summary()).getByRole('radiogroup', { name: 'Chart' })).toBeInTheDocument();
-    expect(summaryRadio('Rate')).toBeChecked();
-    expect(summaryRadio('Loss')).not.toBeChecked();
+    expect(summaryRadio('Traffic rates')).toBeChecked();
+    expect(summaryRadio('Packet loss')).not.toBeChecked();
   });
 
   it('"Delay histogram" is disabled even though every link has delay statistics; Rate and Loss are enabled', async () => {
     await open({ '0': [sample(1000)], '1': [sample(1000)] });
     expect(summaryRadio('Delay histogram')).toBeDisabled();
-    expect(summaryRadio('Rate')).toBeEnabled();
-    expect(summaryRadio('Loss')).toBeEnabled();
+    expect(summaryRadio('Traffic rates')).toBeEnabled();
+    expect(summaryRadio('Packet loss')).toBeEnabled();
   });
 
   it('"Delay histogram" is there and disabled also when no link has delay statistics', async () => {
     await open({ '0': [sample(1000)] }, [fx.dirStats(0, { delay_stats: false })]);
-    expect(names()).toEqual(['Rate', 'Delay histogram', 'Loss']);
+    expect(names()).toEqual(['Traffic rates', 'Delay histogram', 'Packet loss']);
     expect(summaryRadio('Delay histogram')).toBeDisabled();
   });
 
@@ -242,7 +243,7 @@ describe('Summary tab (spec 36 S1): the radios', () => {
   it('clicking the disabled "Delay histogram" changes nothing and requests no histogram', async () => {
     await open({ '0': [sample(1000)], '1': [sample(1000)] });
     fireEvent.click(summaryRadio('Delay histogram'));
-    expect(summaryRadio('Rate')).toBeChecked();
+    expect(summaryRadio('Traffic rates')).toBeChecked();
     expect(within(summary()).queryByTestId('chart-bar')).not.toBeInTheDocument();
     expect(api.getDelayHistogram).not.toHaveBeenCalled();
   });
@@ -255,13 +256,13 @@ describe('Summary tab (spec 36 S1): the radios', () => {
     await tick(0);
     await tick(0);
     expect(lineOf(summary()).datasets.map((s) => s.label)).toEqual(['RX', 'TX']);
-    fireEvent.click(summaryRadio('Loss'));
-    expect(summaryRadio('Loss')).toBeChecked();
-    expect(lineOf(summary()).datasets.map((s) => s.label)).toEqual(['Model loss %', 'Overload drops %']);
+    fireEvent.click(summaryRadio('Packet loss'));
+    expect(summaryRadio('Packet loss')).toBeChecked();
+    expect(lineOf(summary()).datasets.map((s) => s.label)).toEqual([...CAUSES]);
     expect(must(within(summary()).getAllByRole('img')[0]).getAttribute('aria-label')).toMatch(/loss/i);
     await tick(3000);
-    expect(summaryRadio('Loss')).toBeChecked();
-    fireEvent.click(summaryRadio('Rate'));
+    expect(summaryRadio('Packet loss')).toBeChecked();
+    fireEvent.click(summaryRadio('Traffic rates'));
     expect(lineOf(summary()).datasets.map((s) => s.label)).toEqual(['RX', 'TX']);
     expect(must(within(summary()).getAllByRole('img')[0]).getAttribute('aria-label')).toMatch(/rate/i);
   });
@@ -405,56 +406,61 @@ describe('Summary tab (spec 36 S1): the rate chart', () => {
 
 // ---- loss view ----------------------------------------------------------------------------------------------------------------
 
-describe('Summary tab (spec 36 S1): the loss chart', () => {
-  const loss = (rx_mpps: number, model: number, overload: number): Partial<HistorySample> => ({
-    rx_mpps,
-    loss_pct: model,
-    limiter_pct: overload / 2,
-    buffer_full_pct: overload / 2,
-    nic_tx_pct: 0,
-    nic_rx_pct: 0,
+describe('Summary tab (spec 36 S1, spec 43 F1): the loss chart', () => {
+  const counts = (a: number, b = 0, c = 0, d = 0, e = 0, f = 0): Partial<HistorySample> => ({
+    loss_drops: a,
+    limiter_drops: b,
+    buffer_full_drops: c,
+    nic_tx_drops: d,
+    nic_rx_imissed: e,
+    nic_rx_nombuf: f,
+  });
+  const show = async (history: Record<string, HistorySample[]>) => {
+    await open(history);
+    fireEvent.click(summaryRadio('Packet loss'));
+  };
+
+  it('has six lines in the order, with the labels, and the colours of the donut', async () => {
+    await show({ '0': [sample(1000)], '1': [sample(1000)] });
+    const chart = lineOf(summary());
+    expect(chart.datasets.map((s) => s.label)).toEqual([...CAUSES]);
+    const donut = JSON.parse(within(summary()).getByTestId('chart-doughnut').getAttribute('data-chart') ?? 'null');
+    expect(chart.datasets.map((s) => s.borderColor)).toEqual(donut.datasets[0].backgroundColor);
   });
 
-  it('weights each link by its rx_mpps: (3 x 4 + 1 x 8) / 4 = 5 model loss, (3 x 2 + 1 x 8) / 4 = 3.5 overload', async () => {
-    await open({ '0': [sample(1000, loss(3, 4, 2))], '1': [sample(1000, loss(1, 8, 8))] });
-    fireEvent.click(summaryRadio('Loss'));
-    await waitFor(() => expect(dataset(summary(), 'Model loss %')).toHaveLength(1));
-    expect(dataset(summary(), 'Model loss %')[0]).toBeCloseTo(5, 9); // the unweighted mean would be 6
-    expect(dataset(summary(), 'Overload drops %')[0]).toBeCloseTo(3.5, 9); // the unweighted mean would be 5
-  });
-
-  it('overload is limiter + buffer full + NIC TX + NIC RX of each link', async () => {
-    await open({
-      '0': [
-        sample(1000, { rx_mpps: 1, loss_pct: 0, limiter_pct: 1, buffer_full_pct: 2, nic_tx_pct: 4, nic_rx_pct: 8 }),
-      ],
-      '1': [
-        sample(1000, { rx_mpps: 1, loss_pct: 0, limiter_pct: 0, buffer_full_pct: 0, nic_tx_pct: 0, nic_rx_pct: 0 }),
-      ],
+  it('sums the links counts per cause, plainly (no weighting by rx_mpps)', async () => {
+    await show({
+      '0': [sample(1000, { rx_mpps: 3, ...counts(4, 1, 2, 3, 4, 5) })],
+      '1': [sample(1000, { rx_mpps: 1, ...counts(8, 10, 20, 30, 40, 50) })],
     });
-    fireEvent.click(summaryRadio('Loss'));
-    await waitFor(() => expect(dataset(summary(), 'Overload drops %')).toHaveLength(1));
-    expect(dataset(summary(), 'Overload drops %')[0]).toBeCloseTo(7.5, 9); // 15 / 2
+    await waitFor(() => expect(dataset(summary(), 'Loss model')).toHaveLength(1));
+    const at = (label: string) => dataset(summary(), label)[0];
+    expect(CAUSES.map(at)).toEqual([12, 11, 22, 33, 44, 55]);
   });
 
-  it('is 0 (not NaN) when no link received anything at that time', async () => {
-    await open({ '0': [sample(1000, loss(0, 4, 2))], '1': [sample(1000, loss(0, 8, 8))] });
-    fireEvent.click(summaryRadio('Loss'));
-    await waitFor(() => expect(dataset(summary(), 'Model loss %')).toHaveLength(1));
-    expect(dataset(summary(), 'Model loss %')).toEqual([0]);
-    expect(dataset(summary(), 'Overload drops %')).toEqual([0]);
+  it('the y axis is titled "Dropped packets" and starts at zero', async () => {
+    await show({ '0': [sample(1000)], '1': [sample(1000)] });
+    const options = JSON.parse(within(summary()).getByTestId('chart-line').getAttribute('data-options') ?? 'null');
+    expect(options.scales.y.title.text).toBe('Dropped packets');
+    expect(options.scales.y.beginAtZero === true || options.scales.y.min === 0).toBe(true);
+  });
+
+  it('is 0 (not NaN) for a link that dropped nothing and a rx_mpps of 0', async () => {
+    await show({
+      '0': [sample(1000, { rx_mpps: 0, ...counts(0) })],
+      '1': [sample(1000, { rx_mpps: 0, ...counts(0) })],
+    });
+    await waitFor(() => expect(dataset(summary(), 'Loss model')).toHaveLength(1));
+    for (const label of CAUSES) expect(dataset(summary(), label)).toEqual([0]);
   });
 
   it('is computed per sample time and over the common times only', async () => {
-    await open({
-      '0': [sample(1000, loss(1, 10, 0)), sample(2000, loss(1, 2, 0)), sample(3000, loss(1, 99, 0))],
-      '1': [sample(1000, loss(3, 2, 0)), sample(2000, loss(0, 50, 0))],
+    await show({
+      '0': [sample(1000, counts(10)), sample(2000, counts(20)), sample(3000, counts(99))],
+      '1': [sample(1000, counts(2)), sample(2000, counts(5))],
     });
-    fireEvent.click(summaryRadio('Loss'));
-    await waitFor(() => expect(dataset(summary(), 'Model loss %')).toHaveLength(2));
-    const data = dataset(summary(), 'Model loss %');
-    expect(data[0]).toBeCloseTo(4, 9); // (1 x 10 + 3 x 2) / 4
-    expect(data[1]).toBeCloseTo(2, 9); // (1 x 2 + 0 x 50) / 1
+    await waitFor(() => expect(dataset(summary(), 'Loss model')).toHaveLength(2));
+    expect(dataset(summary(), 'Loss model')).toEqual([12, 25]);
     expect(lineOf(summary()).labels).toEqual([formatElapsed(1000), formatElapsed(2000)]);
   });
 });

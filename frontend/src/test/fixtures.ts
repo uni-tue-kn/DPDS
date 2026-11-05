@@ -15,7 +15,6 @@ import type {
   Link,
   LinkInput,
   OnlineView,
-  PortStats,
   RunningConfig,
   StatsView,
 } from '../api/types';
@@ -313,25 +312,8 @@ export function dirStats(dir: number, over: Partial<DirectionStats> = {}): Direc
   };
 }
 
-/** NIC port counters; every counter distinct so a table cell can be traced to its field. */
-export function portStats(port: number, over: Partial<PortStats> = {}): PortStats {
-  return {
-    port,
-    name: `0000:65:00.${port}`,
-    ipackets: 1234567,
-    opackets: 7654321,
-    ibytes: 98765432100,
-    obytes: 12345678900,
-    imissed: 11,
-    ierrors: 22,
-    oerrors: 33,
-    rx_nombuf: 44,
-    ...over,
-  };
-}
-
 export function stats(directions: DirectionStats[], over: Partial<StatsView> = {}): StatsView {
-  return { directions, ports: [], age_ms: 120, stale: false, ...over };
+  return { directions, age_ms: 120, stale: false, ...over };
 }
 
 /**
@@ -396,8 +378,8 @@ export function runningEmulation(
 }
 
 /**
- * Spec 29: one sample of `GET /api/stats/history` (`t_ms`: whole milliseconds since the run started). The defaults are the rates and shares of `dirStats()` in the units of the
- * series (Gbit/s, Mpps, percent), so a chart built from the history shows what the stats cards show.
+ * Spec 29: one sample of `GET /api/stats/history` (`t_ms`: whole milliseconds since the run started). The defaults are the rates of `dirStats()` in the units of the
+ * series (Gbit/s, Mpps) and cumulative drop counts (spec 43), so a chart built from the history shows what the stats cards show.
  */
 export function historySample(t_ms: number, over: Partial<HistorySample> = {}): HistorySample {
   return {
@@ -406,11 +388,13 @@ export function historySample(t_ms: number, over: Partial<HistorySample> = {}): 
     tx_gbps: 8.25,
     rx_mpps: 1.234567,
     tx_mpps: 1.2,
-    loss_pct: 0.5,
-    limiter_pct: 1.25,
-    buffer_full_pct: 2.5,
-    nic_tx_pct: 0.1,
-    nic_rx_pct: 0.75,
+    // spec 43 (B1): the link's cumulative drop counters at this sample, distinct per cause (they sum to 100)
+    loss_drops: 40,
+    limiter_drops: 30,
+    buffer_full_drops: 20,
+    nic_tx_drops: 5,
+    nic_rx_imissed: 4,
+    nic_rx_nombuf: 1,
     ...over,
   };
 }
@@ -456,3 +440,13 @@ export function totals(over: Partial<HistoryTotals> = {}): HistoryTotals {
 export function historySamples(from: number, count: number, over: Partial<HistorySample> = {}): HistorySample[] {
   return Array.from({ length: count }, (_, i) => historySample((from + i) * 1000, over));
 }
+
+/** Spec 43 B1: the cumulative drop fields of a `HistorySample`, in the order of the donut's causes (and of the loss chart's lines). */
+export const DROP_FIELDS = [
+  'loss_drops',
+  'limiter_drops',
+  'buffer_full_drops',
+  'nic_tx_drops',
+  'nic_rx_imissed',
+  'nic_rx_nombuf',
+] as const;

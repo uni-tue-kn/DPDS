@@ -28,10 +28,6 @@ export function formatDuration(ns?: number | null): string {
   return `${(ns / 1e9).toFixed(2)} s`;
 }
 
-export function formatPct(v?: number | null): string {
-  return v == null ? NA : `${v.toFixed(2)} %`;
-}
-
 export function formatInt(v?: number | null): string {
   return v == null ? NA : String(v);
 }

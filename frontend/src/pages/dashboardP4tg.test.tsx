@@ -4,7 +4,18 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { vi } from 'vitest';
 import type { EmulationState } from '../api/types';
-import { card, findCard, queryRadio, radio } from '../test/dashboardUi';
+import {
+  card,
+  CAUSES,
+  expectState,
+  findCard,
+  findState,
+  queryRadio,
+  radio,
+  RUN_BUTTONS,
+  runButtonNames,
+  runButtons,
+} from '../test/dashboardUi';
 import * as fx from '../test/fixtures';
 import { deferred, expectStartBody, renderApp, seedRaw, seedStore, storedDoc, tick } from '../test/helpers';
 import { setPrefersDark } from '../test/matchMedia';
@@ -13,18 +24,16 @@ import { must } from '../test/must';
 
 // Spec 28 (user 2026-11-04): the P4TG-like dashboard. Spec: items 1-3 of scratchpad/spec28.md (item 4, server-side history, is
 // spec 29 and not tested here). The tester's choices where the spec is silent are marked "CHOICE" and listed in the report:
-//   - test ids: pill-rx, pill-tx, pill-elapsed, pill-lost (spec 38; was pill-dropped; state keeps `state-badge`)
+//   - test ids: pill-rx, pill-tx, pill-elapsed, pill-lost (spec 43: the lost pill reads "Lost N frames"; there is no state-badge any more)
 //   - the rate pills read "<n> Gbit/s (<m> Mpps)" with two decimals, e.g. "9.25 Gbit/s (7.31 Mpps)"
-//   - "dropped" = rx_pps-weighted mean over the directions of the sum of the five drop shares, two decimals
-//   - radio group named "Chart", radios named "Rate", "Drops", "Delay histogram"; the last one only with delay_stats on
-//   - the drops chart is ONE chart with two datasets: "Model loss %" (loss_pct) and "Overload drops %" (limiter + buffer
-//     full + NIC TX + NIC RX)
+//   - radio group named "Chart", radios named "Traffic rates", "Packet loss", "Delay histogram" (spec 43 F5); the last one only with delay_stats on
+//   - the loss chart has six lines, one per donut cause, of cumulative counts (spec 43 F1; was two percent datasets)
 //   - Restart refuses locally (no stop) when the local document has no links or is unreadable
 //   - the histogram controls, percentile list and under/overflow line belong to the histogram view only
 // The chart stubs in test/setup.ts expose the chart data as `data-chart` and the options as `data-options`.
 //
 // Spec 35 (2026-11-05) reworked this file; each changed or removed block says what it was. In short: the button group always
-// holds [Restart] [Start|Stop|...] (Restart is disabled, not absent, unless running); the "dropped" pill is always there (spec 38: now the "lost" pill, only while NIC drops > 0); the
+// holds [Restart] [Start|Stop|...] (spec 43 F8: now Stop/Restart, Draining…/Restart or Start, see the Start/Stop/Restart block); the "dropped" pill is always there (spec 38: now the "lost" pill, only while NIC drops > 0); the
 // per-card radio group is per-tab ("Drops" is "Loss", "Delay histogram" is second); the histogram has no controls, no percentile
 // list and no expected overlay (F4); the NIC ports table moved to the Interfaces page (interfacesPorts.test.tsx).
 
@@ -33,79 +42,124 @@ const STATES: EmulationState[] = ['stopped', 'starting', 'running', 'stopping', 
 const startBtn = () => screen.queryByRole('button', { name: /^start$/i });
 const stopBtn = () => screen.queryByRole('button', { name: /^stop$/i });
 const restartBtn = () => screen.queryByRole('button', { name: /^restart$/i });
-const stoppingBtn = () => screen.queryByRole('button', { name: /^stopping…$/i });
+const drainingBtn = () => screen.queryByRole('button', { name: /^draining…$/i });
 
 async function openIn(state: EmulationState, over: Partial<ReturnType<typeof fx.emulation>> = {}) {
   api.getEmulation.mockResolvedValue(fx.emulation(state, over));
   renderApp('/');
-  await waitFor(() => expect(screen.getByTestId('state-badge')).toHaveAttribute('data-state', state));
+  await findState(state);
 }
 
-describe('Dashboard (spec 28, spec 35 F1): one contextual Start/Stop button next to an always present Restart', () => {
+// Spec 43 F8. Was (spec 28, spec 35 F1): a ButtonGroup of [Restart] and one contextual Start/Stop/"Stopping…" button, Restart
+// always present and enabled only while running, "Stopping…" with a spinner. Now like P4TG's Home.tsx: plain Buttons with `mb-1`,
+// no group, no spinners; starting/running [Stop (danger, bi-stop-fill)] [Restart (primary, bi-arrow-clockwise)]; stopping the
+// same two disabled with "Draining…" for Stop; any other state only [Start (primary, bi-play-circle-fill)].
+describe('Dashboard (spec 43 F8): Start / Stop / Restart like P4TG', () => {
   beforeEach(() => {
     seedStore({ links: [fx.link(), fx.linkRev()] });
   });
 
-  it.each(['stopped', 'failed'] as const)('"%s": only Start is visible, and it is enabled', async (state) => {
-    await openIn(state);
-    expect(startBtn()).toBeEnabled();
-    expect(stopBtn()).not.toBeInTheDocument();
-    expect(restartBtn()).toBeDisabled(); // spec 35 F1. Was: not in the document
-    expect(stoppingBtn()).not.toBeInTheDocument();
-  });
+  it.each(['stopped', 'failed'] as const)(
+    '"%s": only Start is visible, and it is enabled; there is no Restart',
+    async (state) => {
+      await openIn(state);
+      expect(startBtn()).toBeEnabled();
+      expect(stopBtn()).not.toBeInTheDocument();
+      expect(restartBtn()).not.toBeInTheDocument();
+      expect(drainingBtn()).not.toBeInTheDocument();
+    },
+  );
 
-  it.each(['starting', 'running'] as const)('"%s": only Stop is visible, and it is enabled', async (state) => {
+  it.each(['starting', 'running'] as const)('"%s": Stop (enabled) then Restart; no Start', async (state) => {
     await openIn(state);
     expect(stopBtn()).toBeEnabled();
+    expect(restartBtn()).toBeInTheDocument();
     expect(startBtn()).not.toBeInTheDocument();
-    expect(stoppingBtn()).not.toBeInTheDocument();
+    expect(drainingBtn()).not.toBeInTheDocument();
+    expect(runButtonNames()).toEqual(['Stop', 'Restart']);
   });
 
-  it('"stopping": a disabled "Stopping…" button with a spinner; no Start or Stop, Restart disabled', async () => {
+  it('"running": Restart is enabled', async () => {
+    await openIn('running');
+    expect(must(restartBtn())).toBeEnabled();
+  });
+
+  it('"stopping": the same two buttons, both disabled, Stop reading "Draining…"; no Start, no spinner', async () => {
     await openIn('stopping');
-    const b = must(stoppingBtn(), 'the Stopping… button');
-    expect(b).toBeDisabled();
-    expect(b.querySelector('.spinner-border')).not.toBeNull();
-    expect(startBtn()).not.toBeInTheDocument();
+    expect(runButtonNames()).toEqual(['Draining…', 'Restart']);
+    for (const b of runButtons()) expect(b).toBeDisabled();
     expect(stopBtn()).not.toBeInTheDocument();
-    expect(restartBtn()).toBeDisabled(); // spec 35 F1. Was: not in the document
+    expect(startBtn()).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^stopping…$/i })).not.toBeInTheDocument();
   });
 
-  it('exactly one of Start / Stop / "Stopping…" is shown in every state', async () => {
+  it('every state has exactly the buttons of RUN_BUTTONS', async () => {
     for (const state of STATES) {
       api.getEmulation.mockResolvedValue(fx.emulation(state));
       const view = renderApp('/');
-      await waitFor(() => expect(screen.getByTestId('state-badge')).toHaveAttribute('data-state', state));
-      const shown = [startBtn(), stopBtn(), stoppingBtn()].filter((b) => b !== null);
-      expect(shown, state).toHaveLength(1);
+      await findState(state);
+      expect(runButtonNames(), state).toEqual(RUN_BUTTONS[state]);
       view.unmount();
     }
   });
 
-  // Spec 35 F1. Was: 'Restart is visible only while running'. It is always rendered now and enabled only while running.
-  it('Restart is enabled only while running (not starting, stopping, stopped or failed) and always visible', async () => {
-    for (const state of STATES) {
-      api.getEmulation.mockResolvedValue(fx.emulation(state));
-      const view = renderApp('/');
-      await waitFor(() => expect(screen.getByTestId('state-badge')).toHaveAttribute('data-state', state));
-      if (state === 'running') expect(restartBtn(), state).toBeEnabled();
-      else expect(restartBtn(), state).toBeDisabled();
-      view.unmount();
-    }
-  });
-
-  it('the button follows the state: Start turns into Stop when the poll reports "running"', async () => {
+  it('the button follows the state: Start turns into Stop and Restart when the poll reports "running"', async () => {
     vi.useFakeTimers();
     api.getEmulation.mockResolvedValue(fx.emulation('stopped'));
     renderApp('/');
     await tick(0);
     await tick(0);
     expect(startBtn()).toBeInTheDocument();
+    expect(restartBtn()).not.toBeInTheDocument();
     api.getEmulation.mockResolvedValue(fx.emulation('running'));
     await tick(2500);
     expect(stopBtn()).toBeInTheDocument();
     expect(startBtn()).not.toBeInTheDocument();
     expect(restartBtn()).toBeInTheDocument();
+  });
+
+  it('is plain Buttons like P4TG: no ButtonGroup, no spinner, `mb-1`, Stop danger, Restart and Start primary, with icons', async () => {
+    await openIn('running');
+    const col = screen.getByTestId('run-buttons');
+    expect(col.querySelector('.btn-group')).toBeNull();
+    expect(within(col).queryByRole('group')).not.toBeInTheDocument();
+    expect(col.querySelector('.spinner-border, .spinner-grow')).toBeNull();
+    const stop = must(stopBtn(), 'Stop');
+    const restart = must(restartBtn(), 'Restart');
+    expect(stop).toHaveClass('btn', 'btn-danger', 'mb-1');
+    expect(restart).toHaveClass('btn', 'btn-primary', 'mb-1');
+    expect(stop.querySelector('i')).toHaveClass('bi', 'bi-stop-fill');
+    expect(restart.querySelector('i')).toHaveClass('bi', 'bi-arrow-clockwise');
+    expect(stop.compareDocumentPosition(restart) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(restart).not.toHaveClass('btn-outline-primary');
+    for (const b of [stop, restart]) expect(b.style.minWidth).toBe('');
+  });
+
+  it('Start is a primary Button with the bi-play-circle-fill icon, `mb-1`, not green', async () => {
+    await openIn('stopped');
+    const start = must(startBtn(), 'Start');
+    expect(start).toHaveClass('btn', 'btn-primary', 'mb-1');
+    expect(start).not.toHaveClass('btn-success');
+    expect(start.querySelector('i')).toHaveClass('bi', 'bi-play-circle-fill');
+    expect(start.style.minWidth).toBe('');
+    expect(screen.getByTestId('run-buttons').querySelector('.btn-group, .spinner-border')).toBeNull();
+  });
+
+  it('the buttons sit in the right column of the top row, `col-4 text-end`', async () => {
+    await openIn('running');
+    const col = must(screen.getByTestId('run-buttons').closest('.col-4'), 'the col-4 column');
+    expect(col).toHaveClass('text-end');
+  });
+
+  it('while a request is in flight (Stop clicked, no answer yet) the buttons are disabled', async () => {
+    const user = userEvent.setup();
+    api.stopEmulation.mockReturnValue(deferred<ReturnType<typeof fx.emulation>>().promise);
+    await openIn('running');
+    await user.click(must(stopBtn()));
+    await waitFor(() => {
+      for (const b of runButtons()) expect(b).toBeDisabled();
+    });
+    expect(screen.getByTestId('run-buttons').querySelector('.spinner-border')).toBeNull();
   });
 
   it('Start still sends the whole local document (unchanged by the restyle)', async () => {
@@ -192,7 +246,7 @@ describe('Dashboard (spec 28): Restart = stop, then start with the current local
     expect(api.stopEmulation).toHaveBeenCalledTimes(1);
   });
 
-  it('while the restart is in flight Restart is disabled and a second click sends no second stop', async () => {
+  it('while the restart is in flight every button is disabled and a second click sends no second stop', async () => {
     vi.useFakeTimers();
     const c = fakeController('running');
     const stopped = deferred<ReturnType<typeof fx.emulation>>();
@@ -202,10 +256,12 @@ describe('Dashboard (spec 28): Restart = stop, then start with the current local
     await tick(0);
     fireEvent.click(must(restartBtn()));
     await tick(0);
-    // spec 28b item 1: while it waits, the button area shows a disabled "Restarting…" (see dashboardSpec28b.test.tsx)
-    const b = screen.getByRole('button', { name: 'Restarting…' });
-    expect(b).toBeDisabled();
-    fireEvent.click(b);
+    // spec 43 F8: no "Restarting…" and no spinner any more; while it waits every run button is disabled
+    expect(runButtons().length).toBeGreaterThan(0);
+    for (const b of runButtons()) expect(b).toBeDisabled();
+    expect(screen.getByTestId('run-buttons').querySelector('.spinner-border')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Restarting…' })).not.toBeInTheDocument();
+    for (const b of runButtons()) fireEvent.click(b);
     await tick(0);
     expect(api.stopEmulation).toHaveBeenCalledTimes(1);
     c.state = 'stopped';
@@ -279,11 +335,12 @@ describe('Dashboard (spec 28): status pills', () => {
     expect(screen.getByTestId('pill-rx')).toHaveTextContent(/1\.5(0)? Gbit\/s \(1\.25 Mpps\)/);
   });
 
-  it('the state pill stays (same test id and live region)', async () => {
+  // Spec 43 F3. Was: 'the state pill stays (same test id and live region)'.
+  it('there is no state badge left of the RX pill', async () => {
     renderApp('/');
-    const badge = await screen.findByTestId('state-badge');
-    expect(badge).toHaveTextContent(/running/i);
-    expect(badge.closest('[aria-live="polite"], [role="status"]')).not.toBeNull();
+    await screen.findByTestId('pill-rx');
+    expect(screen.queryByTestId('state-badge')).not.toBeInTheDocument();
+    expect(screen.queryByText(/^running$/i)).not.toBeInTheDocument();
   });
 
   // Spec 29, second round (user 2026-11-04): relative times like P4TG. The pill shows the `elapsed_ms` of the stats poll
@@ -362,7 +419,7 @@ describe('Dashboard (spec 28): status pills', () => {
       'is not shown while the stats carry no elapsed_ms (%s), also for a running emulation',
       async (v) => {
         await open(v);
-        expect(screen.getByTestId('state-badge')).toHaveAttribute('data-state', 'running');
+        expectState('running');
         expect(screen.queryByTestId('pill-elapsed')).not.toBeInTheDocument();
       },
     );
@@ -413,73 +470,6 @@ describe('Dashboard (spec 28): status pills', () => {
           expect(src, `${file} uses ${forbidden}`).not.toContain(forbidden);
         }
       }
-    });
-  });
-
-  // Spec 38. Was: the "dropped" pill (all five shares, neutral, always there). Now: "lost", NIC drops only, only while > 0, with
-  // the danger icon. Full contract: dashboardSpec35.test.tsx; here the P4TG-style cases on the stats poll.
-  describe('the "lost" pill: real (NIC) loss only, shown only while > 0', () => {
-    const shares = (m: number, rx_pps: number) =>
-      ({
-        rx_pps,
-        loss_pct: 1 * m,
-        limiter_pct: 1 * m,
-        buffer_full_pct: 1 * m,
-        nic_tx_pct: 0.5 * m,
-        nic_rx_pct: 0.5 * m,
-      }) as const;
-    const none = { loss_pct: 0, limiter_pct: 0, buffer_full_pct: 0, nic_tx_pct: 0, nic_rx_pct: 0 };
-
-    it('shows the NIC shares only, of a single direction: "lost 0.85 %"', async () => {
-      api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0)])); // 0.1 + 0.75; loss 0.5, limiter 1.25, buffer 2.5 excluded
-      renderApp('/');
-      const pill = await screen.findByTestId('pill-lost');
-      expect(pill).toHaveTextContent(/lost\s+0\.85\s?%/i);
-      expect(screen.queryByTestId('pill-dropped')).not.toBeInTheDocument();
-    });
-
-    it('over several directions it is the NIC share weighted by the received packet rate', async () => {
-      // dir 0: 1 % of 3 Mpps, dir 1: 2 % of 1 Mpps -> (3 x 1 + 1 x 2) / 4 = 1.25 (the unweighted mean would be 1.50)
-      api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0, shares(1, 3e6)), fx.dirStats(1, shares(2, 1e6))]));
-      renderApp('/');
-      expect(await screen.findByTestId('pill-lost')).toHaveTextContent(/lost\s+1\.25\s?%/i);
-    });
-
-    it('carries the danger icon', async () => {
-      api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0)]));
-      renderApp('/');
-      const pill = await screen.findByTestId('pill-lost');
-      expect(must(pill.querySelector('i'), 'icon')).toHaveClass('bi-exclamation-circle-fill', 'text-danger');
-    });
-
-    it('is absent when every drop share is zero', async () => {
-      api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0, none), fx.dirStats(1, none)]));
-      renderApp('/');
-      await findCard(1);
-      expect(screen.queryByTestId('pill-lost')).not.toBeInTheDocument();
-    });
-
-    it('is absent when only emulated causes drop', async () => {
-      const emulated = { ...none, loss_pct: 3, limiter_pct: 4, buffer_full_pct: 5 };
-      api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0, emulated), fx.dirStats(1, emulated)]));
-      renderApp('/');
-      await findCard(1);
-      expect(screen.queryByTestId('pill-lost')).not.toBeInTheDocument();
-    });
-
-    it('follows the polls: absent, then 2.00 %, then absent again', async () => {
-      vi.useFakeTimers();
-      api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0, none)]));
-      renderApp('/');
-      await tick(0);
-      await tick(0);
-      expect(screen.queryByTestId('pill-lost')).not.toBeInTheDocument();
-      api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0, { ...none, nic_rx_pct: 2 })]));
-      await tick(2500);
-      expect(screen.getByTestId('pill-lost')).toHaveTextContent(/lost\s+2\.00\s?%/i);
-      api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0, none)]));
-      await tick(2500);
-      expect(screen.queryByTestId('pill-lost')).not.toBeInTheDocument();
     });
   });
 });
@@ -542,7 +532,7 @@ async function openCards() {
 async function showChart(
   user: ReturnType<typeof userEvent.setup>,
   d: number,
-  name: 'Rate' | 'Loss' | 'Delay histogram',
+  name: 'Traffic rates' | 'Packet loss' | 'Delay histogram',
 ) {
   await user.click(radio(d, name));
   return within(card(d)).findByTestId(name === 'Delay histogram' ? 'chart-bar' : 'chart-line');
@@ -564,16 +554,16 @@ describe("Dashboard (spec 28, spec 35 F3): radio chart selector in each link's t
       const group = within(card(d)).getByRole('radiogroup', { name: /chart/i });
       const all = within(group).getAllByRole('radio');
       expect(all).toHaveLength(3);
-      expect(all[0]).toBe(radio(d, 'Rate'));
+      expect(all[0]).toBe(radio(d, 'Traffic rates'));
       expect(all[1]).toBe(radio(d, 'Delay histogram'));
-      expect(all[2]).toBe(radio(d, 'Loss'));
+      expect(all[2]).toBe(radio(d, 'Packet loss'));
     }
   });
 
   it('Rate is the default and the only chart shown', async () => {
     await openCards();
-    expect(radio(0, 'Rate')).toBeChecked();
-    expect(radio(0, 'Loss')).not.toBeChecked();
+    expect(radio(0, 'Traffic rates')).toBeChecked();
+    expect(radio(0, 'Packet loss')).not.toBeChecked();
     expect(radio(0, 'Delay histogram')).not.toBeChecked();
     const lines = within(card(0)).getAllByTestId('chart-line');
     expect(lines).toHaveLength(1);
@@ -584,9 +574,9 @@ describe("Dashboard (spec 28, spec 35 F3): radio chart selector in each link's t
   it('choosing Loss shows only the loss chart', async () => {
     const user = userEvent.setup();
     await openCards();
-    const chart = await showChart(user, 0, 'Loss');
-    expect(radio(0, 'Loss')).toBeChecked();
-    expect(radio(0, 'Rate')).not.toBeChecked();
+    const chart = await showChart(user, 0, 'Packet loss');
+    expect(radio(0, 'Packet loss')).toBeChecked();
+    expect(radio(0, 'Traffic rates')).not.toBeChecked();
     expect(within(card(0)).getAllByTestId('chart-line')).toHaveLength(1);
     expect(imgName(chart)).toMatch(/loss/i);
     expect(within(card(0)).queryByTestId('chart-bar')).not.toBeInTheDocument();
@@ -610,7 +600,7 @@ describe("Dashboard (spec 28, spec 35 F3): radio chart selector in each link's t
     const user = userEvent.setup();
     await openCards();
     await showChart(user, 0, 'Delay histogram');
-    await showChart(user, 0, 'Rate');
+    await showChart(user, 0, 'Traffic rates');
     expect(within(card(0)).queryByTestId('chart-bar')).not.toBeInTheDocument();
   });
 
@@ -619,9 +609,9 @@ describe("Dashboard (spec 28, spec 35 F3): radio chart selector in each link's t
     renderApp('/');
     await tick(0);
     await tick(0);
-    fireEvent.click(radio(0, 'Loss')); // fireEvent: userEvent waits on timers that are faked here
+    fireEvent.click(radio(0, 'Packet loss')); // fireEvent: userEvent waits on timers that are faked here
     await tick(5000);
-    expect(radio(0, 'Loss')).toBeChecked();
+    expect(radio(0, 'Packet loss')).toBeChecked();
     expect(imgName(within(card(0)).getByTestId('chart-line'))).toMatch(/loss/i);
   });
 
@@ -631,8 +621,8 @@ describe("Dashboard (spec 28, spec 35 F3): radio chart selector in each link's t
     );
     await openCards();
     expect(queryRadio(1, 'Delay histogram')).not.toBeInTheDocument();
-    expect(radio(1, 'Rate')).toBeInTheDocument();
-    expect(radio(1, 'Loss')).toBeInTheDocument();
+    expect(radio(1, 'Traffic rates')).toBeInTheDocument();
+    expect(radio(1, 'Packet loss')).toBeInTheDocument();
     expect(radio(0, 'Delay histogram')).toBeInTheDocument();
     await new Promise((r) => setTimeout(r, 50));
     expect(api.getDelayHistogram).not.toHaveBeenCalledWith(1);
@@ -715,58 +705,73 @@ describe('Dashboard (spec 28): rate chart in the P4TG look', () => {
   });
 });
 
-describe('Dashboard (spec 28, spec 35 F3): loss chart split into model loss and overload', () => {
+// Spec 43 F1. Was: two datasets, "Model loss %" (loss_pct) and "Overload drops %" (limiter + buffer full + NIC TX + NIC RX shares).
+// Now one line per donut cause, each the cumulative count of that cause at the sample.
+describe('Dashboard (spec 43 F1): the loss chart plots cumulative dropped packets per cause', () => {
   beforeEach(() => {
     api.getEmulation.mockResolvedValue(fx.emulation('running'));
     api.getStats.mockResolvedValue(twoDirections());
-    serveFixtureHistory(); // spec 29
+    serveFixtureHistory(); // spec 29: one sample per link with the default counts 40 / 30 / 20 / 5 / 4 / 1
   });
 
   const drops = async () => {
     const user = userEvent.setup();
     await openCards();
-    return showChart(user, 0, 'Loss');
+    return showChart(user, 0, 'Packet loss');
   };
 
-  it('has exactly two datasets: "Model loss" and "Overload drops"', async () => {
+  it('has exactly six datasets, labelled and ordered like the donut causes', async () => {
     const chart = await drops();
-    const labels = dataOf(chart).datasets.map((s) => s.label ?? '');
-    expect(labels).toHaveLength(2);
-    expect(labels[0]).toMatch(/model loss/i);
-    expect(labels[1]).toMatch(/overload/i);
+    expect(dataOf(chart).datasets.map((s) => s.label)).toEqual([...CAUSES]);
   });
 
-  it('model loss is loss_pct; overload is limiter + buffer full + NIC TX + NIC RX', async () => {
+  it('each line is the cumulative count of its cause (the default sample: 40, 30, 20, 5, 4, 1)', async () => {
     const chart = await drops();
-    const [loss, overload] = dataOf(chart).datasets;
-    expect(loss.data.at(-1)).toBeCloseTo(0.5, 6);
-    expect(overload.data.at(-1)).toBeCloseTo(1.25 + 2.5 + 0.1 + 0.75, 6);
+    expect(dataOf(chart).datasets.map((s) => s.data.at(-1))).toEqual([40, 30, 20, 5, 4, 1]);
   });
 
-  it('every cause is in the sum: one cause alone moves only its own series', async () => {
-    // spec 29: the series, not the stats, carries the shares the chart plots
-    const alone = { loss_pct: 0, limiter_pct: 0, buffer_full_pct: 0, nic_tx_pct: 0, nic_rx_pct: 3 };
+  it.each(fx.DROP_FIELDS.map((f, i) => [f, i] as const))(
+    'one cause alone (%s) moves only its own line',
+    async (field, i) => {
+      const zero = Object.fromEntries(fx.DROP_FIELDS.map((f) => [f, 0]));
+      serveHistory({
+        startedAt: 1762000000,
+        samples: { '0': [fx.historySample(1000, { ...zero, [field]: 3 })], '1': [fx.historySample(1000)] },
+      });
+      const chart = await drops();
+      const want = [0, 0, 0, 0, 0, 0];
+      want[i] = 3;
+      expect(dataOf(chart).datasets.map((s) => s.data.at(-1))).toEqual(want);
+    },
+  );
+
+  it('the counts are cumulative, not per sample: the points are the counters as they come', async () => {
     serveHistory({
       startedAt: 1762000000,
-      samples: { '0': [fx.historySample(1000, alone)], '1': [fx.historySample(1000)] },
+      samples: {
+        '0': [
+          fx.historySample(1000, { loss_drops: 5 }),
+          fx.historySample(2000, { loss_drops: 9 }),
+          fx.historySample(3000, { loss_drops: 9 }),
+        ],
+        '1': [],
+      },
     });
     const chart = await drops();
-    const [loss, overload] = dataOf(chart).datasets;
-    expect(loss.data.at(-1)).toBe(0);
-    expect(overload.data.at(-1)).toBeCloseTo(3, 6);
+    expect(dataOf(chart).datasets[0].data).toEqual([5, 9, 9]);
   });
 
-  it('the series are told apart by colour', async () => {
+  it('the lines are told apart by colour, and each has the colour of its donut segment', async () => {
     const chart = await drops();
-    const [a, b] = dataOf(chart).datasets;
-    expect(a.borderColor).toBeTruthy();
-    expect(b.borderColor).toBeTruthy();
-    expect(a.borderColor).not.toBe(b.borderColor);
+    const colours = dataOf(chart).datasets.map((s) => s.borderColor);
+    expect(new Set(colours).size).toBe(6);
+    const donut = JSON.parse(within(card(0)).getByTestId('chart-doughnut').getAttribute('data-chart') ?? 'null');
+    expect(colours).toEqual(donut.datasets[0].backgroundColor);
   });
 
-  it('y title names the unit (%), starts at zero; x title is time; legend on top; tooltips on', async () => {
+  it('y title is "Dropped packets" (no percent), starts at zero; x title is time; legend on top; tooltips on', async () => {
     const o = optsOf(await drops());
-    expect(o.scales?.y?.title?.text).toMatch(/%/);
+    expect(o.scales?.y?.title?.text).toBe('Dropped packets');
     expect(o.scales?.y?.beginAtZero === true || o.scales?.y?.min === 0).toBe(true);
     expect(o.scales?.x?.title?.text).toMatch(/time/i);
     expect(o.plugins?.legend?.position).toBe('top');
@@ -774,7 +779,7 @@ describe('Dashboard (spec 28, spec 35 F3): loss chart split into model loss and 
   });
 
   // Spec 29. Was: "collects one point per poll" (a client-side sample per stats poll).
-  it('has one point per sample of the series in both datasets, as many as there are labels', async () => {
+  it('has one point per sample of the series in every dataset, as many as there are labels', async () => {
     vi.useFakeTimers();
     serveHistory({
       startedAt: 1762000000,
@@ -783,7 +788,7 @@ describe('Dashboard (spec 28, spec 35 F3): loss chart split into model loss and 
     renderApp('/');
     await tick(0);
     await tick(0);
-    fireEvent.click(radio(0, 'Loss')); // fireEvent: userEvent waits on timers that are faked here
+    fireEvent.click(radio(0, 'Packet loss')); // fireEvent: userEvent waits on timers that are faked here
     await tick(3000);
     const chart = within(card(0)).getByTestId('chart-line');
     const d = dataOf(chart);
@@ -961,7 +966,7 @@ describe('Dashboard (spec 28): chart text and grid colours follow dark mode', ()
     ['y grid', o.scales?.y?.grid?.color],
   ];
 
-  const VIEWS = ['Rate', 'Loss', 'Delay histogram'] as const;
+  const VIEWS = ['Traffic rates', 'Packet loss', 'Delay histogram'] as const;
 
   async function optionsOf(view: (typeof VIEWS)[number]): Promise<ChartOptions> {
     const user = userEvent.setup();

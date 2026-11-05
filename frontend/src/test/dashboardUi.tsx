@@ -4,26 +4,27 @@
 //
 // ## Layout, top to bottom
 //   top row    data-testid="top-row", two columns like P4TG's Home.tsx:
-//                data-testid="top-pills"   `col-8 text-start`: state-badge, pill-rx, pill-tx, pill-elapsed, pill-lost (DOM order)
+//                data-testid="top-pills"   `col-8 text-start`: pill-rx, pill-tx, pill-elapsed, pill-lost (DOM order). Spec 43 F3: there is
+//                                          no state badge (`state-badge`) any more; `expectState()` below tells the state from the run buttons.
 //                                          Spec 37 (user 2026-11-05), like P4TG: the pills are live statistics. While stopped, stopping
 //                                          or failed after a run, RX/TX read `RX|TX ${formatRatePill(0, 0)}` and pill-elapsed keeps
 //                                          the frozen elapsed_ms. Before any run: "–" for RX/TX, no elapsed pill. Running: the live
 //                                          sums. The charts (all tabs, Summary too) and the donuts keep the ended run's history and
 //                                          totals; the pills never read those.
-//                                          Spec 38: pill-lost (was pill-dropped, which is gone) reads "lost <x.xx> %" and exists only
-//                                          while the live share is > 0: absent before a run, after a stop and while running without NIC
-//                                          drops. The share is sum(rx_pps x (nic_tx_pct + nic_rx_pct)) / sum(rx_pps) over the links;
-//                                          emulated causes (loss model, limiter, buffer full) are excluded. First child: the icon
+//                                          Spec 43 F2 (was spec 38's live NIC percentage): pill-lost reads "Lost <formatCount(N)> frames", N =
+//                                          the sum of all six causes of the Summary's drop counts (live counters while running, the run's
+//                                          totals after the stop), and exists only while N > 0, also after the stop. First child: the icon
 //                                          `<i class="bi bi-exclamation-circle-fill text-danger">`, before the text.
-//                data-testid="run-buttons" the ButtonGroup (role "group") inside a `col-4 text-end` column: exactly two buttons,
-//                                          always [Restart] [Start | Stop | Stopping… | Restarting…]
+//                data-testid="run-buttons" the `col-4 text-end` column (spec 43 F8, like P4TG: no ButtonGroup, plain Buttons with
+//                                          `mb-1`, no spinners): [Stop][Restart] while starting/running, [Draining…][Restart] (both
+//                                          disabled) while stopping, only [Start] otherwise (see RUN_BUTTONS)
 //   notices    data-testid="notices", a row after the top row: "Restart needed" (pending-restart), stale-indicator, stats-warning,
 //              history-warning, and every role="alert" (action error, poll error, emulation error). Never inside the top row.
 //   banner     LoadRunning (unchanged), anywhere below the top row
 //   chart area a react-bootstrap Tabs: role "tablist", one role "tab" per link (index order), titled "name: ingress → egress"
 //              (netdev labels), with the badge "Stopping" / "Stopped" / "Failed" inside the tab while the run has ended.
 //              Inside the active role "tabpanel": the chart (role "img" with an aria-label), centred below it the radiogroup
-//              "Chart" with the radios "Rate", "Delay histogram" (only with delay_stats and while live) and "Loss", in this order,
+//              "Chart" with the radios "Traffic rates", "Delay histogram" (only with delay_stats and while live) and "Packet loss" (spec 43 F5), in this order,
 //              then the loss donut.
 //   donut      chart-doughnut (the Doughnut stub of test/setup.ts), the React legend data-testid="donut-legend" (one listitem per
 //              cause, each with a `legend-swatch` and a button "About <label>" whose tooltip is the explanation), or the text
@@ -31,14 +32,14 @@
 //              unchanged and the text "No drops" is shown too.
 //   log        only for state "failed" and a non-empty log_tail: a closed <details> whose <summary> reads "Show log" and that
 //              holds data-testid="log-tail".
-//   ports      no ports table on the dashboard; PortsTable (data-testid="ports-table", heading "NIC ports") is on /interfaces.
+//   ports      no ports table on the dashboard, and (spec 43 F6) none on /interfaces either: PortsTable is deleted.
 //
 // ## Spec 36 (summary tab and histogram tables; spec: .git/claude-specs/spec36-summary-histtables.md)
 //   tabs       the FIRST role "tab" is titled exactly "Summary" (no badge) and is selected by default; the link tabs follow in index
 //              order, with the same titles and badges as before. No Summary tab (and no tablist) while there is no link tab.
-//   summary    inside the Summary tabpanel: the chart (role "img", aria-label starting "Rate chart"/"Loss chart" per view; CHOICE:
-//              "of all links"), the radiogroup "Chart" with the radios "Rate", "Delay histogram" (always present there, always
-//              disabled, wrapped in a tooltip) and "Loss", then the loss donut with the same legend as a link's.
+//   summary    inside the Summary tabpanel: the chart (role "img", aria-label starting "Rate chart"/"Loss chart" per view (spec 43 F5: the label may follow the radio name; tests accept both); CHOICE:
+//              "of all links"), the radiogroup "Chart" with the radios "Traffic rates", "Delay histogram" (always present there, always
+//              disabled, wrapped in a tooltip) and "Packet loss", then the loss donut with the same legend as a link's.
 //   tables     inside a link's tabpanel, in the "Delay histogram" view, above the bar chart, in one `.row` of three `.col-md-4`
 //              (and `.col-12`) columns; each column holds one `table.table-striped.table-bordered.table-hover.table-sm` with a
 //              `thead.table-dark`, a role "columnheader" per column and exactly one body row. The three tables, in DOM order:
@@ -50,7 +51,7 @@
 //   is shown from localStorage: the Summary tab, then one link tab per STORED link in stored order, titled "name: ingress →
 //   egress" (netdev labels, same fallbacks as live), no ended badge. No stored links: only the Summary tab (a tablist with one tab
 //   and one tabpanel). Every tab: the Rate chart with no points (datasets RX, TX with empty data, axes titled, legend on), the radios
-//   Rate / Delay histogram / Loss with "Delay histogram" present but disabled on link tabs too, and the grey "No drops" donut with
+//   Traffic rates / Delay histogram / Packet loss with "Delay histogram" present but disabled on link tabs too, and the grey "No drops" donut with
 //   the six-cause legend. getDelayHistogram is never called. While "starting" there are no tabs (as before); a running or ended run
 //   takes its tabs from the run (live stats / history), never from the stored links.
 //
@@ -61,6 +62,7 @@
 // selected) and returns that tab's tabpanel (found by aria-labelledby; other panels may stay mounted), so `within(card(d))` queries that link's chart area. Positions are the link indexes
 // of every test here (0, 1, 2 ...), as the tabs come in index order.
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import type { EmulationState } from '../api/types';
 import { must } from './must';
 
 /** The title of the Summary tab (spec 36). */
@@ -194,3 +196,21 @@ export const CAUSE_HELP: Record<(typeof CAUSES)[number], string> = {
   'NIC RX missed (imissed)': 'Packets the NIC dropped because its receive queues were full.',
   'RX buffers exhausted (rx_nombuf)': 'Packets lost because no packet buffer (mbuf) was free to receive them.',
 };
+
+/**
+ * The run buttons per state (spec 43 F3/F8: the state badge is gone, and the buttons are P4TG's): Stop then Restart while
+ * starting/running, the same two (disabled, Stop reading "Draining…") while stopping, only Start otherwise.
+ */
+export const RUN_BUTTONS: Record<EmulationState, string[]> = {
+  stopped: ['Start'],
+  starting: ['Stop', 'Restart'],
+  running: ['Stop', 'Restart'],
+  stopping: ['Draining…', 'Restart'],
+  failed: ['Start'],
+};
+
+/** The run buttons read like `state` (so the page has taken that state over; stopped/failed and starting/running look alike). */
+export const expectState = (state: EmulationState) => expect(runButtonNames(), state).toEqual(RUN_BUTTONS[state]);
+
+/** Waits until the run buttons read like `state`. */
+export const findState = (state: EmulationState) => waitFor(() => expectState(state));

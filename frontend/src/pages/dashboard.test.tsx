@@ -2,7 +2,20 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { vi } from 'vitest';
 import type { EmulationState, StatsView } from '../api/types';
-import { card, findCard, hasTab, radioNames, tab, tabs, tabTitle } from '../test/dashboardUi';
+import {
+  card,
+  expectState,
+  findCard,
+  findState,
+  hasTab,
+  radioNames,
+  RUN_BUTTONS,
+  runButtonNames,
+  runButtons,
+  tab,
+  tabTitle,
+  tabs,
+} from '../test/dashboardUi';
 import * as fx from '../test/fixtures';
 import { deferred, expectStartBody, renderApp, seedStore, storedDoc, tick } from '../test/helpers';
 import { ApiError, api } from '../test/mockApi';
@@ -29,37 +42,26 @@ describe('Dashboard: emulation state and control', () => {
     seedStore({ links: [fx.link(), fx.linkRev()] });
   });
 
-  it.each(STATES)('shows a state badge for "%s"', async (state) => {
+  // Spec 43 F3. Was: 'shows a state badge for "%s"' (text and data-state of `state-badge`) and, below, 'the state badge is a polite
+  // live region'. The badge is gone; the state shows in the run buttons (spec 43 F8: see dashboardP4tg.test.tsx).
+  it.each(STATES)('has no state badge in "%s"', async (state) => {
     api.getEmulation.mockResolvedValue(fx.emulation(state));
     renderApp('/');
-    const badge = await screen.findByTestId('state-badge');
-    await waitFor(() => expect(badge).toHaveAttribute('data-state', state));
-    expect(badge).toHaveTextContent(new RegExp(state, 'i'));
+    await findState(state);
+    expect(screen.queryByTestId('state-badge')).not.toBeInTheDocument();
+    expect(screen.getByTestId('top-pills').querySelector('.badge, [data-state]')).toBeNull();
   });
 
   // Spec 28: one contextual button instead of a Start and a Stop button that are both always there (details in
-  // dashboardP4tg.test.tsx). Was: both buttons queried in every state and only their enabled/disabled state checked.
-  const SHOWN: Record<EmulationState, 'Start' | 'Stop' | 'Stopping…'> = {
-    stopped: 'Start',
-    starting: 'Stop',
-    running: 'Stop',
-    stopping: 'Stopping…',
-    failed: 'Start',
-  };
-  it.each(STATES)('the contextual button in "%s"', async (state) => {
+  // dashboardP4tg.test.tsx). Spec 43 F8: Start alone, Stop + Restart, or Draining… + Restart (both disabled).
+  it.each(STATES)('the run buttons in "%s"', async (state) => {
     api.getEmulation.mockResolvedValue(fx.emulation(state));
     renderApp('/');
-    await waitFor(() => expect(screen.getByTestId('state-badge')).toHaveAttribute('data-state', state));
-    const shown = SHOWN[state];
-    for (const name of ['Start', 'Stop', 'Stopping…'] as const) {
-      const btn = screen.queryByRole('button', { name: new RegExp(`^${name}$`, 'i') });
-      if (name !== shown) {
-        expect(btn).not.toBeInTheDocument();
-      } else if (name === 'Stopping…') {
-        expect(btn).toBeDisabled();
-      } else {
-        expect(btn).toBeEnabled();
-      }
+    await findState(state);
+    expect(runButtonNames()).toEqual(RUN_BUTTONS[state]);
+    for (const b of runButtons()) {
+      if (state === 'stopping') expect(b).toBeDisabled();
+      else expect(b).toBeEnabled();
     }
   });
 
@@ -76,7 +78,7 @@ describe('Dashboard: emulation state and control', () => {
     await user.click(btn);
     expect(api.startEmulation).toHaveBeenCalledTimes(1);
     expect(api.stopEmulation).not.toHaveBeenCalled();
-    await waitFor(() => expect(screen.getByTestId('state-badge')).toHaveAttribute('data-state', 'starting'));
+    await findState('starting');
   });
 
   it('Start sends the whole local configuration: `{links}` without ids, no settings, no presets, nothing else', async () => {
@@ -227,7 +229,7 @@ describe('Dashboard: emulation state and control', () => {
 
   it('shows no error alert and no log tail while stopped without error', async () => {
     renderApp('/');
-    await screen.findByTestId('state-badge');
+    await screen.findByTestId('run-buttons');
     await waitFor(() => expect(api.getEmulation).toHaveBeenCalled());
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(screen.queryByTestId('log-tail')).not.toBeInTheDocument();
@@ -317,13 +319,13 @@ describe('Dashboard: stale badge only while running (F1)', () => {
     renderApp('/');
     await tick(0);
     await tick(0);
-    expect(screen.getByTestId('state-badge')).toHaveAttribute('data-state', state);
+    expectState(state);
     expect(api.getStats).toHaveBeenCalled();
     return screen.queryByTestId('stale-indicator') !== null;
   }
 
   // The payload the controller really sends for a stopped emulation (no age_ms at all).
-  const STOPPED_PAYLOAD: StatsView = { directions: [], ports: [], stale: true };
+  const STOPPED_PAYLOAD: StatsView = { directions: [], stale: true };
 
   it('the real stopped payload {"directions":[],"ports":[],"stale":true} shows no badge', async () => {
     expect(await staleShown('stopped', STOPPED_PAYLOAD)).toBe(false);
@@ -363,7 +365,7 @@ describe('Dashboard: stale badge only while running (F1)', () => {
     api.getEmulation.mockResolvedValue(fx.emulation('stopped'));
     api.getStats.mockResolvedValue(STOPPED_PAYLOAD);
     await tick(2500);
-    expect(screen.getByTestId('state-badge')).toHaveAttribute('data-state', 'stopped');
+    expectState('stopped');
     expect(screen.queryByTestId('stale-indicator')).not.toBeInTheDocument();
   });
 });
@@ -444,7 +446,7 @@ describe('Dashboard: delay histogram', () => {
     showHistogram(0);
     await waitFor(() => expect(api.getDelayHistogram).toHaveBeenCalled());
     expect(within(card(0)).queryByTestId('chart-bar')).not.toBeInTheDocument();
-    expect(radioNames(0)).toContain('Rate'); // the chart area is still there
+    expect(radioNames(0)).toContain('Traffic rates'); // the chart area is still there
   });
 });
 
@@ -678,8 +680,8 @@ describe('Dashboard: accessibility and labels (F4)', () => {
     renderApp('/');
     await findCard(0);
     for (const [choice, re, id] of [
-      ['Rate', /rate/i, 'chart-line'],
-      ['Loss', /loss/i, 'chart-line'],
+      ['Traffic rates', /rate/i, 'chart-line'],
+      ['Packet loss', /loss/i, 'chart-line'],
       ['Delay histogram', /histogram/i, 'chart-bar'],
     ] as const) {
       fireEvent.click(within(card(0)).getByRole('radio', { name: choice }));
@@ -715,12 +717,6 @@ describe('Dashboard: accessibility and labels (F4)', () => {
     api.getStats.mockResolvedValue(fx.stats([]));
     renderApp('/');
     expect(await screen.findByRole('alert')).toHaveTextContent('dpds exited during startup (status 1)');
-  });
-
-  it('the state badge is a polite live region', async () => {
-    renderApp('/');
-    const badge = await screen.findByTestId('state-badge');
-    expect(badge.closest('[aria-live="polite"], [role="status"]')).not.toBeNull();
   });
 
   // Spec 35 F3: the title is the tab's (it was the card header's).
@@ -839,7 +835,7 @@ describe('Dashboard: port labels are the netdev, device name as fallback (v16, r
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(screen.queryByTestId('stats-warning')).not.toBeInTheDocument();
     expect(document.body).not.toHaveTextContent(/sysfs unreadable/);
-    expect(radioNames(0)).toContain('Rate'); // the tabs and their chart areas are unaffected
+    expect(radioNames(0)).toContain('Traffic rates'); // the tabs and their chart areas are unaffected
   });
 
   it('a slow interface list does not hold the cards back: plain names first, then the labels', async () => {

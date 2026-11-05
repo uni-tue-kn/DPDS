@@ -7,7 +7,7 @@ import { formatCount } from '../common/format';
 import { useTheme } from '../common/theme';
 
 /** One segment per cause, in this order; the loss model is neutral (it is intended), the overload causes are warm. */
-const CAUSES = [
+export const CAUSES = [
   {
     label: 'Loss model',
     color: '#6c8ebf',

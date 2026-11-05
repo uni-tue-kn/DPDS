@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, Badge, Button, ButtonGroup, Col, Row, Spinner, Tab, Tabs } from 'react-bootstrap';
+import { Alert, Badge, Button, Col, Row, Tab, Tabs } from 'react-bootstrap';
 import * as api from '../api/client';
-import type { EmulationState, EmulationView, StatsView } from '../api/types';
-import { errorMessage, formatElapsed, formatPct, formatRatePill, linkLabel } from '../common/format';
+import type { EmulationView, StatsView } from '../api/types';
+import { errorMessage, formatCount, formatElapsed, formatRatePill, linkLabel } from '../common/format';
 import { readConfig, startRequestOf, useLocalConfig } from '../common/localConfig';
 import { pendingRestart } from '../common/pendingRestart';
 import { startPolling } from '../common/polling';
@@ -11,7 +11,7 @@ import { NO_SAMPLES, sumHistories, useRunHistory } from '../common/runHistory';
 import ErrorAlert from '../components/ErrorAlert';
 import LinkCharts from './LinkCharts';
 import LoadRunning from './LoadRunning';
-import { type DropCounts, dropsOfCounters, dropsOfTotals } from './LossDonut';
+import { type DropCounts, dropsOfCounters, dropsOfTotals, totalDrops } from './LossDonut';
 
 const POLL_MS = 1000;
 
@@ -22,20 +22,9 @@ const SUMMARY_TAB = 'summary';
 
 const ENDED_TEXT = { stopping: 'Stopping', stopped: 'Stopped', failed: 'Failed' } as const;
 
-/** Every button of the group has this width, so that Start, Stop, "Stopping…" and "Restarting…" never move the others. */
-const BUTTON_STYLE = { minWidth: '8rem' };
-
-const STATE_BG: Record<EmulationState, string> = {
-  stopped: 'secondary',
-  starting: 'warning',
-  running: 'success',
-  stopping: 'warning',
-  failed: 'danger',
-};
-
 const DASH = '–';
 
-const ZERO_PILLS = { rxBps: 0, rxPps: 0, txBps: 0, txPps: 0, lostPct: 0 };
+const ZERO_PILLS = { rxBps: 0, rxPps: 0, txBps: 0, txPps: 0 };
 
 const addDrops = (a: DropCounts, b: DropCounts): DropCounts => ({
   loss: a.loss + b.loss,
@@ -64,21 +53,19 @@ function storedRequest() {
   return startRequestOf(stored.doc);
 }
 
-/** Total RX and TX rate over all links, and the share of packets lost to the NIC (not the emulation) weighted by each link's received rate. */
+/** Total RX and TX rate over all links. */
 function totalsOf(directions: StatsView['directions']) {
   let rxBps = 0;
   let rxPps = 0;
   let txBps = 0;
   let txPps = 0;
-  let lost = 0;
   for (const d of directions) {
     rxBps += d.rx_bps;
     rxPps += d.rx_pps;
     txBps += d.tx_bps;
     txPps += d.tx_pps;
-    lost += d.rx_pps * (d.nic_tx_pct + d.nic_rx_pct);
   }
-  return { rxBps, rxPps, txBps, txPps, lostPct: rxPps > 0 ? lost / rxPps : 0 };
+  return { rxBps, rxPps, txBps, txPps };
 }
 
 export default function Dashboard() {
@@ -218,6 +205,8 @@ export default function Dashboard() {
     const s = live?.find((d) => d.dir === dir);
     return s ? dropsOfCounters(s.counters) : NO_DROPS;
   };
+  const summaryDrops = shown.map(dropsOf).reduce(addDrops, NO_DROPS);
+  const lost = totalDrops(summaryDrops);
   // A finished run is titled by the links of its own history, a live one by its stats or the plan.
   const titleOf = (dir: number) => {
     const stored = storedLinks[dir];
@@ -232,29 +221,18 @@ export default function Dashboard() {
     return linkLabel(s?.link ?? p?.link, s?.rx ?? p?.rx, s?.tx ?? p?.tx, label);
   };
   const activeTab = selected !== undefined && shown.includes(Number(selected)) ? selected : SUMMARY_TAB;
-  const pillClass = `status-pill ${state === 'running' ? 'status-pill-active' : ''}`;
+  const stopping = state === 'stopping';
 
   return (
     <>
       <h1 className="mb-3">Dashboard</h1>
       <Row className="align-items-center mb-3" data-testid="top-row">
         <Col xs={8} className="text-start d-flex flex-wrap align-items-center gap-3" data-testid="top-pills">
-          <span aria-live="polite">
-            <Badge
-              pill
-              bg={state ? STATE_BG[state] : 'secondary'}
-              className="state-badge"
-              data-testid="state-badge"
-              data-state={state ?? 'unknown'}
-            >
-              {state ?? 'unknown'}
-            </Badge>
-          </span>
-          <span className={pillClass} data-testid="pill-rx">
+          <span className="status-pill" data-testid="pill-rx">
             <i className="bi bi-arrow-down-circle-fill" aria-hidden="true" />
             RX {pills ? formatRatePill(pills.rxBps, pills.rxPps) : DASH}
           </span>
-          <span className={pillClass} data-testid="pill-tx">
+          <span className={`status-pill ${state === 'running' ? 'status-pill-active' : ''}`} data-testid="pill-tx">
             <i className="bi bi-arrow-up-circle-fill" aria-hidden="true" />
             TX {pills ? formatRatePill(pills.txBps, pills.txPps) : DASH}
           </span>
@@ -263,46 +241,43 @@ export default function Dashboard() {
               {formatElapsed(stats.elapsed_ms)}
             </span>
           )}
-          {pills && pills.lostPct > 0 && (
+          {lost > 0 && (
             <span className="status-pill" data-testid="pill-lost">
               <i className="bi bi-exclamation-circle-fill text-danger" aria-hidden="true" />
-              lost {formatPct(pills.lostPct)}
+              Lost {formatCount(lost)} frames
             </span>
           )}
         </Col>
-        <Col xs={4} className="text-end">
-          <ButtonGroup data-testid="run-buttons">
-            <Button
-              variant="outline-primary"
-              style={BUTTON_STYLE}
-              disabled={state !== 'running' || corrupt || busy !== undefined}
-              onClick={() => act('restart')}
-            >
-              <i className="bi bi-arrow-clockwise" aria-hidden="true" /> Restart
-            </Button>
-            {busy === 'restart' ? (
-              <Button variant="primary" style={BUTTON_STYLE} disabled>
-                <Spinner size="sm" aria-hidden="true" /> Restarting…
-              </Button>
-            ) : state === 'stopping' ? (
-              <Button variant="primary" style={BUTTON_STYLE} disabled>
-                <Spinner size="sm" aria-hidden="true" /> Stopping…
-              </Button>
-            ) : state === 'starting' || state === 'running' ? (
-              <Button variant="primary" style={BUTTON_STYLE} disabled={busy !== undefined} onClick={() => act('stop')}>
-                <i className="bi bi-stop-fill" aria-hidden="true" /> Stop
-              </Button>
-            ) : (
+        <Col xs={4} className="text-end" data-testid="run-buttons">
+          {state === 'starting' || state === 'running' || stopping ? (
+            <>
               <Button
-                variant="success"
-                style={BUTTON_STYLE}
-                disabled={state === undefined || corrupt || busy !== undefined}
-                onClick={() => act('start')}
+                className="mb-1"
+                variant="danger"
+                disabled={stopping || busy !== undefined}
+                onClick={() => act('stop')}
               >
-                <i className="bi bi-play-fill" aria-hidden="true" /> Start
+                <i className="bi bi-stop-fill" aria-hidden="true" /> {stopping ? 'Draining…' : 'Stop'}
+              </Button>{' '}
+              <Button
+                className="mb-1"
+                variant="primary"
+                disabled={stopping || corrupt || busy !== undefined}
+                onClick={() => act('restart')}
+              >
+                <i className="bi bi-arrow-clockwise" aria-hidden="true" /> Restart
               </Button>
-            )}
-          </ButtonGroup>
+            </>
+          ) : (
+            <Button
+              className="mb-1"
+              variant="primary"
+              disabled={state === undefined || corrupt || busy !== undefined}
+              onClick={() => act('start')}
+            >
+              <i className="bi bi-play-circle-fill" aria-hidden="true" /> Start
+            </Button>
+          )}
         </Col>
       </Row>
       <div data-testid="notices">
@@ -355,11 +330,7 @@ export default function Dashboard() {
         <Tabs id="link-tabs" transition={false} activeKey={activeTab} onSelect={(k) => k && setSelected(k)}>
           <Tab eventKey={SUMMARY_TAB} title="Summary">
             <div className="pt-3">
-              <LinkCharts
-                active={activeTab === SUMMARY_TAB}
-                history={summaryHistory}
-                drops={shown.map(dropsOf).reduce(addDrops, NO_DROPS)}
-              />
+              <LinkCharts active={activeTab === SUMMARY_TAB} history={summaryHistory} drops={summaryDrops} />
             </div>
           </Tab>
           {shown.map((dir) => {

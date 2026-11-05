@@ -77,7 +77,7 @@ describe('Dashboard (spec 28b item 2): charts keep their data and options object
 
   it('the Loss chart: the same', async () => {
     await open();
-    fireEvent.click(within(card(0)).getByRole('radio', { name: 'Loss' }));
+    fireEvent.click(within(card(0)).getByRole('radio', { name: 'Packet loss' }));
     await tick(0);
     const before = last('line');
     toggleTheme();
@@ -104,7 +104,7 @@ describe('Dashboard (spec 28b item 2): charts keep their data and options object
     const samples = { '0': fx.historySamples(0, 5) };
     serveHistory({ startedAt: 1762000000, samples });
     await open();
-    fireEvent.click(within(card(0)).getByRole('radio', { name: 'Loss' }));
+    fireEvent.click(within(card(0)).getByRole('radio', { name: 'Packet loss' }));
     await tick(0);
     const before = last('line');
     samples['0'].push(fx.historySample(5000));
@@ -191,7 +191,7 @@ describe('Dashboard (spec 35 F7): the loss donut keeps its data and options obje
   it('switching the chart radio does not rebuild the donut data or options', async () => {
     await open();
     const before = last('doughnut');
-    fireEvent.click(within(card(0)).getByRole('radio', { name: 'Loss' }));
+    fireEvent.click(within(card(0)).getByRole('radio', { name: 'Packet loss' }));
     await tick(0);
     expect(last('doughnut').data).toBe(before.data);
     expect(last('doughnut').options).toBe(before.options);
@@ -233,7 +233,7 @@ describe('Dashboard (spec 28b item 2 / spec 29): a stats poll that changes only 
   it('Loss chart: the same', async () => {
     onlyStatsKeepAnswering();
     await open();
-    fireEvent.click(within(card(0)).getByRole('radio', { name: 'Loss' }));
+    fireEvent.click(within(card(0)).getByRole('radio', { name: 'Packet loss' }));
     await tick(0);
     const before = last('line');
     await tick(1000);

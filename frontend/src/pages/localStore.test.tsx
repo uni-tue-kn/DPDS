@@ -112,12 +112,12 @@ describe('local document: corrupt or unknown storage', () => {
   it('a reset is not offered for a healthy document and nothing is shown for an absent one', async () => {
     seedStore({ links: [fx.link()] });
     const view = renderApp('/');
-    await screen.findByTestId('state-badge');
+    await screen.findByTestId('run-buttons');
     expect(screen.queryByRole('button', { name: /^reset/i })).not.toBeInTheDocument();
     view.unmount();
     localStorage.removeItem(STORAGE_KEY);
     renderApp('/');
-    await screen.findByTestId('state-badge');
+    await screen.findByTestId('run-buttons');
     expect(screen.queryByRole('button', { name: /^reset/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
