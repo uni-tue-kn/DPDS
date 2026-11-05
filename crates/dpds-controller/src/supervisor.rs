@@ -306,7 +306,7 @@ fn capture(shared: &Arc<Shared>, stream: impl Read + Send + 'static) -> JoinHand
 }
 
 /// Waits (bounded) until the output readers saw EOF so the log is complete.
-fn join_readers(readers: Vec<JoinHandle<()>>) {
+fn join_readers(readers: &[JoinHandle<()>]) {
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline && !readers.iter().all(JoinHandle::is_finished) {
         thread::sleep(Duration::from_millis(10));
@@ -446,6 +446,9 @@ fn run_instance(
             } else {
                 "exited"
             };
+            // the child is gone, so its pipes close: wait for the readers, or the last
+            // line (the reason) may not be in the log yet
+            join_readers(&readers);
             let reason = dpds_reason(&lock(&shared.log))
                 .map(|r| format!(": {r}"))
                 .unwrap_or_default();
@@ -497,12 +500,12 @@ fn run_instance(
         if !exited {
             stop_child(shared, &mut child, plan.drain_timeout);
         }
-        join_readers(readers);
+        join_readers(&readers);
         remove_runtime_dir(plan);
         shared.set(State::Stopped, None, None, None);
         return stop;
     }
-    join_readers(readers);
+    join_readers(&readers);
     fail(failure.unwrap_or_default());
     false
 }
