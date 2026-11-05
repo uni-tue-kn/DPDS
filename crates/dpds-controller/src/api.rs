@@ -508,16 +508,14 @@ async fn host_hints_for(
     hints_of(app, config).await
 }
 
-/// Computes the hints while holding the start/stop lock, so no start begins in the middle of a
-/// tool query (a start waits at most the query's time budget). The emulation state is read under
-/// the lock: tools run only while no emulation is starting, running or stopping.
+/// Computes the hints. The emulation state is read once: tools run only while no emulation is
+/// starting, running or stopping. No lock is taken, so a start or stop is never delayed by a
+/// running query and queries do not queue behind each other.
 async fn hints_of(app: Arc<App>, config: RunConfig) -> Result<Json<Vec<Hint>>, ApiError> {
-    let _step = app.lifecycle.lock().await;
-    let shared = Arc::clone(&app);
     Ok(Json(
         blocking(move || {
-            let tools = tools_may_run(&shared);
-            compute_hints(&shared.deps.roots, &config, tools)
+            let tools = tools_may_run(&app);
+            compute_hints(&app.deps.roots, &config, tools)
         })
         .await?,
     ))

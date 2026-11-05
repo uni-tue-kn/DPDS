@@ -100,6 +100,81 @@ async fn pci_addresses_are_reported_in_lower_case_and_conflict_across_case() {
     assert!(r.message().contains("up"), "{}", r.text());
 }
 
+/// Spec 33c item 2: two links whose ports differ only in the case of the hex digits name the same
+/// port, whatever the route: start, validate and the hints post all answer 409 naming the first
+/// link (the hints post used to be the one that could miss it).
+#[tokio::test]
+async fn ports_that_differ_only_in_case_are_a_reused_port_on_start_validate_and_hints() {
+    let cases = [
+        (
+            "ingress",
+            [
+                link("first", "0000:AB:00.0", "0000:17:00.0", None),
+                link("second", "0000:ab:00.0", "0000:65:00.0", None),
+            ],
+        ),
+        (
+            "ingress, the lower-case link first",
+            [
+                link("first", "0000:ab:00.0", "0000:17:00.0", None),
+                link("second", "0000:AB:00.0", "0000:65:00.0", None),
+            ],
+        ),
+        (
+            "egress",
+            [
+                link("first", "0000:17:00.0", "0000:Af:00.1", None),
+                link("second", "0000:65:00.0", "0000:aF:00.1", None),
+            ],
+        ),
+        (
+            "ingress in mixed case",
+            [
+                link("first", "0000:Ab:Cd.0", "0000:17:00.0", None),
+                link("second", "0000:aB:cD.0", "0000:65:00.0", None),
+            ],
+        ),
+    ];
+    for (what, links) in cases {
+        let s = setup(links.to_vec());
+        for (route, path) in [
+            ("start", "/api/emulation/start"),
+            ("validate", "/api/emulation/validate"),
+            ("hints", "/api/host/hints"),
+        ] {
+            let a = app();
+            let r = a.post(path, s.body()).await;
+            assert_eq!(r.status, 409, "{route}, {what}: {}", r.text());
+            assert!(
+                r.message().contains("first"),
+                "{route}, {what} names the first link: {}",
+                r.text()
+            );
+            assert!(
+                a.supervisor.plans().is_empty(),
+                "{route}, {what}: nothing started"
+            );
+        }
+    }
+}
+
+/// The same ports in one case each are not a conflict (the rule is about identity, not spelling).
+#[tokio::test]
+async fn ports_that_differ_in_case_and_in_the_digits_are_two_ports() {
+    let s = setup(vec![
+        link("first", "0000:AB:00.0", "0000:17:00.0", None),
+        link("second", "0000:ab:00.1", "0000:65:00.0", None),
+    ]);
+    for path in [
+        "/api/emulation/validate",
+        "/api/host/hints",
+        "/api/emulation/start",
+    ] {
+        let r = app().post(path, s.body()).await;
+        assert!(r.status < 300, "{path}: {} {}", r.status, r.text());
+    }
+}
+
 const BAD_PORTS: &[&str] = &[
     "",
     " ",

@@ -128,6 +128,7 @@ fn drain<R: Read + Send + 'static>(mut pipe: R) -> JoinHandle<io::Result<String>
         let mut excess = false;
         loop {
             match pipe.read(&mut chunk) {
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
                     let room = OUTPUT_CAP - bytes.len();

@@ -293,6 +293,12 @@ fieldset.config-section > legend {
   overflow-wrap: anywhere;
 }
 
+.commands-fallback {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow: visible;
+}
+
 .inspect-fields {
   display: grid;
   grid-template-columns: max-content 1fr;

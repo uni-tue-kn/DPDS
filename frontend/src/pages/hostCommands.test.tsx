@@ -33,9 +33,19 @@ import { must } from '../test/must';
 // CHOICES of the tester (spec silent): the feedback sits in the hint's list item; per-hint state (another hint shows
 // nothing); a second click on Copy keeps the fallback revealed (no toggle); a synchronous throw of `writeText` counts as a
 // failure; the fallback adds no button that the "applies nothing" rules would forbid.
-// Not pinned: the icon class, the tooltip placement, how the fallback pre is styled, whether an empty status element stays.
+// Spec 33c (frontend item 5), review of 5b5d931:
+// - The fallback `pre` has the class FALLBACK_CLASS, which the stylesheet gives `white-space: pre-wrap` and a word-breaking
+//   rule like the tooltip's `pre` (pinned in `assets/stylesSpec33b.test.ts`); Bootstrap's `pre` alone would scroll sideways.
+// - Every hint with commands has exactly ONE always-mounted `role=status` element in its list item (found with
+//   `within(li).getByRole('status')`), empty until a copy succeeded: screen readers announce changes of a live region, not
+//   a region inserted together with its text. Its text is exactly "Copied" for 2 s and then empty again; it is the same DOM
+//   node before, during and after. A hint without commands has none.
+// CHOICES of the tester: the class name `commands-fallback` (the stylesheet test needs a name); a hint in the fallback state
+// still has exactly one status element (the explanation is not a second live region); the status is not inside the tooltip.
+// Not pinned: the icon class, the tooltip placement.
 
 const NOTE = 'Run as root on the DPDS host.';
+const FALLBACK_CLASS = 'commands-fallback';
 const FALLBACK_TEXT = 'Clipboard not available here (plain http): select the commands and copy them.';
 const NIC = '0000:65:00.0';
 const SWAP = fx.commandsHint();
@@ -668,7 +678,7 @@ describe('Host hints: Copy commands confirms a successful copy (spec 33b)', () =
     fireEvent.click(copyButton(SWAP.title));
     await flush();
     const copied = must(copiedIn(SWAP.title), 'the Copied text in the hint');
-    expect(copied.closest('[role="status"]'), 'inside a role=status element').not.toBeNull();
+    expect(copied).toBe(within(itemOf(SWAP.title)).getByRole('status'));
     expect(copied.textContent?.trim()).toBe('Copied');
     act(() => {
       vi.advanceTimersByTime(1000);
@@ -773,6 +783,161 @@ describe('Host hints: Copy commands confirms a successful copy (spec 33b)', () =
       window.removeEventListener('error', onError);
     }
     expect(errors).toEqual([]);
+  });
+});
+
+describe('Host hints: the fallback block wraps (spec 33c)', () => {
+  it('the revealed pre carries the class the stylesheet gives pre-wrap and word breaking', async () => {
+    const user = userEvent.setup();
+    setClipboard(undefined);
+    await showHints([FIRMWARE]);
+    await user.click(copyButton(FIRMWARE.title));
+    expectFallback(FIRMWARE);
+    expect(must(fallbackBlocks(FIRMWARE.title)[0]).classList.contains(FALLBACK_CLASS)).toBe(true);
+  });
+
+  it('a rejected write reveals the same classed block', async () => {
+    setClipboard(() => Promise.reject(new DOMException('denied', 'NotAllowedError')));
+    await showHints([SWAP]);
+    fireEvent.click(copyButton(SWAP.title));
+    await screen.findByText(FALLBACK_TEXT);
+    expect(must(fallbackBlocks(SWAP.title)[0]).classList.contains(FALLBACK_CLASS)).toBe(true);
+  });
+
+  it('the tooltip pre does not use the fallback class (its own rule is .commands-tip pre)', async () => {
+    const user = userEvent.setup();
+    mockClipboard();
+    await showHints([SWAP]);
+    await user.hover(commandsButton(SWAP.title));
+    const tip = await screen.findByRole('tooltip');
+    expect(tip.querySelector(`.${FALLBACK_CLASS}`)).toBeNull();
+  });
+});
+
+describe('Host hints: the "Copied" live region is always mounted (spec 33c)', () => {
+  const statusOf = (title: string) => within(itemOf(title)).getByRole('status');
+
+  it('every hint with commands has exactly one status element, empty until something was copied', async () => {
+    mockClipboard();
+    await showHints([SWAP, FLOW]);
+    for (const h of [SWAP, FLOW]) {
+      expect(within(itemOf(h.title)).getAllByRole('status'), `one status in "${h.title}"`).toHaveLength(1);
+      expect(statusOf(h.title).textContent, `"${h.title}" announces nothing yet`).toBe('');
+    }
+  });
+
+  it('a hint without commands has no status element', async () => {
+    await showHints([SWAP, ...fx.hints()]);
+    for (const h of fx.hints()) expect(within(itemOf(h.title)).queryByRole('status')).toBeNull();
+    expect(within(itemOf(SWAP.title)).getAllByRole('status')).toHaveLength(1);
+  });
+
+  it('an empty commands array counts as none: no status element either', async () => {
+    const empty = fx.commandsHint({ id: 'empty_list', title: 'Empty list hint', commands: [] });
+    await showHints([SWAP, empty]);
+    expect(within(itemOf(empty.title)).queryByRole('status')).toBeNull();
+  });
+
+  it('the status element is not inside a tooltip', async () => {
+    const user = userEvent.setup();
+    mockClipboard();
+    await showHints([SWAP]);
+    await user.hover(commandsButton(SWAP.title));
+    const tip = await screen.findByRole('tooltip');
+    expect(within(tip).queryByRole('status')).toBeNull();
+    expect(tip.contains(statusOf(SWAP.title))).toBe(false);
+  });
+
+  it('after a successful copy the same element reads "Copied", and is empty again after 2 s', async () => {
+    mockClipboard();
+    await showHints([SWAP]);
+    const before = statusOf(SWAP.title);
+    vi.useFakeTimers();
+    fireEvent.click(copyButton(SWAP.title));
+    await flush();
+    expect(statusOf(SWAP.title), 'the element was not replaced by a new one').toBe(before);
+    expect(before.textContent).toBe('Copied');
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect(statusOf(SWAP.title).textContent, 'still shown after 1 s').toBe('Copied');
+    act(() => {
+      vi.advanceTimersByTime(2000);
+    });
+    expect(statusOf(SWAP.title), 'still the same element after the 2 s').toBe(before);
+    expect(before.textContent, 'emptied, not removed').toBe('');
+    expect(before.isConnected).toBe(true);
+  });
+
+  it('the status stays empty while the write is pending', async () => {
+    let release: () => void = () => {};
+    const pending = new Promise<void>((r) => {
+      release = r;
+    });
+    setClipboard(() => pending);
+    await showHints([SWAP]);
+    fireEvent.click(copyButton(SWAP.title));
+    await flush();
+    expect(statusOf(SWAP.title).textContent).toBe('');
+    release();
+    await flush();
+    expect(statusOf(SWAP.title).textContent).toBe('Copied');
+  });
+
+  it('a second copy restarts the 2 s on the same element', async () => {
+    mockClipboard();
+    await showHints([SWAP]);
+    const before = statusOf(SWAP.title);
+    vi.useFakeTimers();
+    fireEvent.click(copyButton(SWAP.title));
+    await flush();
+    act(() => {
+      vi.advanceTimersByTime(1500);
+    });
+    fireEvent.click(copyButton(SWAP.title));
+    await flush();
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect(statusOf(SWAP.title)).toBe(before);
+    expect(before.textContent, '1 s after the second copy').toBe('Copied');
+    act(() => {
+      vi.advanceTimersByTime(2000);
+    });
+    expect(before.textContent).toBe('');
+  });
+
+  it('the confirmation is written into the element of the hint that was copied only', async () => {
+    mockClipboard();
+    await showHints([SWAP, FLOW]);
+    fireEvent.click(copyButton(FLOW.title));
+    await flush();
+    expect(statusOf(FLOW.title).textContent).toBe('Copied');
+    expect(statusOf(SWAP.title).textContent).toBe('');
+  });
+
+  it('a failed copy leaves the status empty and shows the fallback, with still one status element', async () => {
+    const user = userEvent.setup();
+    setClipboard(undefined);
+    await showHints([SWAP]);
+    const before = statusOf(SWAP.title);
+    await user.click(copyButton(SWAP.title));
+    await screen.findByText(FALLBACK_TEXT);
+    expect(within(itemOf(SWAP.title)).getAllByRole('status')).toHaveLength(1);
+    expect(statusOf(SWAP.title)).toBe(before);
+    expect(before.textContent).toBe('');
+  });
+
+  it('a failed copy right after a successful one empties the status at once', async () => {
+    const write = vi.fn().mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('denied'));
+    setClipboard(write);
+    await showHints([SWAP]);
+    fireEvent.click(copyButton(SWAP.title));
+    await flush();
+    expect(statusOf(SWAP.title).textContent).toBe('Copied');
+    fireEvent.click(copyButton(SWAP.title));
+    await flush();
+    expect(statusOf(SWAP.title).textContent).toBe('');
   });
 });
 

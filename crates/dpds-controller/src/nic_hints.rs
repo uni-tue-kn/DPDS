@@ -56,6 +56,12 @@ fn time_left(ctx: &Ctx) -> Tool<Duration> {
     }
 }
 
+/// A duration in seconds with millisecond precision, trailing zeros trimmed (`30`, `0.9`, `0.001`).
+fn seconds(d: Duration) -> String {
+    let text = format!("{:.3}", d.as_secs_f64());
+    text.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
 /// Runs a read-only query and returns its stdout.
 fn run(ctx: &Ctx, argv: &[&str]) -> Tool<String> {
     let timeout = time_left(ctx)?.min(TOOL_TIMEOUT);
@@ -65,7 +71,7 @@ fn run(ctx: &Ctx, argv: &[&str]) -> Tool<String> {
         Err(e) if e.kind() == ErrorKind::TimedOut => Err(Gap::TimedOut(format!(
             "{} timed out after {} s and was stopped",
             argv.join(" "),
-            timeout.as_secs()
+            seconds(timeout)
         ))),
         Err(e) => Err(Gap::Failed(format!("{} could not run: {e}", argv[0]))),
         Ok(out) if out.code != 0 => Err(Gap::Failed(format!(

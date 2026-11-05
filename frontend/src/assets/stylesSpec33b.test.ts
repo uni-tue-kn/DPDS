@@ -85,3 +85,34 @@ describe('commands tooltip looks (spec 33b)', () => {
       expect(lastValue(decl, p) ?? 'visible').not.toMatch(/\b(auto|scroll)\b/);
   });
 });
+
+// Spec 33c (frontend item 5): the manual-copy fallback shows the commands under the hint in a `pre` that has the class
+// `commands-fallback` (pinned in pages/hostCommands.test.tsx). Bootstrap's `pre` is `overflow: auto` without wrapping, so a
+// long command would scroll sideways inside the hint: the class wraps like the tooltip's `pre`.
+describe('commands fallback looks (spec 33c)', () => {
+  const FALLBACK = ['.commands-fallback', 'pre.commands-fallback'] as const;
+
+  it('has a .commands-fallback rule', () => {
+    expect(rules(...FALLBACK), '.commands-fallback is styled').not.toBe('');
+  });
+
+  it('wraps long lines: white-space: pre-wrap', () => {
+    expect(lastValue(rules(...FALLBACK), 'white-space')).toBe('pre-wrap');
+  });
+
+  it('breaks inside long words', () => {
+    const decl = rules(...FALLBACK);
+    const wordBreak = lastValue(decl, 'word-break');
+    const overflowWrap = lastValue(decl, 'overflow-wrap') ?? lastValue(decl, 'word-wrap');
+    const breaks =
+      (wordBreak !== null && /^(break-all|break-word)$/.test(wordBreak)) ||
+      (overflowWrap !== null && /^(anywhere|break-word)$/.test(overflowWrap));
+    expect(breaks, `word-break "${wordBreak}", overflow-wrap "${overflowWrap}"`).toBe(true);
+  });
+
+  it('has no horizontal scrollbar', () => {
+    const decl = rules(...FALLBACK);
+    for (const p of ['overflow', 'overflow-x'])
+      expect(lastValue(decl, p) ?? 'visible').not.toMatch(/\b(auto|scroll)\b/);
+  });
+});

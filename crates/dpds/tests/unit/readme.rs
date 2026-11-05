@@ -903,3 +903,87 @@ fn the_readme_documents_the_400_and_the_409_of_the_hints_post() {
         "the answers of the hints post: {item}"
     );
 }
+
+// ---- spec 33c items 1 and 6: no lock around hint queries, and the touched paragraphs wrapped ----
+
+/// The top-level list items of the controller section that mention `needle`, as written (line
+/// breaks and indentation kept).
+fn controller_raw_items_with(needle: &str) -> Vec<String> {
+    let section = controller_section(&readme());
+    let mut items: Vec<String> = Vec::new();
+    for line in section.lines() {
+        if line.starts_with("- ") || items.is_empty() {
+            items.push(String::new());
+        }
+        let last = items.last_mut().unwrap();
+        last.push_str(line);
+        last.push('\n');
+    }
+    items.into_iter().filter(|i| i.contains(needle)).collect()
+}
+
+/// The two items spec 33b / commit d02768b edited are the "Host check" item (host hints, the
+/// hints post) and the "Hint commands" item. The rest of the controller section has older lines
+/// longer than 120 characters, so only these two are pinned.
+#[test]
+fn the_host_check_and_hint_commands_items_have_no_line_over_120_characters() {
+    for marker in ["- **Host check**", "- **Hint commands**"] {
+        let items = controller_raw_items_with(marker);
+        assert_eq!(items.len(), 1, "one item starts with {marker}: {items:?}");
+        let too_long: Vec<String> = items[0]
+            .lines()
+            .filter(|l| l.chars().count() > 120)
+            .map(|l| format!("{} characters: {l}", l.chars().count()))
+            .collect();
+        assert!(
+            too_long.is_empty(),
+            "{marker} has lines over 120 characters (rewrap the paragraph):\n{}",
+            too_long.join("\n")
+        );
+    }
+}
+
+/// Rewrapping must not change what the item says: these facts stay.
+#[test]
+fn the_rewrapped_items_still_say_what_they_said() {
+    let host_check = controller_items_with("- **Host check**").join(" ");
+    for needle in [
+        "`irq_affinity`",
+        "400 naming the field, 409 for a duplicate name or reused port",
+        "link-dependent",
+    ] {
+        assert!(host_check.contains(needle), "Host check lost {needle:?}");
+    }
+    let commands = controller_items_with("- **Hint commands**").join(" ");
+    for needle in [
+        "`sudo -i`",
+        "sudo tee",
+        "sudo echo",
+        "budget of 60 s",
+        "not checked (time budget of 60 s used up)",
+        "not checked while an emulation is running",
+        "4 MiB",
+    ] {
+        assert!(commands.contains(needle), "Hint commands lost {needle:?}");
+    }
+}
+
+/// Spec 33c item 1: hint queries take no lock, so the README no longer says a start waits for a
+/// running query (or that the queries share the lock of start and stop).
+#[test]
+fn the_readme_no_longer_says_a_start_waits_for_a_running_query() {
+    let text = readme();
+    let flat = text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    for stale in [
+        "a start waits",
+        "start waits for a running query",
+        "same lock as start and stop",
+        "under the lock of start and stop",
+    ] {
+        assert!(!flat.contains(stale), "the README still says {stale:?}");
+    }
+}

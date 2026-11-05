@@ -106,8 +106,15 @@
 //!   overrides it with a simulated clock that only moves when a call registered with
 //!   `FakeExec::takes` runs. A call gets `min(30 s, remaining)` as its timeout; when nothing
 //!   remains no tool runs and the hint is info, has no commands and says "not checked (time
-//!   budget of 60 s used up)". The tool queries run while holding the lifecycle lock (the one
-//!   start and stop take), after the emulation state is read again under that lock.
+//!   budget of 60 s used up)". (Spec 33c replaces the lock rule of this item: see below.)
+//! - Spec 33c item 1: the tool queries do not take the lifecycle lock (the one start and stop
+//!   take). A hints request reads the emulation state once; tools run only when it is Stopped or
+//!   Failed. A start sent while a query is running is not delayed, several queries run at the
+//!   same time, and the 60 s budget per request stays.
+//! - Spec 33c item 3: the readers of `SystemExec` retry a read that fails with
+//!   `ErrorKind::Interrupted`, so a signal never cuts the output of a tool short.
+//! - Spec 33c item 4: the message of a timed-out tool gives the timeout the call really had,
+//!   with millisecond precision below 1 s (`timed out after 0.9 s`, never `0 s`).
 //!
 //! ## Sources
 //!
@@ -119,7 +126,7 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -2223,6 +2230,125 @@ fn pid_in(file: &std::path::Path) -> u32 {
         .unwrap()
 }
 
+// ---- spec 33c item 3: a signal does not cut a tool's output short ----------------------------
+
+extern "C" fn ignore_signal(_: libc::c_int) {}
+
+/// Makes SIGUSR1 interrupt a blocking `read` (a handler without `SA_RESTART`), the way any
+/// handler of the host program would.
+fn make_sigusr1_interrupt_reads() {
+    // SAFETY: a zeroed `sigaction` is a valid starting value; the handler does nothing, and
+    // nothing else in this process sends SIGUSR1.
+    unsafe {
+        let mut action: libc::sigaction = std::mem::zeroed();
+        action.sa_sigaction = ignore_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
+        action.sa_flags = 0;
+        libc::sigemptyset(&mut action.sa_mask);
+        assert_eq!(
+            libc::sigaction(libc::SIGUSR1, &action, std::ptr::null_mut()),
+            0
+        );
+    }
+}
+
+/// Sends SIGUSR1 to every thread of this process that is blocked in `read` on the pipe with
+/// this link target (`pipe:[<inode>]`); returns how many it hit. Only the readers of that one pipe
+/// are signalled, so tests running at the same time are not disturbed.
+fn interrupt_readers_of(pipe: &str) -> usize {
+    let mut hit = 0;
+    for task in fs::read_dir("/proc/self/task").unwrap().flatten() {
+        let tid = task.file_name().to_string_lossy().into_owned();
+        let Ok(syscall) = fs::read_to_string(format!("/proc/self/task/{tid}/syscall")) else {
+            continue;
+        };
+        let mut words = syscall.split_whitespace();
+        if words.next() != Some(&libc::SYS_read.to_string()) {
+            continue;
+        }
+        let Some(fd) = words
+            .next()
+            .and_then(|w| w.strip_prefix("0x"))
+            .and_then(|w| u64::from_str_radix(w, 16).ok())
+        else {
+            continue;
+        };
+        let target = fs::read_link(format!("/proc/self/fd/{fd}"))
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if target != pipe {
+            continue;
+        }
+        let tid: libc::c_long = tid.parse().unwrap();
+        // SAFETY: `tgkill` only sends a signal to a thread of this process.
+        unsafe {
+            libc::syscall(
+                libc::SYS_tgkill,
+                libc::c_long::from(std::process::id()),
+                tid,
+                libc::c_long::from(libc::SIGUSR1),
+            );
+        }
+        hit += 1;
+    }
+    hit
+}
+
+#[test]
+fn system_exec_reads_all_of_the_output_when_signals_interrupt_its_readers() {
+    make_sigusr1_interrupt_reads();
+    let dir = tempfile::tempdir().unwrap();
+    let pid_file = dir.path().join("pid");
+    // nothing is written for a second, so both readers sit in `read` while the signals come
+    let script = format!(
+        "echo $$ > {}; sleep 1; echo out; echo err >&2",
+        pid_file.display()
+    );
+    let done = Arc::new(AtomicBool::new(false));
+    let hits = Arc::new(AtomicUsize::new(0));
+    let signaller = std::thread::spawn({
+        let (done, hits, pid_file) = (done.clone(), hits.clone(), pid_file.clone());
+        move || {
+            let t0 = Instant::now();
+            while !pid_file.exists() || fs::read_to_string(&pid_file).unwrap_or_default().is_empty()
+            {
+                assert!(
+                    t0.elapsed() < Duration::from_secs(10),
+                    "the script never started"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let pid = pid_in(&pid_file);
+            let pipes: Vec<String> = [1, 2]
+                .iter()
+                .map(|fd| {
+                    fs::read_link(format!("/proc/{pid}/fd/{fd}"))
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .expect("the pipes of the tool")
+                })
+                .collect();
+            while !done.load(Ordering::SeqCst) {
+                for pipe in &pipes {
+                    hits.fetch_add(interrupt_readers_of(pipe), Ordering::SeqCst);
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    });
+    let out = SystemExec.run(&sh(&script), Duration::from_secs(20));
+    done.store(true, Ordering::SeqCst);
+    signaller.join().unwrap();
+    let out = out.expect("the tool ran");
+    assert_eq!(out.code, 0, "{out:?}");
+    assert_eq!(out.stdout, "out\n", "stdout is read to its end: {out:?}");
+    assert_eq!(out.stderr, "err\n", "stderr is read to its end: {out:?}");
+    assert!(
+        hits.load(Ordering::SeqCst) >= 4,
+        "the test interrupted the readers {} times (it needs to see them blocked in read, \
+         through /proc/self/task/<tid>/syscall)",
+        hits.load(Ordering::SeqCst)
+    );
+}
+
 #[test]
 fn system_exec_gives_up_on_a_background_process_that_keeps_the_pipes_open() {
     // the shell exits at once; its `sleep` keeps stdout and stderr open for 6 s
@@ -2628,6 +2754,57 @@ fn fast_tools_never_touch_the_budget() {
     assert!(host.exec().timeouts().iter().all(|t| *t == T30));
 }
 
+/// Runs the three tools of NIC0 on the simulated clock: `ethtool` and `dcb` use up all of the
+/// 60 s budget but `left`, and `mstconfig` never answers, so it gets `left` as its timeout.
+/// Returns the timeout `mstconfig` got and the text of the firmware hint.
+fn firmware_timeout_with(left: Duration) -> (Duration, String) {
+    let host = FakeHost::bare_metal();
+    all_tools(&host);
+    let exec = host.exec();
+    // flow control off, so the port buffer is read as well
+    fake_ethtool(&exec, "ens1f0", eth(false, false, false));
+    exec.takes(&["ethtool"], T30);
+    exec.takes(&["dcb"], Duration::from_secs(30) - left);
+    exec.takes(&["mstconfig"], Duration::from_secs(3600));
+    let h = hints_json(&host, &link_on(NIC0));
+    let timeouts = exec.timeouts();
+    assert_eq!(timeouts.len(), 3, "ethtool, dcb, mstconfig: {timeouts:?}");
+    let id = nic_id("firmware", NIC0);
+    assert_level(&h, &id, "info", "info");
+    assert_no_commands(&h, &id);
+    (timeouts[2], text(&h, &id))
+}
+
+#[test]
+fn a_timeout_message_below_a_second_shows_the_milliseconds_not_zero_seconds() {
+    for (left, shown) in [
+        (Duration::from_millis(900), "0.9 s"),
+        (Duration::from_millis(250), "0.25 s"),
+        (Duration::from_millis(1), "0.001 s"),
+    ] {
+        let (timeout, t) = firmware_timeout_with(left);
+        assert_eq!(timeout, left, "the last call gets what the budget has left");
+        assert!(
+            t.contains(&format!("timed out after {shown}")),
+            "{left:?} left: {t}"
+        );
+        assert!(
+            !t.contains("after 0 s") && !t.contains("after 0.0 s"),
+            "{left:?} left: {t}"
+        );
+    }
+}
+
+#[test]
+fn a_timeout_message_of_a_full_call_still_says_30_s() {
+    let host = FakeHost::bare_metal();
+    all_tools(&host);
+    host.exec().takes(&["ethtool"], Duration::from_secs(3600));
+    let h = hints_json(&host, &link_on(NIC0));
+    let t = text(&h, &nic_id("flow_control", NIC0));
+    assert!(t.contains("timed out after 30 s"), "{t}");
+}
+
 /// A tool that waits until the test lets it go.
 #[derive(Clone)]
 struct Gate(Arc<(AtomicUsize, Mutex<bool>, Condvar)>);
@@ -2687,12 +2864,10 @@ fn start_body() -> Value {
     setup(vec![link("s", NIC1, NIC1, None)]).body()
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_start_issued_during_a_slow_query_waits_until_the_query_ends() {
+/// Starts a hints request for NIC0 whose `ethtool` waits for `gate`.
+fn slow_hints_app(gate: &Gate) -> TestApp {
     let host = FakeHost::bare_metal();
     all_tools(&host);
-    let gate = Gate::new();
-    let _open = OpenOnDrop(gate.clone());
     host.exec().on_fn(&["ethtool", "--json", "-a", "ens1f0"], {
         let gate = gate.clone();
         move |_| {
@@ -2703,39 +2878,45 @@ async fn a_start_issued_during_a_slow_query_waits_until_the_query_ends() {
             )
         }
     });
-    let a = TestApp::new(host);
+    TestApp::new(host)
+}
+
+fn hints_request(router: &axum::Router) -> tokio::task::JoinHandle<Reply> {
+    let router = router.clone();
+    tokio::spawn(async move {
+        call(
+            &router,
+            "POST",
+            "/api/host/hints",
+            Some(link_on(NIC0).body()),
+        )
+        .await
+    })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_start_issued_during_a_slow_query_is_not_delayed_by_it() {
+    let gate = Gate::new();
+    let _open = OpenOnDrop(gate.clone());
+    let a = slow_hints_app(&gate);
     let router = a.router.clone();
-    let query = tokio::spawn({
-        let router = router.clone();
-        async move {
-            call(
-                &router,
-                "POST",
-                "/api/host/hints",
-                Some(link_on(NIC0).body()),
-            )
-            .await
-        }
-    });
+    let query = hints_request(&router);
     until("the query to reach the tool", || gate.entered() >= 1).await;
-    let start = tokio::spawn({
-        let router = router.clone();
-        async move { call(&router, "POST", "/api/emulation/start", Some(start_body())).await }
-    });
-    // routes that take no part in the lifecycle are not held up
-    let state = tokio::time::timeout(
+    // the tool is stuck: the start must go through nevertheless
+    let s = tokio::time::timeout(
         Duration::from_secs(5),
-        call(&router, "GET", "/api/emulation", None),
+        call(&router, "POST", "/api/emulation/start", Some(start_body())),
     )
     .await
-    .expect("GET /api/emulation answers during the query");
-    assert_eq!(state.status, 200, "{}", state.text());
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    .expect("the start does not wait for the query that is running");
+    assert_eq!(s.status, 202, "{}", s.text());
+    assert_eq!(a.supervisor.starts_entered(), 1);
+    assert_eq!(a.supervisor.plans().len(), 1);
     assert!(
-        !start.is_finished(),
-        "the start must wait for the query that is running"
+        !query.is_finished(),
+        "the query is still waiting for its tool"
     );
-    assert_eq!(a.supervisor.starts_entered(), 0);
+    // the query read the state before the start and finishes as asked
     gate.open();
     let q = query.await.unwrap();
     assert_eq!(q.status, 200, "{}", q.text());
@@ -2744,42 +2925,78 @@ async fn a_start_issued_during_a_slow_query_waits_until_the_query_ends() {
         &nic_id("flow_control", NIC0),
         &["ethtool -A ens1f0 rx off tx off"],
     );
-    let s = start.await.unwrap();
-    assert_eq!(s.status, 202, "{}", s.text());
-    assert_eq!(a.supervisor.plans().len(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_state_is_read_again_under_the_lock_so_a_start_in_progress_stops_the_tools() {
+async fn hints_requests_do_not_queue_behind_each_other_and_a_start_behind_none_of_them() {
+    let gate = Gate::new();
+    let _open = OpenOnDrop(gate.clone());
+    let a = slow_hints_app(&gate);
+    let router = a.router.clone();
+    let queries: Vec<_> = (0..3).map(|_| hints_request(&router)).collect();
+    // all three are inside the tool at the same time: no request holds the others up
+    until("three queries to be inside the tool", || {
+        gate.entered() >= 3
+    })
+    .await;
+    let s = tokio::time::timeout(
+        Duration::from_secs(5),
+        call(&router, "POST", "/api/emulation/start", Some(start_body())),
+    )
+    .await
+    .expect("the start does not wait for any of the queries");
+    assert_eq!(s.status, 202, "{}", s.text());
+    gate.open();
+    for q in queries {
+        let q = q.await.unwrap();
+        assert_eq!(q.status, 200, "{}", q.text());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stop_during_a_slow_query_is_not_delayed_by_it_either() {
+    let gate = Gate::new();
+    let _open = OpenOnDrop(gate.clone());
+    let a = slow_hints_app(&gate);
+    // the query reads the state as Stopped; the emulation runs by the time the stop comes
+    let router = a.router.clone();
+    let query = hints_request(&router);
+    until("the query to reach the tool", || gate.entered() >= 1).await;
+    a.supervisor.force_status(status(State::Running));
+    let s = tokio::time::timeout(
+        Duration::from_secs(5),
+        call(&router, "POST", "/api/emulation/stop", Some(json!({}))),
+    )
+    .await
+    .expect("the stop does not wait for the query that is running");
+    assert_eq!(s.status, 202, "{}", s.text());
+    gate.open();
+    assert_eq!(query.await.unwrap().status, 200);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_hints_request_while_a_start_is_in_progress_runs_no_tools() {
+    // the emulation is already `Starting` when the request reads the state: no tool runs and
+    // the request does not wait for the start to finish
     let host = FakeHost::bare_metal();
     all_tools(&host);
     let exec = host.exec();
     let a = TestApp::new(host);
-    a.supervisor.set_start_delay(Duration::from_millis(1500));
-    let router = a.router.clone();
-    let start = tokio::spawn({
-        let router = router.clone();
-        async move { call(&router, "POST", "/api/emulation/start", Some(start_body())).await }
-    });
-    // the start holds the lifecycle lock from here until the supervisor is done
-    until("the start to reach the supervisor", || {
-        a.supervisor.starts_entered() >= 1
-    })
-    .await;
-    let r = call(
-        &router,
-        "POST",
-        "/api/host/hints",
-        Some(link_on(NIC0).body()),
+    a.supervisor.force_status(status(State::Starting));
+    let r = tokio::time::timeout(
+        Duration::from_secs(5),
+        call(
+            &a.router,
+            "POST",
+            "/api/host/hints",
+            Some(link_on(NIC0).body()),
+        ),
     )
-    .await;
+    .await
+    .expect("hints answer at once");
     assert_eq!(r.status, 200, "{}", r.text());
     let h = r.json();
-    assert!(
-        exec.calls().is_empty(),
-        "the emulation is starting when the query gets its turn: {:?}",
-        exec.calls()
-    );
+    assert!(exec.calls().is_empty(), "{:?}", exec.calls());
     for kind in ["flow_control", "port_buffer", "firmware"] {
         let id = nic_id(kind, NIC0);
         assert_no_commands(&h, &id);
@@ -2789,7 +3006,6 @@ async fn the_state_is_read_again_under_the_lock_so_a_start_in_progress_stops_the
             hint(&h, &id)
         );
     }
-    assert_eq!(start.await.unwrap().status, 202);
 }
 
 // ---- the sources -----------------------------------------------------------------------------

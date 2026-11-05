@@ -66,15 +66,12 @@ function Commands({ hint, commands }: { hint: Hint; commands: string[] }) {
       <Button type="button" size="sm" variant="outline-primary" onClick={copy}>
         Copy commands
       </Button>
-      {copied && (
-        <span role="status" className="ms-2 text-success">
-          Copied
-        </span>
-      )}
+      {/* Always mounted: screen readers announce changes of a live region, not one inserted together with its text. */}
+      <output className="ms-2 text-success">{copied ? 'Copied' : ''}</output>
       {manual && (
         <div className="mt-2">
           <div>Clipboard not available here (plain http): select the commands and copy them.</div>
-          <pre className="text-start mb-0">{text}</pre>
+          <pre className="text-start mb-0 commands-fallback">{text}</pre>
         </div>
       )}
     </div>
