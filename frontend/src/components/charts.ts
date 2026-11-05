@@ -46,9 +46,13 @@ export const chartInk = (theme: Theme) =>
     ? { text: '#e6e6e6', grid: 'rgba(255, 255, 255, 0.15)' }
     : { text: '#212529', grid: 'rgba(0, 0, 0, 0.1)' };
 
+/** True when the user asked for reduced motion; false where `matchMedia` does not exist. */
+const prefersReducedMotion = () =>
+  typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
 /**
  * The options every chart shares: P4TG look (wide and short, titled axes, legend on top, y from zero), text and grid in
- * the colours of the theme, and hover tooltips that work without visible points.
+ * the colours of the theme. Chart.js animates and draws points by default; animation is off for reduced motion.
  */
 export function chartOptions<T extends 'line' | 'bar'>(
   theme: Theme,
@@ -59,14 +63,13 @@ export function chartOptions<T extends 'line' | 'bar'>(
   const { text, grid } = chartInk(theme);
   const axis = (title: string) => ({
     title: { display: true, text: title, color: text },
-    ticks: { color: text, maxTicksLimit: 8 },
+    ticks: { color: text, autoSkip: true },
     grid: { color: grid },
   });
   return {
-    animation: false,
+    ...(prefersReducedMotion() ? { animation: false } : {}),
     responsive: true,
     maintainAspectRatio: false,
-    elements: { point: { radius: 0 } },
     interaction: { mode: 'index', intersect: false },
     scales: {
       x: axis(xTitle),
