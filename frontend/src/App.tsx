@@ -2,18 +2,19 @@ import { useEffect, useRef, useState } from 'react';
 import { Button, Modal, OverlayTrigger, Tooltip } from 'react-bootstrap';
 import { Navigate, NavLink, Route, Routes } from 'react-router';
 import * as api from './api/client';
+import type { OnlineView } from './api/types';
+import logo from './assets/logo.png';
+import { resetConfig, useLocalConfig } from './common/localConfig';
+import { startPolling } from './common/polling';
+import type { Theme } from './common/theme';
+import { ThemeContext } from './common/theme';
+import { isUpdateAvailable, RELEASES_URL } from './common/updateCheck';
 import Dashboard from './pages/Dashboard';
 import Hints from './pages/Hints';
 import Interfaces from './pages/Interfaces';
 import LinkEditor from './pages/LinkEditor';
 import Links from './pages/Links';
 import Settings from './pages/Settings';
-import { resetConfig, useLocalConfig } from './common/localConfig';
-import { startPolling } from './common/polling';
-import { ThemeContext } from './common/theme';
-import type { Theme } from './common/theme';
-import { isUpdateAvailable, RELEASES_URL } from './common/updateCheck';
-import type { OnlineView } from './api/types';
 
 const ONLINE_POLL_MS = 5000;
 
@@ -69,7 +70,9 @@ function Sidebar({ theme, onToggle }: { theme: Theme; onToggle: () => void }) {
   }, []);
   return (
     <div className="sidebar">
-      <div className="sidebar-brand">DPDS</div>
+      <div className="sidebar-brand">
+        <img src={logo} alt="DPDS logo" draggable={false} />
+      </div>
       <nav aria-label="Main navigation" className="nav flex-column">
         {NAV.map((n) => (
           <OverlayTrigger
