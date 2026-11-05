@@ -1691,3 +1691,435 @@ async fn a_stalled_elapsed_reader_does_not_restart_the_clock_of_an_older_run() {
         s.first
     );
 }
+
+// ---- spec 35 (C1): `totals`, the run's final cumulative counters --------------------------------
+//
+// Contract the tests pin (coordinator's design, not user-confirmed in detail; the wording of the
+// choices is the tester's):
+//
+// - `GET /api/stats/history` also carries `totals`: `{"<link index>": {rx_pkts, loss_drops,
+//   limiter_drops, buffer_full_drops, nic_tx_drops, nic_rx_imissed, nic_rx_nombuf}}`, the key set
+//   of the samples (the order of the start body), each object with exactly these seven u64 fields.
+//   They are the cumulative counters since the `dpds` process started, taken from the NEWEST
+//   successful poll of the run (not from the newest once-a-second sample): `rx_pkts`,
+//   `loss_drops`, `limiter_drops`, `buffer_full_drops` are the counters of `/api/stats` of the
+//   same names; `nic_tx_drops` is its `counters.tx_drops` (the link's `tx_drops` of `/dpds/stats`,
+//   there is no counter called `nic_tx_drops` today); `nic_rx_imissed` and `nic_rx_nombuf` are
+//   `counters.nic_rx_imissed` and `counters.nic_rx_nombuf` (the receiving port's cumulative
+//   `imissed` and `rx_nombuf`).
+// - Every answer has it, incremental ones (`since_ms`) too, also when no sample is newer.
+// - Before any run it is `{}` (present, not null and not omitted). It is kept after the stop with
+//   the values of the last poll while the run was running, and when failed polls clear the stats
+//   cache, like the samples. A new run (a new start) drops the old totals; they are `{}` or the new
+//   run's own until its first poll gives numbers. A refused start changes nothing.
+// - OpenAPI: `totals` is a property of the 200 body, an object whose values have exactly these seven
+//   integer properties.
+//
+// The fake `dpds` below ticks per POLL, not per second: its uptime is 100 ms times the number of
+// `/dpds/ports` queries so far, so a counter value names the poll it came from, and the test can
+// tell the newest poll from the newest sample.
+
+/// Uptime step of one poll of the counting fake.
+const COUNT_STEP_NS: u64 = 100_000_000;
+
+/// Packets per poll of link 0 and link 1 (`EXPECT`'s rates times 100 ms).
+const RX_PER_POLL: [u64; 2] = [200_000, 100_000];
+
+const TOTALS_FIELDS: [&str; 7] = [
+    "rx_pkts",
+    "loss_drops",
+    "limiter_drops",
+    "buffer_full_drops",
+    "nic_tx_drops",
+    "nic_rx_imissed",
+    "nic_rx_nombuf",
+];
+
+/// A fake `dpds` whose uptime advances by [`COUNT_STEP_NS`] with every `/dpds/ports` query: the
+/// k-th poll sees the counters of `at(k * COUNT_STEP_NS)`.
+fn counting(runtime_dir: &Path, pid: u32) -> Live {
+    let polls = Arc::new(AtomicU64::new(0));
+    let hists = full_hists(&at(1));
+    let server = FakeTelemetryServer::start(
+        &socket_path(runtime_dir),
+        pid,
+        vec![Mode::Serve],
+        move |cmd| {
+            let (name, param) = cmd.split_once(',').unwrap_or((cmd, ""));
+            if name == "/dpds/ports" {
+                polls.fetch_add(1, Ordering::SeqCst);
+            }
+            let snap = at(polls.load(Ordering::SeqCst).max(1) * COUNT_STEP_NS);
+            let idx: usize = param.parse().unwrap_or(usize::MAX);
+            match name {
+                "/dpds/ports" => Some(snap.ports),
+                "/dpds/stats" => snap.dirs.get(idx).cloned(),
+                "/dpds/delay_hist" => hist_page(&hists, param),
+                "/ethdev/stats" => snap.eth.get(idx).cloned(),
+                _ => None,
+            }
+        },
+    );
+    Live {
+        server,
+        t0: Arc::new(Mutex::new(Instant::now())),
+    }
+}
+
+impl Rig {
+    /// Like `start_run`, with the counting fake.
+    async fn start_counting_run(&mut self, pid: u32, started_at: u64) {
+        self.live = None;
+        self.live = Some(counting(&self.runtime_dir, pid));
+        self.supervisor.set_next_run(pid, started_at);
+        let s = setup(vec![link("l", "net_null0", "net_null0", None)]);
+        let mut body = s.body();
+        body["settings"]["poll_interval_ms"] = json!(POLL_MS);
+        let r = call(&self.router, "POST", "/api/emulation/start", Some(body)).await;
+        assert_eq!(r.status, 202, "{}", r.text());
+    }
+
+    /// Number of polls the counting fake has served.
+    fn polls_served(&self) -> u64 {
+        self.live
+            .as_ref()
+            .unwrap()
+            .server
+            .queries()
+            .iter()
+            .filter(|q| q.as_str() == "/dpds/ports")
+            .count() as u64
+    }
+}
+
+/// The poll (1-based) whose `rx_pkts` of `link` is `rx`; panics when no poll has that value.
+fn poll_of(link: usize, rx: u64, what: &Value) -> u64 {
+    let guess = rx / RX_PER_POLL[link];
+    (guess.saturating_sub(1).max(1)..=guess + 1)
+        .find(|k| at(k * COUNT_STEP_NS).dirs[link]["rx_pkts"] == json!(rx))
+        .unwrap_or_else(|| panic!("rx_pkts {rx} of link {link} is no poll's counter: {what}"))
+}
+
+/// What the seven totals of `link` are after poll `k`, from the fake's own reply: link `d`
+/// receives on port `d` in this fake.
+fn totals_after(k: u64, link: usize) -> Value {
+    let s = at(k * COUNT_STEP_NS);
+    let d = &s.dirs[link];
+    let port = &s.eth[link];
+    json!({
+        "rx_pkts": d["rx_pkts"],
+        "loss_drops": d["loss_drops"],
+        "limiter_drops": d["limiter_drops"],
+        "buffer_full_drops": d["buffer_full_drops"],
+        "nic_tx_drops": d["tx_drops"],
+        "nic_rx_imissed": port["imissed"],
+        "nic_rx_nombuf": port["rx_nombuf"],
+    })
+}
+
+/// Checks the `totals` of an answer: both links, exactly the seven u64 fields, all of one poll
+/// that matches the fake's counters; returns that poll.
+fn check_totals(v: &Value) -> u64 {
+    let totals = v["totals"]
+        .as_object()
+        .unwrap_or_else(|| panic!("totals is not an object in {v}"));
+    let mut keys: Vec<&str> = totals.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["0", "1"], "a totals entry per link: {v}");
+    let mut polls = Vec::new();
+    for (i, key) in ["0", "1"].iter().enumerate() {
+        let t = &v["totals"][*key];
+        let o = t
+            .as_object()
+            .unwrap_or_else(|| panic!("totals[{key}] is not an object in {v}"));
+        let mut fields: Vec<&str> = o.keys().map(String::as_str).collect();
+        fields.sort_unstable();
+        let mut want = TOTALS_FIELDS.to_vec();
+        want.sort_unstable();
+        assert_eq!(fields, want, "exactly the seven fields: {t}");
+        for f in TOTALS_FIELDS {
+            assert!(t[f].is_u64(), "{f} is a u64 in {t}");
+        }
+        let k = poll_of(i, t["rx_pkts"].as_u64().unwrap(), v);
+        assert_eq!(
+            *t,
+            totals_after(k, i),
+            "link {i}: the counters of poll {k}, each from the right source: {v}"
+        );
+        polls.push(k);
+    }
+    assert_eq!(polls[0], polls[1], "both links are from the same poll: {v}");
+    polls[0]
+}
+
+/// The poll `/api/stats` shows, from its counters of link 0 (also checks the two new counters).
+fn stats_poll(stats: &Value) -> u64 {
+    let dirs = stats["directions"].as_array().unwrap();
+    assert_eq!(dirs.len(), 2, "{stats}");
+    let mut polls = Vec::new();
+    for (i, d) in dirs.iter().enumerate() {
+        let c = &d["counters"];
+        let k = poll_of(i, c["rx_pkts"].as_u64().unwrap(), stats);
+        let want = totals_after(k, i);
+        assert_eq!(
+            c["nic_rx_imissed"], want["nic_rx_imissed"],
+            "link {i}: the receiving port's imissed: {c}"
+        );
+        assert_eq!(
+            c["nic_rx_nombuf"], want["nic_rx_nombuf"],
+            "link {i}: the receiving port's rx_nombuf: {c}"
+        );
+        polls.push(k);
+    }
+    polls[0]
+}
+
+fn totals_of(v: &Value) -> &Value {
+    &v["totals"]
+}
+
+#[tokio::test]
+async fn totals_are_an_empty_object_before_any_run() {
+    // a source that records nothing (the common fake)
+    let a = TestApp::new(FakeHost::bare_metal());
+    let v = a.get("/api/stats/history").await.json();
+    assert_eq!(totals_of(&v), &json!({}), "{v}");
+
+    // the real poller, never started
+    let r = rig();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    for q in ["", "?since_ms=0", "?since_ms=99999999"] {
+        let v = r.history(q).await;
+        assert_eq!(totals_of(&v), &json!({}), "{q}: {v}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn totals_are_the_newest_counters_of_the_last_poll_not_of_the_last_sample() {
+    let mut r = rig();
+    r.start_counting_run(4242, 1_700_000_000).await;
+    r.wait_history("a sample at 2 s", 15, |v| newest_t(v) >= 2.0)
+        .await;
+    // ten reads over a second: a stats read before and one after each history read bracket the
+    // poll the totals may come from, give or take the poll that lands between the reads. A series
+    // that only changes once a second (the samples) would trail by up to ten polls.
+    let mut seen = Vec::new();
+    for _ in 0..10 {
+        let s1 = stats_poll(&r.stats().await);
+        let h = r.history("").await;
+        let s2 = stats_poll(&r.stats().await);
+        let k = check_totals(&h);
+        assert!(
+            k + 1 >= s1 && k <= s2 + 1,
+            "totals come from poll {k}, /api/stats showed polls {s1} and {s2}: {h}"
+        );
+        assert!(k >= 15, "poll {k} after 2 s of a run at 100 ms: {h}");
+        seen.push(k);
+        tokio::time::sleep(Duration::from_millis(130)).await;
+    }
+    assert!(
+        seen.windows(2).all(|w| w[0] <= w[1]),
+        "the totals never go back: {seen:?}"
+    );
+    assert!(
+        seen.last() > seen.first(),
+        "the totals follow the polls while the run goes on: {seen:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn incremental_answers_carry_the_totals_too() {
+    let mut r = rig();
+    r.start_counting_run(4242, 1_700_000_000).await;
+    let full = r
+        .wait_history("a sample at 2 s", 15, |v| newest_t(v) >= 2.0)
+        .await;
+    let k_full = check_totals(&full);
+    for q in ["?since_ms=0", "?since_ms=99999999"] {
+        let inc = r.history(q).await;
+        let k = check_totals(&inc);
+        assert!(
+            k >= k_full,
+            "{q}: totals from poll {k}, the full answer had {k_full}"
+        );
+    }
+    // with no newer sample the answer still has them
+    let none = r.history("?since_ms=99999999").await;
+    assert_eq!(none["samples"], json!({"0": [], "1": []}), "{none}");
+    check_totals(&none);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn totals_are_kept_after_the_stop_with_the_last_poll() {
+    let mut r = rig();
+    r.start_counting_run(4242, 1_700_000_000).await;
+    r.wait_history("a sample at 2 s", 15, |v| newest_t(v) >= 2.0)
+        .await;
+    r.stop_run().await;
+    // the poller sees the stopped state, no poll is made after that
+    tokio::time::sleep(Duration::from_millis(6 * POLL_MS)).await;
+    let polls = r.polls_served();
+    let stopped = r.history("").await;
+    let k = check_totals(&stopped);
+    // the newest poll of the run (a poll in flight at the stop may not count)
+    assert!(
+        k + 1 >= polls && k <= polls,
+        "{polls} polls were made, the totals are from poll {k}: {stopped}"
+    );
+    // later, and incrementally, the same numbers; no poll came in between
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(r.polls_served(), polls, "a stopped run is not polled");
+    let later = r.history("").await;
+    assert_eq!(totals_of(&later), totals_of(&stopped), "{later}");
+    let inc = r.history(&format!("?since_ms={}", newest_ms(&later))).await;
+    assert_eq!(totals_of(&inc), totals_of(&stopped), "{inc}");
+
+    // a refused start changes nothing
+    for body in [
+        setup(vec![]).body(),
+        setup(vec![link("zeta", "bad port!", "net_null0", None)]).body(),
+    ] {
+        let resp = call(&r.router, "POST", "/api/emulation/start", Some(body)).await;
+        assert_eq!(resp.status, 400, "{}", resp.text());
+    }
+    tokio::time::sleep(Duration::from_millis(5 * POLL_MS)).await;
+    assert_eq!(totals_of(&r.history("").await), totals_of(&stopped));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_polls_that_clear_the_stats_do_not_clear_the_totals() {
+    let mut r = rig();
+    r.start_counting_run(4242, 1_700_000_000).await;
+    let before = r
+        .wait_history("a sample at 2 s", 15, |v| newest_t(v) >= 2.0)
+        .await;
+    let k_before = check_totals(&before);
+    let server = &r.live.as_ref().unwrap().server;
+    server.set_modes(vec![Mode::Nulls]);
+    server.break_all();
+    // five failed polls clear the cached stats ...
+    let t0 = Instant::now();
+    loop {
+        if r.stats().await["directions"].as_array().unwrap().is_empty() {
+            break;
+        }
+        assert!(t0.elapsed() < Duration::from_secs(10), "stats not cleared");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // ... the run is the same, so are its numbers: those of the last good poll
+    let after = r.history("").await;
+    let k_after = check_totals(&after);
+    assert!(k_after >= k_before, "{k_after} vs {k_before}: {after}");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        totals_of(&r.history("").await),
+        totals_of(&after),
+        "no successful poll, no new numbers"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_new_run_drops_the_old_totals() {
+    let mut r = rig();
+    r.start_counting_run(4242, 1_700_000_000).await;
+    let run1 = r
+        .wait_history("a sample at 3 s", 20, |v| newest_t(v) >= 3.0)
+        .await;
+    let id1 = run_id(&run1);
+    r.stop_run().await;
+    tokio::time::sleep(Duration::from_millis(6 * POLL_MS)).await;
+    let stopped = r.history("").await;
+    let k1 = check_totals(&stopped);
+    assert!(k1 >= 20, "3 s of polls at 100 ms, got poll {k1}");
+
+    // run 2: another pid and start time, its fake counts its polls from 1 again
+    r.start_counting_run(4243, 1_700_000_900).await;
+    let t0 = Instant::now();
+    let run2 = loop {
+        let v = r.history("").await;
+        let served = r.polls_served();
+        if v["run_id"].is_null() {
+            // a start in progress has no run, so no numbers
+            assert_eq!(totals_of(&v), &json!({}), "{v}");
+        } else if run_id(&v) == id1 {
+            // not seen the new run yet: still the old run's numbers
+            assert_eq!(totals_of(&v), totals_of(&stopped), "{v}");
+        } else {
+            // the new run: nothing yet, or its own numbers; never the old run's
+            let t = totals_of(&v);
+            if t.as_object().is_some_and(|o| !o.is_empty()) {
+                let k = check_totals(&v);
+                assert!(
+                    k <= served,
+                    "poll {k} of the new run, only {served} were made: {v}"
+                );
+                assert!(k < k1, "the old run's totals are gone: {v}");
+                if newest_t(&v) >= 1.0 {
+                    break v;
+                }
+            } else {
+                assert_eq!(t, &json!({}), "{v}");
+            }
+        }
+        assert!(
+            t0.elapsed() < Duration::from_secs(15),
+            "no totals in the new run; last answer {v}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert_eq!(run2["started_at"], json!(1_700_000_900), "{run2}");
+}
+
+#[tokio::test]
+async fn openapi_documents_the_totals() {
+    let a = TestApp::new(FakeHost::bare_metal());
+    let doc = a.get("/api/openapi.json").await.json();
+    let body = resolve(
+        &doc,
+        &doc["paths"]["/api/stats/history"]["get"]["responses"]["200"]["content"]
+            ["application/json"]["schema"],
+    );
+    let props = body["properties"]
+        .as_object()
+        .unwrap_or_else(|| panic!("no properties: {body}"));
+    let totals = resolve(
+        &doc,
+        props
+            .get("totals")
+            .unwrap_or_else(|| panic!("no totals in {body}")),
+    );
+    assert_eq!(totals["type"], "object", "{totals}");
+    let item = resolve(&doc, &totals["additionalProperties"]);
+    let item_props = item["properties"]
+        .as_object()
+        .unwrap_or_else(|| panic!("the values of totals have no properties: {totals}"));
+    let mut names: Vec<&str> = item_props.keys().map(String::as_str).collect();
+    names.sort_unstable();
+    let mut want = TOTALS_FIELDS.to_vec();
+    want.sort_unstable();
+    assert_eq!(names, want, "{item}");
+    for (name, schema) in item_props {
+        let schema = resolve(&doc, schema);
+        assert_eq!(schema["type"], "integer", "{name}: {schema}");
+    }
+}
+
+#[tokio::test]
+async fn openapi_documents_the_port_counters_of_a_direction() {
+    let a = TestApp::new(FakeHost::bare_metal());
+    let doc = a.get("/api/openapi.json").await.json();
+    let schemas = doc["components"]["schemas"].as_object().unwrap();
+    // the schema of `counters`: the one with `tx_drops` and `loss_drops`
+    let counters = schemas
+        .values()
+        .find(|s| {
+            s["properties"]
+                .as_object()
+                .is_some_and(|p| p.contains_key("tx_drops") && p.contains_key("loss_drops"))
+        })
+        .unwrap_or_else(|| panic!("no counters schema: {:?}", schemas.keys()));
+    for name in ["nic_rx_imissed", "nic_rx_nombuf"] {
+        let p = resolve(&doc, &counters["properties"][name]);
+        assert_eq!(p["type"], "integer", "{name} is documented: {counters}");
+    }
+}

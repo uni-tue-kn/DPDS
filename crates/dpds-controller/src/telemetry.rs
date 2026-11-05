@@ -14,7 +14,9 @@ use socket2::{Domain, SockAddr, Socket, Type};
 
 use crate::dto::MAX_HISTOGRAM_BINS;
 pub use crate::stats::Polled;
-use crate::stats::{compute_stats, HistoryLink, HistorySample, HistoryView, Snapshot, StatsView};
+use crate::stats::{
+    compute_stats, HistoryLink, HistorySample, HistoryTotals, HistoryView, Snapshot, StatsView,
+};
 use crate::supervisor::{State, Supervisor, SupervisorStatus};
 
 /// DPDK `--file-prefix` of the child; fixes the socket path below the runtime dir.
@@ -252,6 +254,8 @@ struct RunSeries {
     last_ms: Option<u64>,
     /// `links[d]` = samples of link `d`, oldest first.
     links: Vec<VecDeque<HistorySample>>,
+    /// `totals[d]` = counters of link `d` at the newest successful poll.
+    totals: Vec<HistoryTotals>,
 }
 
 impl RunSeries {
@@ -338,6 +342,7 @@ impl Poller {
                         stopped_ms: None,
                         last_ms: None,
                         links: Vec::new(),
+                        totals: Vec::new(),
                     });
                 }
             }
@@ -351,9 +356,9 @@ impl Poller {
         (run, status)
     }
 
-    /// Adds a sample per link, at most one per [`SAMPLE_PERIOD_MS`], from the rates of a poll
-    /// of the process `pid`.
-    fn record(&self, pid: u32, view: &StatsView) {
+    /// Keeps the counters of a poll of the process `pid` as the run's totals and, when the poll
+    /// has a rate window, adds a sample per link, at most one per [`SAMPLE_PERIOD_MS`].
+    fn record(&self, pid: u32, view: &StatsView, has_window: bool) {
         let mut guard = self.run.lock().unwrap_or_else(|e| e.into_inner());
         let Some(run) = guard
             .as_mut()
@@ -361,6 +366,14 @@ impl Poller {
         else {
             return;
         };
+        run.totals = view
+            .directions
+            .iter()
+            .map(|d| HistoryTotals::from(&d.counters))
+            .collect();
+        if !has_window {
+            return;
+        }
         let t_ms = run.elapsed_ms();
         if run.last_ms.is_some_and(|l| t_ms < l + SAMPLE_PERIOD_MS) {
             return;
@@ -386,15 +399,14 @@ impl Poller {
     }
 
     fn succeeded(&self, cur: Snapshot, capacity: usize, pid: u32) {
-        // a poll without a predecessor has no rate window and gives no sample; the sample is
-        // recorded with the cell unlocked, so waiting for the run lock never blocks its readers
-        let view = self
-            .cell()
-            .as_ref()
-            .map(|c| compute_stats(Some(&c.polled.cur), &cur));
-        if let Some(view) = &view {
-            self.record(pid, view);
-        }
+        // a poll without a predecessor has no rate window and gives no sample, only totals; they
+        // are recorded with the cell unlocked, so waiting for the run lock never blocks its readers
+        let (view, has_window) = {
+            let cell = self.cell();
+            let prev = cell.as_ref().map(|c| &c.polled.cur);
+            (compute_stats(prev, &cur), prev.is_some())
+        };
+        self.record(pid, &view, has_window);
         let mut cell = self.cell();
         let now = Instant::now();
         let (prev, mut ring) = match cell.take() {
@@ -505,6 +517,12 @@ impl TelemetrySource for Poller {
             links: r.labels.clone(),
             started_at: r.started_at,
             samples,
+            totals: r
+                .totals
+                .iter()
+                .enumerate()
+                .map(|(d, t)| (d.to_string(), *t))
+                .collect(),
         }
     }
 

@@ -654,6 +654,86 @@ fn the_readme_documents_get_api_stats_history() {
     }
 }
 
+// ---- spec 35: `totals` of the history and the receiving port's counters of `/api/stats` ----------
+
+const TOTALS_FIELDS: [&str; 7] = [
+    "rx_pkts",
+    "loss_drops",
+    "limiter_drops",
+    "buffer_full_drops",
+    "nic_tx_drops",
+    "nic_rx_imissed",
+    "nic_rx_nombuf",
+];
+
+/// The item that documents the stats route (not the history route, which also names
+/// `GET /api/stats` when it says where its numbers come from), lower-cased copy second.
+fn stats_route_item() -> String {
+    let items: Vec<String> = controller_items_with("`GET /api/stats`")
+        .into_iter()
+        .filter(|i| !i.contains("`GET /api/stats/history`"))
+        .collect();
+    assert!(
+        !items.is_empty(),
+        "no item of the controller section documents `GET /api/stats` on its own"
+    );
+    items.join(" ")
+}
+
+#[test]
+fn the_readme_documents_totals_on_the_history() {
+    let item = route_item("`GET /api/stats/history`");
+    let lower = item.to_lowercase();
+    assert!(item.contains("`totals`"), "the answer's `totals`: {item}");
+    for field in TOTALS_FIELDS {
+        assert!(
+            item.contains(&format!("`{field}`")),
+            "totals has `{field}`: {item}"
+        );
+    }
+    // what they are: cumulative counters of the newest poll, per link, kept like the samples
+    assert!(
+        lower.contains("cumulative"),
+        "totals are cumulative counters: {item}"
+    );
+    assert!(
+        lower.contains("last poll")
+            || lower.contains("newest poll")
+            || lower.contains("latest poll"),
+        "totals come from the last poll of the run: {item}"
+    );
+    // `totals` is an object per link index that is empty before any run
+    assert!(
+        lower.contains("`{}`") || lower.contains("empty object"),
+        "totals is `{{}}` before any run: {item}"
+    );
+}
+
+#[test]
+fn the_readme_documents_the_port_counters_of_a_direction_on_the_stats() {
+    let item = stats_route_item();
+    let lower = item.to_lowercase();
+    for field in ["`nic_rx_imissed`", "`nic_rx_nombuf`"] {
+        assert!(
+            item.contains(field),
+            "`GET /api/stats` documents {field}: {item}"
+        );
+    }
+    assert!(
+        lower.contains("receiving port"),
+        "they are the receiving port's counters: {item}"
+    );
+    assert!(
+        lower.contains("cumulative"),
+        "they are cumulative counters: {item}"
+    );
+    // links that receive on one port report the same numbers
+    assert!(
+        lower.contains("share") || lower.contains("hairpin"),
+        "two links on one receiving port both report its counters: {item}"
+    );
+}
+
 // ---- spec 33: DPDS never changes the host; hints show the commands for an administrator --------
 //
 // Spec 32's Apply (route, button, `action`) is gone. The controller section says that neither

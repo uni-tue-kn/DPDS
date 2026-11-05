@@ -378,3 +378,134 @@ fn ring_histograms_are_per_link_index() {
     }
     assert!(delay_histogram(&ring_snapshot(2), 4).is_none());
 }
+
+// ---- spec 35 (C2): the receiving port's imissed and rx_nombuf per direction --------------------
+//
+// `counters` of a direction also carries `nic_rx_imissed` and `nic_rx_nombuf`: the CUMULATIVE
+// `imissed` and `rx_nombuf` of the direction's RECEIVING port (`dir<d>_rx_port`, the link's
+// ingress), straight from the newest snapshot's `/ethdev/stats`, so they are the same whatever the
+// window (not deltas, not clamped after a restart, present without a `prev`). Two links that
+// receive on the same port both report that port's counters (a hairpin of one port; they are not
+// split and not summed). A receiving port without NIC stats reports 0. The existing `nic_rx_pct`
+// stays as it is. The dashboard's donut uses these as exact counts, `nic_tx_drops` is `tx_drops`.
+
+fn nic_rx(v: &Value, d: usize) -> (u64, u64) {
+    let c = &v["directions"][d]["counters"];
+    let n = |k: &str| {
+        c[k].as_u64()
+            .unwrap_or_else(|| panic!("counters.{k} is not a u64 in {c}"))
+    };
+    (n("nic_rx_imissed"), n("nic_rx_nombuf"))
+}
+
+/// `cur()` with port 1 given its own imissed and rx_nombuf, so that a direction that takes the
+/// wrong port shows.
+fn cur_with_port1(imissed: u64, nombuf: u64) -> dpds_controller::stats::Snapshot {
+    snapshot(
+        [
+            d(
+                12_000_000_000,
+                3_000_000,
+                2_700_000,
+                50_000,
+                25_000,
+                11_000,
+                5_100,
+            ),
+            d(12_000_000_000, 2_500, 2_500, 0, 0, 0, 0),
+        ],
+        [
+            p(2_250_000_000, 725_000_000, 30_100, 10_000),
+            p(1000, 1_800_000_000, imissed, nombuf),
+        ],
+    )
+}
+
+#[test]
+fn counters_carry_the_cumulative_imissed_and_nombuf_of_the_receiving_port() {
+    // dir0 = port 0 -> 1, dir1 = port 1 -> 0; prev has port 0 imissed 100, so a delta would be
+    // 30_000 instead of 30_100
+    let v = view(Some(&prev()), &cur_with_port1(7, 3));
+    assert_eq!(nic_rx(&v, 0), (30_100, 10_000), "{v}");
+    assert_eq!(nic_rx(&v, 1), (7, 3), "{v}");
+}
+
+#[test]
+fn the_nic_rx_counters_do_not_need_a_previous_snapshot() {
+    let v = view(None, &cur_with_port1(7, 3));
+    assert_eq!(nic_rx(&v, 0), (30_100, 10_000), "{v}");
+    assert_eq!(nic_rx(&v, 1), (7, 3), "{v}");
+}
+
+#[test]
+fn the_nic_rx_counters_stay_cumulative_after_a_counter_restart() {
+    // prev is far ahead of cur (a restarted dpds): the rates and shares are clamped to 0, the
+    // cumulative counters are what cur says
+    let ahead = snapshot(
+        [
+            d(99_000_000_000, 9_000_000, 9_000_000, 0, 0, 0, 0),
+            d(99_000_000_000, 9_000_000, 9_000_000, 0, 0, 0, 0),
+        ],
+        [p(0, 0, 900_000, 800_000), p(0, 0, 700_000, 600_000)],
+    );
+    let v = view(Some(&ahead), &cur_with_port1(7, 3));
+    assert_eq!(nic_rx(&v, 0), (30_100, 10_000), "{v}");
+    assert_eq!(nic_rx(&v, 1), (7, 3), "{v}");
+}
+
+#[test]
+fn a_receiving_port_without_nic_stats_reports_zero() {
+    let mut c = cur_with_port1(7, 3);
+    c.eth.truncate(1); // only port 0 has stats
+    let v = view(Some(&prev()), &c);
+    assert_eq!(nic_rx(&v, 0), (30_100, 10_000), "{v}");
+    assert_eq!(nic_rx(&v, 1), (0, 0), "{v}");
+}
+
+/// `ring_snapshot(t)` with imissed and rx_nombuf per port: port p has imissed 11 * (p + 1) and
+/// rx_nombuf p + 5.
+fn ring_with_nic_drops(t_s: u64) -> dpds_controller::stats::Snapshot {
+    let mut s = ring_snapshot(t_s);
+    for (port, e) in s.eth.iter_mut().enumerate() {
+        e["imissed"] = json!(11 * (port as u64 + 1));
+        e["rx_nombuf"] = json!(port as u64 + 5);
+    }
+    s
+}
+
+#[test]
+fn every_link_of_a_ring_takes_the_counters_of_its_own_ingress_port() {
+    // a-to-b rx 0, b-to-c rx 1, c-to-a rx 2, loop rx 3 (tx ports 1, 2, 0, 3: a mapping to the
+    // egress port would give other numbers)
+    let v = view(Some(&ring_with_nic_drops(1)), &ring_with_nic_drops(2));
+    assert_eq!(nic_rx(&v, 0), (11, 5), "{v}");
+    assert_eq!(nic_rx(&v, 1), (22, 6), "{v}");
+    assert_eq!(nic_rx(&v, 2), (33, 7), "{v}");
+    assert_eq!(nic_rx(&v, 3), (44, 8), "{v}");
+}
+
+#[test]
+fn links_that_share_a_receiving_port_both_report_its_counters() {
+    // `loop` is port 3 -> 3; make `a-to-b` receive on port 3 as well (3 -> 1)
+    let mut s = ring_with_nic_drops(2);
+    s.ports["dir0_rx_port"] = json!(3);
+    s.ports["dir0_rx_name"] = json!("net_null0");
+    let v = view(Some(&ring_with_nic_drops(1)), &s);
+    assert_eq!(nic_rx(&v, 0), (44, 8), "a-to-b receives on port 3: {v}");
+    assert_eq!(nic_rx(&v, 3), (44, 8), "loop receives on port 3: {v}");
+    // the others are untouched, and the port itself is listed once with its own numbers
+    assert_eq!(nic_rx(&v, 1), (22, 6), "{v}");
+    assert_eq!(nic_rx(&v, 2), (33, 7), "{v}");
+    let ports = v["ports"].as_array().unwrap();
+    assert_eq!(ports.len(), 4, "{v}");
+    assert_eq!(ports[3]["imissed"], 44, "{v}");
+    assert_eq!(ports[3]["rx_nombuf"], 8, "{v}");
+}
+
+#[test]
+fn a_hairpin_reports_its_one_port_for_receive_and_transmit() {
+    // `loop` receives and sends on port 3; only its receive side is a counter of this spec
+    let v = view(None, &ring_with_nic_drops(2));
+    assert_eq!(nic_rx(&v, 3), (44, 8), "{v}");
+    assert_eq!(v["directions"][3]["counters"]["tx_drops"], 0, "{v}");
+}

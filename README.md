@@ -740,7 +740,10 @@ without internet access, means no notice.
   with `age_ms` and `stale`. `elapsed_ms` is the time since the run started in whole milliseconds,
   read from the controller's monotonic clock, so a client never compares its own clock with the
   controller's. It keeps counting while the run goes on, is frozen at the stop and is absent before
-  any run; a new run restarts it near 0.
+  any run; a new run restarts it near 0. A direction's `counters` also carry `nic_rx_imissed` and
+  `nic_rx_nombuf`, the cumulative `imissed` and `rx_nombuf` of its receiving port (0 without NIC
+  statistics). Two links that share a receiving port (a hairpin of one port) both report that
+  port's counters, unsplit.
 - **Chart history** (`GET /api/stats/history`, optionally with `?since_ms=<t>`): the answer is `{started_at, run_id,
   links, samples}`. `samples` has, per link index (the order of the start body), the series of the
   run, oldest first. Each sample is `{t_ms, rx_gbps, tx_gbps, rx_mpps, tx_mpps, loss_pct,
@@ -752,7 +755,12 @@ without internet access, means no notice.
   of milliseconds), and a bad value or any other query parameter is a 400. `run_id` is one more
   with every new run the controller sees and null before any run; `links` is
   `[{name, ingress, egress}]` of that run in link order, `[]` before any run, so a client can title
-  the charts of a finished run. A client that sees a new `run_id` starts over. The history is
+  the charts of a finished run. The answer also has `totals`, per link index (like `samples`) an object
+  of `rx_pkts`, `loss_drops`, `limiter_drops`, `buffer_full_drops`, `nic_tx_drops`,
+  `nic_rx_imissed` and `nic_rx_nombuf`: the cumulative counters since the `dpds` process started, taken from the last
+  poll of the run (not from the newest once-a-second sample), so a finished run's drops by cause
+  stay readable. `nic_tx_drops` is `counters.tx_drops` of `GET /api/stats`. `totals` is in every
+  answer, also with `since_ms`, and is the empty object `{}` before any run. A client that sees a new `run_id` starts over. The history is
   kept after the stop (the final charts stay readable), cleared at the next start and lost when
   the controller restarts, as it lives in memory only.
 - **Frontend**: `http://<host>:<controller port>/`, served by the controller itself. Pages for the

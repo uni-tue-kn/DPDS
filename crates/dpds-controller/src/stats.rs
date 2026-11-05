@@ -48,6 +48,11 @@ pub struct Counters {
     pub tx_pkts: u64,
     pub tx_sent: u64,
     pub tx_drops: u64,
+    /// Cumulative `imissed` of the receiving port; links that share a receiving port (a
+    /// hairpin of one port) both report the port's counter.
+    pub nic_rx_imissed: u64,
+    /// Cumulative `rx_nombuf` of the receiving port, shared like `nic_rx_imissed`.
+    pub nic_rx_nombuf: u64,
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -150,6 +155,33 @@ impl HistorySample {
     }
 }
 
+/// A link's cumulative counters since the `dpds` process started, as of the last poll of the run.
+#[derive(Debug, Clone, Copy, Serialize, ToSchema)]
+pub struct HistoryTotals {
+    pub rx_pkts: u64,
+    pub loss_drops: u64,
+    pub limiter_drops: u64,
+    pub buffer_full_drops: u64,
+    /// `counters.tx_drops` of `/api/stats`.
+    pub nic_tx_drops: u64,
+    pub nic_rx_imissed: u64,
+    pub nic_rx_nombuf: u64,
+}
+
+impl From<&Counters> for HistoryTotals {
+    fn from(c: &Counters) -> HistoryTotals {
+        HistoryTotals {
+            rx_pkts: c.rx_pkts,
+            loss_drops: c.loss_drops,
+            limiter_drops: c.limiter_drops,
+            buffer_full_drops: c.buffer_full_drops,
+            nic_tx_drops: c.tx_drops,
+            nic_rx_imissed: c.nic_rx_imissed,
+            nic_rx_nombuf: c.nic_rx_nombuf,
+        }
+    }
+}
+
 /// A link of the run a history belongs to, to title its charts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct HistoryLink {
@@ -171,6 +203,9 @@ pub struct HistoryView {
     /// Per link index (in the order of the start body), the samples with `t_ms` above the
     /// request's `since_ms`, oldest first.
     pub samples: BTreeMap<String, Vec<HistorySample>>,
+    /// Per link index, the cumulative counters of the newest successful poll of the run; kept
+    /// after the stop, `{}` before any run.
+    pub totals: BTreeMap<String, HistoryTotals>,
 }
 
 /// Where a clamped percentile lies: below or above the histogram range.
@@ -374,6 +409,7 @@ pub fn compute_stats(prev: Option<&Snapshot>, cur: &Snapshot) -> StatsView {
             let rx_port = uint(&cur.ports, &format!("dir{d}_rx_port")).unwrap_or(0) as usize;
             let tx_port = uint(&cur.ports, &format!("dir{d}_tx_port")).unwrap_or(0) as usize;
             let delay_stats = delay_stats_on(&cur.ports, d);
+            let rx_eth = cur.eth.get(rx_port);
             let delay = |key: &str| if delay_stats { num(c, key) } else { None };
             let mut s = DirectionStats {
                 dir: d as u32,
@@ -410,6 +446,8 @@ pub fn compute_stats(prev: Option<&Snapshot>, cur: &Snapshot) -> StatsView {
                     tx_pkts: u(c, "tx_pkts"),
                     tx_sent: u(c, "tx_sent"),
                     tx_drops: u(c, "tx_drops"),
+                    nic_rx_imissed: rx_eth.map_or(0, |e| u(e, "imissed")),
+                    nic_rx_nombuf: rx_eth.map_or(0, |e| u(e, "rx_nombuf")),
                 },
             };
             let Some(p) = prev else { return s };
