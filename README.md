@@ -386,6 +386,11 @@ The config is a 10 ms normally distributed delay with correlation, no rate limit
 mbufs (about 1.8 GiB) per link; to use such a config here, raise `-m` accordingly. Stop with
 `Ctrl-C`.
 
+- **Histograms**: a link entry may have `"histogram"` (delay) and `"iat_histogram"` (IAT), each
+  `{"bins": 1..4096, "lo_ns": ..., "hi_ns": ...}` with every field optional (`lo_ns` >= 0, `lo_ns` < `hi_ns`).
+  An omitted field takes the default: for the delay histogram the automatic range of the config, for the
+  IAT histogram `lo_ns` 0, `hi_ns` `4 * 1e9 / initialization_rate_pps`, 256 bins. The controller sets both
+  from the optional `histogram` / `iat_histogram` of a link's config.
 - **Pools**: every link has its own mbuf pool on the socket of its ingress port.
   A port that is only an egress still has an RX ring that is filled, so its
   descriptors are added to the pool of the link that transmits on it.
@@ -510,7 +515,7 @@ Build with `--features telemetry` to register the commands:
 | `/dpds/stats,<dir>` | Packet counters of link `<dir>` (its index in the [links file](#several-links-in-one-process---links); 0 or 1 with `--config*`) since start (`rx_pkts`, `dpds_rejects` and its causes `loss_drops` / `limiter_drops` / `buffer_full_drops`, `pops`, `tx_sent`, `tx_drops`, `out_of_order`, `frame_sizes` ...), gauges, delay statistics (`delay_mean_ns`, `delay_std_ns`, `delay_min_ns`, `delay_max_ns`, `lateness_mean_ns`, `lateness_max_ns`; absent for a link with `delay_stats` off), first-loss result. |
 | `/dpds/epochs,<dir>` | The same per epoch (a burst of traffic, closed after 500 ms of silence). |
 | `/dpds/delay_hist,<dir>[,<page>]` | Cumulative histogram of the intended delay of the accepted packets, up to 4096 bins, read in pages of at most 500 bins (`<page>` from 0, default 0; each page has `lo_ns`, `bin_ns`, `num_bins`, `underflow`, `overflow`, `page`, `first_bin` and its `bins`; empty page 0 for a link with `delay_stats` off). See [docs/TELEMETRY.md](docs/TELEMETRY.md). |
-| `/dpds/iat_hist,<dir>[,<page>]` | Cumulative histogram of the IAT of link `<dir>`: the gap between the send times of consecutive packets that left the buffer (the departure gap `dpds` schedules, not a measured RX gap), exactly one `lo_ns` ... `bins` page like `/dpds/delay_hist`, always 256 bins over `[0, 4 / initialization_rate_pps)` (4 mean gaps at the link's expected rate); empty for a link with `delay_stats` off. See [docs/TELEMETRY.md](docs/TELEMETRY.md). |
+| `/dpds/iat_hist,<dir>[,<page>]` | Cumulative histogram of the IAT of link `<dir>`: the gap between the send times of consecutive packets that left the buffer (the departure gap `dpds` schedules, not a measured RX gap), exactly one `lo_ns` ... `bins` page like `/dpds/delay_hist`, by default 256 bins over `[0, 4 / initialization_rate_pps)` (4 mean gaps at the link's expected rate), or the link's `iat_histogram` (`bins`, `lo_ns`, `hi_ns`, each optional); empty for a link with `delay_stats` off. See [docs/TELEMETRY.md](docs/TELEMETRY.md). |
 | `/dpds/ports` | Port names, descriptor ring sizes (applied and requested), the number of links, and per link its name, ports (ids and device names), lcore, config path, pool size, free path and whether its delay statistics are on (`3 + 5 * ports + 10 * links` keys, at most 256). |
 | `/nic/hw_first_loss,<port>` | First NIC hardware drop (`imissed`, `rx_nombuf`, ...) seen by the main lcore. |
 | `/nic/epochs,<port>` | Per-epoch NIC `rx_packets` / `imissed` / `rx_port_discards`. |
@@ -815,7 +820,9 @@ without internet access, means no notice.
 - **IAT histogram** (`GET /api/stats/{dir}/iat_histogram`): the histogram of the gap between the
   send times `dpds` schedules for consecutive packets of the link (the departure gap, exact per
   packet; recorded only for a link with delay statistics), 256 bins over `[0, hi)` with
-  `hi = 4 * 1e9 / initialization_rate_pps` ns. The reply has the shape of the delay histogram's
+  `hi = 4 * 1e9 / initialization_rate_pps` ns by default; the optional `iat_histogram` of a link
+  config (`{bins, lo_ns, hi_ns}`, the same shape and validation as `histogram`, every field optional,
+  an omitted one keeps this default; errors say "IAT histogram") changes that. The reply has the shape of the delay histogram's
   (`lo_ns`, `bin_ns`, `bins`, `underflow`, `overflow`, `edges_ns`, `count`, `percentiles`) since the
   start, without `expected*` and `window_s`; 404 without data or for a link without delay
   statistics. Like the delay histogram it is answered from a copy after the stop (refreshed while

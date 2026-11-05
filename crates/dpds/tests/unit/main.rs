@@ -185,6 +185,7 @@ mod quit;
 mod readme;
 mod setup;
 mod spec51;
+mod spec53;
 mod stats;
 mod support;
 mod worker;

@@ -294,6 +294,7 @@ fn shorthand_links(cli: &dpds::cli::Cli, probed: &[(String, u16)]) -> Result<Lay
             config: Config::from_file(path).map_err(Box::<dyn Error>::from)?,
             lcore: None,
             histogram: Default::default(),
+            iat_histogram: Default::default(),
             delay_stats: true,
         });
     }
@@ -354,7 +355,8 @@ fn run() -> Result<()> {
         ranges.push((
             HistRange::from_spec(&dir.config, &dir.histogram)
                 .map_err(|e| format!("{label}: {e}"))?,
-            HistRange::iat_from_config(&dir.config),
+            HistRange::iat_from_spec(&dir.config, &dir.iat_histogram)
+                .map_err(|e| format!("{label}: IAT histogram: {e}"))?,
             dir.delay_stats,
         ));
     }

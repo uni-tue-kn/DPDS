@@ -7,7 +7,7 @@ use std::time::Duration;
 use dpds_core::Config;
 use serde_json::{json, Value};
 
-use crate::dto::{ConfigDto, DtoError};
+use crate::dto::DtoError;
 use crate::host::is_vdev;
 use crate::lcores::DirectionPlan;
 use crate::model::Link;
@@ -72,8 +72,8 @@ pub fn eal_argv(i: &EalInput) -> Vec<String> {
 }
 
 /// The `--links` file (v2): one entry per link with its `dpds_core::Config` JSON and the
-/// explicit lcore of its direction plan; `histogram` only when the link has histogram
-/// settings and `delay_stats: false` only when delay statistics are off.
+/// explicit lcore of its direction plan; `histogram` and `iat_histogram` only when the link has
+/// them and `delay_stats: false` only when delay statistics are off.
 pub fn links_file_json(links: &[Link], directions: &[DirectionPlan]) -> Result<Value, DtoError> {
     let mut out = Vec::with_capacity(links.len());
     for l in links {
@@ -91,16 +91,17 @@ pub fn links_file_json(links: &[Link], directions: &[DirectionPlan]) -> Result<V
         if l.config.delay_stats == Some(false) {
             entry["delay_stats"] = json!(false);
         }
-        if l.config.histogram.is_some() {
-            entry["histogram"] = histogram_json(&l.config);
+        for (key, h) in [
+            ("histogram", &l.config.histogram),
+            ("iat_histogram", &l.config.iat_histogram),
+        ] {
+            if let Some(h) = h {
+                entry[key] = serde_json::to_value(h).unwrap_or_else(|_| json!({}));
+            }
         }
         out.push(entry);
     }
     Ok(json!({ "links": out }))
-}
-
-fn histogram_json(c: &ConfigDto) -> Value {
-    serde_json::to_value(c.histogram.clone().unwrap_or_default()).unwrap_or_else(|_| json!({}))
 }
 
 /// How long `dpds` may need to drain: the longest `mean + 6 std` (plus

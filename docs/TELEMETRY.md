@@ -56,7 +56,7 @@ echo '/dpds/stats,0' | dpdk-telemetry.py -f <file-prefix>
 | `/dpds/stats,<dir>` | Counters of link `<dir>`, cumulative since start, the delay statistics, plus that link's whole-run first-loss result. |
 | `/dpds/epochs,<dir>` | The same counters per epoch (deltas) and gauges per epoch (maxima), plus per-epoch first loss, for link `<dir>`. |
 | `/dpds/delay_hist,<dir>[,<page>]` | One page (500 bins) of the cumulative histogram of the intended delay of link `<dir>`; `,<dir>` alone is page 0. |
-| `/dpds/iat_hist,<dir>[,<page>]` | Cumulative histogram of the gaps between the send times of consecutive packets of link `<dir>` (256 bins, one page), same fields as `/dpds/delay_hist`. |
+| `/dpds/iat_hist,<dir>[,<page>]` | Cumulative histogram of the gaps between the send times of consecutive packets of link `<dir>` (256 bins by default, one page), same fields as `/dpds/delay_hist`. |
 | `/dpds/ports` | Static: device name and descriptor ring sizes of each port, the number of links, and the layout of each link. |
 | `/nic/hw_first_loss,<port>` | First NIC hardware drop seen by the main lcore on port `<port>` (a DPDK port id, any port of the links). |
 | `/nic/epochs,<port>` | Per-epoch NIC `rx_packets` / `imissed` / `rx_port_discards` of port `<port>`. |
@@ -303,7 +303,8 @@ The inter-arrival time (IAT) histogram of link `<dir>`: for every packet popped 
 `send_time - previous send_time` in ns (the send times of `dpds`' own schedule, the same ones
 the pop path collects for the lateness; the previous one is carried across bursts; a negative gap, possible
 with reordering, counts as 0). Linear bins over `[0, 4 * 1e9 / initialization_rate_pps)`, 256
-of them, plus `underflow` (never) and `overflow`. Fields, paging, bad-param and delay-statistics-off behaviour are those of
+of them (the defaults; the link's `iat_histogram` in the `--links` file, `bins`, `lo_ns`, `hi_ns`, each
+optional, overrides any of them, with the validation of `histogram`), plus `underflow` (never) and `overflow`. Fields, paging, bad-param and delay-statistics-off behaviour are those of
 `/dpds/delay_hist`; there is only page 0.
 
 ## First-loss reasons

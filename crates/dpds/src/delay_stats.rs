@@ -61,8 +61,8 @@ pub enum Bin {
     Overflow,
 }
 
-/// The per-link `"histogram"` entry of the links file: every field
-/// optional, a missing one takes the automatic value.
+/// The per-link `"histogram"` (or `"iat_histogram"`) entry of the links file: every
+/// field optional, a missing one takes the automatic value.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct HistogramSpec {
     pub bins: Option<usize>,
@@ -219,8 +219,26 @@ impl HistRange {
     /// `lo_ns` / `hi_ns` the automatic one of `config`. Explicit values are
     /// used as given (the minimum width applies to the automatic range only).
     pub fn from_spec(config: &Config, spec: &HistogramSpec) -> Result<HistRange, HistogramError> {
+        HistRange::from_spec_in(spec, automatic_window(config))
+    }
+
+    /// Like [`HistRange::from_spec`] for the IAT histogram: a missing `lo_ns` is 0, a missing
+    /// `hi_ns` is `4 * 1e9 / initialization_rate_pps` (the range of
+    /// [`HistRange::iat_from_config`]), a missing `bins` is 256.
+    pub fn iat_from_spec(
+        config: &Config,
+        spec: &HistogramSpec,
+    ) -> Result<HistRange, HistogramError> {
+        let hi = 4.0 * 1e9 / config.delayer.initialization_rate_pps;
+        HistRange::from_spec_in(spec, (0.0, hi))
+    }
+
+    /// `spec` over the default window `(auto_lo, auto_hi)`.
+    fn from_spec_in(
+        spec: &HistogramSpec,
+        (auto_lo, auto_hi): (f64, f64),
+    ) -> Result<HistRange, HistogramError> {
         spec.validate()?;
-        let (auto_lo, auto_hi) = automatic_window(config);
         let lo = spec.lo_ns.unwrap_or(auto_lo);
         let hi = spec.hi_ns.unwrap_or(auto_hi);
         if lo >= hi {

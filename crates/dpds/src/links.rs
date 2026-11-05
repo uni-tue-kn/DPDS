@@ -7,6 +7,7 @@
 //!     "config": { <dpds_core::Config> },
 //!     "lcore": 3,                                                (optional)
 //!     "histogram": {"bins": 100, "lo_ns": 0, "hi_ns": 2e6},      (optional)
+//!     "iat_histogram": {"bins": 100, "lo_ns": 0, "hi_ns": 256},  (optional, like histogram)
 //!     "delay_stats": true },                                     (optional)
 //!   { "name": "loop", "ingress": "net_null0", "egress": "net_null0", "config": { <Config> } }
 //! ] }
@@ -53,6 +54,8 @@ pub struct LinkSpec {
     pub lcore: Option<u32>,
     /// `HistogramSpec::default()` if the file has none.
     pub histogram: HistogramSpec,
+    /// The IAT histogram, `HistogramSpec::default()` if the file has none.
+    pub iat_histogram: HistogramSpec,
     /// Whether the link records delay statistics (`true` if the file has none).
     pub delay_stats: bool,
 }
@@ -89,6 +92,7 @@ struct RawLink {
     config: Config,
     lcore: Option<u32>,
     histogram: Option<RawHistogram>,
+    iat_histogram: Option<RawHistogram>,
     delay_stats: Option<bool>,
 }
 
@@ -147,16 +151,21 @@ pub fn parse_links(json: &str) -> Result<Vec<LinkSpec>, LinksError> {
             }
         }
 
-        let histogram = raw
-            .histogram
-            .map_or_else(HistogramSpec::default, |h| HistogramSpec {
+        let spec_of = |h: Option<RawHistogram>| {
+            h.map_or_else(HistogramSpec::default, |h| HistogramSpec {
                 bins: h.bins,
                 lo_ns: h.lo_ns,
                 hi_ns: h.hi_ns,
-            });
+            })
+        };
+        let histogram = spec_of(raw.histogram);
         histogram
             .validate()
             .map_err(|e| LinksError(format!("link '{name}': {e}")))?;
+        let iat_histogram = spec_of(raw.iat_histogram);
+        iat_histogram
+            .validate()
+            .map_err(|e| LinksError(format!("link '{name}': IAT histogram: {e}")))?;
 
         if let Some(lcore) = raw.lcore {
             if !lcores.insert(lcore) {
@@ -174,6 +183,7 @@ pub fn parse_links(json: &str) -> Result<Vec<LinkSpec>, LinksError> {
             config: raw.config,
             lcore: raw.lcore,
             histogram,
+            iat_histogram,
             delay_stats: raw.delay_stats.unwrap_or(true),
         });
     }
@@ -227,6 +237,7 @@ pub struct LinkDirection {
     pub tx_port: u16,
     pub config: Config,
     pub histogram: HistogramSpec,
+    pub iat_histogram: HistogramSpec,
     /// Whether the link records delay statistics.
     pub delay_stats: bool,
     /// The worker lcore that runs the link.
@@ -267,6 +278,7 @@ pub fn resolve_directions(
             tx_port: id_of(link, "egress", &link.egress)?,
             config: link.config,
             histogram: link.histogram,
+            iat_histogram: link.iat_histogram,
             delay_stats: link.delay_stats,
             lcore: 0,
         });

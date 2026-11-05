@@ -50,6 +50,7 @@ mod spec48;
 mod spec49;
 mod spec50;
 mod spec51;
+mod spec53;
 mod start_body;
 mod startup_errors;
 mod stateless;

@@ -110,11 +110,20 @@ pub struct HistogramDto {
 impl HistogramDto {
     /// 1 <= bins <= 4096, `lo_ns` and `hi_ns` finite and not negative, `lo_ns < hi_ns`.
     pub fn validate(&self) -> Result<(), DtoError> {
+        self.validate_as("histogram")
+    }
+
+    /// [`HistogramDto::validate`] for the IAT histogram (messages name "IAT histogram").
+    pub fn validate_iat(&self) -> Result<(), DtoError> {
+        self.validate_as("IAT histogram")
+    }
+
+    fn validate_as(&self, what: &str) -> Result<(), DtoError> {
         let bad = |m: String| Err(DtoError(m));
         if let Some(n) = self.bins {
             if !(1..=MAX_HISTOGRAM_BINS).contains(&n) {
                 return bad(format!(
-                    "histogram bins = {n}: must be between 1 and {MAX_HISTOGRAM_BINS}"
+                    "{what} bins = {n}: must be between 1 and {MAX_HISTOGRAM_BINS}"
                 ));
             }
         }
@@ -122,14 +131,14 @@ impl HistogramDto {
             if let Some(v) = v {
                 if !v.is_finite() || v < 0.0 {
                     return bad(format!(
-                        "histogram {name} = {v}: must be finite and not negative"
+                        "{what} {name} = {v}: must be finite and not negative"
                     ));
                 }
             }
         }
         if let (Some(lo), Some(hi)) = (self.lo_ns, self.hi_ns) {
             if lo >= hi {
-                return bad(format!("histogram lo_ns = {lo} must be below hi_ns = {hi}"));
+                return bad(format!("{what} lo_ns = {lo} must be below hi_ns = {hi}"));
             }
         }
         Ok(())
@@ -154,6 +163,10 @@ pub struct ConfigDto {
     pub seed: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub histogram: Option<HistogramDto>,
+    /// Optional IAT histogram settings, the same shape as `histogram`; omitted fields
+    /// keep the defaults (`lo_ns` 0, `hi_ns` 4e9 / `initialization_rate_pps`, 256 bins).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iat_histogram: Option<HistogramDto>,
     /// Record the intended delay, lateness and histogram of this direction (absent: on;
     /// off: `dpds` skips that work, counters and drop causes stay). Kept as sent, so the
     /// running configuration echoes the request.
@@ -268,6 +281,9 @@ impl ConfigDto {
         .map_err(|e| DtoError(e.to_string()))?;
         if let Some(h) = &self.histogram {
             h.validate()?;
+        }
+        if let Some(h) = &self.iat_histogram {
+            h.validate_iat()?;
         }
         Ok(config)
     }
