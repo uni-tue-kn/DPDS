@@ -806,25 +806,28 @@ without internet access, means no notice.
   indented `# run as root:` line and then one indented line per command, exactly as in the hint's
   `commands`; `dpds-controller check --json` carries the `commands` member. Host-wide hints: core
   isolation (`isolcpus`, `nohz_full`, `rcu_nocbs`), isolated cores, hugepages, NUMA locality, CPU
-  governor, NIC interrupts (`irq_affinity`), IOMMU, MTU, `vm.swappiness` and
-  `vm.zone_reclaim_mode`. For each PCI NIC of the configured links there are further hints:
+  governor, IOMMU, MTU, `vm.swappiness` and `vm.zone_reclaim_mode`. For each PCI NIC of the configured links there are further hints:
   Ethernet flow control (`flow_control:<pci>`, needs `ethtool`), PCIe MaxReadReq
   (`pcie_maxreadreq:<pci>`) and, for Mellanox NICs on `mlx5_core`, the port buffer
   (`port_buffer:<pci>`, needs `dcb` from the `iproute2` package) and the firmware settings
   (`firmware:<pci>`, needs `mstconfig` from the `mstflint` package; `mlxconfig` of the NVIDIA MFT
   works too). `GET /api/host/hints` serves the hints that depend on the host only and the frontend
   shows them on its Host hints page. `POST /api/host/hints` takes a start body, validated like the
-  start body (400 naming the field), and adds the link-dependent hints (NUMA locality, hugepages
-  for the links, NIC interrupts, host uplink, drain timeout, MTU and the per-NIC hints of the used
-  NICs); the frontend calls it with its current configuration. Warnings do not block the
+  start body (400 naming the field, 409 for a duplicate name or reused port), and adds the
+  link-dependent hints, which need the links to know the NICs (NUMA locality, hugepages for the
+  links, NIC interrupts (`irq_affinity`), host uplink, drain timeout, MTU and the per-NIC hints of
+  the used NICs); the frontend calls it with its current configuration. Warnings do not block the
   installation.
 - **Hint commands**: a hint that can be fixed has an optional `commands` array (omitted when
   empty): the exact shell commands an administrator runs as root to enable the tuning on this
   host, computed by the controller from what it read (netdev names, PCI addresses, interrupt
   numbers, core lists, page counts), with the real `/proc` and `/sys` paths. DPDS runs none of
-  them. They are `sysctl -w vm.swappiness=0` and `sysctl -w vm.zone_reclaim_mode=0`; one `echo
+  them. A command that writes to a file below `/proc` or `/sys` (the `echo ... >` ones) needs a
+  root shell (`sudo -i`) or the value piped to `sudo tee <file>`: `sudo echo ... > <file>` does not
+  work, because the calling shell opens the file, not sudo. They are `sysctl -w vm.swappiness=0` and `sysctl -w vm.zone_reclaim_mode=0`; one `echo
   <cores> > /proc/irq/<n>/smp_affinity_list` per NIC interrupt on an isolated core, moving it to
-  the housekeeping cores; `ethtool -A <netdev> rx off tx off` (plus `autoneg off` while
+  the non-isolated online cores of the NIC's NUMA node (all non-isolated online cores when that
+  node has none or is unknown; a NIC the host uses or DPDS cannot use is skipped and named); `ethtool -A <netdev> rx off tx off` (plus `autoneg off` while
   autonegotiation is on); `setpci -s <pci> CAP_EXP+8.w=5000:7000` for MaxReadReq 4096 B;
   `dcb buffer set dev <netdev> buffer-size all:0 <i>:<total>` for the port buffer, only when all
   priorities share one buffer and flow control is already off; `echo performance >
@@ -837,11 +840,16 @@ without internet access, means no notice.
   reset that DPDS never runs (on a VM, from the hypervisor host); MaxReadReq read inside a VM is
   the hypervisor's copy of the register, so verify it on the hypervisor host. A missing tool is an
   `INFO` hint that names its package and has the command `apt install <package>`. No command is
-  suggested for a NIC the host uses or that DPDS cannot use (the detail says why), for MaxReadReq
-  of a virtual function, or for a netdev whose name starts with `-`. The controller only runs
-  read-only queries (`ethtool --json -a`, `dcb -j buffer show`, `mstconfig -j ... q`), each with a
-  30 s timeout, and none while an emulation is starting, running or stopping: those hints say "not
-  checked while an emulation is running".
+  suggested for a NIC the host uses or that DPDS cannot use (the detail says why; the `apt install`
+  of a missing tool stays), for MaxReadReq of a virtual function, or for a netdev whose name is not
+  safe to put into a shell command (only letters, digits, `_`, `.`, `@` and `-`, not starting with
+  `-`; no tool runs for it either). The controller only runs read-only queries (`ethtool --json
+  -a`, `dcb -j buffer show`, `mstconfig -j ... q`), each in its own process group with a timeout
+  of at most 30 s and at most 4 MiB of output per stream. The queries of one request share a
+  budget of 60 s; once it is used up the remaining hints say "not checked (time budget of 60 s
+  used up)". They run under the same lock as start and stop, so a start waits for a running query
+  (60 s at most), and none run while an emulation is starting, running or stopping: those hints
+  say "not checked while an emulation is running".
 - **Kernel command line** (`rcu_nocb_poll` and boot-time 1 GiB hugepages, `default_hugepagesz=1G
   hugepagesz=1G hugepages=<n>`) is checked next to the core isolation parameters. These are
   hint-only: the detail names the parameters to add, and there are no commands.

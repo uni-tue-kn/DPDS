@@ -20,7 +20,9 @@
 //!     `sysctl -w vm.zone_reclaim_mode=0`
 //!   - `irq_affinity`, one per NIC interrupt on an isolated core (`isolated` and `nohz_full`),
 //!     ascending by IRQ: `echo <cpulist> > /proc/irq/<n>/smp_affinity_list`, the list being the
-//!     online cores minus the isolated ones (any valid cpulist spelling)
+//!     non-isolated online cores of the NUMA node of the interrupt's NIC when that node has any,
+//!     else all non-isolated online cores (spec 33b; any valid cpulist spelling). NICs that are
+//!     uplinks or not `dpds_usable` are skipped, the detail names them.
 //!   - `governor`, one per core, ascending: `echo performance >
 //!     /sys/devices/system/cpu/cpu<n>/cpufreq/scaling_governor` for the workers and the isolated
 //!     cores that list `performance`
@@ -80,6 +82,33 @@
 //! path. The body of `POST /api/host/hints` is validated like the start body: 400 naming the
 //! field (the 409 rules of start, for example an uplink port, stay hints).
 //!
+//! ## Spec 33b (fixes from the review of spec 33)
+//!
+//! - Item 2: a netdev name that appears in a command or a tool argv matches
+//!   `^[A-Za-z0-9_.@-]+$` and does not start with `-`. For any other name neither `ethtool` nor
+//!   `dcb` runs for the NIC, `flow_control` and `port_buffer` have no commands and say "the
+//!   interface name <escaped> is not safe to put into a shell command" (control characters as
+//!   `\x1b`); the commands that use the PCI address stay. `dpds-controller check` prints no raw
+//!   control character in a hint line (escaped as `\xNN`). What `mstconfig` does for such a NIC is
+//!   not pinned.
+//! - Item 3: `SystemExec::run` puts the child into its own process group, kills the whole group
+//!   when the timeout runs out, joins the reader threads only up to the deadline (a background
+//!   process that keeps a pipe open ends the call with `TimedOut` and is killed), and fails with
+//!   `ErrorKind::InvalidData` when a stream exceeds 4 MiB (exactly 4 MiB is fine).
+//! - Item 4: OpenAPI documents the 409 of `POST /api/host/hints`; an upper-case PCI address in the
+//!   body gets the same lookups (NUMA node, hugepage path) as the lower-case one.
+//! - Item 6: a blocked NIC (uplink, not usable) keeps `apt install <package>` of a missing tool;
+//!   only tuning commands are removed, and only then does the detail say "no command is
+//!   suggested for this NIC". The dcb install hint says "iproute2 (5.11 or later provides dcb)".
+//! - Item 7: the tool queries of one request share a budget of 60 s. The seam: `Exec` has a
+//!   provided method `fn now(&self) -> Instant` (default `Instant::now()`), and every time the
+//!   controller reads for the budget goes through it (`ctx.roots.exec.now()`); `FakeExec`
+//!   overrides it with a simulated clock that only moves when a call registered with
+//!   `FakeExec::takes` runs. A call gets `min(30 s, remaining)` as its timeout; when nothing
+//!   remains no tool runs and the hint is info, has no commands and says "not checked (time
+//!   budget of 60 s used up)". The tool queries run while holding the lifecycle lock (the one
+//!   start and stop take), after the emulation state is read again under that lock.
+//!
 //! ## Sources
 //!
 //! No source file executes a mutating argv (`ethtool -A`, `... set`), writes below `/proc` or
@@ -89,6 +118,9 @@
 use std::fs;
 use std::io::ErrorKind;
 use std::path::PathBuf;
+use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::common::*;
@@ -113,6 +145,10 @@ fn text(hints: &Value, id: &str) -> String {
         h["suggestion"].as_str().unwrap_or_default()
     )
     .to_lowercase()
+}
+
+fn h_level<'a>(hints: &'a Value, id: &str) -> &'a str {
+    hint(hints, id)["level"].as_str().expect("a hint level")
 }
 
 fn has_hint(hints: &Value, id: &str) -> bool {
@@ -262,7 +298,8 @@ fn a_nic_irq_on_an_isolated_core_warns_and_names_the_commands() {
     assert_level(&h, "irq_affinity", "warn", "warn");
     let cmds = commands_of(&h, "irq_affinity");
     assert_eq!(cmds.len(), 1, "{cmds:?}");
-    assert_eq!(irq_command(&cmds[0]), (101, vec![0, 1, 4, 5]));
+    // NIC0 sits on node 0 (cores 0-3, isolated 2-3): the housekeeping cores of that node
+    assert_eq!(irq_command(&cmds[0]), (101, vec![0, 1]));
     assert!(detail_has(&h, "irq_affinity", "101"), "names the irq: {h}");
     assert!(!detail_has(&h, "irq_affinity", "irq 100"), "{h}");
 }
@@ -282,13 +319,13 @@ fn the_irq_hint_reads_the_smp_affinity_when_there_is_no_effective_list() {
 #[test]
 fn only_the_irqs_of_the_used_nics_count() {
     let host = FakeHost::bare_metal();
-    host.irq_effective(120, "2"); // INTEL, on an isolated core
+    host.irq_effective(110, "2"); // NIC1, on an isolated core
     let h = hints_json(&host, &link_on(NIC0));
     assert_level(&h, "irq_affinity", "ok", "ok");
-    let h = hints_json(&host, &link_on(INTEL));
+    let h = hints_json(&host, &link_on(NIC1));
     assert_level(&h, "irq_affinity", "warn", "warn");
     // the egress NIC counts as well
-    let h = hints_json(&host, &setup(vec![link("l", NIC0, INTEL, None)]));
+    let h = hints_json(&host, &setup(vec![link("l", NIC0, NIC1, None)]));
     assert_level(&h, "irq_affinity", "warn", "warn");
 }
 
@@ -312,7 +349,8 @@ fn nohz_full_cores_count_as_isolated_too() {
     assert_level(&h, "irq_affinity", "warn", "warn");
     let cmds = commands_of(&h, "irq_affinity");
     assert_eq!(cmds.len(), 1, "{cmds:?}");
-    assert_eq!(irq_command(&cmds[0]), (101, vec![0, 1, 4, 5, 6, 7]));
+    // node 0 is cores 0-3, of which 2-3 are nohz_full
+    assert_eq!(irq_command(&cmds[0]), (101, vec![0, 1]));
 }
 
 #[test]
@@ -325,7 +363,7 @@ fn a_running_irqbalance_is_named_in_the_detail() {
 }
 
 #[test]
-fn the_irq_commands_move_only_the_irqs_on_isolated_cores_to_the_housekeeping_cores() {
+fn the_irq_commands_move_only_the_irqs_on_isolated_cores_to_the_housekeeping_cores_of_the_node() {
     let host = FakeHost::bare_metal(); // isolated 2-3,6-7 of 8 CPUs
     host.irq_effective(100, "2");
     host.irq_effective(101, "3");
@@ -335,8 +373,8 @@ fn the_irq_commands_move_only_the_irqs_on_isolated_cores_to_the_housekeeping_cor
     let parsed: Vec<(u32, Vec<u32>)> = cmds.iter().map(|c| irq_command(c)).collect();
     assert_eq!(
         parsed,
-        [(100, vec![0, 1, 4, 5]), (101, vec![0, 1, 4, 5])],
-        "the NIC's IRQs on isolated cores, ascending, no others: {cmds:?}"
+        [(100, vec![0, 1]), (101, vec![0, 1])],
+        "the NIC's IRQs on isolated cores, ascending, no others, to node 0's housekeeping cores: {cmds:?}"
     );
     for c in &cmds {
         assert!(
@@ -356,14 +394,122 @@ fn the_irq_commands_move_only_the_irqs_on_isolated_cores_to_the_housekeeping_cor
 }
 
 #[test]
-fn the_housekeeping_cores_are_the_online_cores_minus_the_isolated_ones() {
+fn the_target_is_the_non_isolated_online_cores_of_the_nics_node() {
+    // node 1 is cores 4-7; core 4 is isolated and core 7 is offline
     let host = FakeHost::bare_metal();
-    host.cpus(8, Some("1-2"), &[(0, "0-3"), (1, "4-7")]);
-    host.irq_effective(110, "1");
+    host.cpus(7, Some("2-3,4"), &[(0, "0-3"), (1, "4-7")]);
+    host.irq_effective(110, "4");
     let h = hints_json(&host, &link_on(NIC1));
     let cmds = commands_of(&h, "irq_affinity");
     assert_eq!(cmds.len(), 1, "{cmds:?}");
-    assert_eq!(irq_command(&cmds[0]), (110, vec![0, 3, 4, 5, 6, 7]));
+    assert_eq!(irq_command(&cmds[0]), (110, vec![5, 6]));
+}
+
+#[test]
+fn each_nic_gets_the_housekeeping_cores_of_its_own_node() {
+    let host = FakeHost::bare_metal(); // node 0: 0-3, node 1: 4-7, isolated 2-3,6-7
+    host.irq_effective(101, "3"); // NIC0, node 0
+    host.irq_effective(110, "6"); // NIC1, node 1
+    host.irq_effective(111, "7");
+    let h = hints_json(&host, &setup(vec![link("l", NIC0, NIC1, None)]));
+    let parsed: Vec<(u32, Vec<u32>)> = commands_of(&h, "irq_affinity")
+        .iter()
+        .map(|c| irq_command(c))
+        .collect();
+    assert_eq!(
+        parsed,
+        [(101, vec![0, 1]), (110, vec![4, 5]), (111, vec![4, 5])]
+    );
+}
+
+#[test]
+fn a_node_without_housekeeping_cores_falls_back_to_all_non_isolated_online_cores() {
+    // all of node 1 (4-7) is isolated
+    let host = FakeHost::bare_metal();
+    host.cpus(8, Some("2-3,4-7"), &[(0, "0-3"), (1, "4-7")]);
+    host.irq_effective(110, "5");
+    host.irq_effective(111, "0"); // already on a housekeeping core
+    let h = hints_json(&host, &link_on(NIC1));
+    let cmds = commands_of(&h, "irq_affinity");
+    assert_eq!(cmds.len(), 1, "{cmds:?}");
+    assert_eq!(irq_command(&cmds[0]), (110, vec![0, 1]));
+}
+
+#[test]
+fn without_numa_information_the_target_is_all_non_isolated_online_cores() {
+    // the VM has no NUMA node for its NIC and no `node` directory; isolated 2-3 of 4 cores
+    let host = FakeHost::vm();
+    host.nic_irqs("0000:00:05.0", &[(30, "2"), (31, "0")]);
+    let h = hints_json(&host, &link_on("0000:00:05.0"));
+    let cmds = commands_of(&h, "irq_affinity");
+    assert_eq!(cmds.len(), 1, "{cmds:?}");
+    assert_eq!(irq_command(&cmds[0]), (30, vec![0, 1]));
+    // a NIC whose numa_node is -1 (unknown) is no different
+    let host = FakeHost::bare_metal();
+    host.write("sys/bus/pci/devices/0000:65:00.0/numa_node", "-1\n");
+    host.irq_effective(110, "6");
+    let h = hints_json(&host, &link_on(NIC1));
+    let cmds = commands_of(&h, "irq_affinity");
+    assert_eq!(cmds.len(), 1, "{cmds:?}");
+    assert_eq!(irq_command(&cmds[0]), (110, vec![0, 1, 4, 5]));
+}
+
+#[test]
+fn nics_that_are_uplinks_or_not_usable_are_skipped_and_named() {
+    // NIC1 has an address (uplink), INTEL is bound to `ice` (not usable); both have an interrupt
+    // on an isolated core. NIC0, which is usable, has one too
+    let host = FakeHost::bare_metal();
+    host.addr("ens2f0", "192.168.7.7");
+    host.irq_effective(101, "3");
+    host.irq_effective(110, "6");
+    host.irq_effective(120, "2");
+    let h = hints_json(
+        &host,
+        &setup(vec![
+            link("a", NIC0, NIC1, None),
+            link("b", INTEL, NIC0, None),
+        ]),
+    );
+    let cmds = commands_of(&h, "irq_affinity");
+    assert_eq!(
+        cmds.iter().map(|c| irq_command(c)).collect::<Vec<_>>(),
+        [(101, vec![0, 1])],
+        "only the interrupt of the usable NIC is moved: {cmds:?}"
+    );
+    for (netdev, pci) in [("ens2f0", NIC1), ("enp179s0", INTEL)] {
+        assert!(
+            detail_has(&h, "irq_affinity", netdev) || detail_has(&h, "irq_affinity", pci),
+            "the detail names the skipped NIC {netdev}: {h}"
+        );
+    }
+    for irq in ["110", "120"] {
+        assert!(
+            !commands_of(&h, "irq_affinity")
+                .iter()
+                .any(|c| c.contains(&format!("/proc/irq/{irq}/"))),
+            "{irq}"
+        );
+    }
+}
+
+#[test]
+fn when_every_used_nic_is_skipped_there_is_no_irq_command_and_the_detail_names_them() {
+    let host = FakeHost::bare_metal();
+    host.addr("ens2f0", "192.168.7.7");
+    host.irq_effective(110, "6");
+    host.irq_effective(120, "2");
+    for (pci, name) in [(NIC1, "ens2f0"), (INTEL, "enp179s0")] {
+        let h = hints_json(&host, &link_on(pci));
+        assert_no_commands(&h, "irq_affinity");
+        assert!(
+            rank(h_level(&h, "irq_affinity")) <= rank("info"),
+            "nothing to do for a NIC DPDS cannot use: {h}"
+        );
+        assert!(
+            detail_has(&h, "irq_affinity", name) || detail_has(&h, "irq_affinity", pci),
+            "{name}: {h}"
+        );
+    }
 }
 
 // ---- Ethernet flow control -------------------------------------------------------------------
@@ -1878,6 +2024,772 @@ fn system_exec_kills_a_tool_that_outlasts_its_timeout() {
         gone
     });
     assert!(gone, "process {pid} still exists after the timeout");
+}
+
+// ---- spec 33b item 2: netdev names that are unsafe in a shell command -------------------------
+
+/// Names that do not match `^[A-Za-z0-9_.@-]+$` or start with `-`. The kernel refuses some of
+/// them (whitespace, `:`), but sysfs of a hostile or odd host may still list them.
+const UNSAFE_NETDEVS: [&str; 18] = [
+    ";reboot;",
+    "$(x)",
+    "a\"b",
+    "a*b",
+    "a\u{1b}[31mb",
+    "-evil",
+    "a'b",
+    "a&b",
+    "a>b",
+    "a|b",
+    "a`b`",
+    "a\\b",
+    "\u{e4}0",
+    "a%b",
+    "a=b",
+    "a:b",
+    "a b",
+    "a#b",
+];
+
+/// The spellings of `name` that a detail may use: control characters as `\xNN`; other characters
+/// as they are or escaped like Rust's `Debug` does.
+fn shown(name: &str) -> Vec<String> {
+    let with_control_escapes: String = name
+        .chars()
+        .map(|c| {
+            if c.is_control() {
+                format!("\\x{:02x}", c as u32)
+            } else {
+                c.to_string()
+            }
+        })
+        .collect();
+    if name.chars().any(char::is_control) {
+        return vec![with_control_escapes];
+    }
+    vec![
+        with_control_escapes,
+        name.chars().flat_map(char::escape_debug).collect(),
+    ]
+}
+
+#[test]
+fn an_unsafe_netdev_name_gets_no_tool_call_and_no_netdev_command() {
+    for name in UNSAFE_NETDEVS {
+        let pci = "0000:af:00.0";
+        let host = FakeHost::bare_metal();
+        host.add_nic(&Nic::mlx5(pci, name, Some(1)));
+        let exec = host.exec();
+        fake_ethtool(&exec, name, eth(false, true, true));
+        fake_dcb(&exec, name, dcb_untuned());
+        fake_mst(&exec, "mstconfig", pci, MstState::untuned());
+        set_mrr(&host, pci, 512);
+        let h = hints_json(&host, &link_on(pci));
+        let calls = exec.calls();
+        assert!(
+            calls.iter().all(|c| !c.iter().any(|a| a.contains(name))),
+            "{name:?}: the name reached a tool: {calls:?}"
+        );
+        assert!(
+            calls.iter().all(|c| c[0] != "ethtool" && c[0] != "dcb"),
+            "{name:?}: no netdev-based tool runs for the NIC: {calls:?}"
+        );
+        for id in hint_ids(&h) {
+            for c in commands_of(&h, &id) {
+                assert!(!c.contains(name), "{name:?}: {id}: {c}");
+            }
+        }
+        for kind in ["flow_control", "port_buffer"] {
+            let id = nic_id(kind, pci);
+            assert_no_commands(&h, &id);
+            assert!(
+                detail_has(&h, &id, "is not safe to put into a shell command"),
+                "{name:?}: {id} says why: {}",
+                hint(&h, &id)
+            );
+            assert!(
+                shown(name).iter().any(|s| detail_has(&h, &id, s)),
+                "{name:?}: {id} names the interface as {:?}: {}",
+                shown(name),
+                hint(&h, &id)
+            );
+            assert!(
+                !hint(&h, &id)["detail"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .chars()
+                    .any(char::is_control),
+                "{name:?}: {id}: no raw control character in the detail"
+            );
+        }
+        // what needs the PCI address only stays
+        assert_commands(
+            &h,
+            &nic_id("pcie_maxreadreq", pci),
+            &["setpci -s 0000:af:00.0 CAP_EXP+8.w=5000:7000"],
+        );
+    }
+}
+
+#[test]
+fn safe_netdev_names_still_get_their_commands() {
+    for name in [
+        "eth0.100",
+        "en-p1",
+        "en_p1",
+        "EN0",
+        "a@b",
+        "9a",
+        "ens1f0np0",
+    ] {
+        let pci = "0000:af:00.0";
+        let host = FakeHost::bare_metal();
+        host.add_nic(&Nic::mlx5(pci, name, Some(1)));
+        let exec = host.exec();
+        fake_ethtool(&exec, name, eth(false, true, true));
+        let h = hints_json(&host, &link_on(pci));
+        assert_commands(
+            &h,
+            &nic_id("flow_control", pci),
+            &[&format!("ethtool -A {name} rx off tx off")],
+        );
+        assert!(
+            exec.calls().iter().any(|c| c.iter().any(|a| a == name)),
+            "{name}: the tool is asked about it"
+        );
+    }
+}
+
+#[test]
+fn check_prints_control_characters_escaped() {
+    // a governor name with an escape sequence ends up in the `CPU governor` hint
+    let host = FakeHost::bare_metal();
+    host.governor_all(8, "powersave");
+    host.write(
+        "sys/devices/system/cpu/cpu2/cpufreq/scaling_governor",
+        "pow\u{1b}[31mer\n",
+    );
+    let o = Command::new(env!("CARGO_BIN_EXE_dpds-controller"))
+        .arg("check")
+        .arg("--sysfs-root")
+        .arg(host.sysfs())
+        .arg("--procfs-root")
+        .arg(host.procfs())
+        .output()
+        .expect("cannot run dpds-controller");
+    let out = String::from_utf8_lossy(&o.stdout).into_owned();
+    assert!(
+        out.contains("CPU governor") && out.contains("cpu2"),
+        "the governor hint names cpu2: {out:?}"
+    );
+    for c in out.chars().filter(|c| *c != '\n') {
+        assert!(!c.is_control(), "raw control character {c:?} in {out:?}");
+    }
+    assert!(
+        out.contains("\\x1b"),
+        "the escape is spelled \\x1b: {out:?}"
+    );
+}
+
+// ---- spec 33b item 3: the real runner -------------------------------------------------------------
+
+/// Whether a process exists and is not a zombie (a process whose parent is gone is only reaped
+/// by init, which a container may not do).
+fn alive(pid: u32) -> bool {
+    match fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Err(_) => false,
+        Ok(stat) => stat
+            .rsplit(')')
+            .next()
+            .is_some_and(|rest| !rest.trim_start().starts_with('Z')),
+    }
+}
+
+fn gone_within(pid: u32, secs: u64) -> bool {
+    (0..secs * 10).any(|_| {
+        let gone = !alive(pid);
+        if !gone {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        gone
+    })
+}
+
+fn pid_in(file: &std::path::Path) -> u32 {
+    fs::read_to_string(file)
+        .expect("the script wrote its pid")
+        .trim()
+        .parse()
+        .unwrap()
+}
+
+#[test]
+fn system_exec_gives_up_on_a_background_process_that_keeps_the_pipes_open() {
+    // the shell exits at once; its `sleep` keeps stdout and stderr open for 6 s
+    let dir = tempfile::tempdir().unwrap();
+    let pid_file = dir.path().join("pid");
+    let script = format!("sleep 6 & echo $! > {}", pid_file.display());
+    let t0 = Instant::now();
+    let e = SystemExec
+        .run(&sh(&script), Duration::from_millis(500))
+        .expect_err("the pipes stay open past the deadline");
+    assert_eq!(e.kind(), ErrorKind::TimedOut, "{e}");
+    assert!(
+        t0.elapsed() < Duration::from_secs(3),
+        "the call ended with the deadline, not with the grandchild: {:?}",
+        t0.elapsed()
+    );
+    assert!(
+        gone_within(pid_in(&pid_file), 5),
+        "the background process is killed with the group"
+    );
+}
+
+#[test]
+fn system_exec_kills_the_whole_process_group_on_a_timeout() {
+    let dir = tempfile::tempdir().unwrap();
+    let pid_file = dir.path().join("pid");
+    let script = format!("sleep 30 & echo $! > {}; wait", pid_file.display());
+    let t0 = Instant::now();
+    let e = SystemExec
+        .run(&sh(&script), Duration::from_millis(500))
+        .expect_err("the shell waits for a 30 s sleep");
+    assert_eq!(e.kind(), ErrorKind::TimedOut, "{e}");
+    assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
+    assert!(
+        gone_within(pid_in(&pid_file), 5),
+        "the child's child is killed too, not only the child"
+    );
+}
+
+#[test]
+fn system_exec_runs_the_child_in_its_own_process_group() {
+    let out = SystemExec
+        .run(&sh("echo $$ $(cut -d' ' -f5 /proc/$$/stat)"), T30)
+        .expect("the script runs");
+    let nums: Vec<i64> = out
+        .stdout
+        .split_whitespace()
+        .map(|w| w.parse().expect("a number"))
+        .collect();
+    assert_eq!(nums.len(), 2, "pid and process group: {:?}", out.stdout);
+    // SAFETY: `getpgrp` has no preconditions and cannot fail.
+    let ours = i64::from(unsafe { libc::getpgrp() });
+    assert_eq!(nums[1], nums[0], "the child leads its own group");
+    assert_ne!(nums[1], ours, "and not the group of the controller");
+}
+
+#[test]
+fn system_exec_accepts_exactly_4_mib_per_stream_and_fails_above_it() {
+    const CAP: usize = 4 * 1024 * 1024;
+    let out = SystemExec
+        .run(
+            &sh(&format!("head -c {CAP} /dev/zero | tr '\\0' x")),
+            Duration::from_secs(20),
+        )
+        .expect("4 MiB is no excess");
+    assert_eq!(out.stdout.len(), CAP);
+    let out = SystemExec
+        .run(
+            &sh(&format!("head -c {CAP} /dev/zero | tr '\\0' x >&2")),
+            Duration::from_secs(20),
+        )
+        .expect("4 MiB on stderr is no excess");
+    assert_eq!(out.stderr.len(), CAP);
+    for to in ["", ">&2"] {
+        let e = SystemExec
+            .run(
+                &sh(&format!("head -c {} /dev/zero | tr '\\0' x {to}", CAP + 1)),
+                Duration::from_secs(20),
+            )
+            .expect_err("4 MiB + 1 byte is above the cap");
+        assert_eq!(e.kind(), ErrorKind::InvalidData, "{to:?}: {e}");
+    }
+}
+
+#[test]
+fn system_exec_does_not_stall_on_a_flood_and_fails_with_invalid_data() {
+    let t0 = Instant::now();
+    let e = SystemExec
+        .run(
+            &sh("head -c 100000000 /dev/zero | tr '\\0' x"),
+            Duration::from_secs(25),
+        )
+        .expect_err("100 MB is above the cap");
+    assert_eq!(e.kind(), ErrorKind::InvalidData, "{e}");
+    assert!(
+        t0.elapsed() < Duration::from_secs(20),
+        "the excess is read and dropped, the tool is not left blocked: {:?}",
+        t0.elapsed()
+    );
+}
+
+// ---- spec 33b item 4: the 409 of the hints post and the address the lookups use -----------------
+
+#[tokio::test]
+async fn openapi_documents_the_400_and_409_of_the_hints_post() {
+    let a = TestApp::new(FakeHost::bare_metal());
+    let doc = a.get("/api/openapi.json").await.json();
+    let post = &doc["paths"]["/api/host/hints"]["post"];
+    let responses = post["responses"]
+        .as_object()
+        .unwrap_or_else(|| panic!("no responses for POST /api/host/hints: {post}"));
+    for code in ["200", "400", "409"] {
+        assert!(responses.contains_key(code), "{code} in {responses:?}");
+    }
+    assert!(
+        responses["409"].to_string().contains("ErrorBody"),
+        "the 409 has the error body like start's: {}",
+        responses["409"]
+    );
+}
+
+#[tokio::test]
+async fn the_hints_post_answers_409_for_a_duplicate_name_or_a_reused_port_like_start() {
+    let a = TestApp::new(FakeHost::bare_metal());
+    all_tools(&a.host);
+    let cases = [
+        (
+            "a duplicate name",
+            setup(vec![
+                link("x", NIC0, NIC1, None),
+                link("x", INTEL, MGMT, None),
+            ]),
+            "x",
+        ),
+        (
+            "a reused ingress",
+            setup(vec![
+                link("a", NIC0, NIC1, None),
+                link("b", NIC0, INTEL, None),
+            ]),
+            NIC0,
+        ),
+        (
+            "a reused egress",
+            setup(vec![
+                link("a", NIC0, NIC1, None),
+                link("b", INTEL, NIC1, None),
+            ]),
+            NIC1,
+        ),
+    ];
+    for (what, s, named) in cases {
+        let hints = a.post("/api/host/hints", s.body()).await;
+        let start = a.start(&s).await;
+        assert_eq!(start.status, 409, "start {what}: {}", start.text());
+        assert_eq!(hints.status, 409, "hints {what}: {}", hints.text());
+        assert!(
+            hints.message().contains(named),
+            "hints {what} names {named}: {}",
+            hints.text()
+        );
+    }
+    assert!(a.host.exec().calls().is_empty(), "no tool ran");
+}
+
+#[test]
+fn an_upper_case_pci_address_in_the_body_gets_the_per_node_hugepage_path() {
+    // `bare`: node 0 only, no hugepages; the NIC with hex letters sits on node 0
+    let host = FakeHost::bare();
+    host.add_nic(&Nic::mlx5("0000:af:00.0", "ens3f0", Some(0)));
+    for pci in ["0000:af:00.0", "0000:AF:00.0"] {
+        let h = hints_json(&host, &link_on(pci));
+        let cmds = commands_of(&h, "hugepages");
+        assert_eq!(cmds.len(), 1, "{pci}: {cmds:?}");
+        assert_eq!(echo_command(&cmds[0]).1, node0_nr(), "{pci}");
+    }
+}
+
+#[test]
+fn an_upper_case_pci_address_in_the_body_gives_the_same_hints_as_the_lower_case_one() {
+    let host = FakeHost::bare_metal();
+    let pci = "0000:af:00.0";
+    host.add_nic(&Nic::mlx5(pci, "ens3f0", Some(1)));
+    set_mrr(&host, pci, 512);
+    host.nic_irqs(pci, &[(140, "6")]);
+    let exec = host.exec();
+    fake_ethtool(&exec, "ens3f0", eth(false, true, true));
+    fake_dcb(&exec, "ens3f0", dcb_untuned());
+    fake_mst(&exec, "mstconfig", pci, MstState::untuned());
+    let lower = hints_json(&host, &link_on(pci));
+    let upper = hints_json(&host, &link_on("0000:AF:00.0"));
+    assert_eq!(upper, lower);
+    assert!(
+        !commands_of(&lower, "irq_affinity").is_empty(),
+        "the interrupt hint has content to compare: {lower}"
+    );
+}
+
+// ---- spec 33b item 6: blocked NICs keep the install command ------------------------------------
+
+#[tokio::test]
+async fn a_blocked_nic_keeps_the_install_command_of_a_missing_tool() {
+    // no tool is installed. NIC1 is an uplink, INTEL is bound to `ice`
+    let host = FakeHost::bare_metal();
+    host.addr("ens2f0", "192.168.7.7");
+    let a = TestApp::new(host);
+    let h = a.post("/api/host/hints", link_on(NIC1).body()).await.json();
+    for (kind, package) in [
+        ("flow_control", "ethtool"),
+        ("port_buffer", "iproute2"),
+        ("firmware", "mstflint"),
+    ] {
+        let id = nic_id(kind, NIC1);
+        assert_commands(&h, &id, &[&format!("apt install {package}")]);
+        assert!(
+            !detail_has(&h, &id, "no command is suggested"),
+            "nothing was removed, so there is no note: {}",
+            hint(&h, &id)
+        );
+    }
+    let h = a
+        .post("/api/host/hints", link_on(INTEL).body())
+        .await
+        .json();
+    let id = nic_id("flow_control", INTEL);
+    assert_commands(&h, &id, &["apt install ethtool"]);
+    assert!(!detail_has(&h, &id, "no command is suggested"), "{h}");
+}
+
+#[tokio::test]
+async fn the_no_command_note_appears_only_where_tuning_commands_were_removed() {
+    // nothing to tune: flow control off, MaxReadReq 4096, firmware tuned
+    let host = FakeHost::bare_metal();
+    host.addr("ens2f0", "192.168.7.7");
+    let exec = host.exec();
+    fake_ethtool(&exec, "ens2f0", eth(false, false, false));
+    fake_mst(&exec, "mstconfig", NIC1, MstState::tuned());
+    let a = TestApp::new(host);
+    let h = a.post("/api/host/hints", link_on(NIC1).body()).await.json();
+    for kind in ["flow_control", "pcie_maxreadreq", "firmware"] {
+        let id = nic_id(kind, NIC1);
+        assert_no_commands(&h, &id);
+        assert!(
+            !detail_has(&h, &id, "no command is suggested"),
+            "{id} had no command to remove: {}",
+            hint(&h, &id)
+        );
+    }
+    // everything needs tuning: the commands are removed and the note gives the reason
+    let host = FakeHost::bare_metal();
+    host.addr("ens2f0", "192.168.7.7");
+    set_mrr(&host, NIC1, 512);
+    let exec = host.exec();
+    fake_ethtool(&exec, "ens2f0", eth(false, true, true));
+    fake_mst(&exec, "mstconfig", NIC1, MstState::untuned());
+    let a = TestApp::new(host);
+    let why = reason_of(&a, NIC1).await;
+    let h = a.post("/api/host/hints", link_on(NIC1).body()).await.json();
+    for kind in ["flow_control", "pcie_maxreadreq", "firmware"] {
+        let id = nic_id(kind, NIC1);
+        assert_no_commands(&h, &id);
+        assert!(
+            detail_has(&h, &id, "no command is suggested for this NIC"),
+            "{id}: {}",
+            hint(&h, &id)
+        );
+        assert!(detail_has(&h, &id, &why), "{id} gives the reason {why:?}");
+    }
+}
+
+#[test]
+fn the_dcb_install_hint_says_which_iproute2_provides_dcb() {
+    let h = hints_json(&FakeHost::bare_metal(), &link_on(NIC0));
+    let id = port_buffer_id();
+    assert_commands(&h, &id, &["apt install iproute2"]);
+    assert!(
+        text(&h, &id).contains("iproute2 (5.11 or later provides dcb)"),
+        "{}",
+        hint(&h, &id)
+    );
+}
+
+// ---- spec 33b item 7: the time budget and the lifecycle lock ------------------------------------
+
+const USED_UP: &str = "not checked (time budget of 60 s used up)";
+
+/// The hints that need a tool, for the two NICs of the link below.
+fn tool_ids() -> Vec<String> {
+    [NIC0, NIC1]
+        .iter()
+        .flat_map(|p| ["flow_control", "port_buffer", "firmware"].map(|k| nic_id(k, p)))
+        .collect()
+}
+
+fn two_nic_link() -> Setup {
+    setup(vec![link("l", NIC0, NIC1, None)])
+}
+
+fn assert_used_up(h: &Value, id: &str) {
+    assert_level(h, id, "info", "info");
+    assert_no_commands(h, id);
+    let t = text(h, id);
+    assert!(t.contains(USED_UP), "{id}: {}", hint(h, id));
+    assert!(
+        !t.contains("apt install"),
+        "{id}: a tool that was not run is not missing"
+    );
+    assert!(
+        !t.contains("emulation"),
+        "{id}: the budget is no emulation state: {}",
+        hint(h, id)
+    );
+}
+
+#[test]
+fn hung_tools_use_up_a_budget_of_60_seconds_and_the_rest_is_not_checked() {
+    let host = FakeHost::bare_metal();
+    all_tools(&host);
+    let exec = host.exec();
+    for tool in ["ethtool", "dcb", "mstconfig"] {
+        exec.takes(&[tool], Duration::from_secs(3600)); // never answers: stopped at its timeout
+    }
+    let h = hints_json(&host, &two_nic_link());
+    let timeouts = exec.timeouts();
+    assert!(
+        timeouts.iter().all(|t| *t > Duration::ZERO && *t <= T30),
+        "no call without time, none above 30 s: {timeouts:?}"
+    );
+    assert_eq!(
+        timeouts.iter().sum::<Duration>(),
+        Duration::from_secs(60),
+        "the calls share 60 s: {timeouts:?}"
+    );
+    let ids = tool_ids();
+    let used_up: Vec<&String> = ids
+        .iter()
+        .filter(|i| text(&h, i).contains(USED_UP))
+        .collect();
+    let timed_out = ids
+        .iter()
+        .filter(|i| {
+            let t = text(&h, i);
+            t.contains("timed out") || t.contains("timeout")
+        })
+        .count();
+    assert_eq!(
+        timed_out,
+        exec.calls().len(),
+        "one timed-out hint per call: {h}"
+    );
+    assert_eq!(
+        used_up.len() + timed_out,
+        ids.len(),
+        "every tool hint either ran or says the budget is used up: {h}"
+    );
+    assert!(!used_up.is_empty(), "{h}");
+    for id in used_up {
+        assert_used_up(&h, id);
+    }
+    exec.assert_read_only();
+}
+
+#[test]
+fn a_call_gets_the_time_that_is_left_and_a_second_request_starts_a_new_budget() {
+    let host = FakeHost::bare_metal();
+    all_tools(&host);
+    let exec = host.exec();
+    for tool in ["ethtool", "dcb", "mstconfig"] {
+        exec.takes(&[tool], Duration::from_secs(20)); // answers, after 20 s
+    }
+    let want = [T30, T30, Duration::from_secs(20)];
+    let h = hints_json(&host, &two_nic_link());
+    assert_eq!(exec.timeouts(), want, "30 s, 30 s, then the 20 s left");
+    let used_up = tool_ids()
+        .into_iter()
+        .filter(|i| text(&h, i).contains(USED_UP))
+        .collect::<Vec<_>>();
+    assert_eq!(used_up.len(), 3, "{h}");
+    for id in &used_up {
+        assert_used_up(&h, id);
+    }
+    // the first NIC was read in full, so its hints are real answers
+    assert_commands(
+        &h,
+        &nic_id("flow_control", NIC0),
+        &["ethtool -A ens1f0 rx off tx off"],
+    );
+    // a new request has its own budget
+    hints_json(&host, &two_nic_link());
+    let timeouts = exec.timeouts();
+    assert_eq!(timeouts.len(), 6, "{timeouts:?}");
+    assert_eq!(timeouts[3..], want, "the same again with a fresh budget");
+}
+
+#[test]
+fn fast_tools_never_touch_the_budget() {
+    let host = FakeHost::bare_metal();
+    all_tools(&host);
+    let h = hints_json(&host, &two_nic_link());
+    for id in tool_ids() {
+        assert!(!text(&h, &id).contains(USED_UP), "{id}");
+    }
+    assert!(host.exec().timeouts().iter().all(|t| *t == T30));
+}
+
+/// A tool that waits until the test lets it go.
+#[derive(Clone)]
+struct Gate(Arc<(AtomicUsize, Mutex<bool>, Condvar)>);
+
+impl Gate {
+    fn new() -> Gate {
+        Gate(Arc::new((
+            AtomicUsize::new(0),
+            Mutex::new(false),
+            Condvar::new(),
+        )))
+    }
+
+    /// Called by the fake tool: counts itself in and waits (at most 30 s, so a failed test cannot
+    /// hang the run).
+    fn pass(&self) {
+        self.0 .0.fetch_add(1, Ordering::SeqCst);
+        let open = self.0 .1.lock().unwrap();
+        drop(
+            self.0
+                 .2
+                .wait_timeout_while(open, Duration::from_secs(30), |o| !*o)
+                .unwrap(),
+        );
+    }
+
+    fn entered(&self) -> usize {
+        self.0 .0.load(Ordering::SeqCst)
+    }
+
+    fn open(&self) {
+        *self.0 .1.lock().unwrap() = true;
+        self.0 .2.notify_all();
+    }
+}
+
+/// Opens the gate when the test ends, also by a failed assertion.
+struct OpenOnDrop(Gate);
+
+impl Drop for OpenOnDrop {
+    fn drop(&mut self) {
+        self.0.open();
+    }
+}
+
+async fn until(what: &str, mut cond: impl FnMut() -> bool) {
+    for _ in 0..1000 {
+        if cond() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("gave up waiting for {what}");
+}
+
+fn start_body() -> Value {
+    setup(vec![link("s", NIC1, NIC1, None)]).body()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_start_issued_during_a_slow_query_waits_until_the_query_ends() {
+    let host = FakeHost::bare_metal();
+    all_tools(&host);
+    let gate = Gate::new();
+    let _open = OpenOnDrop(gate.clone());
+    host.exec().on_fn(&["ethtool", "--json", "-a", "ens1f0"], {
+        let gate = gate.clone();
+        move |_| {
+            gate.pass();
+            Out::Ok(
+                json!([{"ifname": "ens1f0", "autonegotiate": false, "rx": true, "tx": true}])
+                    .to_string(),
+            )
+        }
+    });
+    let a = TestApp::new(host);
+    let router = a.router.clone();
+    let query = tokio::spawn({
+        let router = router.clone();
+        async move {
+            call(
+                &router,
+                "POST",
+                "/api/host/hints",
+                Some(link_on(NIC0).body()),
+            )
+            .await
+        }
+    });
+    until("the query to reach the tool", || gate.entered() >= 1).await;
+    let start = tokio::spawn({
+        let router = router.clone();
+        async move { call(&router, "POST", "/api/emulation/start", Some(start_body())).await }
+    });
+    // routes that take no part in the lifecycle are not held up
+    let state = tokio::time::timeout(
+        Duration::from_secs(5),
+        call(&router, "GET", "/api/emulation", None),
+    )
+    .await
+    .expect("GET /api/emulation answers during the query");
+    assert_eq!(state.status, 200, "{}", state.text());
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        !start.is_finished(),
+        "the start must wait for the query that is running"
+    );
+    assert_eq!(a.supervisor.starts_entered(), 0);
+    gate.open();
+    let q = query.await.unwrap();
+    assert_eq!(q.status, 200, "{}", q.text());
+    assert_commands(
+        &q.json(),
+        &nic_id("flow_control", NIC0),
+        &["ethtool -A ens1f0 rx off tx off"],
+    );
+    let s = start.await.unwrap();
+    assert_eq!(s.status, 202, "{}", s.text());
+    assert_eq!(a.supervisor.plans().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_state_is_read_again_under_the_lock_so_a_start_in_progress_stops_the_tools() {
+    let host = FakeHost::bare_metal();
+    all_tools(&host);
+    let exec = host.exec();
+    let a = TestApp::new(host);
+    a.supervisor.set_start_delay(Duration::from_millis(1500));
+    let router = a.router.clone();
+    let start = tokio::spawn({
+        let router = router.clone();
+        async move { call(&router, "POST", "/api/emulation/start", Some(start_body())).await }
+    });
+    // the start holds the lifecycle lock from here until the supervisor is done
+    until("the start to reach the supervisor", || {
+        a.supervisor.starts_entered() >= 1
+    })
+    .await;
+    let r = call(
+        &router,
+        "POST",
+        "/api/host/hints",
+        Some(link_on(NIC0).body()),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let h = r.json();
+    assert!(
+        exec.calls().is_empty(),
+        "the emulation is starting when the query gets its turn: {:?}",
+        exec.calls()
+    );
+    for kind in ["flow_control", "port_buffer", "firmware"] {
+        let id = nic_id(kind, NIC0);
+        assert_no_commands(&h, &id);
+        assert!(
+            text(&h, &id).contains("not checked while an emulation is running"),
+            "{id}: {}",
+            hint(&h, &id)
+        );
+    }
+    assert_eq!(start.await.unwrap().status, 202);
 }
 
 // ---- the sources -----------------------------------------------------------------------------

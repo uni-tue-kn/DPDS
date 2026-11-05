@@ -9,7 +9,7 @@ use axum::http::HeaderValue;
 use clap::{Args, Parser, Subcommand};
 use dpds_controller::api::{self, Deps};
 use dpds_controller::frontend::Frontend;
-use dpds_controller::hints::{compute_hints, Level};
+use dpds_controller::hints::{compute_hints, escape_control, Level};
 use dpds_controller::host::{HostRoots, IfAddrs, SystemExec};
 use dpds_controller::model::RunConfig;
 use dpds_controller::supervisor::ProcessSupervisor;
@@ -149,11 +149,11 @@ fn check(a: &CheckArgs) -> Result<ExitCode, String> {
             if !h.suggestion.is_empty() {
                 line.push_str(&format!(" -> {}", h.suggestion));
             }
-            println!("{line}");
+            println!("{}", escape_control(&line));
             if !h.commands.is_empty() {
                 println!("  # run as root:");
                 for c in &h.commands {
-                    println!("  {c}");
+                    println!("  {}", escape_control(c));
                 }
             }
         }

@@ -16,15 +16,17 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::discovery::Interface;
-use crate::hints::{hint, Ctx, Hint, Level};
+use crate::hints::{escape_control, hint, nic_label, Ctx, Hint, Level};
 
 /// The PCIe maximum, the target of MaxReadReq.
 const MAX_READ_REQ_TARGET: u32 = 4096;
 /// preof's firmware values (no tool reports a device maximum: the firmware clamps silently).
 const FW_MAX_ACC_OUT_READ: u64 = 256;
 const FW_CQE_COMPRESSION: u64 = 1;
-/// How long a tool may take before it is killed.
+/// How long one tool call may take before it is killed.
 const TOOL_TIMEOUT: Duration = Duration::from_secs(30);
+/// What all the tool calls of one request may take together.
+const TOOL_BUDGET: Duration = Duration::from_secs(60);
 
 /// Why a tool gave no state.
 enum Gap {
@@ -32,6 +34,8 @@ enum Gap {
     Missing,
     /// An emulation is starting, running or stopping, so no tool ran.
     NotChecked,
+    /// The request's time budget for tools was used up before this call.
+    BudgetUsed,
     /// The tool ran past its timeout and was killed.
     TimedOut(String),
     /// The tool ran but its answer cannot be used.
@@ -40,18 +44,28 @@ enum Gap {
 
 type Tool<T> = Result<T, Gap>;
 
-/// Runs a read-only query and returns its stdout.
-fn run(ctx: &Ctx, argv: &[&str]) -> Tool<String> {
+/// The time left of the request's tool budget, `Err` when none is left or no tool may run.
+fn time_left(ctx: &Ctx) -> Tool<Duration> {
     if !ctx.run_tools {
         return Err(Gap::NotChecked);
     }
+    let spent = ctx.roots.exec.now().saturating_duration_since(ctx.started);
+    match TOOL_BUDGET.saturating_sub(spent) {
+        left if left.is_zero() => Err(Gap::BudgetUsed),
+        left => Ok(left),
+    }
+}
+
+/// Runs a read-only query and returns its stdout.
+fn run(ctx: &Ctx, argv: &[&str]) -> Tool<String> {
+    let timeout = time_left(ctx)?.min(TOOL_TIMEOUT);
     let argv: Vec<String> = argv.iter().map(|s| s.to_string()).collect();
-    match ctx.roots.exec.run(&argv, TOOL_TIMEOUT) {
+    match ctx.roots.exec.run(&argv, timeout) {
         Err(e) if e.kind() == ErrorKind::NotFound => Err(Gap::Missing),
         Err(e) if e.kind() == ErrorKind::TimedOut => Err(Gap::TimedOut(format!(
             "{} timed out after {} s and was stopped",
             argv.join(" "),
-            TOOL_TIMEOUT.as_secs()
+            timeout.as_secs()
         ))),
         Err(e) => Err(Gap::Failed(format!("{} could not run: {e}", argv[0]))),
         Ok(out) if out.code != 0 => Err(Gap::Failed(format!(
@@ -64,14 +78,30 @@ fn run(ctx: &Ctx, argv: &[&str]) -> Tool<String> {
     }
 }
 
-/// The netdev of a NIC as far as a tool may be given it: a name that starts with `-` would be
-/// read as an option.
+/// The netdev of a NIC as far as a tool or a shell command may be given it: only letters, digits
+/// and `_ . @ -`, and not starting with `-` (it would be read as an option).
 fn tool_netdev(nic: &Interface) -> Option<&str> {
-    nic.netdev.as_deref().filter(|n| !n.starts_with('-'))
+    nic.netdev.as_deref().filter(|n| {
+        !n.is_empty()
+            && !n.starts_with('-')
+            && n.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '@' | '-'))
+    })
+}
+
+/// Why a NIC has a netdev that no tool or command may use, when it has one.
+fn unsafe_netdev(nic: &Interface) -> Option<String> {
+    let name = nic.netdev.as_deref()?;
+    tool_netdev(nic).is_none().then(|| {
+        format!(
+            "the interface name {} is not safe to put into a shell command",
+            escape_control(name)
+        )
+    })
 }
 
 /// Why a NIC gets no command: the host uses it, or DPDS cannot use it.
-fn blocked(nic: &Interface) -> Option<&str> {
+pub(crate) fn blocked(nic: &Interface) -> Option<&str> {
     if nic.uplink || !nic.dpds_usable {
         Some(nic.reason.as_deref().unwrap_or("the host uses this NIC"))
     } else {
@@ -83,7 +113,7 @@ fn blocked(nic: &Interface) -> Option<&str> {
 pub(crate) fn nic_hints(ctx: &Ctx) -> Vec<Hint> {
     let mut hints = Vec::new();
     for nic in ctx.used_nics() {
-        let label = nic.netdev.as_deref().unwrap_or(&nic.pci);
+        let label = &nic_label(nic);
         let pause = tool_netdev(nic).map(|nd| read_pause(ctx, nd));
         let mut set = vec![
             flow_control(nic, label, pause.as_ref()),
@@ -96,10 +126,14 @@ pub(crate) fn nic_hints(ctx: &Ctx) -> Vec<Hint> {
             set.push(firmware(ctx, nic, label));
         }
         if let Some(why) = blocked(nic) {
-            for h in set.iter_mut().filter(|h| !h.commands.is_empty()) {
-                h.commands.clear();
-                h.detail
-                    .push_str(&format!("; no command is suggested for this NIC: {why}"));
+            for h in &mut set {
+                // only the tuning commands go; the install command of a missing tool stays
+                let had = h.commands.len();
+                h.commands.retain(|c| c.starts_with("apt install "));
+                if h.commands.len() < had {
+                    h.detail
+                        .push_str(&format!("; no command is suggested for this NIC: {why}"));
+                }
             }
         }
         hints.extend(set);
@@ -124,7 +158,14 @@ fn gap_hint(
             Level::Info,
             title,
             format!("{tool} is not installed, so the {what} of {label} cannot be checked"),
-            &format!("Install the {package} package, then check again."),
+            &format!(
+                "Install the {} package, then check again.",
+                if tool == "dcb" {
+                    "iproute2 (5.11 or later provides dcb)"
+                } else {
+                    package
+                }
+            ),
         )
         .with_commands(vec![format!("apt install {package}")]),
         Gap::NotChecked => hint(
@@ -135,6 +176,16 @@ fn gap_hint(
                 "the {what} of {label} is not checked while an emulation is running (reading it runs {tool})"
             ),
             "Stop the emulation to check it.",
+        ),
+        Gap::BudgetUsed => hint(
+            id,
+            Level::Info,
+            title,
+            format!(
+                "the {what} of {label} is not checked (time budget of {} s used up)",
+                TOOL_BUDGET.as_secs()
+            ),
+            "Check again.",
         ),
         Gap::TimedOut(why) | Gap::Failed(why) => hint(
             id,
@@ -220,8 +271,8 @@ fn flow_control(nic: &Interface, label: &str, pause: Option<&Tool<Pause>>) -> Hi
     let title = format!("Flow control {label}");
     let pause = match pause {
         None => {
-            let why = if nic.netdev.is_some() {
-                format!("the network device name {label} starts with '-', so no tool is run for it")
+            let why = if let Some(why) = unsafe_netdev(nic) {
+                format!("{why}, so no tool is run for it")
             } else {
                 format!(
                     "{} has no network device (a userspace driver is bound)",
@@ -381,14 +432,13 @@ fn port_buffer(ctx: &Ctx, nic: &Interface, label: &str, pause: Option<&Tool<Paus
     let id = format!("port_buffer:{}", nic.pci);
     let title = format!("Port buffer {label}");
     let Some(netdev) = tool_netdev(nic) else {
+        let why =
+            unsafe_netdev(nic).unwrap_or_else(|| format!("{} has no network device", nic.pci));
         return hint(
             &id,
             Level::Info,
             &title,
-            format!(
-                "{} has no usable network device, so its port buffer cannot be read",
-                nic.pci
-            ),
+            format!("{why}, so its port buffer cannot be read"),
             "",
         );
     };
@@ -521,9 +571,7 @@ fn private_dir() -> std::io::Result<PathBuf> {
 
 /// Queries the firmware settings with `tool` (`mstconfig` or `mlxconfig`).
 fn query_firmware(ctx: &Ctx, tool: &str, bdf: &str) -> Tool<Firmware> {
-    if !ctx.run_tools {
-        return Err(Gap::NotChecked);
-    }
+    time_left(ctx)?;
     let dir = private_dir()
         .map_err(|e| Gap::Failed(format!("no temporary directory for {tool}: {e}")))?;
     let file = dir.join("query.json");

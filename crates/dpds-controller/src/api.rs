@@ -479,36 +479,45 @@ async fn interfaces(State(app): Shared) -> Result<Json<Vec<Interface>>, ApiError
     responses((status = 200, body = Vec<Hint>), (status = 500, body = ErrorBody))
 )]
 async fn host_hints(State(app): Shared) -> Result<Json<Vec<Hint>>, ApiError> {
-    Ok(Json(
-        blocking(move || {
-            let tools = tools_may_run(&app);
-            compute_hints(&app.deps.roots, &RunConfig::default(), tools)
-        })
-        .await?,
-    ))
+    hints_of(app, RunConfig::default()).await
 }
 
 /// The host hints plus the ones that depend on the links of a configuration. The body is
-/// validated like the start body (400 naming the field; links may be empty, which gives the host
-/// hints), but nothing is planned, started or kept, so a port the host uses is a hint, not a 409.
-/// Hints suggest root commands for an administrator; DPDS runs none of them.
+/// validated like the start body (400 naming the field, 409 for a duplicate link name or a reused
+/// port; links may be empty, which gives the host hints), but nothing is planned, started or
+/// kept, so a port the host uses is a hint, not a 409. Hints suggest root commands for an
+/// administrator; DPDS runs none of them.
 #[utoipa::path(
     post, path = "/api/host/hints", request_body = StartRequest,
     responses(
-        (status = 200, body = Vec<Hint>), (status = 400, body = ErrorBody), (status = 413, body = ErrorBody),
-        (status = 415, body = ErrorBody), (status = 500, body = ErrorBody)
+        (status = 200, body = Vec<Hint>), (status = 400, body = ErrorBody), (status = 409, body = ErrorBody),
+        (status = 413, body = ErrorBody), (status = 415, body = ErrorBody), (status = 500, body = ErrorBody)
     )
 )]
 async fn host_hints_for(
     State(app): Shared,
     ApiJson(req): ApiJson<StartRequest>,
 ) -> Result<Json<Vec<Hint>>, ApiError> {
-    let config = req.into_run_config();
+    let mut config = req.into_run_config();
     validate_body(&config)?;
+    // validation accepts upper-case PCI addresses; sysfs has them in lower case
+    for l in &mut config.links {
+        l.ingress.make_ascii_lowercase();
+        l.egress.make_ascii_lowercase();
+    }
+    hints_of(app, config).await
+}
+
+/// Computes the hints while holding the start/stop lock, so no start begins in the middle of a
+/// tool query (a start waits at most the query's time budget). The emulation state is read under
+/// the lock: tools run only while no emulation is starting, running or stopping.
+async fn hints_of(app: Arc<App>, config: RunConfig) -> Result<Json<Vec<Hint>>, ApiError> {
+    let _step = app.lifecycle.lock().await;
+    let shared = Arc::clone(&app);
     Ok(Json(
         blocking(move || {
-            let tools = tools_may_run(&app);
-            compute_hints(&app.deps.roots, &config, tools)
+            let tools = tools_may_run(&shared);
+            compute_hints(&shared.deps.roots, &config, tools)
         })
         .await?,
     ))

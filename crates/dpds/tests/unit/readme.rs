@@ -828,3 +828,78 @@ fn the_readme_says_dpds_sh_tunes_nothing() {
         "the Host hints page is named"
     );
 }
+
+// ---- spec 33b item 8 (and the 409 of item 4): what an administrator needs to run the commands ---
+//
+// `sudo echo 2 > /proc/...` does not work: the redirection is opened by the caller's own shell, not
+// by sudo. The README says so and names the two ways that work. It also lists `irq_affinity` with
+// the link-dependent hints, since it needs the links to know the NICs.
+
+#[test]
+fn the_readme_says_how_to_run_commands_that_write_below_proc_or_sys() {
+    let items = controller_items_with("`commands`");
+    assert!(
+        !items.is_empty(),
+        "no item documents the `commands` of a hint"
+    );
+    let item = items.join(" ");
+    assert!(
+        item.contains("`sudo -i`"),
+        "a root shell (`sudo -i`) runs the commands that write to /proc or /sys: {item}"
+    );
+    assert!(
+        item.contains("sudo tee"),
+        "or the value is piped to `sudo tee`: {item}"
+    );
+    let lower = item.to_lowercase();
+    assert!(
+        item.contains("sudo echo")
+            && (lower.contains("does not work") || lower.contains("doesn't work")),
+        "and `sudo echo ... >` is said not to work: {item}"
+    );
+    assert!(
+        lower.contains("/proc") && lower.contains("/sys"),
+        "the advice is tied to /proc and /sys: {item}"
+    );
+}
+
+#[test]
+fn irq_affinity_is_listed_as_link_dependent_not_as_host_wide() {
+    let items = controller_items_with("**Host check**");
+    assert_eq!(items.len(), 1, "one Host check item: {items:?}");
+    let item = items[0].to_lowercase();
+    let at: Vec<usize> = item.match_indices("irq_affinity").map(|(i, _)| i).collect();
+    assert!(!at.is_empty(), "the Host check item names `irq_affinity`");
+    for i in at {
+        // the closest heading before the mention: the host-wide list or the link-dependent one
+        let before = &item[..i];
+        let host_wide = before.rfind("host-wide hints");
+        let linked = before.rfind("link-dependent");
+        let near = &item[i.saturating_sub(100)..(i + 100).min(item.len())];
+        let says_linked = near.contains("link-dependent")
+            || near.contains("depends on the links")
+            || near.contains("needs the links");
+        assert!(
+            linked > host_wide || says_linked,
+            "`irq_affinity` is listed with the host-wide hints, but it needs the links: {near}"
+        );
+    }
+    assert!(
+        item.contains("link-dependent"),
+        "the item says which hints are link-dependent: {item}"
+    );
+}
+
+#[test]
+fn the_readme_documents_the_400_and_the_409_of_the_hints_post() {
+    let items = controller_items_with("`POST /api/host/hints`");
+    assert!(
+        !items.is_empty(),
+        "no item documents `POST /api/host/hints`"
+    );
+    let item = items.join(" ");
+    assert!(
+        item.contains("400 naming the field, 409 for a duplicate name or reused port"),
+        "the answers of the hints post: {item}"
+    );
+}

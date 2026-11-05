@@ -10,7 +10,7 @@
 //! isolated cores, MaxReadReq 4096 (1024 and 2048 are acceptable).
 
 use std::fs;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use utoipa::ToSchema;
@@ -20,7 +20,7 @@ use crate::eal::drain_timeout;
 use crate::host::{fmt_cpus, parse_cpulist, read_trim, HostRoots};
 use crate::lcores::{assign_lcores, Assignment, LcoreError};
 use crate::model::RunConfig;
-use crate::nic_hints::nic_hints;
+use crate::nic_hints::{blocked, nic_hints};
 
 /// Mbuf size in hugepage memory (README: about 1.9 KB per mbuf).
 const BYTES_PER_MBUF: u64 = 1920;
@@ -88,6 +88,8 @@ pub(crate) struct Ctx<'a> {
     pub roots: &'a HostRoots,
     /// Whether tools may run: not while an emulation is starting, running or stopping.
     pub run_tools: bool,
+    /// When this request began its tool time budget, read from `roots.exec.now()`.
+    pub started: Instant,
     config: &'a RunConfig,
     interfaces: Vec<Interface>,
     assignment: Result<Assignment, LcoreError>,
@@ -113,11 +115,31 @@ impl Ctx<'_> {
     }
 }
 
+/// The text with every control character spelled `\xNN`, so a name read from the host cannot
+/// move the cursor or recolour a terminal.
+pub fn escape_control(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_control() {
+                format!("\\x{:02x}", u32::from(c))
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
+}
+
+/// How a NIC is named in a hint: its netdev, else its PCI address, control characters escaped.
+pub(crate) fn nic_label(nic: &Interface) -> String {
+    escape_control(nic.netdev.as_deref().unwrap_or(&nic.pci))
+}
+
 /// All hints, in a fixed order, one per check.
 pub fn compute_hints(roots: &HostRoots, config: &RunConfig, run_tools: bool) -> Vec<Hint> {
     let ctx = Ctx {
         roots,
         run_tools,
+        started: roots.exec.now(),
         config,
         interfaces: discover(roots),
         assignment: assign_lcores(roots, config),
@@ -693,6 +715,37 @@ fn irq_affinity(ctx: &Ctx) -> Hint {
     if nics.is_empty() {
         return hint(id, Level::Ok, title, "no PCI NIC is used".into(), "");
     }
+    // a NIC the host uses or DPDS cannot use gets no command, so its interrupts are not looked at
+    let (usable, skipped): (Vec<&Interface>, Vec<&Interface>) =
+        nics.into_iter().partition(|n| blocked(n).is_none());
+    let skipped = if skipped.is_empty() {
+        String::new()
+    } else {
+        let list: Vec<String> = skipped
+            .iter()
+            .map(|n| {
+                format!(
+                    "{} ({}: {})",
+                    nic_label(n),
+                    n.pci,
+                    blocked(n).unwrap_or_default()
+                )
+            })
+            .collect();
+        format!(
+            "; skipped, no command is suggested for: {}",
+            list.join(", ")
+        )
+    };
+    if usable.is_empty() {
+        return hint(
+            id,
+            Level::Info,
+            title,
+            format!("the interrupts of the used NICs are not checked{skipped}"),
+            "",
+        );
+    }
     let mut isolated = ctx.roots.isolated_cpus();
     isolated.extend(ctx.roots.nohz_full_cpus());
     isolated.sort_unstable();
@@ -702,14 +755,34 @@ fn irq_affinity(ctx: &Ctx) -> Hint {
             id,
             Level::Ok,
             title,
-            "no cores are isolated, so no interrupt runs on one (see the core isolation hint)"
-                .into(),
+            format!("no cores are isolated, so no interrupt runs on one (see the core isolation hint){skipped}"),
             "",
         );
     }
-    let mut on_isolated: Vec<(u32, String, Vec<u32>)> = Vec::new();
-    for nic in nics {
-        let label = nic.netdev.as_deref().unwrap_or(&nic.pci);
+    let housekeeping: Vec<u32> = ctx
+        .roots
+        .online_cpus()
+        .into_iter()
+        .filter(|c| !isolated.contains(c))
+        .collect();
+    // (irq, NIC, cores it runs on, cores to move it to)
+    let mut on_isolated: Vec<(u32, String, Vec<u32>, Vec<u32>)> = Vec::new();
+    for nic in usable {
+        let label = nic_label(nic);
+        // the housekeeping cores of the NIC's node, else all of them
+        let local: Vec<u32> = ctx
+            .roots
+            .pci_numa_node(&nic.pci)
+            .map(|n| ctx.roots.node_cpus(n))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|c| housekeeping.contains(c))
+            .collect();
+        let target = if local.is_empty() {
+            &housekeeping
+        } else {
+            &local
+        };
         for irq in msi_irqs(ctx.roots, &nic.pci) {
             let dir = ctx.roots.proc(&format!("irq/{irq}"));
             let cpus = read_trim(&dir.join("effective_affinity_list"))
@@ -717,7 +790,7 @@ fn irq_affinity(ctx: &Ctx) -> Hint {
                 .map(|s| parse_cpulist(&s))
                 .unwrap_or_default();
             if cpus.iter().any(|c| isolated.contains(c)) {
-                on_isolated.push((irq, label.to_string(), cpus));
+                on_isolated.push((irq, label.clone(), cpus, target.clone()));
             }
         }
     }
@@ -731,40 +804,46 @@ fn irq_affinity(ctx: &Ctx) -> Hint {
             id,
             Level::Ok,
             title,
-            format!("NIC interrupts are off the isolated cores{balance}"),
+            format!("NIC interrupts are off the isolated cores{balance}{skipped}"),
             "",
         );
     }
     let list = on_isolated
         .iter()
-        .map(|(irq, nic, cpus)| format!("IRQ {irq} of {nic} on core(s) {}", fmt_cpus(cpus)))
+        .map(|(irq, nic, cpus, _)| format!("IRQ {irq} of {nic} on core(s) {}", fmt_cpus(cpus)))
         .collect::<Vec<_>>()
         .join(", ");
-    let online = ctx.roots.online_cpus();
-    let housekeeping: Vec<u32> = online
-        .into_iter()
-        .filter(|c| !isolated.contains(c))
-        .collect();
+    let mut targets: Vec<String> = Vec::new();
+    for (_, nic, _, target) in &on_isolated {
+        let t = format!("{nic}: {}", fmt_cpus(target));
+        if !targets.contains(&t) {
+            targets.push(t);
+        }
+    }
     let h = hint(
         id,
         Level::Warn,
         title,
         format!(
-            "{list}; the isolated cores are {}{balance}. The commands move them to the housekeeping cores {} (the online cores minus the isolated ones); the kernel refuses to move managed interrupts",
+            "{list}; the isolated cores are {}{balance}{skipped}. The commands move them to the non-isolated online cores of the NIC's NUMA node, or to all of them when the node has none ({}); the kernel refuses to move managed interrupts",
             fmt_cpus(&isolated),
-            fmt_cpus(&housekeeping)
+            targets.join("; ")
         ),
         "Move the NIC interrupts to the housekeeping cores (smp_affinity_list) and keep irqbalance off the isolated cores.",
     );
     if housekeeping.is_empty() {
         return h;
     }
-    let target = fmt_cpus(&housekeeping);
-    on_isolated.sort_by_key(|(irq, _, _)| *irq);
+    on_isolated.sort_by_key(|(irq, ..)| *irq);
     h.with_commands(
         on_isolated
             .iter()
-            .map(|(irq, _, _)| format!("echo {target} > /proc/irq/{irq}/smp_affinity_list"))
+            .map(|(irq, _, _, target)| {
+                format!(
+                    "echo {} > /proc/irq/{irq}/smp_affinity_list",
+                    fmt_cpus(target)
+                )
+            })
             .collect(),
     )
 }
@@ -938,7 +1017,7 @@ fn mtu(ctx: &Ctx) -> Hint {
         .into_iter()
         .filter_map(|i| {
             let m = i.mtu?;
-            (m < 1500).then(|| format!("{} has {m}", i.netdev.as_deref().unwrap_or(&i.pci)))
+            (m < 1500).then(|| format!("{} has {m}", nic_label(i)))
         })
         .collect();
     if small.is_empty() {

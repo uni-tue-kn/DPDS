@@ -7,7 +7,7 @@ use std::fs;
 use std::io::{self, Read};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -101,26 +101,85 @@ pub struct CommandOutput {
 /// only ever asks tools for their state and never changes the host. Tests replace it.
 pub trait Exec: Send + Sync + std::fmt::Debug {
     /// Runs `argv[0]` with the other elements as arguments (no shell), waits at most `timeout`,
-    /// kills and reaps the process when that runs out and returns `Err(ErrorKind::TimedOut)`.
-    /// `Err` with `ErrorKind::NotFound` means the tool is not installed.
+    /// kills the process (its whole process group) and reaps it when that runs out and returns
+    /// `Err(ErrorKind::TimedOut)`. `Err` with `ErrorKind::InvalidData` means the tool printed more
+    /// than 4 MiB on a stream. `Err` with `ErrorKind::NotFound` means the tool is not installed.
     fn run(&self, argv: &[String], timeout: Duration) -> io::Result<CommandOutput>;
+
+    /// The clock the time budget of a request is read from; tests replace it.
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
 }
 
 /// The real thing: `std::process::Command`.
 #[derive(Debug, Clone, Copy)]
 pub struct SystemExec;
 
-/// Reads a pipe to its end on its own thread, so a large answer never blocks the tool.
-fn drain<R: Read + Send + 'static>(mut pipe: R) -> JoinHandle<String> {
+/// Most bytes kept of one output stream of a tool.
+const OUTPUT_CAP: usize = 4 * 1024 * 1024;
+
+/// Reads a pipe to its end on its own thread, so a large answer never blocks the tool. Bytes past
+/// the cap are read and dropped; the result is then `InvalidData`.
+fn drain<R: Read + Send + 'static>(mut pipe: R) -> JoinHandle<io::Result<String>> {
     std::thread::spawn(move || {
         let mut bytes = Vec::new();
-        let _ = pipe.read_to_end(&mut bytes);
-        String::from_utf8_lossy(&bytes).into_owned()
+        let mut chunk = [0u8; 64 * 1024];
+        let mut excess = false;
+        loop {
+            match pipe.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    let room = OUTPUT_CAP - bytes.len();
+                    bytes.extend_from_slice(&chunk[..n.min(room)]);
+                    excess |= n > room;
+                }
+            }
+        }
+        if excess {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "the tool printed more than 4 MiB",
+            ))
+        } else {
+            Ok(String::from_utf8_lossy(&bytes).into_owned())
+        }
     })
+}
+
+/// Kills the child's whole process group and reaps the child.
+fn kill_group(child: &mut Child) {
+    if let Ok(pgid) = libc::pid_t::try_from(child.id()) {
+        // SAFETY: `killpg` only sends a signal; the child leads the group with its own pid.
+        unsafe {
+            libc::killpg(pgid, libc::SIGKILL);
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// The text a reader thread read, waiting for it only until `deadline`; `None` when it is still
+/// reading by then.
+fn finished(
+    h: Option<JoinHandle<io::Result<String>>>,
+    deadline: Instant,
+) -> Option<io::Result<String>> {
+    let Some(h) = h else {
+        return Some(Ok(String::new()));
+    };
+    while !h.is_finished() {
+        if Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    Some(h.join().unwrap_or_else(|_| Ok(String::new())))
 }
 
 impl Exec for SystemExec {
     fn run(&self, argv: &[String], timeout: Duration) -> io::Result<CommandOutput> {
+        use std::os::unix::process::CommandExt;
         let (tool, args) = argv
             .split_first()
             .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
@@ -129,28 +188,37 @@ impl Exec for SystemExec {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .process_group(0)
             .spawn()?;
         let stdout = child.stdout.take().map(drain);
         let stderr = child.stderr.take().map(drain);
         let deadline = Instant::now() + timeout;
         let status = loop {
-            if let Some(status) = child.try_wait()? {
-                break status;
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) => {}
+                Err(e) => {
+                    kill_group(&mut child);
+                    return Err(e);
+                }
             }
             if Instant::now() >= deadline {
-                // the reader threads end by themselves when the pipes close
-                let _ = child.kill();
-                let _ = child.wait();
+                kill_group(&mut child);
                 return Err(io::Error::from(io::ErrorKind::TimedOut));
             }
             std::thread::sleep(Duration::from_millis(5));
         };
-        let text =
-            |h: Option<JoinHandle<String>>| h.and_then(|h| h.join().ok()).unwrap_or_default();
+        // a background process of the tool may keep a pipe open: wait for the readers only until
+        // the deadline, then stop the whole group
+        let (Some(stdout), Some(stderr)) = (finished(stdout, deadline), finished(stderr, deadline))
+        else {
+            kill_group(&mut child);
+            return Err(io::Error::from(io::ErrorKind::TimedOut));
+        };
         Ok(CommandOutput {
             code: status.code().unwrap_or(-1),
-            stdout: text(stdout),
-            stderr: text(stderr),
+            stdout: stdout?,
+            stderr: stderr?,
         })
     }
 }
@@ -273,6 +341,13 @@ impl HostRoots {
             }
         }
         None
+    }
+
+    /// The CPUs of a NUMA node (`node<N>/cpulist`); empty without that information.
+    pub fn node_cpus(&self, node: u32) -> Vec<u32> {
+        read_trim(&self.sys(&format!("devices/system/node/node{node}/cpulist")))
+            .map(|l| parse_cpulist(&l))
+            .unwrap_or_default()
     }
 
     /// NUMA node of a PCI device (`None` for -1, absent or non-PCI names).

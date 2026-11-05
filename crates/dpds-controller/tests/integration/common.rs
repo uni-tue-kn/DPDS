@@ -80,8 +80,9 @@
 use std::fs;
 use std::net::{IpAddr, TcpStream};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use tempfile::TempDir;
@@ -1080,7 +1081,7 @@ pub enum Out {
     Timeout,
 }
 
-type Handler = Box<dyn Fn(&[String]) -> Out + Send + Sync>;
+type Handler = Arc<dyn Fn(&[String]) -> Out + Send + Sync>;
 
 /// The only tool calls hint computation may make (spec 33, item 5): `ethtool --json -a <netdev>`
 /// (and the text form `ethtool -a <netdev>` of an old ethtool), `dcb -j buffer show dev <netdev>`
@@ -1101,6 +1102,12 @@ struct FakeExecInner {
     calls: Vec<Vec<String>>,
     timeouts: Vec<Duration>,
     violations: Vec<Vec<String>>,
+    /// Spec 33b: calls starting with the prefix take this much simulated time (see
+    /// [`FakeExec::takes`]).
+    slow: Vec<(Vec<String>, Duration)>,
+    /// Spec 33b: the simulated clock is `base + offset`; only a slow call moves it.
+    base: Instant,
+    offset: Duration,
 }
 
 /// The test double of `host::Exec`.
@@ -1112,6 +1119,12 @@ struct FakeExecInner {
 /// `ErrorKind::NotFound` (the tool is missing). Among the rules of an installed tool the latest
 /// registered one whose argv prefix matches answers; a call no rule matches exits 2 with
 /// "fake: unexpected arguments" on stderr (so a wrong argv fails loudly).
+///
+/// Spec 33b: the clock of the fake runner is simulated. `Exec::now` (a provided method of the
+/// seam, `Instant::now()` by default) answers `base + offset`, and `offset` only grows when a
+/// call registered with [`FakeExec::takes`] runs, so a test can spend the controller's 60 s tool
+/// budget without waiting. Everything the controller measures for that budget goes through
+/// `Exec::now`.
 ///
 /// There is no write method: the controller changes nothing, so the seam cannot express it.
 pub struct FakeExec {
@@ -1145,8 +1158,25 @@ impl FakeExec {
                 calls: vec![],
                 timeouts: vec![],
                 violations: vec![],
+                slow: vec![],
+                base: Instant::now(),
+                offset: Duration::ZERO,
             }),
         })
+    }
+
+    /// Calls starting with `prefix` take `d` of simulated time (the call runs, the clock of
+    /// `Exec::now` moves by `d`). A call that takes longer than the timeout it was given is
+    /// stopped at the timeout: the clock moves by the timeout and `run` returns
+    /// `Err(ErrorKind::TimedOut)`, like the real runner does. `d == timeout` still answers. A
+    /// tool that is not installed answers `NotFound` at once and takes no time. The latest
+    /// registration that matches wins.
+    pub fn takes(&self, prefix: &[&str], d: Duration) {
+        self.inner
+            .lock()
+            .unwrap()
+            .slow
+            .push((prefix.iter().map(|s| s.to_string()).collect(), d));
     }
 
     /// Calls starting with `prefix` answer `out` (the tool is installed from now on).
@@ -1167,7 +1197,7 @@ impl FakeExec {
             .lock()
             .unwrap()
             .rules
-            .push((prefix.iter().map(|s| s.to_string()).collect(), Box::new(f)));
+            .push((prefix.iter().map(|s| s.to_string()).collect(), Arc::new(f)));
     }
 
     /// Every command run so far, as argv.
@@ -1204,32 +1234,53 @@ impl FakeExec {
 }
 
 impl Exec for FakeExec {
+    fn now(&self) -> Instant {
+        let i = self.inner.lock().unwrap();
+        i.base + i.offset
+    }
+
     fn run(&self, argv: &[String], timeout: Duration) -> std::io::Result<CommandOutput> {
-        let mut i = self.inner.lock().unwrap();
-        i.calls.push(argv.to_vec());
-        i.timeouts.push(timeout);
-        if !is_read_only_query(argv) {
-            i.violations.push(argv.to_vec());
-            return Ok(CommandOutput {
-                code: 126,
-                stdout: String::new(),
-                stderr: format!("fake: refused, not a read-only query: {argv:?}"),
-            });
-        }
-        let tool = argv.first().map(String::as_str).unwrap_or_default();
-        if !i
-            .rules
-            .iter()
-            .any(|(p, _)| p.first().map(String::as_str) == Some(tool))
-        {
-            return Err(std::io::Error::from(std::io::ErrorKind::NotFound));
-        }
-        let out = i
-            .rules
-            .iter()
-            .rev()
-            .find(|(p, _)| argv.starts_with(p))
-            .map(|(_, f)| f(argv));
+        // the handler runs outside the lock, so a test's handler may block
+        let handler = {
+            let mut i = self.inner.lock().unwrap();
+            i.calls.push(argv.to_vec());
+            i.timeouts.push(timeout);
+            if !is_read_only_query(argv) {
+                i.violations.push(argv.to_vec());
+                return Ok(CommandOutput {
+                    code: 126,
+                    stdout: String::new(),
+                    stderr: format!("fake: refused, not a read-only query: {argv:?}"),
+                });
+            }
+            let tool = argv.first().map(String::as_str).unwrap_or_default();
+            if !i
+                .rules
+                .iter()
+                .any(|(p, _)| p.first().map(String::as_str) == Some(tool))
+            {
+                return Err(std::io::Error::from(std::io::ErrorKind::NotFound));
+            }
+            let takes = i
+                .slow
+                .iter()
+                .rev()
+                .find(|(p, _)| argv.starts_with(p))
+                .map(|(_, d)| *d);
+            if let Some(d) = takes {
+                if d > timeout {
+                    i.offset += timeout;
+                    return Err(std::io::Error::from(std::io::ErrorKind::TimedOut));
+                }
+                i.offset += d;
+            }
+            i.rules
+                .iter()
+                .rev()
+                .find(|(p, _)| argv.starts_with(p))
+                .map(|(_, f)| f.clone())
+        };
+        let out = handler.map(|f| f(argv));
         Ok(match out {
             None => CommandOutput {
                 code: 2,
@@ -1439,6 +1490,8 @@ pub struct FakeSupervisorInner {
 /// `fail_next_start` was called, `stop` goes straight to Stopped.
 pub struct FakeSupervisor {
     pub inner: Mutex<FakeSupervisorInner>,
+    /// Spec 33b: how many `start` calls have been entered (before their delay).
+    entered: AtomicUsize,
 }
 
 pub fn status(state: State) -> SupervisorStatus {
@@ -1462,7 +1515,12 @@ impl FakeSupervisor {
                 start_delay: Duration::ZERO,
                 next_run: None,
             }),
+            entered: AtomicUsize::new(0),
         })
+    }
+    /// Spec 33b: the number of `start` calls entered so far, also those still in their delay.
+    pub fn starts_entered(&self) -> usize {
+        self.entered.load(Ordering::SeqCst)
     }
     pub fn fail_next_start(&self, error: &str, log_tail: &[&str]) {
         self.inner.lock().unwrap().fail_next = Some((
@@ -1490,6 +1548,7 @@ impl FakeSupervisor {
 
 impl Supervisor for FakeSupervisor {
     fn start(&self, plan: LaunchPlan) {
+        self.entered.fetch_add(1, Ordering::SeqCst);
         let delay = self.inner.lock().unwrap().start_delay;
         std::thread::sleep(delay);
         let mut i = self.inner.lock().unwrap();
