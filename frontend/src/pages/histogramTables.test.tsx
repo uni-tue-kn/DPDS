@@ -8,6 +8,7 @@ import * as fx from '../test/fixtures';
 import { renderApp, tick } from '../test/helpers';
 import { api } from '../test/mockApi';
 import { must } from '../test/must';
+import { expectBars } from '../test/probabilities';
 
 // Spec 36 S2 (user 2026-11-05: the histogram's numbers in rows above the diagram, "displayed like the table in P4TG"). Contract:
 // the header of src/test/dashboardUi.tsx. In a link's "Delay histogram" view, above the bar chart, one `.row` with three
@@ -297,9 +298,9 @@ describe('Histogram tables (spec 36 S2): the chart keeps its bars and loses its 
     await ready();
     const chart = delayBar(card(0));
     const data = JSON.parse(chart.getAttribute('data-chart') ?? 'null');
-    expect(data.datasets[0].data).toEqual([1, 10, 100, 40, 2]);
+    expectBars(data.datasets[0].data, fx.histogram(0));
     const options = JSON.parse(chart.getAttribute('data-options') ?? 'null');
-    expect(Object.keys(options.plugins?.annotation?.annotations ?? {})).toHaveLength(4);
+    expect(Object.keys(options.plugins?.annotation?.annotations ?? {})).toHaveLength(8); // spec 58 A1: a line and a label each
   });
 
   it('has no "Mean ... · Jitter (σ) ..." title: not in the options, not in the page', async () => {

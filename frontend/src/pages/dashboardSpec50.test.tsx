@@ -7,6 +7,7 @@ import * as fx from '../test/fixtures';
 import { renderApp, seedLinks, tick } from '../test/helpers';
 import { ApiError, api, serveHistory } from '../test/mockApi';
 import { must } from '../test/must';
+import { expectBars } from '../test/probabilities';
 
 // Spec 50 A3 (user 2026-11-05: "The histogram diagram is lost when we stop the traffic. It should still be displayed even when
 // traffic is stopped."). The controller now answers the run's last histogram after the stop (crates/dpds-controller/tests/
@@ -89,7 +90,7 @@ describe.each(['stopped', 'failed'] as const)('Dashboard (spec 50 A3): the histo
     expect(tablesOf(0)).toHaveLength(3);
     expect(api.getDelayHistogram).toHaveBeenCalledWith(0);
     const bars = JSON.parse(delayBar(card(0)).getAttribute('data-chart') ?? 'null');
-    expect(bars.datasets[0].data).toEqual(fx.histogram(0).bins);
+    expectBars(bars.datasets[0].data, fx.histogram(0));
   });
 
   it('takes Delay and σ from the response (mean_ns, std_ns) as there are no live stats', async () => {

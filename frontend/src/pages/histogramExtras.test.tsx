@@ -5,6 +5,7 @@ import { card, delayBar, findCard, findDelayBar } from '../test/dashboardUi';
 import * as fx from '../test/fixtures';
 import { renderApp, tick } from '../test/helpers';
 import { api } from '../test/mockApi';
+import { expectBars } from '../test/probabilities';
 
 // Spec 35 F4 (user 2026-11-05) removes the histogram extras of spec 8 from the dashboard: the window select, the log-scale
 // toggle, the expected-distribution overlay, the percentile list and the under/overflow text. Removed from this file, with the
@@ -65,7 +66,7 @@ describe('Dashboard histogram: no window, no log scale, no overlay, no percentil
     await ready();
     const data = chartData(0);
     expect(data.datasets).toHaveLength(1);
-    expect(data.datasets[0].data).toEqual([1, 10, 100, 40, 2]);
+    expectBars(data.datasets[0].data, fx.histogram(0));
     expect(data.datasets.some((s) => s.type === 'line')).toBe(false);
     expect(data.labels).toHaveLength(5);
   });
@@ -73,10 +74,10 @@ describe('Dashboard histogram: no window, no log scale, no overlay, no percentil
   it('each link shows the bins of its own reply', async () => {
     // A link whose tab is not shown does not render its histogram: read each link's chart while its tab shows.
     await ready(0);
-    expect(chartData(0).datasets[0].data).toEqual([1, 10, 100, 40, 2]);
+    expectBars(chartData(0).datasets[0].data, fx.histogram(0));
     card(1);
     await findDelayBar(card(1));
-    expect(chartData(1).datasets[0].data).toEqual([1, 10, 100, 40, 3]);
+    expectBars(chartData(1).datasets[0].data, fx.histogram(1));
   });
 
   it('the chart follows the next reply', async () => {
@@ -88,10 +89,10 @@ describe('Dashboard histogram: no window, no log scale, no overlay, no percentil
     await tick(0);
     fireEvent.click(within(card(0)).getByRole('radio', { name: 'Delay histogram' }));
     await tick(0);
-    expect(chartData(0).datasets[0].data).toEqual([1, 10, 100, 40, 2]);
+    expectBars(chartData(0).datasets[0].data, fx.histogram(0));
     api.getDelayHistogram.mockImplementation(async (dir) => fx.histogram(dir, { bins: [9, 9, 9, 9, 9] }));
     await tick(2500);
-    expect(chartData(0).datasets[0].data).toEqual([9, 9, 9, 9, 9]);
+    expectBars(chartData(0).datasets[0].data, fx.histogram(0, { bins: [9, 9, 9, 9, 9] }));
   });
 
   it('a controller without the optional extras still renders the bars (no percentiles, no expected curve, no crash)', async () => {
@@ -112,7 +113,7 @@ describe('Dashboard histogram: no window, no log scale, no overlay, no percentil
     });
     await ready();
     expect(chartData(0).datasets).toHaveLength(1);
-    expect(chartData(0).datasets[0].data).toEqual([1, 10, 100, 40, 2]);
+    expectBars(chartData(0).datasets[0].data, fx.histogram(0));
   });
 
   it('a reply with an expected curve does not add it to the chart (the overlay is gone)', async () => {

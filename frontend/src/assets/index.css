@@ -206,9 +206,18 @@ body {
   --bs-table-border-color: var(--color-secondary);
 }
 
+/* The line and bar charts size themselves by the aspect ratio in their options (P4TG: 6 and 4), not by a height. */
 .chart-box {
   position: relative;
-  height: 250px;
+}
+
+/* What a histogram view holds while it waits for its first data: the room of the tables row and of the chart. */
+.chart-placeholder {
+  aspect-ratio: 4;
+}
+
+.hist-tables-placeholder {
+  min-height: 9rem;
 }
 
 .donut-box {

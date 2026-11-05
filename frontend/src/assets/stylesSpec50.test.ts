@@ -89,9 +89,10 @@ describe('no Bootstrap blue in the stylesheet (spec 50 C)', () => {
 describe('taller charts (spec 50 E)', () => {
   const flat = css.replace(/\s+/g, ' ');
 
-  it('.chart-box is 250px high (1.25 x 200px)', () => {
+  // Spec 58 S1 (P4TG): the line and bar charts size themselves by aspect ratio (6 and 4); .chart-box has no fixed height any more.
+  it('.chart-box has no fixed height (spec 58 S1; was 250px)', () => {
     const rule = must(/\.chart-box \{([^}]*)\}/.exec(flat), 'the .chart-box rule')[1];
-    expect(rule).toMatch(/(?:^|[;\s])height: 250px;/);
+    expect(rule).not.toMatch(/(?:^|[;\s])(?:min-|max-)?height:/);
   });
 
   it('the donut keeps its size: .donut-box is 220px by 220px', () => {

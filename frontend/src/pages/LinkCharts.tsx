@@ -1,13 +1,13 @@
-import { Fragment, useId, useMemo, useState } from 'react';
+import { Fragment, useCallback, useId, useMemo, useState } from 'react';
 import { Form, OverlayTrigger, Row, Tooltip } from 'react-bootstrap';
 import { Line } from 'react-chartjs-2';
-import type { HistorySample } from '../api/types';
+import type { HistogramView, HistorySample } from '../api/types';
 import { l1Gbps, secondsToTime } from '../common/format';
 import { selectTimeKeys } from '../common/selectTimeKeys';
 import { useTheme } from '../common/theme';
-import { chartOptions, RX_COLOR, RX_FILL, TX_COLOR, TX_FILL } from '../components/charts';
+import { chartOptions, hexAlpha, RX_COLOR, RX_FILL, TX_COLOR, TX_FILL } from '../components/charts';
 import ChartBox from './ChartBox';
-import DelayHistogram from './DelayHistogram';
+import DelayHistogram, { type HistKind, sameHistogram } from './DelayHistogram';
 import FrameDonut from './FrameDonut';
 import { LossTable, RateTable } from './LinkTables';
 import LossDonut, { CAUSES, totalDrops } from './LossDonut';
@@ -17,6 +17,9 @@ type View = 'rate' | 'histogram' | 'iat' | 'loss';
 
 /** The most points a time chart plots, like P4TG's `time_statistics?limit=100`. */
 const MAX_POINTS = 100;
+
+/** P4TG's width to height of the line charts. */
+const LINE_ASPECT = 6;
 
 /** The units of the rate chart's y axis, largest first; with no traffic it is Gbit/s, like P4TG. */
 const RATE_AXIS_UNITS = [
@@ -70,17 +73,14 @@ export default function LinkCharts({
   const theme = useTheme();
   const [chosen, setChosen] = useState<View>('rate');
   const id = useId();
-  // Which percentile lines are switched off, per histogram view: here so that they outlive the view and the tab.
-  const [hiddenLines, setHiddenLines] = useState<Record<'histogram' | 'iat', ReadonlySet<string>>>({
-    histogram: new Set(),
-    iat: new Set(),
-  });
-  const toggleLine = (v: 'histogram' | 'iat') => (key: string) =>
-    setHiddenLines((h) => {
-      const next = new Set(h[v]);
-      if (!next.delete(key)) next.add(key);
-      return { ...h, [v]: next };
-    });
+  // The percentile lines' flag and the last histogram of each kind live here, above the views that remount on every radio switch.
+  const [hidePercentiles, setHidePercentiles] = useState(false);
+  const [hists, setHists] = useState<Partial<Record<HistKind, HistogramView>>>({});
+  const keep = useCallback(
+    (kind: HistKind, h: HistogramView) =>
+      setHists((all) => (sameHistogram(all[kind], h) ? all : { ...all, [kind]: h })),
+    [],
+  );
   const summary = dir === undefined;
   const of = summary ? 'all links' : `link ${dir}`;
   const noHistogram = summary || empty;
@@ -137,13 +137,17 @@ export default function LinkCharts({
         label: c.label,
         data: points.map(COUNTS[i]),
         borderColor: c.color,
-        backgroundColor: c.color,
+        backgroundColor: hexAlpha(c.color, 0.5),
+        fill: true,
       })),
     }),
     [points, labels],
   );
-  const rateOptions = useMemo(() => chartOptions<'line'>(theme, 'Time', rateUnit.label), [theme, rateUnit]);
-  const lossOptions = useMemo(() => chartOptions<'line'>(theme, 'Time', 'Dropped packets'), [theme]);
+  const rateOptions = useMemo(
+    () => chartOptions<'line'>(theme, 'Time', rateUnit.label, LINE_ASPECT),
+    [theme, rateUnit],
+  );
+  const lossOptions = useMemo(() => chartOptions<'line'>(theme, 'Time', 'Dropped packets', LINE_ASPECT), [theme]);
 
   return (
     <>
@@ -160,14 +164,24 @@ export default function LinkCharts({
       {view === 'histogram' && active && dir !== undefined && (
         <DelayHistogram
           dir={dir}
+          hist={hists.delay}
+          onHist={keep}
           meanNs={live?.meanNs}
           stdNs={live?.stdNs}
-          hidden={hiddenLines.histogram}
-          onToggle={toggleLine('histogram')}
+          hidden={hidePercentiles}
+          onToggle={() => setHidePercentiles((h) => !h)}
         />
       )}
       {view === 'iat' && dir !== undefined && (
-        <DelayHistogram dir={dir} active={active} kind="iat" hidden={hiddenLines.iat} onToggle={toggleLine('iat')} />
+        <DelayHistogram
+          dir={dir}
+          active={active}
+          kind="iat"
+          hist={hists.iat}
+          onHist={keep}
+          hidden={hidePercentiles}
+          onToggle={() => setHidePercentiles((h) => !h)}
+        />
       )}
       <Form.Group role="radiogroup" aria-label="Chart" className="text-center my-3">
         {views.map(([v, text]) => {

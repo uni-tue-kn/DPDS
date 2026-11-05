@@ -24,6 +24,7 @@ import { deferred, expectStartBody, renderApp, seedRaw, seedStore, storedDoc, ti
 import { setPrefersDark } from '../test/matchMedia';
 import { ApiError, api, fakeController, serveHistory } from '../test/mockApi';
 import { must } from '../test/must';
+import { expectBars } from '../test/probabilities';
 
 // Spec 28 (user 2026-11-04): the P4TG-like dashboard. Spec: items 1-3 of scratchpad/spec28.md (item 4, server-side history, is
 // spec 29 and not tested here). The tester's choices where the spec is silent are marked "CHOICE" and listed in the report:
@@ -706,9 +707,10 @@ describe('Dashboard (spec 28): rate chart in the P4TG look', () => {
     expect(o.plugins?.legend?.position).toBe('top');
   });
 
-  it('hover tooltips stay enabled', async () => {
+  // Spec 58 S6 (P4TG): no tooltips on the line and bar charts. Was: 'hover tooltips stay enabled'.
+  it('has no hover tooltips', async () => {
     const o = optsOf(await rate());
-    expect(o.plugins?.tooltip?.enabled).not.toBe(false);
+    expect(o.plugins?.tooltip?.enabled).toBe(false);
   });
 
   // Spec 29. Was: "keeps one sample per poll (the 120 s client history is unchanged)", which counted one point per stats poll.
@@ -787,13 +789,13 @@ describe('Dashboard (spec 43 F1): the loss chart plots cumulative dropped packet
     expect(colours).toEqual(donut.datasets[0].backgroundColor);
   });
 
-  it('y title is "Dropped packets" (no percent), starts at zero; x title is time; legend on top; tooltips on', async () => {
+  it('y title is "Dropped packets" (no percent), starts at zero; x title is time; legend on top; no tooltips (spec 58 S6)', async () => {
     const o = optsOf(await drops());
     expect(o.scales?.y?.title?.text).toBe('Dropped packets');
     expect(o.scales?.y?.beginAtZero === true || o.scales?.y?.min === 0).toBe(true);
     expect(o.scales?.x?.title?.text).toMatch(/time/i);
     expect(o.plugins?.legend?.position).toBe('top');
-    expect(o.plugins?.tooltip?.enabled).not.toBe(false);
+    expect(o.plugins?.tooltip?.enabled).toBe(false);
   });
 
   // Spec 29. Was: "collects one point per poll" (a client-side sample per stats poll).
@@ -854,19 +856,26 @@ describe('Dashboard (spec 28): delay histogram chart look and percentile lines',
     }
   });
 
-  it('draws nothing else: no annotation without a percentile name', async () => {
+  // Spec 58 A1: a percentile is a line (no text) and a separate label. Was: every annotation carries a percentile name.
+  it('draws nothing else: only lines and labels, the labels carrying the names', async () => {
     const o = optsOf(await hist());
+    expect(annotations(o)).toHaveLength(8);
+    expect(annotations(o).filter((a) => a.type !== 'line' && a.type !== 'label')).toEqual([]);
     const named = new Set(['p50', 'p90', 'p99', 'p99.9'].flatMap((n) => labelled(o, n)));
-    expect(annotations(o).filter((a) => !named.has(a))).toEqual([]);
+    expect(
+      annotations(o)
+        .filter((a) => !named.has(a))
+        .every((a) => a.type === 'line'),
+    ).toBe(true);
   });
 
   it('the lines are vertical (xMin = xMax) with numeric category positions', async () => {
     const o = optsOf(await hist());
     for (const name of ['p50', 'p90', 'p99', 'p99.9']) {
-      const a = must(labelled(o, name).find((x) => x.type === 'line') ?? labelled(o, name)[0], `${name} annotation`);
+      const a = must(labelled(o, name)[0], `${name} annotation`);
       expect(typeof xOf(a)).toBe('number');
-      if (a.type === 'line') expect(a.xMax ?? a.xMin).toBe(a.xMin);
     }
+    for (const l of annotations(o).filter((x) => x.type === 'line')) expect(l.xMax).toBe(l.xMin);
   });
 
   it('they stand where the values fall: bin axis position (value - lo) / bin - 0.5, within 0.6 of a bin', async () => {
@@ -918,19 +927,19 @@ describe('Dashboard (spec 28): delay histogram chart look and percentile lines',
   // Spec 35 F4. Was: 'the percentile list under the chart stays' (p50..p99.9 as a list, with clamp markers; removed, the dashed
   // annotation lines stay), 'y axis titled ... legend on top' (the legend assertion is dropped: with the expected overlay gone
   // the single series needs none) and 'keeps the expected overlay in the legend and the log toggle' (overlay and log toggle gone).
-  it('y axis titled, starts at zero and linear, x axis titled with the delay; tooltips on', async () => {
+  it('y axis titled with the probability, starts at zero and linear, x axis titled with the delay range; no tooltips (spec 58 S3, S4, S6)', async () => {
     const o = optsOf(await hist());
-    expect(o.scales?.y?.title?.text).toMatch(/packets|count/i);
+    expect(o.scales?.y?.title?.text).toBe('Probability (%)');
     expect(o.scales?.y?.beginAtZero === true || o.scales?.y?.min === 0).toBe(true);
     expect(o.scales?.y?.type ?? 'linear').toBe('linear');
-    expect(o.scales?.x?.title?.text).toMatch(/delay/i);
-    expect(o.plugins?.tooltip?.enabled).not.toBe(false);
+    expect(o.scales?.x?.title?.text).toBe('Delay Range');
+    expect(o.plugins?.tooltip?.enabled).toBe(false);
   });
 
   it('has the bars only: one dataset, no expected overlay, and no percentile list under the chart', async () => {
     const chart = await hist();
     expect(dataOf(chart).datasets).toHaveLength(1);
-    expect(dataOf(chart).datasets[0].data).toEqual([1, 10, 100, 40, 2]);
+    expectBars(dataOf(chart).datasets[0].data, fx.histogram(0));
     expect(within(card(0)).queryByTestId('percentiles')).not.toBeInTheDocument();
     expect(within(card(0)).queryByText('p50', { selector: 'dt' })).not.toBeInTheDocument();
   });

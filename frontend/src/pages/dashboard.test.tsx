@@ -11,8 +11,8 @@ import {
   findState,
   hasTab,
   queryDelayBar,
-  radioNames,
   RUN_BUTTONS,
+  radioNames,
   runButtonNames,
   runButtons,
   tab,
@@ -23,6 +23,7 @@ import * as fx from '../test/fixtures';
 import { deferred, expectStartBody, renderApp, seedStore, storedDoc, tick } from '../test/helpers';
 import { ApiError, api } from '../test/mockApi';
 import { must } from '../test/must';
+import { expectBars } from '../test/probabilities';
 
 const STATES: EmulationState[] = ['stopped', 'starting', 'running', 'stopping', 'failed'];
 
@@ -386,10 +387,10 @@ describe('Dashboard: delay histogram', () => {
     showHistogram(0, 1);
     const chart = await findDelayBar(card(0));
     const data = JSON.parse(chart.getAttribute('data-chart') ?? 'null');
-    expect(data.datasets[0].data).toEqual([1, 10, 100, 40, 2]);
+    expectBars(data.datasets[0].data, fx.histogram(0));
     expect(data.labels).toHaveLength(5);
     const chart1 = await findDelayBar(card(1));
-    expect(JSON.parse(chart1.getAttribute('data-chart') ?? 'null').datasets[0].data).toEqual([1, 10, 100, 40, 3]);
+    expectBars(JSON.parse(chart1.getAttribute('data-chart') ?? 'null').datasets[0].data, fx.histogram(1));
     expect(api.getDelayHistogram).toHaveBeenCalledWith(0);
     expect(api.getDelayHistogram).toHaveBeenCalledWith(1);
   });

@@ -26,6 +26,7 @@ import * as fx from '../test/fixtures';
 import { renderApp, seedLinks, tick } from '../test/helpers';
 import { api, serveHistory } from '../test/mockApi';
 import { must } from '../test/must';
+import { expectBars } from '../test/probabilities';
 
 // Spec 52 (user 2026-11-05: loss donut left, frame donut right, a central line, both centred; the IAT histogram becomes a chart radio
 // "like P4TG's chart views", "shown like delay histogram"). Spec: .git/claude-specs/spec52-donut-row-iat-radio.md. Contract of the DOM:
@@ -196,7 +197,7 @@ describe('Spec 52 R2: the "IAT histogram" radio', () => {
     const box = within(panel).getByRole('img', { name: 'IAT histogram of link 0' });
     expect(box).toHaveClass('chart-box');
     expect(within(box).getByTestId('chart-bar')).toBe(iatBar(panel));
-    expect(iatData().datasets[0].data).toEqual(fx.iatHistogram(0).bins);
+    expectBars(iatData().datasets[0].data, fx.iatHistogram(0));
     expect(within(panel).queryByRole('img', { name: /^Rate chart/ })).not.toBeInTheDocument();
     expect(queryDelayBar(panel)).toBeNull();
     expect(within(panel).getByRole('img', { name: LOSS_DONUT_LABEL })).toBeInTheDocument();
@@ -271,13 +272,13 @@ describe('Spec 52 R2: the "IAT histogram" radio', () => {
       await tick(0);
       fireEvent.click(radio(0, 'IAT histogram'));
       await tick(1000);
-      expect(iatData().datasets[0].data).toEqual(fx.iatHistogram(0).bins);
+      expectBars(iatData().datasets[0].data, fx.iatHistogram(0));
       expect(histTables(card(0))).toHaveLength(3);
       ended('stopped');
       await tick(3000);
       expect(screen.queryByTestId('pill-status')).not.toBeInTheDocument(); // the run is over
       expect(radio(0, 'IAT histogram')).toBeChecked();
-      expect(iatData().datasets[0].data).toEqual(fx.iatHistogram(0).bins);
+      expectBars(iatData().datasets[0].data, fx.iatHistogram(0));
       expect(histTables(card(0))).toHaveLength(3);
       const n = api.getIatHistogram.mock.calls.length;
       await tick(2000);
@@ -520,41 +521,43 @@ describe('Spec 52 R2b: the cells', () => {
 });
 
 describe('Spec 52 R2b: the chart of the IAT view', () => {
-  it('is one bar dataset of the response’s bins, one label per bin, y axis "#Packets", x axis in a time unit', async () => {
+  it('is one bar dataset of the response’s bin probabilities, one label per bin, y axis "Probability (%)", x axis "IAT Range" (spec 58 S3, S4)', async () => {
     await ready();
     const data = iatData();
     expect(data.datasets).toHaveLength(1);
-    expect(data.datasets[0].data).toEqual(fx.iatHistogram(0).bins);
+    expectBars(data.datasets[0].data, fx.iatHistogram(0));
     expect(data.labels).toHaveLength(5);
     expect(data.labels.join(' ')).not.toMatch(/NaN|undefined/);
     const o = iatOptions();
-    expect(o.scales?.y?.title?.text).toBe('#Packets');
-    expect(o.scales?.x?.title?.text).toMatch(/(^|[^a-zA-Zµ])(ns|µs|us|ms|s)([^a-zA-Zµ]|$)/);
+    expect(o.scales?.y?.title?.text).toBe('Probability (%)');
+    expect(o.scales?.x?.title?.text).toBe('IAT Range');
   });
 
-  it('draws the four percentile lines as vertical annotations on the category axis (p50 of 3 µs at bin 1)', async () => {
+  // Spec 58 A1: each percentile is a line and a label (was: one line with a built-in label).
+  it('draws the four percentile lines as vertical annotations on the category axis (p50 of 3 µs at bin 1), each with a label', async () => {
     await ready();
-    const annotations = Object.values(iatOptions().plugins?.annotation?.annotations ?? {}) as {
+    const all = Object.values(iatOptions().plugins?.annotation?.annotations ?? {}) as {
       type: string;
       xMin: number;
       xMax: number;
-      label?: { content?: string };
+      content?: string;
     }[];
-    expect(annotations).toHaveLength(4);
-    for (const a of annotations) {
-      expect(a.type).toBe('line');
+    const lines = all.filter((a) => a.type === 'line');
+    expect(all).toHaveLength(8);
+    expect(lines).toHaveLength(4);
+    for (const a of lines) {
       expect(a.xMax).toBe(a.xMin);
       expect(Number.isFinite(a.xMin)).toBe(true);
     }
-    expect(annotations.map((a) => a.label?.content)).toEqual(['p50', 'p90', 'p99', 'p99.9']);
+    expect(all.filter((a) => a.type === 'label').map((a) => a.content)).toEqual(['p50', 'p90', 'p99', 'p99.9']);
     // bin i is centred on i: (value - lo) / bin_ns - 0.5
-    expect(annotations.map((a) => a.xMin)).toEqual([1, 2, 3, 4]);
+    expect(lines.map((a) => a.xMin)).toEqual([1, 2, 3, 4]);
   });
 
   it('draws no line for a percentile the response does not have', async () => {
     serveIat({ percentiles: { p50: 3000, p90: null, p99: 7000, p999: null } });
     await ready();
-    expect(Object.keys(iatOptions().plugins?.annotation?.annotations ?? {})).toHaveLength(2);
+    expect(Object.keys(iatOptions().plugins?.annotation?.annotations ?? {})).toHaveLength(4); // two lines and their labels
   });
 
   it('has no expected overlay: no second dataset, no "expected" anywhere in the chart, even when the reply carries expected fields', async () => {

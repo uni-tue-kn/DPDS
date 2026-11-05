@@ -50,15 +50,22 @@ export const chartInk = (theme: Theme) =>
 const prefersReducedMotion = () =>
   typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
+/** `#rrggbb` as an `rgba()` string of the given alpha. */
+export function hexAlpha(hex: string, alpha: number): string {
+  const n = Number.parseInt(hex.slice(1), 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+}
+
 /**
- * The options every chart shares: P4TG look (wide and short, titled axes, legend on top, y from zero), text and grid in
- * the colours of the theme. Chart.js animates and draws points by default; animation is off for reduced motion.
+ * The options the line and bar charts share: P4TG look (wide and short by `aspectRatio`, titled axes, legend on top, y
+ * from zero, no tooltips), text and grid in the colours of the theme. Chart.js animates and draws points by default;
+ * animation is off for reduced motion.
  */
 export function chartOptions<T extends 'line' | 'bar'>(
   theme: Theme,
   xTitle: string,
   yTitle: string,
-  showLegend = true,
+  aspectRatio: number,
 ): ChartOptions<T> {
   const { text, grid } = chartInk(theme);
   const axis = (title: string) => ({
@@ -69,12 +76,14 @@ export function chartOptions<T extends 'line' | 'bar'>(
   return {
     ...(prefersReducedMotion() ? { animation: false } : {}),
     responsive: true,
-    maintainAspectRatio: false,
-    interaction: { mode: 'index', intersect: false },
+    aspectRatio,
     scales: {
       x: axis(xTitle),
       y: { ...axis(yTitle), beginAtZero: true },
     },
-    plugins: { legend: { display: showLegend, position: 'top', labels: { color: text } } },
+    plugins: {
+      legend: { display: true, position: 'top', labels: { color: text } },
+      tooltip: { enabled: false },
+    },
   } as unknown as ChartOptions<T>;
 }
