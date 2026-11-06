@@ -7,13 +7,15 @@ import logo from './assets/logo.png';
 import logoDark from './assets/logo-dark.png';
 import { resetConfig, useLocalConfig } from './common/localConfig';
 import { startPolling } from './common/polling';
+import { ToastContext } from './common/toast';
+import type { ToastVariant } from './common/toast';
 import type { Theme } from './common/theme';
 import { ThemeContext } from './common/theme';
 import { isUpdateAvailable, RELEASES_URL, REPO_URL } from './common/updateCheck';
+import ToastMessage from './components/ToastMessage';
 import Dashboard from './pages/Dashboard';
 import Hints from './pages/Hints';
 import Interfaces from './pages/Interfaces';
-import LinkEditor from './pages/LinkEditor';
 import Offline from './pages/Offline';
 import Settings from './pages/Settings';
 
@@ -208,6 +210,13 @@ export default function App() {
   const [online, setOnline] = useState(true);
   const goOnline = useCallback(() => setOnline(true), []);
   const goOffline = useCallback(() => setOnline(false), []);
+  // One toast at a time: a new one replaces the shown one (`id` restarts its timer).
+  const [toast, setToast] = useState({ id: 0, show: false, message: '', variant: 'success' as ToastVariant });
+  const showToast = useCallback(
+    (message: string, variant: ToastVariant) => setToast((t) => ({ id: t.id + 1, show: true, message, variant })),
+    [],
+  );
+  const hideToast = useCallback(() => setToast((t) => ({ ...t, show: false })), []);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -222,31 +231,32 @@ export default function App() {
 
   return (
     <ThemeContext.Provider value={theme}>
-      <div className="app-shell">
-        <Sidebar theme={theme} onToggle={toggle} onConnected={setOthers} onOnline={goOnline} onOffline={goOffline} />
-        <main className="main-content">
-          <SessionWarning others={others} />
-          <CorruptConfigAlert />
-          {online ? (
-            <Routes>
-              <Route path="/" element={<Dashboard />} />
-              <Route path="/interfaces" element={<Interfaces />} />
-              <Route path="/hints" element={<Hints />} />
-              <Route path="/settings" element={<Settings />} />
-              <Route path="/settings/new" element={<LinkEditor />} />
-              <Route path="/settings/:id" element={<LinkEditor />} />
-              <Route path="*" element={<Navigate to="/" replace />} />
-            </Routes>
-          ) : (
-            <Offline onOnline={goOnline} />
-          )}
-          <footer className="app-footer">
-            <a href={REPO_URL} target="_blank" rel="noopener noreferrer" aria-label="DPDS @ GitHub">
-              DPDS @ <i className="bi bi-github" aria-hidden="true" />
-            </a>
-          </footer>
-        </main>
-      </div>
+      <ToastContext.Provider value={showToast}>
+        <div className="app-shell">
+          <Sidebar theme={theme} onToggle={toggle} onConnected={setOthers} onOnline={goOnline} onOffline={goOffline} />
+          <main className="main-content">
+            <SessionWarning others={others} />
+            <CorruptConfigAlert />
+            {online ? (
+              <Routes>
+                <Route path="/" element={<Dashboard />} />
+                <Route path="/interfaces" element={<Interfaces />} />
+                <Route path="/hints" element={<Hints />} />
+                <Route path="/settings" element={<Settings />} />
+                <Route path="*" element={<Navigate to="/" replace />} />
+              </Routes>
+            ) : (
+              <Offline onOnline={goOnline} />
+            )}
+            <footer className="app-footer">
+              <a href={REPO_URL} target="_blank" rel="noopener noreferrer" aria-label="DPDS @ GitHub">
+                DPDS @ <i className="bi bi-github" aria-hidden="true" />
+              </a>
+            </footer>
+          </main>
+        </div>
+        <ToastMessage key={toast.id} show={toast.show} message={toast.message} bg={toast.variant} onClose={hideToast} />
+      </ToastContext.Provider>
     </ThemeContext.Provider>
   );
 }

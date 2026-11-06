@@ -1,4 +1,4 @@
-// Form model of the link editor: every number is kept as the typed string so inputs can be emptied and
+// Form model of the Link settings and Histogram modals: every number is kept as the typed string so inputs can be emptied and
 // retyped; `formToDto` validates and converts back to the wire type.
 import { errorMessage } from '../common/format';
 import type { ConfigDto, DelayerDto, HistogramDto, Distribution, LimiterMode, LossModelDto } from '../api/types';
@@ -11,6 +11,7 @@ import {
   emptyUnit,
   fromBase,
   parseFrame,
+  shiftDecimal,
   sourceOf,
   sameFamily,
   toBase,
@@ -257,7 +258,7 @@ function limiterRate(v: UnitValue, frame: number | null): number {
 }
 
 /** The average frame size in bytes, null when empty; an invalid value is refused even if no rate field needs it. */
-function frameToDto(f: ConfigForm): number | null {
+export function frameToDto(f: ConfigForm): number | null {
   if (f.avg_frame_size.trim() === '') return null;
   const n = parseFrame(f.avg_frame_size);
   if (n === null) throw new Error('Average frame size must be a number of at least 64 (bytes)');
@@ -295,7 +296,7 @@ export function portError(port: string): string | null {
     : `"${port}" is neither a PCI address (0000:65:00.0) nor a vdev (net_null0, net_ring0)`;
 }
 
-function delayerToDto(f: ConfigForm, frame: number | null): DelayerDto {
+export function delayerToDto(f: ConfigForm, frame: number | null): DelayerDto {
   if (!DISTRIBUTIONS.includes(f.distribution)) throw new Error(`Delayer distribution "${f.distribution}" is unknown`);
   return {
     distribution: f.distribution,
@@ -307,7 +308,7 @@ function delayerToDto(f: ConfigForm, frame: number | null): DelayerDto {
   };
 }
 
-function lossToDto(f: ConfigForm): LossModelDto {
+export function lossToDto(f: ConfigForm): LossModelDto {
   return f.loss_type === 'Random'
     ? { type: 'Random', p: prob(f.random_p, 'Random loss probability') }
     : {
@@ -319,13 +320,13 @@ function lossToDto(f: ConfigForm): LossModelDto {
       };
 }
 
-function limiterToDto(f: ConfigForm, frame: number | null) {
+export function limiterToDto(f: ConfigForm, frame: number | null) {
   if (!LIMITER_MODES.includes(f.limiter_mode)) throw new Error(`Unknown limiter mode "${f.limiter_mode}"`);
   return { mode: f.limiter_mode, rate_bps: limiterRate(f.rate_bps, frame) };
 }
 
 /** The buffer capacity as an integer packet count; a number of packets that is not a non-negative whole one is refused. */
-function bufferCapacity(v: UnitValue): number {
+export function bufferCapacity(v: UnitValue): number {
   const label = 'Buffer capacity';
   const n = toBase(v, PACKET_UNITS);
   if (n === null) throw new Error(`${label} must be a number`);
@@ -344,7 +345,7 @@ function checkAccuracy(f: ConfigForm) {
 }
 
 /** An optional histogram: null while all three fields are empty; `name` prefixes the messages ("Histogram", "IAT histogram"). */
-function histogramToDto(name: string, bins: string, lo: UnitValue, hi: UnitValue): HistogramDto | null {
+export function histogramToDto(name: string, bins: string, lo: UnitValue, hi: UnitValue): HistogramDto | null {
   const b = optInt(bins, `${name} bins`);
   const lo_ns = lo.text.trim() === '' ? null : unitNum(lo, TIME_UNITS, `${name} lo`);
   const hi_ns = hi.text.trim() === '' ? null : unitNum(hi, TIME_UNITS, `${name} hi`);
@@ -381,11 +382,69 @@ export function formToDto(f: ConfigForm): FormDto {
   return convert(f);
 }
 
+const problemOf = (check: () => void): string | null => {
+  try {
+    check();
+    return null;
+  } catch (e) {
+    return errorMessage(e);
+  }
+};
+
+/** The first problem of the Buffer, Delayer, Limiter and Dropper fields (the checks of the Link settings modal), or null. */
+export const stageProblem = (f: ConfigForm): string | null =>
+  problemOf(() => {
+    checkAccuracy(f);
+    const frame = frameToDto(f);
+    bufferCapacity(f.buffer_capacity);
+    seed(f.seed);
+    if (f.delayer_added) delayerToDto(f, frame);
+    if (f.limiter_added) limiterToDto(f, frame);
+    if (f.dropper_added) lossToDto(f);
+  });
+
+/** The first problem of the delay and IAT histogram fields (the checks of the Histogram modal), or null. */
+export const histogramProblem = (f: ConfigForm): string | null =>
+  problemOf(() => {
+    histogramToDto('Histogram', f.hist_bins, f.hist_lo, f.hist_hi);
+    histogramToDto('IAT histogram', f.iat_bins, f.iat_lo, f.iat_hi);
+  });
+
 /** `formToDto` without the delay accuracy rule, so a stored link that breaks it stays listed and openable to be fixed. */
 function convert(f: ConfigForm): FormDto {
   const frame = frameToDto(f);
   const config = configToDto(f, frame);
   return frame === null ? { config } : { config, avg_frame_size_byte: frame };
+}
+
+/** A bin count that is a power of two: 1, 2, 4, ... */
+export const isPowerOfTwo = (n: number) => Number.isSafeInteger(n) && n > 0 && Number.isInteger(Math.log2(n));
+
+/** 2^k for a whole k, negative ones included (a bin narrower than 1 ns). */
+const isBinaryWidth = (n: number) => Number.isFinite(n) && n > 0 && Number.isInteger(Math.log2(n));
+
+/** `ns` as the text of the time unit `unit`, exact ("0.064"), or null when it cannot be shown. */
+const inUnit = (ns: number, unit: number) => shiftDecimal(String(ns), -TIME_UNITS[unit].exp);
+
+/** Advice on the histogram range: advisory only, nothing here refuses a value. */
+export function rangeAdvice(
+  value: ConfigForm,
+): { aligned: boolean; width: string; suggested: string; exponent: number } | null {
+  const hi = value.hist_hi.text.trim() === '' ? null : toBase(value.hist_hi, TIME_UNITS);
+  if (hi === null || hi <= 0) return null;
+  const lo = value.hist_lo.text.trim() === '' ? null : toBase(value.hist_lo, TIME_UNITS);
+  const bins = value.hist_bins.trim() === '' ? NaN : Number(value.hist_bins);
+  const width = lo === null ? NaN : (hi - lo) / bins;
+  if (lo !== null && Number.isSafeInteger(lo) && isBinaryWidth(width) && lo % width === 0) {
+    const shown = inUnit(width, value.hist_hi.unit);
+    if (shown !== null) return { aligned: true, width: shown, suggested: '', exponent: Math.log2(width) };
+  }
+  const next = 2 ** Math.ceil(Math.log2(Math.ceil(hi)));
+  const suggested = inUnit(next, value.hist_hi.unit);
+  if (!Number.isSafeInteger(next) || suggested === null) return null;
+  // Applying the suggestion would change nothing.
+  if (lo === 0 && hi === next) return null;
+  return { aligned: false, width: '', suggested, exponent: Math.log2(next) };
 }
 
 /** The controller's link-name rule (`valid_name` in `api.rs`). */
@@ -395,8 +454,8 @@ export const LINK_NAME_RULE = 'Name must be 1 to 32 characters: letters A-Z a-z,
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
 /**
- * What is wrong with a stored or imported link, or null when the link editor would accept it unchanged: the name rule,
- * non-empty ports, an optional frame size, and a config that survives the editor's own round trip
+ * What is wrong with a stored or imported link, or null when the form would accept it unchanged: the name rule,
+ * non-empty ports, an optional frame size, and a config that survives the form's own round trip
  * (`configToForm` then the conversion of `formToDto`, minus the delay accuracy rule).
  */
 export function linkProblem(v: unknown): string | null {

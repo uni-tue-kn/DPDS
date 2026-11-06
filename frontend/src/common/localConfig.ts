@@ -5,7 +5,7 @@
 // A value that cannot be read is reported (`corrupt`) and left untouched until the user resets it.
 import { useMemo, useSyncExternalStore } from 'react';
 import { linkProblem } from '../pages/linkForm';
-import type { Link, LinkInput, LocalConfig, StartRequest } from '../api/types';
+import type { Link, LocalConfig, StartRequest } from '../api/types';
 
 export const STORAGE_KEY = 'dpds.config.v1';
 
@@ -26,7 +26,7 @@ const cleanLink = (l: Link): Link => ({
 });
 
 /**
- * What is wrong with a list of links, or null when it is fine: the first link the editor would not accept unchanged
+ * What is wrong with a list of links, or null when it is fine: the first link the form would not accept unchanged
  * (named by position and name), or the first repeated id or name.
  */
 export function linksProblem(links: unknown[]): string | null {
@@ -119,30 +119,7 @@ export function updateConfig(change: (doc: LocalConfig) => LocalConfig): void {
   writeConfig(change(s.doc));
 }
 
-const nextId = (list: { id: number }[]) => list.reduce((m, x) => Math.max(m, x.id), 0) + 1;
-
-/** Creates (`id` undefined, id = max + 1) or replaces a link. Throws when another link has the name. */
-export function saveLink(input: LinkInput, id?: number): void {
-  updateConfig((doc) => {
-    if (doc.links.some((l) => l.id !== id && l.name === input.name)) {
-      throw new Error(`A link named "${input.name}" already exists`);
-    }
-    const links: Link[] =
-      id === undefined
-        ? [...doc.links, { ...input, id: nextId(doc.links) }]
-        : doc.links.map((l) => (l.id === id ? { ...input, id } : l));
-    return { ...doc, links };
-  });
-}
-
-export function deleteLink(id: number): void {
-  updateConfig((doc) => ({
-    ...doc,
-    links: doc.links.filter((l) => l.id !== id),
-  }));
-}
-
-/** Replaces all links with `links` (ids as given). */
+/** Replaces all links with `links` (ids as given): ONE store write. */
 export function replaceLinks(links: Link[]): void {
   updateConfig((doc) => ({ ...doc, links }));
 }

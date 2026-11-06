@@ -142,7 +142,7 @@ export function toBase(v: UnitValue, units: Unit[]): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-/** "2.5 µs": a stored base value in the unit the editor would show. */
+/** "2.5 µs": a stored base value in the unit the form would show. */
 export function formatUnit(base: number, units: Unit[], defaultUnit: number): string {
   const v = fromBase(base, units, defaultUnit);
   return `${v.text} ${units[v.unit].label}`;

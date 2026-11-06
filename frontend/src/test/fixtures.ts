@@ -96,7 +96,7 @@ export function config3(): ConfigDto {
       half_life_period_ns: 555,
       initialization_rate_pps: 2500000,
     },
-    limiter: { mode: 'Spacer', rate_bps: 5000000000 }, // display-only fixture: never saved through the editor
+    limiter: { mode: 'Spacer', rate_bps: 5000000000 }, // display-only fixture: never saved through the form
     loss_model: { type: 'Random', p: 0.25 },
     seed: 7,
     histogram: { bins: 32, lo_ns: 1000, hi_ns: 50000 },

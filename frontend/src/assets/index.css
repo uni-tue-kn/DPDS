@@ -291,37 +291,6 @@ body {
   color: var(--color-okay);
 }
 
-fieldset.direction {
-  border: 1px solid var(--color-border);
-  border-radius: 0.375rem;
-  padding: 0.75rem 1rem 0.25rem;
-  margin-bottom: 1rem;
-}
-
-fieldset.direction > .config-title {
-  margin: 0 0 0.5rem;
-  font-size: 1rem;
-  font-weight: 600;
-  color: var(--color-primary);
-}
-
-fieldset.config-section {
-  border-top: 1px solid var(--color-border);
-  padding-top: 0.5rem;
-  margin-bottom: 0.5rem;
-}
-
-fieldset.config-section > legend {
-  float: none;
-  width: auto;
-  padding: 0 0.5rem 0 0;
-  margin: 0 0 0.5rem;
-  font-size: 0.9rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
 .unit-select {
   max-width: 7rem;
 }
@@ -364,16 +333,6 @@ fieldset.config-section > legend {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   overflow: visible;
-}
-
-.inspect-fields {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 0.2rem 1rem;
-}
-
-.inspect-fields > dd {
-  margin: 0;
 }
 
 .histogram-optimization-hint {
@@ -484,4 +443,141 @@ fieldset.config-section > legend {
 .loader-text {
   font-weight: bold;
   color: var(--color-primary);
+}
+
+/* Settings page (P4TG style). */
+.link-table > tbody > tr > td {
+  vertical-align: middle;
+}
+
+.btn-config {
+  color: var(--color-text);
+}
+
+.btn-config:hover {
+  color: var(--color-primary);
+}
+
+.table-dark .info-tip {
+  color: #fff;
+}
+
+/* The accordion of the Link settings modal follows the --color-* variables in both themes. */
+.accordion {
+  --bs-accordion-bg: var(--color-background);
+  --bs-accordion-color: var(--color-text);
+  --bs-accordion-border-color: var(--color-border);
+  --bs-accordion-btn-focus-border-color: var(--color-primary);
+  --bs-accordion-btn-focus-box-shadow: 0 0 0 0.25rem rgba(231, 76, 60, 0.25);
+}
+
+.accordion-button,
+.accordion-button:not(.collapsed) {
+  background-color: var(--color-secondary);
+  color: #ffffff;
+  box-shadow: none;
+}
+
+.accordion-button::after,
+.accordion-button:not(.collapsed)::after {
+  filter: grayscale(1) invert(1);
+}
+
+.accordion-button:focus {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 0.25rem rgba(231, 76, 60, 0.25);
+}
+
+.form-check-input:checked {
+  background-color: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+.form-check-input:focus {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 0.25rem rgba(231, 76, 60, 0.25);
+}
+
+/* The toast: bottom centre, a coloured left border and a round tinted icon. */
+.toast-floating-container {
+  position: fixed;
+  right: auto;
+  bottom: clamp(2rem, 8vh, 5rem);
+  left: 50%;
+  padding: 0;
+  transform: translateX(-50%);
+  width: min(calc(100vw - 2rem), 32rem);
+  z-index: 9999;
+}
+
+.toast-floating {
+  --toast-accent: var(--color-okay);
+  --toast-tint: rgba(39, 174, 96, 0.16);
+  width: 100%;
+  max-width: none;
+  overflow: hidden;
+  background: var(--color-background);
+  color: var(--color-text);
+  border: 1px solid color-mix(in srgb, var(--color-text) 16%, transparent);
+  border-left: 5px solid var(--toast-accent);
+  border-radius: 0.75rem;
+  box-shadow: 0 1rem 2.75rem rgba(0, 0, 0, 0.3);
+}
+
+.toast-floating.toast-danger {
+  --toast-accent: var(--bs-danger);
+  --toast-tint: rgba(220, 53, 69, 0.16);
+}
+
+.toast-floating.toast-info {
+  --toast-accent: #0d6efd;
+  --toast-tint: rgba(13, 110, 253, 0.16);
+}
+
+.toast-floating.toast-warning {
+  --toast-accent: var(--color-yellow);
+  --toast-tint: rgba(255, 193, 7, 0.18);
+}
+
+.toast-floating-content {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.875rem;
+  min-height: 4.5rem;
+  padding: 0.9rem 1rem;
+}
+
+.toast-floating-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 50%;
+  background: var(--toast-tint);
+  color: var(--toast-accent);
+  font-size: 1.35rem;
+}
+
+.toast-floating-title {
+  margin-bottom: 0.15rem;
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.toast-floating-text {
+  line-height: 1.35;
+  opacity: 0.78;
+  overflow-wrap: anywhere;
+}
+
+.toast-floating-content .btn-close {
+  align-self: start;
+  margin: 0.1rem 0 0 0.25rem;
+}
+
+[data-theme="dark"] .toast-floating-content .btn-close {
+  filter: invert(1);
 }

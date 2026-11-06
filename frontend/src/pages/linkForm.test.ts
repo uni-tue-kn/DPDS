@@ -32,13 +32,14 @@ import {
   frameRequired,
   halfLifeRequired,
   linkProblem,
+  rangeAdvice,
   portError,
   reorderingActive,
   stdRequired,
   withAccuracy,
 } from './linkForm';
 import type { ConfigForm } from './linkForm';
-import { delayCell, derivedLimitText, limiterCell, lossCell } from './linkSummary';
+import { derivedLimitText, rowSummary } from './linkSummary';
 
 // Pure logic of the config form: unit conversion, `formToDto` validation and the stored-value round trip. Nothing is rendered.
 
@@ -693,27 +694,35 @@ describe('link rules: name, ports and what the form accepts unchanged', () => {
 });
 
 describe('summaries of a config (the table cells) and the derived limit', () => {
+  const summary = (c: ConfigDto) => rowSummary(configToForm(c));
+
   it('Delay: distribution with mean / std, the deterministic one without a std, "none" without a delayer', () => {
-    expect(delayCell(fx.config())).toBe(`Normal 1 ${MU} / 10 ns`);
+    expect(summary(fx.config()).delay).toBe(`Normal 1 ${MU} / 10 ns`);
     const det = {
       ...fx.config(),
       delayer: { ...must(fx.config().delayer), distribution: 'DeterministicDistribution' as const },
     };
-    expect(delayCell(det)).toBe(`Deterministic 1 ${MU}`);
-    expect(delayCell(fx.configBare())).toBe('none');
+    expect(summary(det).delay).toBe(`Deterministic 1 ${MU}`);
+    expect(summary(fx.configBare()).delay).toBe('none');
   });
 
   it('Limiter and Loss', () => {
-    expect(limiterCell({ ...fx.config(), limiter: { mode: 'Spacer', rate_bps: 1e10 } })).toBe('spacing 10 Gbit/s');
-    expect(limiterCell({ ...fx.config(), limiter: { mode: 'TokenBucketFilter', rate_bps: 1e9 } })).toBe(
+    expect(summary({ ...fx.config(), limiter: { mode: 'Spacer', rate_bps: 1e10 } }).limiter).toBe('spacing 10 Gbit/s');
+    expect(summary({ ...fx.config(), limiter: { mode: 'TokenBucketFilter', rate_bps: 1e9 } }).limiter).toBe(
       'policing 1 Gbit/s',
     );
-    expect(limiterCell(fx.configBare())).toBe('none');
-    expect(lossCell(fx.config())).toBe('Random p=0');
-    expect(lossCell({ ...fx.config(), loss_model: { type: 'GilbertElliot', p: 0.01, r: 0.2, h: 0.3, k: 0.9 } })).toBe(
-      'Gilbert-Elliott p=0.01, r=0.2, h=0.3, k=0.9',
-    );
-    expect(lossCell(fx.configBare())).toBe('none');
+    expect(summary(fx.configBare()).limiter).toBe('none');
+    expect(summary(fx.config()).loss).toBe('Random p=0');
+    expect(
+      summary({ ...fx.config(), loss_model: { type: 'GilbertElliot', p: 0.01, r: 0.2, h: 0.3, k: 0.9 } }).loss,
+    ).toBe('Gilbert-Elliott p=0.01, r=0.2, h=0.3, k=0.9');
+    expect(summary(fx.configBare()).loss).toBe('none');
+  });
+
+  it('a cell whose values are not valid yet is null; the others stay', () => {
+    const s = rowSummary(form({ buffer_capacity: uv('', 0) }));
+    expect(s.buffer).toBeNull();
+    expect(s.histogram).not.toBeNull();
   });
 
   it('the derived limit is capacity x 1542 B x 8 bit; no number while the capacity is no valid count', () => {
@@ -722,5 +731,28 @@ describe('summaries of a config (the table cells) and the derived limit', () => 
     for (const bad of ['', 'abc', '-1', '1.5']) {
       expect(derivedLimitText(bad)).not.toMatch(/=|NaN|\d+ [kMG]?bit/);
     }
+  });
+});
+
+describe('rangeAdvice: advisory hints on the histogram range', () => {
+  const NS = at(TIME_UNITS, 'ns');
+  const MS = at(TIME_UNITS, 'ms');
+  const MUS = at(TIME_UNITS, MU);
+  const advice = (bins: string, lo: UnitValue, hi: UnitValue) =>
+    rangeAdvice(form({ hist_bins: bins, hist_lo: lo, hist_hi: hi }));
+
+  it('a power-of-two bin width that divides lo is aligned, also below 1 ns', () => {
+    expect(advice('64', uv('0', NS), uv('4.096', MUS))).toMatchObject({ aligned: true });
+    expect(advice('4096', uv('0', NS), uv('1024', NS))).toMatchObject({ aligned: true });
+  });
+
+  it('otherwise the next power of two for hi is suggested, in the unit of hi', () => {
+    expect(advice('', uv('', MS), uv('3', MUS))).toMatchObject({ aligned: false, suggested: '4.096' });
+    expect(advice('100', uv('1', MS), uv('7', MS))).toMatchObject({ aligned: false });
+  });
+
+  it('there is no advice without hi, or when hi is already a power of two over lo = 0', () => {
+    expect(advice('64', uv('0', NS), uv('', MS))).toBeNull();
+    expect(advice('', uv('0', NS), uv('4096', NS))).toBeNull();
   });
 });
