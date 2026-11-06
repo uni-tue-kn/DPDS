@@ -3,12 +3,12 @@
 
   <h2>DPDS: A DPDK-Based Packet Delayer and Spacer</h2>
 
-  [![CI](https://github.com/uni-tue-kn/DPDS/actions/workflows/ci.yml/badge.svg?branch=nightly)](https://github.com/uni-tue-kn/DPDS/actions/workflows/ci.yml)
   ![License](https://img.shields.io/badge/licence-Apache%202.0-blue)
   ![Backend](https://img.shields.io/badge/backend-Rust-b7410e?logo=rust)
   ![Frontend](https://img.shields.io/badge/frontend-React-149eca?logo=react)
   ![DPDK](https://img.shields.io/badge/dataplane-DPDK%2026.07-1e5aa8)
   ![Version](https://img.shields.io/badge/v-1.0.0-yellow)
+  [![CI](https://github.com/uni-tue-kn/DPDS/actions/workflows/ci.yml/badge.svg?branch=nightly)](https://github.com/uni-tue-kn/DPDS/actions/workflows/ci.yml)
 </div>
 
 ---
@@ -176,14 +176,14 @@ is no default config. Example:
 }
 ```
 
-| Field             | Values                                                                                  |
-| ----------------- | --------------------------------------------------------------------------------------- |
-| `buffer_capacity` | Maximum packets held at once; more are dropped.                                         |
-| `reordering`      | `false` = FIFO, `true` = send-time order; not with correlation or an active `Spacer`.   |
-| `seed`            | Optional; reproducible delay and loss decisions. Absent: system entropy.                |
+| Field             | Values                                                                                                                                                                                                                                                                                                                                     |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `buffer_capacity` | Maximum packets held at once; more are dropped.                                                                                                                                                                                                                                                                                            |
+| `reordering`      | `false` = FIFO, `true` = send-time order; not with correlation or an active `Spacer`.                                                                                                                                                                                                                                                      |
+| `seed`            | Optional; reproducible delay and loss decisions. Absent: system entropy.                                                                                                                                                                                                                                                                   |
 | `delayer`         | `distribution` (`DeterministicDistribution`, `NormalDistribution`, `LogNormalDistribution`, `GammaDistribution` or `UniformDistribution`), `mean_ns`, `std_ns`, `activate_correlation`, `half_life_period_ns`, and the required `initialization_rate_pps`, the link's expected packet rate (about 8.1 Mpps for 100 Gb/s of 1518 B frames). |
-| `limiter`         | `mode` (`Spacer` or `TokenBucketFilter`), `activate`, `rate_bps`.                       |
-| `loss_model`      | `{ "Random": p }` or `{ "GilbertElliot": [p, r, k, h, state_is_good] }`.                |
+| `limiter`         | `mode` (`Spacer` or `TokenBucketFilter`), `activate`, `rate_bps`.                                                                                                                                                                                                                                                                          |
+| `loss_model`      | `{ "Random": p }` or `{ "GilbertElliot": [p, r, k, h, state_is_good] }`.                                                                                                                                                                                                                                                                   |
 
 The limiter's limit and each link's mbuf pool are derived from `buffer_capacity`. A buffer of
 1,000,000 packets needs about 1.8 GiB of hugepages per link; shrink it if that is too much. All
@@ -197,13 +197,13 @@ Build with `--features telemetry` to serve live statistics on DPDK's telemetry s
 nothing is registered and the instrumentation compiles to nothing. `<dir>` is the link's index
 (0 or 1 with `--config*`, else its position in the links file).
 
-| Command                           | Content                                                                 |
-| --------------------------------- | ----------------------------------------------------------------------- |
-| `/dpds/stats,<dir>`               | Counters, drops per cause (`loss_drops`, `limiter_drops`, `buffer_full_drops`), delay statistics, first-loss result |
-| `/dpds/epochs,<dir>`              | The same per epoch (a burst of traffic, closed after 500 ms of silence) |
-| `/dpds/delay_hist,<dir>[,<page>]`, `/dpds/iat_hist,<dir>[,<page>]` | Delay histogram and histogram of the gaps between scheduled send times, in pages of at most 500 bins |
-| `/dpds/ports`                     | Ports, ring sizes, and per link its ports, lcore, config and pool size  |
-| `/nic/hw_first_loss,<port>`, `/nic/epochs,<port>` | First NIC hardware drop, per-epoch NIC counters         |
+| Command                                                            | Content                                                                                                             |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------- |
+| `/dpds/stats,<dir>`                                                | Counters, drops per cause (`loss_drops`, `limiter_drops`, `buffer_full_drops`), delay statistics, first-loss result |
+| `/dpds/epochs,<dir>`                                               | The same per epoch (a burst of traffic, closed after 500 ms of silence)                                             |
+| `/dpds/delay_hist,<dir>[,<page>]`, `/dpds/iat_hist,<dir>[,<page>]` | Delay histogram and histogram of the gaps between scheduled send times, in pages of at most 500 bins                |
+| `/dpds/ports`                                                      | Ports, ring sizes, and per link its ports, lcore, config and pool size                                              |
+| `/nic/hw_first_loss,<port>`, `/nic/epochs,<port>`                  | First NIC hardware drop, per-epoch NIC counters                                                                     |
 
 ```bash
 ./target/release/dpds -l 0-2 --in-memory --file-prefix demo -a <PCI0> -a <PCI1> -- --config link.json &
