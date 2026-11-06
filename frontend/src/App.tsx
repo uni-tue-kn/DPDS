@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button, Modal, OverlayTrigger, Tooltip } from 'react-bootstrap';
 import { Navigate, NavLink, Route, Routes } from 'react-router';
 import * as api from './api/client';
@@ -13,6 +13,7 @@ import Dashboard from './pages/Dashboard';
 import Hints from './pages/Hints';
 import Interfaces from './pages/Interfaces';
 import LinkEditor from './pages/LinkEditor';
+import Offline from './pages/Offline';
 import Settings from './pages/Settings';
 
 const ONLINE_POLL_MS = 5000;
@@ -39,10 +40,14 @@ function Sidebar({
   theme,
   onToggle,
   onConnected,
+  onOnline,
+  onOffline,
 }: {
   theme: Theme;
   onToggle: () => void;
   onConnected: (others: number) => void;
+  onOnline: () => void;
+  onOffline: () => void;
 }) {
   const [info, setInfo] = useState<OnlineView>();
   const [updateAvailable, setUpdateAvailable] = useState(false);
@@ -59,6 +64,7 @@ function Sidebar({
           if (alive) {
             setInfo(o);
             onConnected(o.connected_clients ?? 0);
+            onOnline();
           }
           if (!checked.current) {
             checked.current = true;
@@ -70,10 +76,12 @@ function Sidebar({
               }
             });
           }
-        } catch {
+        } catch (error) {
           if (alive) {
             setInfo(undefined);
             onConnected(0);
+            // An HTTP error status (ApiError) is an answer; only a failure without one means unreachable.
+            if (!(error instanceof api.ApiError)) onOffline();
           }
         }
       },
@@ -84,7 +92,7 @@ function Sidebar({
       alive = false;
       stop();
     };
-  }, [onConnected]);
+  }, [onConnected, onOnline, onOffline]);
   return (
     <div className="sidebar">
       <div className="sidebar-brand">
@@ -198,6 +206,9 @@ function SessionWarning({ others }: { others: number }) {
 export default function App() {
   const [theme, setTheme] = useState<Theme>(initialTheme);
   const [others, setOthers] = useState(0);
+  const [online, setOnline] = useState(true);
+  const goOnline = useCallback(() => setOnline(true), []);
+  const goOffline = useCallback(() => setOnline(false), []);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -213,19 +224,23 @@ export default function App() {
   return (
     <ThemeContext.Provider value={theme}>
       <div className="app-shell">
-        <Sidebar theme={theme} onToggle={toggle} onConnected={setOthers} />
+        <Sidebar theme={theme} onToggle={toggle} onConnected={setOthers} onOnline={goOnline} onOffline={goOffline} />
         <main className="main-content">
           <SessionWarning others={others} />
           <CorruptConfigAlert />
-          <Routes>
-            <Route path="/" element={<Dashboard />} />
-            <Route path="/interfaces" element={<Interfaces />} />
-            <Route path="/hints" element={<Hints />} />
-            <Route path="/settings" element={<Settings />} />
-            <Route path="/settings/new" element={<LinkEditor />} />
-            <Route path="/settings/:id" element={<LinkEditor />} />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
+          {online ? (
+            <Routes>
+              <Route path="/" element={<Dashboard />} />
+              <Route path="/interfaces" element={<Interfaces />} />
+              <Route path="/hints" element={<Hints />} />
+              <Route path="/settings" element={<Settings />} />
+              <Route path="/settings/new" element={<LinkEditor />} />
+              <Route path="/settings/:id" element={<LinkEditor />} />
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
+          ) : (
+            <Offline onOnline={goOnline} />
+          )}
           <footer className="app-footer">
             <a href={REPO_URL} target="_blank" rel="noopener noreferrer" aria-label="DPDS @ GitHub">
               DPDS @ <i className="bi bi-github" aria-hidden="true" />
