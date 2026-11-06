@@ -34,10 +34,10 @@ use dpds_controller::telemetry::socket_path;
 // ---- hugepage check of start ----------------------------------------------------------------------------------------
 
 /// One link with the given buffer capacity.
-fn sized(name: &str, port: &str, capacity: u64) -> Value {
+fn sized(port: &str, capacity: u64) -> Value {
     let mut cfg = cfg_json(1.0e6, 1.0e5);
     cfg["buffer_capacity"] = json!(capacity);
-    link_cfg(name, port, port, cfg)
+    link_cfg(port, port, cfg)
 }
 
 /// 2 MiB hugepages on a host that otherwise starts fine: `free` of `total` pages, global.
@@ -56,14 +56,14 @@ const EXACT: u64 = 1_629_376;
 #[tokio::test]
 async fn a_start_that_needs_more_hugepages_than_are_free_is_a_400_naming_the_numbers() {
     let a = app_with_pages(1024, 1000); // 2048 MiB total, 2000 MiB free
-    let r = a.start_links(vec![sized("big", "net_null0", BIG)]).await;
+    let r = a.start_links(vec![sized("net_null0", BIG)]).await;
     assert_eq!(r.status, 400, "{}", r.text());
     let m = r.message();
     for needle in [
         "hugepage",
         BIG_MIB,
         "2000 MiB",
-        "\"big\"",
+        "link net_null0 -> net_null0",
         "buffer capacity 10000000 packets",
     ] {
         assert!(m.contains(needle), "{needle:?} missing from {m:?}");
@@ -73,14 +73,11 @@ async fn a_start_that_needs_more_hugepages_than_are_free_is_a_400_naming_the_num
 #[tokio::test]
 async fn the_message_has_the_wording_of_the_spec() {
     let a = app_with_pages(1024, 1000);
-    let m = a
-        .start_links(vec![sized("big", "net_null0", BIG)])
-        .await
-        .message();
+    let m = a.start_links(vec![sized("net_null0", BIG)]).await.message();
     assert_eq!(
         m,
         "the links need about 18327 MiB of hugepage memory for their mbuf pools, but only 2000 MiB are free; \
-         link \"big\" needs about 18327 MiB (buffer capacity 10000000 packets). \
+         link net_null0 -> net_null0 needs about 18327 MiB (buffer capacity 10000000 packets). \
          Lower its buffer capacity or reserve more hugepages."
     );
 }
@@ -88,14 +85,14 @@ async fn the_message_has_the_wording_of_the_spec() {
 #[tokio::test]
 async fn a_refused_start_does_not_launch_dpds_and_leaves_the_emulation_stopped() {
     let a = app_with_pages(1024, 1000);
-    let r = a.start_links(vec![sized("big", "net_null0", BIG)]).await;
+    let r = a.start_links(vec![sized("net_null0", BIG)]).await;
     assert_eq!(r.status, 400, "{}", r.text());
     assert_eq!(a.supervisor.starts_entered(), 0);
     assert!(a.supervisor.plans().is_empty());
     let v = a.get("/api/emulation").await.json();
     assert_eq!(v["state"], "stopped", "{v}");
     // nothing sticks: a start that fits is accepted afterwards
-    let r = a.start_links(vec![sized("ok", "net_null0", 100_000)]).await;
+    let r = a.start_links(vec![sized("net_null0", 100_000)]).await;
     assert_eq!(r.status, 202, "{}", r.text());
 }
 
@@ -104,15 +101,13 @@ async fn the_need_of_all_links_is_summed_and_the_largest_link_is_named() {
     // 3 M packets: 5509 MiB, 5 M packets: 9171 MiB, together 14681 MiB; 12000 MiB are free:
     // each link fits alone, both together do not
     let a = app_with_pages(8192, 6000);
-    let alone = a
-        .start_links(vec![sized("small", "net_null0", 3_000_000)])
-        .await;
+    let alone = a.start_links(vec![sized("net_null0", 3_000_000)]).await;
     assert_eq!(alone.status, 202, "{}", alone.text());
     a.post("/api/emulation/stop", json!({})).await;
     let r = a
         .start_links(vec![
-            sized("small", "net_null0", 3_000_000),
-            sized("large", "net_null1", 5_000_000),
+            sized("net_null0", 3_000_000),
+            sized("net_null1", 5_000_000),
         ])
         .await;
     assert_eq!(r.status, 400, "{}", r.text());
@@ -120,18 +115,18 @@ async fn the_need_of_all_links_is_summed_and_the_largest_link_is_named() {
     for needle in [
         "about 14681 MiB of hugepage",
         "only 12000 MiB are free",
-        "link \"large\" needs about 9171 MiB (buffer capacity 5000000 packets)",
+        "link net_null1 -> net_null1 needs about 9171 MiB (buffer capacity 5000000 packets)",
     ] {
         assert!(m.contains(needle), "{needle:?} missing from {m:?}");
     }
-    assert!(!m.contains("\"small\""), "{m}");
+    assert!(!m.contains("link net_null0 -> net_null0"), "{m}");
 }
 
 #[tokio::test]
 async fn a_start_that_fits_is_accepted() {
     let a = app_with_pages(4096, 4096); // 8192 MiB free
     let r = a
-        .start_links(vec![sized("l", "net_null0", 1_000_000)]) // 1_009_024 * 1920 = 1847 MiB
+        .start_links(vec![sized("net_null0", 1_000_000)]) // 1_009_024 * 1920 = 1847 MiB
         .await;
     assert_eq!(r.status, 202, "{}", r.text());
     assert_eq!(a.supervisor.plans().len(), 1);
@@ -141,11 +136,11 @@ async fn a_start_that_fits_is_accepted() {
 async fn need_equal_to_free_fits_and_one_page_less_is_refused() {
     // EXACT needs 3000 MiB = 1500 pages of 2 MiB
     let a = app_with_pages(1500, 1500);
-    let r = a.start_links(vec![sized("l", "net_null0", EXACT)]).await;
+    let r = a.start_links(vec![sized("net_null0", EXACT)]).await;
     assert_eq!(r.status, 202, "{}", r.text());
 
     let a = app_with_pages(1500, 1499);
-    let r = a.start_links(vec![sized("l", "net_null0", EXACT)]).await;
+    let r = a.start_links(vec![sized("net_null0", EXACT)]).await;
     assert_eq!(r.status, 400, "{}", r.text());
     let m = r.message();
     assert!(
@@ -160,7 +155,7 @@ async fn a_host_without_hugepage_information_is_not_refused() {
     host.remove("sys/kernel/mm/hugepages");
     host.remove("proc/meminfo");
     let a = TestApp::new(host);
-    let r = a.start_links(vec![sized("big", "net_null0", BIG)]).await;
+    let r = a.start_links(vec![sized("net_null0", BIG)]).await;
     assert_eq!(
         r.status,
         202,
@@ -173,9 +168,7 @@ async fn a_host_without_hugepage_information_is_not_refused() {
 #[tokio::test]
 async fn validate_does_not_check_the_hugepages() {
     let a = app_with_pages(1024, 0); // nothing free, e.g. a running emulation holds the pages
-    let r = a
-        .validate(&setup(vec![sized("big", "net_null0", BIG)]))
-        .await;
+    let r = a.validate(&setup(vec![sized("net_null0", BIG)])).await;
     assert_eq!(r.status, 200, "{}", r.text());
     assert!(a.supervisor.plans().is_empty());
 }
@@ -204,7 +197,7 @@ fn plan(bin: PathBuf, runtime_dir: &Path) -> LaunchPlan {
         dpds_bin: bin,
         runtime_dir: runtime_dir.to_path_buf(),
         links_file: links_file.clone(),
-        links_json: json!({"links":[{"name":"l","ingress":"net_null0","egress":"net_null0","config":{},"lcore":1}]}),
+        links_json: json!({"links":[{"ingress":"net_null0","egress":"net_null0","config":{},"lcore":1}]}),
         argv: vec![
             "--".into(),
             "--links".into(),
@@ -212,7 +205,6 @@ fn plan(bin: PathBuf, runtime_dir: &Path) -> LaunchPlan {
         ],
         directions: vec![DirectionPlan {
             dir: 0,
-            link: "l".into(),
             rx: "net_null0".into(),
             tx: "net_null0".into(),
             lcore: 1,
@@ -350,7 +342,7 @@ fn an_exit_while_running_carries_the_reason_too() {
         FakeTelemetryServer::start(&socket_path(&rt), pid, vec![Mode::Serve], |cmd: &str| {
             (cmd == "/dpds/ports").then(|| {
                 json!({"num_ports": 1, "num_links": 1, "num_directions": 1,
-                       "port0_name": "net_null0", "dir0_link": "l", "dir0_rx_name": "net_null0",
+                       "port0_name": "net_null0", "dir0_rx_name": "net_null0",
                        "dir0_tx_name": "net_null0", "dir0_rx_port": 0, "dir0_tx_port": 0,
                        "dir0_lcore": 1})
             })

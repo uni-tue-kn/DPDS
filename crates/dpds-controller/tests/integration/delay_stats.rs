@@ -48,9 +48,9 @@ fn delay_stats_default_to_true_and_roundtrip_when_false() {
 #[tokio::test]
 async fn the_api_keeps_delay_stats_per_direction() {
     let a = TestApp::new(FakeHost::bare_metal());
-    let mut off = link("a-to-b", NIC0, NIC1);
+    let mut off = link(NIC0, NIC1);
     off["config"]["delay_stats"] = json!(false);
-    let r = a.start_links(vec![off, link("b-to-a", NIC1, NIC0)]).await;
+    let r = a.start_links(vec![off, link(NIC1, NIC0)]).await;
     assert_eq!(r.status, 202, "{}", r.text());
     // the links file dpds receives carries the switch of the link that has it off
     let plan = &a.supervisor.plans()[0];
@@ -65,10 +65,9 @@ async fn the_api_keeps_delay_stats_per_direction() {
     assert!(on(&v["config"]["links"][1]["config"]), "{v}");
 }
 
-fn plan(dir: u32, link: &str, rx: &str, tx: &str, lcore: u32) -> DirectionPlan {
+fn plan(dir: u32, rx: &str, tx: &str, lcore: u32) -> DirectionPlan {
     DirectionPlan {
         dir,
-        link: link.into(),
         rx: rx.into(),
         tx: tx.into(),
         lcore,
@@ -83,13 +82,13 @@ fn is_on(v: &Value) -> bool {
 fn the_links_file_carries_the_switch_per_link() {
     let mut off = cfg_json(1.0e6, 0.0);
     off["delay_stats"] = json!(false);
-    let a = model_link(1, &link_cfg("a-to-b", "net_null0", "net_null1", off));
-    let b = model_link(2, &link("b-to-a", "net_null1", "net_null0"));
-    let c = model_link(3, &link("loop", "net_null2", "net_null2"));
+    let a = model_link(1, &link_cfg("net_null0", "net_null1", off));
+    let b = model_link(2, &link("net_null1", "net_null0"));
+    let c = model_link(3, &link("net_null2", "net_null2"));
     let p = vec![
-        plan(0, "a-to-b", "net_null0", "net_null1", 2),
-        plan(1, "b-to-a", "net_null1", "net_null0", 3),
-        plan(2, "loop", "net_null2", "net_null2", 4),
+        plan(0, "net_null0", "net_null1", 2),
+        plan(1, "net_null1", "net_null0", 3),
+        plan(2, "net_null2", "net_null2", 4),
     ];
     let v = links_file_json(&[a, b, c], &p).unwrap();
     assert_eq!(v["links"][0]["delay_stats"], json!(false), "{v}");
@@ -99,8 +98,8 @@ fn the_links_file_carries_the_switch_per_link() {
 
 #[test]
 fn an_all_on_link_writes_no_false() {
-    let l = model_link(1, &link("a-to-b", "net_null0", "net_null1"));
-    let v = links_file_json(&[l], &[plan(0, "a-to-b", "net_null0", "net_null1", 2)]).unwrap();
+    let l = model_link(1, &link("net_null0", "net_null1"));
+    let v = links_file_json(&[l], &[plan(0, "net_null0", "net_null1", 2)]).unwrap();
     assert!(is_on(&v["links"][0]["delay_stats"]), "{v}");
 }
 

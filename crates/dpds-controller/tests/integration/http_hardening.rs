@@ -151,7 +151,7 @@ fn the_served_binary_has_no_cors_without_the_option() {
 
 /// `(method, path, valid JSON body)` of every endpoint that reads a body.
 fn mutating() -> Vec<(&'static str, String, Value)> {
-    let body = setup(vec![link("new", "net_null5", "net_null5")]).body();
+    let body = setup(vec![link("net_null5", "net_null5")]).body();
     vec![
         ("POST", "/api/emulation/start".into(), body.clone()),
         ("POST", "/api/emulation/validate".into(), body.clone()),
@@ -200,13 +200,13 @@ async fn the_content_type_is_checked_before_the_state_of_the_emulation() {
     let r = a.post("/api/emulation/stop", json!({})).await;
     assert_eq!(r.status, 409);
     // a start while running with the wrong content type is a 415 too, not a 409
-    a.start_ok(vec![link("l", "net_null0", "net_null0")]).await;
+    a.start_ok(vec![link("net_null0", "net_null0")]).await;
     let r = a
         .request_raw(
             "POST",
             "/api/emulation/start",
             Some("text/plain"),
-            setup(vec![link("l", "net_null0", "net_null0")])
+            setup(vec![link("net_null0", "net_null0")])
                 .body()
                 .to_string()
                 .into_bytes(),
@@ -224,7 +224,7 @@ async fn json_content_types_with_parameters_and_suffixes_are_accepted() {
         "application/merge-patch+json",
     ] {
         let a = app();
-        let body = setup(vec![link("x", "net_null0", "net_null0")])
+        let body = setup(vec![link("net_null0", "net_null0")])
             .body()
             .to_string()
             .into_bytes();
@@ -268,7 +268,7 @@ async fn an_oversized_body_is_a_413_with_a_json_message() {
     }
     // the service still works afterwards
     assert_eq!(
-        a.start_links(vec![link("fine", "net_null0", "net_null0")])
+        a.start_links(vec![link("net_null0", "net_null0")])
             .await
             .status,
         202

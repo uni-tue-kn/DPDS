@@ -233,7 +233,7 @@ fn process_gone(pid: i32) -> bool {
 
 /// The hairpin link `loop` on `net_null0` with `config`.
 fn loop_link(config: Value) -> Value {
-    json!({"name": "loop", "ingress": "net_null0", "egress": "net_null0", "config": config})
+    json!({"ingress": "net_null0", "egress": "net_null0", "config": config})
 }
 
 fn loop_config() -> Value {
@@ -260,14 +260,12 @@ fn full_rest_flow_create_start_stats_stop_drain() {
     let pid = run["pid"].as_i64().expect("running state has a pid") as i32;
     assert!(pid > 0 && !process_gone(pid));
     assert_eq!(run["directions"].as_array().unwrap().len(), 1);
-    assert_eq!(run["directions"][0]["link"], "loop");
     assert_eq!(run["directions"][0]["rx"], "net_null0");
     assert_eq!(run["directions"][0]["tx"], "net_null0");
     assert_eq!(run["directions"][0]["lcore"], 1);
     assert_eq!(run["main_lcore"], 0);
     assert!(run.get("pending_restart").is_none(), "{run}");
     // the running configuration is the one the start carried
-    assert_eq!(run["config"]["links"][0]["name"], "loop", "{run}");
     assert_eq!(run["config"]["links"][0]["ingress"], "net_null0", "{run}");
     assert!(absent(&run["config"], "settings"), "{run}");
 
@@ -302,7 +300,6 @@ fn full_rest_flow_create_start_stats_stop_drain() {
         (0.9e6..1.1e6).contains(&mean),
         "deterministic 1 ms delay, got mean {mean} ns"
     );
-    assert_eq!(d0["link"], "loop");
 
     // histogram has samples
     let (s, h) = c.call("GET", "/api/stats/0/delay_histogram", None);
@@ -348,7 +345,7 @@ fn failed_start_is_reported_with_the_stderr_tail() {
     let _g = serial();
     let c = Controller::start();
     // a PCI address no device answers to: the controller accepts it, `dpds` cannot open the port
-    let (s, v) = c.start_run(vec![json!({"name": "ghost", "ingress": "0000:ff:00.0",
+    let (s, v) = c.start_run(vec![json!({"ingress": "0000:ff:00.0",
                                          "egress": "0000:ff:00.0", "config": loop_config()})]);
     assert_eq!(s, 202, "{v}");
     let v = c.wait_state(&["failed"], START_TIMEOUT);
@@ -406,7 +403,7 @@ fn assert_mean_delay(d: &Value, ms: f64) {
     assert!(
         (0.9 * ms * 1e6..1.1 * ms * 1e6).contains(&mean),
         "link {}: deterministic {ms} ms delay, got mean {mean} ns",
-        d["link"]
+        d["dir"]
     );
 }
 
@@ -416,17 +413,15 @@ fn two_hairpin_links_run_with_their_own_config_and_the_v2_links_file() {
     let _g = serial();
     let c = Controller::start_with_workers(2);
     let (s, v) = c.start_run(vec![
-        json!({"name": "fast", "ingress": "net_null0", "egress": "net_null0",
+        json!({"ingress": "net_null0", "egress": "net_null0",
                    "config": delay_config(1.0)}),
-        json!({"name": "slow", "ingress": "net_null1", "egress": "net_null1",
+        json!({"ingress": "net_null1", "egress": "net_null1",
                    "config": delay_config(3.0)}),
     ]);
     assert_eq!(s, 202, "{v}");
     let run = c.wait_state(&["running"], START_TIMEOUT);
     let dirs = run["directions"].as_array().unwrap();
     assert_eq!(dirs.len(), 2, "{run}");
-    assert_eq!(dirs[0]["link"], "fast");
-    assert_eq!(dirs[1]["link"], "slow");
     let mut lcores: Vec<u64> = dirs.iter().map(|d| d["lcore"].as_u64().unwrap()).collect();
     lcores.sort_unstable();
     assert_eq!(lcores, [1, 2], "one worker per link: {run}");
@@ -435,12 +430,9 @@ fn two_hairpin_links_run_with_their_own_config_and_the_v2_links_file() {
     let file: Value =
         serde_json::from_slice(&std::fs::read(c.runtime_dir.join("links.json")).unwrap()).unwrap();
     assert_eq!(file["links"].as_array().unwrap().len(), 2, "{file}");
-    for (i, (name, port)) in [("fast", "net_null0"), ("slow", "net_null1")]
-        .iter()
-        .enumerate()
-    {
+    for (i, port) in ["net_null0", "net_null1"].iter().enumerate() {
         let l = &file["links"][i];
-        assert_eq!(l["name"], *name);
+        assert!(l.get("name").is_none(), "{l}");
         assert_eq!(l["ingress"], *port);
         assert_eq!(l["egress"], *port);
         assert_eq!(l["lcore"], dirs[i]["lcore"]);
@@ -461,10 +453,8 @@ fn two_hairpin_links_run_with_their_own_config_and_the_v2_links_file() {
             "link {d} must keep forwarding: {v2}"
         );
     }
-    assert_eq!(v2["directions"][0]["link"], "fast");
     assert_eq!(v2["directions"][0]["rx"], "net_null0");
     assert_eq!(v2["directions"][0]["tx"], "net_null0");
-    assert_eq!(v2["directions"][1]["link"], "slow");
     assert_eq!(v2["directions"][1]["rx"], "net_null1");
     assert_mean_delay(&v2["directions"][0], 1.0);
     assert_mean_delay(&v2["directions"][1], 3.0);
@@ -489,11 +479,12 @@ fn a_three_link_ring_over_three_vdevs_runs_one_worker_per_link() {
     let _g = serial();
     let c = Controller::start_with_workers(3);
     // A -> B, B -> C, C -> A: each port is ingress once and egress once
-    let ring = |n: &str, i: &str, e: &str, ms: f64| json!({"name": n, "ingress": i, "egress": e, "config": delay_config(ms)});
+    let ring =
+        |i: &str, e: &str, ms: f64| json!({"ingress": i, "egress": e, "config": delay_config(ms)});
     let (s, v) = c.start_run(vec![
-        ring("a-to-b", "net_null0", "net_null1", 1.0),
-        ring("b-to-c", "net_null1", "net_null2", 2.0),
-        ring("c-to-a", "net_null2", "net_null0", 3.0),
+        ring("net_null0", "net_null1", 1.0),
+        ring("net_null1", "net_null2", 2.0),
+        ring("net_null2", "net_null0", 3.0),
     ]);
     assert_eq!(s, 202, "{v}");
     let run = c.wait_state(&["running"], START_TIMEOUT);
@@ -507,15 +498,14 @@ fn a_three_link_ring_over_three_vdevs_runs_one_worker_per_link() {
     thread::sleep(Duration::from_millis(1500));
     let (_, v) = c.call("GET", "/api/stats", None);
     let ring = [
-        ("a-to-b", "net_null0", "net_null1", 1.0),
-        ("b-to-c", "net_null1", "net_null2", 2.0),
-        ("c-to-a", "net_null2", "net_null0", 3.0),
+        ("net_null0", "net_null1", 1.0),
+        ("net_null1", "net_null2", 2.0),
+        ("net_null2", "net_null0", 3.0),
     ];
     assert_eq!(v["directions"].as_array().unwrap().len(), 3, "{v}");
-    for (d, (link, rx, tx, ms)) in ring.iter().enumerate() {
+    for (d, (rx, tx, ms)) in ring.iter().enumerate() {
         let x = &v["directions"][d];
         assert_eq!(x["dir"], d);
-        assert_eq!(x["link"], *link, "{x}");
         assert_eq!(x["rx"], *rx, "{x}");
         assert_eq!(x["tx"], *tx, "{x}");
         assert!(x["counters"]["rx_pkts"].as_u64().unwrap() > 0, "{x}");
@@ -529,8 +519,7 @@ fn a_three_link_ring_over_three_vdevs_runs_one_worker_per_link() {
     // the links file carries the ring literally
     let file: Value =
         serde_json::from_slice(&std::fs::read(c.runtime_dir.join("links.json")).unwrap()).unwrap();
-    for (i, (link, rx, tx, _)) in ring.iter().enumerate() {
-        assert_eq!(file["links"][i]["name"], *link);
+    for (i, (rx, tx, _)) in ring.iter().enumerate() {
         assert_eq!(file["links"][i]["ingress"], *rx);
         assert_eq!(file["links"][i]["egress"], *tx);
     }

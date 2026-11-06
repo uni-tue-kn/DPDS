@@ -25,7 +25,7 @@ fn plan(bin: PathBuf, runtime_dir: &Path) -> LaunchPlan {
         dpds_bin: bin,
         runtime_dir: runtime_dir.to_path_buf(),
         links_file: links_file.clone(),
-        links_json: json!({"links":[{"name":"l","ingress":"net_null0","egress":"net_null0","config":{},"lcore":1}]}),
+        links_json: json!({"links":[{"ingress":"net_null0","egress":"net_null0","config":{},"lcore":1}]}),
         argv: vec![
             "-l".into(),
             "0,1".into(),
@@ -35,7 +35,6 @@ fn plan(bin: PathBuf, runtime_dir: &Path) -> LaunchPlan {
         ],
         directions: vec![DirectionPlan {
             dir: 0,
-            link: "l".into(),
             rx: "net_null0".into(),
             tx: "net_null0".into(),
             lcore: 1,

@@ -15,7 +15,6 @@ export default function LoadRunning({ emulation }: { emulation?: EmulationView }
       ...doc,
       links: running.links.map((l, i) => ({
         id: i + 1,
-        name: l.name,
         ingress: l.ingress,
         egress: l.egress,
         config: l.config,

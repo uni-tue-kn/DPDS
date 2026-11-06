@@ -7,9 +7,6 @@ use utoipa::ToSchema;
 use crate::dto::ConfigDto;
 use crate::validate;
 
-/// Longest link name, in characters.
-pub const MAX_NAME_CHARS: usize = 32;
-
 /// One emulated link: one direction, packets received on `ingress` leave on `egress`
 /// with `config` applied. `ingress == egress` (hairpin) is allowed. A port is the
 /// ingress of at most one link and the egress of at most one link.
@@ -17,7 +14,6 @@ pub const MAX_NAME_CHARS: usize = 32;
 pub struct Link {
     /// Position in the start body, from 1.
     pub id: u32,
-    pub name: String,
     /// DPDK device name the link receives on: a PCI address or a vdev name such as `net_null0`.
     pub ingress: String,
     /// DPDK device name the link sends on.
@@ -25,11 +21,17 @@ pub struct Link {
     pub config: ConfigDto,
 }
 
+impl Link {
+    /// The label used in messages: `link <ingress> -> <egress>`.
+    pub fn label(&self) -> String {
+        format!("link {} -> {}", self.ingress, self.egress)
+    }
+}
+
 /// A link of a start body: a [`Link`] without an id.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StartLink {
-    pub name: String,
     pub ingress: String,
     pub egress: String,
     pub config: ConfigDto,
@@ -60,7 +62,6 @@ impl StartRequest {
             .zip(1..)
             .map(|(l, id)| Link {
                 id,
-                name: l.name,
                 ingress: normal(l.ingress),
                 egress: normal(l.egress),
                 config: l.config,

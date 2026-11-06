@@ -61,8 +61,8 @@ describe('reading the document', () => {
     expect(parseStored(doc([])).corrupt).toBe(false);
   });
 
-  it('unknown members (old settings, presets) and a link worker are ignored, not an error, and never part of the result', () => {
-    const raw = doc([{ ...fx.link(), worker: { lcore: 3 } }], {
+  it('unknown members (old settings, presets, a link name or worker) are ignored, not an error, and never part of the result', () => {
+    const raw = doc([{ ...fx.link(), name: 'old', worker: { lcore: 3 } }], {
       settings: { main_lcore: 2, eal_extra_args: ['--no-huge'] },
       presets: [{ name: 'p' }],
     });
@@ -76,7 +76,7 @@ describe('reading the document', () => {
   });
 
   it.each(INVALID_LINKS)('$label makes the whole document corrupt, valid links beside it included', ({ link }) => {
-    expect(parseStored(doc([fx.link({ id: 7, name: 'ok' }), link])).corrupt).toBe(true);
+    expect(parseStored(doc([fx.link({ id: 7 }), link])).corrupt).toBe(true);
   });
 
   it.each(EDGE_LINKS)('%s is still a valid link', (_label, link) => {
@@ -89,7 +89,8 @@ describe('reading the document', () => {
 
   it('isLocalConfig and isLinksFile: the shapes of the stored document and of an export file', () => {
     expect(isLocalConfig({ version: 1, links: LINKS() })).toBe(true);
-    expect(isLocalConfig({ version: 1, links: [{ ...fx.link(), name: '' }] })).toBe(false);
+    expect(isLocalConfig({ version: 1, links: [{ ...fx.link(), ingress: '' }] })).toBe(false);
+    expect(isLocalConfig({ version: 1, links: [{ ...fx.link(), name: 'old' }] })).toBe(true);
     expect(isLinksFile({ version: 1, links: [{ not: 'checked here' }] })).toBe(true);
     for (const bad of [null, [], 'x', { version: 2, links: [] }, { version: 1 }, { version: 1, links: {} }]) {
       expect(isLinksFile(bad)).toBe(false);
@@ -98,19 +99,12 @@ describe('reading the document', () => {
 });
 
 describe('writing and resetting the document', () => {
-  it('writeConfig stores exactly version and links, and each link only id, name, ports, config and frame size', () => {
-    const dirty = { ...fx.link(), avg_frame_size_byte: 512, worker: { lcore: 3 } } as unknown as Link;
+  it('writeConfig stores exactly version and links, and each link only id, ports, config and frame size', () => {
+    const dirty = { ...fx.link(), avg_frame_size_byte: 512, name: 'old', worker: { lcore: 3 } } as unknown as Link;
     writeConfig({ version: 1, links: [dirty], settings: { main_lcore: 2 } } as never);
     const stored = JSON.parse(must(readRaw())) as { version: number; links: Record<string, unknown>[] };
     expect(Object.keys(stored).sort()).toEqual(['links', 'version']);
-    expect(Object.keys(stored.links[0]).sort()).toEqual([
-      'avg_frame_size_byte',
-      'config',
-      'egress',
-      'id',
-      'ingress',
-      'name',
-    ]);
+    expect(Object.keys(stored.links[0]).sort()).toEqual(['avg_frame_size_byte', 'config', 'egress', 'id', 'ingress']);
     expect(readConfig()).toEqual({
       corrupt: false,
       doc: { version: 1, links: [{ ...fx.link(), avg_frame_size_byte: 512 }] },
@@ -129,8 +123,8 @@ describe('writing and resetting the document', () => {
   it('updateConfig starts from a fresh read, so a change made elsewhere is not overwritten', () => {
     writeConfig({ version: 1, links: [fx.link()] });
     localStorage.setItem(STORAGE_KEY, doc([fx.link(), fx.linkRev()])); // another tab
-    updateConfig((d) => ({ ...d, links: d.links.filter((l) => l.name !== 'a-b') }));
-    expect(readConfig().doc.links.map((l) => l.name)).toEqual(['b-a']);
+    updateConfig((d) => ({ ...d, links: d.links.filter((l) => l.ingress !== fx.link().ingress) }));
+    expect(readConfig().doc.links.map((l) => l.ingress)).toEqual([fx.linkRev().ingress]);
   });
 
   it('updateConfig refuses an unreadable value and leaves its text untouched', () => {
@@ -148,21 +142,14 @@ describe('linksProblem: what an import refuses, naming the first offending link'
     expect(linksProblem([])).toBeNull();
   });
 
-  it.each(INVALID_LINKS)(
-    '$label: names position 2 (and the name when it has one) and the problem',
-    ({ link, problem }) => {
-      const m = must(linksProblem([fx.link({ id: 7, name: 'ok' }), link]));
-      expect(m).toMatch(/^Link 2( \(".*"\))?: /);
-      expect(m).toMatch(problem);
-    },
-  );
-
-  it('the name of the offending link is in the message', () => {
-    expect(linksProblem([fx.link(), fx.link({ id: 2, name: 'x', ingress: '' })])).toMatch(/^Link 2 \("x"\): .*Ingress/);
+  it.each(INVALID_LINKS)('$label: names position 2 and the problem', ({ link, problem }) => {
+    const m = must(linksProblem([fx.link({ id: 7 }), link]));
+    expect(m).toMatch(/^Link 2: /);
+    expect(m).toMatch(problem);
   });
 
   it('with several bad links only the first is named', () => {
-    const m = must(linksProblem([fx.link({ ingress: '' }), fx.link({ id: 2, name: 'b', egress: '' })]));
+    const m = must(linksProblem([fx.link({ ingress: '' }), fx.link({ id: 2, egress: '' })]));
     expect(m).toMatch(/^Link 1/);
     expect(m).not.toMatch(/Link 2/);
   });
@@ -172,17 +159,28 @@ describe('linksProblem: what an import refuses, naming the first offending link'
     expect(linksProblem([fx.link(), null])).toMatch(/^Link 2: /);
   });
 
-  it('two links with the same id or the same name are refused, naming both positions', () => {
+  it('two links with the same id are refused, naming both positions', () => {
     expect(linksProblem([fx.link(), fx.linkRev({ id: 1 })])).toMatch(/Duplicate link id 1.*1 and 2/);
-    expect(linksProblem([fx.link(), fx.linkRev({ name: 'a-b' })])).toMatch(/Duplicate link name "a-b".*1 and 2/);
+  });
+
+  it('an extra name member is accepted (and dropped on import, like any unknown member)', () => {
+    expect(
+      linksProblem([
+        { ...fx.link(), name: 'old' },
+        { ...fx.linkRev(), name: '' },
+      ]),
+    ).toBeNull();
   });
 });
 
 describe('the Start body', () => {
-  it('has the links without ids and nothing but name, ingress, egress and config', () => {
-    const links = [{ ...fx.link(), avg_frame_size_byte: 512, worker: { lcore: 1 } } as unknown as Link, fx.linkRev()];
+  it('has the links without ids and nothing but ingress, egress and config', () => {
+    const links = [
+      { ...fx.link(), avg_frame_size_byte: 512, name: 'old', worker: { lcore: 1 } } as unknown as Link,
+      fx.linkRev(),
+    ];
     expect(startRequestOf({ version: 1, links })).toStrictEqual({
-      links: links.map((l) => ({ name: l.name, ingress: l.ingress, egress: l.egress, config: l.config })),
+      links: links.map((l) => ({ ingress: l.ingress, egress: l.egress, config: l.config })),
     });
   });
 
@@ -216,10 +214,10 @@ describe('pending restart: the local links against the running start request', (
     expect(pendingRestart(local([reordered]), running([fx.link()])).any).toBe(false);
   });
 
-  it('a changed link is flagged by name; the unchanged one is not', () => {
+  it('a changed link is flagged by its ingress port; the unchanged one is not', () => {
     const p = pendingRestart(local([meanOf(fx.link(), 5), fx.linkRev()]), running());
     expect(p.any).toBe(true);
-    expect([...p.links]).toEqual(['a-b']);
+    expect([...p.links]).toEqual([fx.link().ingress]);
   });
 
   it('a port or histogram difference counts too', () => {
@@ -230,15 +228,15 @@ describe('pending restart: the local links against the running start request', (
 
   it('a link only known locally is flagged; one removed locally raises the notice with nothing to mark', () => {
     const added = pendingRestart(local([...LINKS(), fx.loopLink()]), running());
-    expect([added.any, [...added.links]]).toEqual([true, ['loop']]);
+    expect([added.any, [...added.links]]).toEqual([true, [fx.loopLink().ingress]]);
     const removed = pendingRestart(local([fx.link()]), running());
     expect([removed.any, removed.links.size]).toEqual([true, 0]);
   });
 
-  it('links are matched by name, not by position or id; a rename is a new link', () => {
+  it('links are matched by ingress port, not by position or id; a link with another ingress is a new one', () => {
     expect(pendingRestart(local([fx.linkRev({ id: 1 }), fx.link({ id: 2 })]), running()).any).toBe(false);
-    const renamed = pendingRestart(local([fx.link({ name: 'a-b2' }), fx.linkRev()]), running());
-    expect([renamed.any, [...renamed.links]]).toEqual([true, ['a-b2']]);
+    const moved = pendingRestart(local([fx.link({ ingress: 'net_null1' }), fx.linkRev()]), running());
+    expect([moved.any, [...moved.links]]).toEqual([true, ['net_null1']]);
   });
 
   it.each([

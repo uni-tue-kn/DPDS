@@ -17,7 +17,7 @@ fn vdevs(n: u32) -> Setup {
         (0..n)
             .map(|i| {
                 let p = format!("net_null{i}");
-                link(&format!("l{i}"), &p, &p)
+                link(&p, &p)
             })
             .collect(),
     )
@@ -79,7 +79,7 @@ async fn a_links_only_body_is_accepted_at_every_endpoint() {
 #[tokio::test]
 async fn the_echo_of_a_run_has_links_and_no_settings() {
     let a = app();
-    a.start_ok(vec![link("l", NIC0, NIC1)]).await;
+    a.start_ok(vec![link(NIC0, NIC1)]).await;
     let v = a.get("/api/emulation").await.json();
     let cfg = v["config"].as_object().expect("config while running");
     assert_eq!(cfg.keys().collect::<Vec<_>>(), ["links"], "{v}");
@@ -107,6 +107,13 @@ async fn openapi_has_no_settings_and_no_worker() {
     for name in ["StartLink", "Link"] {
         assert!(!props(name).contains(&"worker".to_string()), "{name}");
     }
+    // links have no name: a direction is identified by its index
+    for name in ["StartLink", "Link", "HistoryLink"] {
+        assert!(!props(name).contains(&"name".to_string()), "{name}");
+    }
+    for name in ["DirectionPlan", "DirectionStats"] {
+        assert!(!props(name).contains(&"link".to_string()), "{name}");
+    }
     let text = doc.to_string();
     for gone in ["eal_extra_args", "poll_interval_ms"] {
         assert!(!text.contains(gone), "{gone} still in the OpenAPI document");
@@ -120,7 +127,7 @@ async fn a_link_with_a_worker_is_a_400_naming_it_at_every_endpoint() {
     for worker in [json!(2), json!(7), json!(null), json!("two")] {
         for path in ENDPOINTS {
             let a = app();
-            let mut l = link("l", NIC0, NIC0);
+            let mut l = link(NIC0, NIC0);
             l["worker"] = worker.clone();
             let r = a.post(path, setup(vec![l]).body()).await;
             assert_eq!(r.status, 400, "{path} {worker}: {}", r.text());
@@ -188,13 +195,6 @@ fn workers_are_the_lowest_free_isolated_cores_in_link_order() {
         a.directions.iter().map(|d| d.lcore).collect::<Vec<_>>(),
         [2, 3, 6]
     );
-    assert_eq!(
-        a.directions
-            .iter()
-            .map(|d| d.link.as_str())
-            .collect::<Vec<_>>(),
-        ["l0", "l1", "l2"]
-    );
 }
 
 #[test]
@@ -202,9 +202,9 @@ fn workers_prefer_the_numa_node_of_the_ingress_nic_then_the_lowest_id() {
     let h = FakeHost::bare_metal();
     // ingress on node 1, node 1, node 0
     let st = setup(vec![
-        link("a", NIC1, NIC0),
-        link("b", INTEL, "net_null0"),
-        link("c", NIC0, "net_null1"),
+        link(NIC1, NIC0),
+        link(INTEL, "net_null0"),
+        link(NIC0, "net_null1"),
     ]);
     let a = plan_for(&h, &st).unwrap();
     assert_eq!(
@@ -266,7 +266,7 @@ fn the_isolated_cores_hint_does_not_offer_to_pin_workers() {
 #[tokio::test]
 async fn the_argv_is_what_the_controller_computes_and_nothing_else() {
     let a = app();
-    a.start_ok(vec![link("l", "net_null0", "net_null0")]).await;
+    a.start_ok(vec![link("net_null0", "net_null0")]).await;
     let argv = &a.supervisor.plans()[0].argv;
     let (links_file, head) = argv.split_last().unwrap();
     assert!(links_file.ends_with("links.json"), "{argv:?}");
@@ -298,7 +298,7 @@ async fn an_eal_argument_has_no_way_in() {
     let r = a.post(ENDPOINTS[0], body).await;
     assert_eq!(r.status, 400, "{}", r.text());
     assert!(r.message().contains("eal_extra_args"), "{}", r.text());
-    let mut l = link("l", "net_null0", "net_null0");
+    let mut l = link("net_null0", "net_null0");
     l["eal_extra_args"] = json!(["--no-huge"]);
     let r = a.start_links(vec![l]).await;
     assert_eq!(r.status, 400, "{}", r.text());

@@ -222,7 +222,7 @@ fn drain(ctx: &Ctx) -> Option<Hint> {
             let configs: Vec<_> = l.config.to_core().ok().into_iter().collect();
             let t = drain_timeout(&configs);
             (t > Duration::from_secs(DRAIN_WARN_S))
-                .then(|| format!("{} ({} s)", l.name, t.as_secs()))
+                .then(|| format!("{} ({} s)", l.label(), t.as_secs()))
         })
         .collect();
     (!slow.is_empty()).then(|| {
@@ -607,8 +607,8 @@ fn numa(ctx: &Ctx) -> Hint {
             known = true;
             if nic != cpu {
                 remote.push(format!(
-                    "link {} on core {} (node {cpu}) receives on {} (node {nic})",
-                    d.link, d.lcore, d.rx
+                    "link {} -> {} on core {} (node {cpu}) receives on {} (node {nic})",
+                    d.rx, d.tx, d.lcore, d.rx
                 ));
             }
         }

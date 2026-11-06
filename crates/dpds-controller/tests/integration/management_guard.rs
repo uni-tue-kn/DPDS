@@ -538,7 +538,7 @@ fn the_system_source_reads_the_real_getifaddrs() {
 const UPLINK_FIX: &str = "Use NICs the host does not use (no IP address, no route, not in Open vSwitch); binding the host's uplink to DPDK cuts the host off the network. Start is refused.";
 
 fn state_using(ingress: &str, egress: &str) -> Setup {
-    setup(vec![link("l", ingress, egress)])
+    setup(vec![link(ingress, egress)])
 }
 
 fn uplink_hints(host: &FakeHost, ingress: &str, egress: &str) -> Vec<Value> {
@@ -655,15 +655,16 @@ fn ovs_uplink_app() -> TestApp {
     TestApp::new(h)
 }
 
-/// The 409 of start for a link `name` on `ingress` -> `egress`: names the link, the port and
+/// The 409 of start for a link `ingress` -> `egress`: names the link by its ports, the port and
 /// the reason, and nothing was spawned.
 async fn assert_start_refused(a: &TestApp, ingress: &str, egress: &str, port: &str, reason: &str) {
-    let r = a
-        .start_links(vec![link("uplinktest", ingress, egress)])
-        .await;
+    let r = a.start_links(vec![link(ingress, egress)]).await;
     assert_eq!(r.status, 409, "{ingress} -> {egress}: {}", r.text());
     let m = r.message();
-    assert!(m.contains("uplinktest"), "the link is named: {m}");
+    assert!(
+        m.contains(&format!("link {ingress} -> {egress}")),
+        "the link is named by its ports: {m}"
+    );
     assert!(m.contains(port), "the port is named: {m}");
     assert!(m.contains(reason), "the reason is given: {m}");
     assert!(a.supervisor.plans().is_empty(), "nothing is spawned");
@@ -728,13 +729,14 @@ async fn start_refuses_an_mlx5_port_whose_bond_carries_a_route() {
 async fn the_second_link_of_a_body_is_checked_too() {
     let a = address_uplink_app();
     let r = a
-        .start_links(vec![
-            link("fine", NIC1, NIC1),
-            link("bad-one", "net_null0", NIC0),
-        ])
+        .start_links(vec![link(NIC1, NIC1), link("net_null0", NIC0)])
         .await;
     assert_eq!(r.status, 409, "{}", r.text());
-    assert!(r.message().contains("bad-one"), "{}", r.message());
+    assert!(
+        r.message().contains(&format!("link net_null0 -> {NIC0}")),
+        "{}",
+        r.message()
+    );
     assert!(a.supervisor.plans().is_empty());
 }
 
@@ -745,13 +747,10 @@ async fn start_still_works_on_free_nics_and_vdevs_next_to_link_local_addresses()
     h.addr("ens2f0", "fe80::2");
     h.addr("lo", "127.0.0.1");
     let a = TestApp::new(h);
-    assert_eq!(
-        a.start_links(vec![link("ok", NIC0, NIC1)]).await.status,
-        202
-    );
+    assert_eq!(a.start_links(vec![link(NIC0, NIC1)]).await.status, 202);
     let a = app();
     assert_eq!(
-        a.start_links(vec![link("v", "net_null0", "net_null0")])
+        a.start_links(vec![link("net_null0", "net_null0")])
             .await
             .status,
         202
@@ -771,11 +770,14 @@ async fn validate_refuses_every_kind_of_uplink_like_start_and_spawns_nothing() {
     assert_eq!(a.validate(&state_using(NIC0, NIC1)).await.status, 200);
     for a in [address_uplink_app(), ovs_uplink_app()] {
         for (i, e) in [(NIC0, NIC1), (NIC1, NIC0), (NIC0, NIC0)] {
-            let r = a.validate(&setup(vec![link("uplinktest", i, e)])).await;
+            let r = a.validate(&setup(vec![link(i, e)])).await;
             assert_eq!(r.status, 409, "{i} -> {e}: {}", r.text());
             let m = r.message();
             assert!(m.contains(NIC0) && m.contains("host uplink"), "{m}");
-            assert!(m.contains("uplinktest"), "the link is named: {m}");
+            assert!(
+                m.contains(&format!("link {i} -> {e}")),
+                "the link is named by its ports: {m}"
+            );
         }
         assert_eq!(a.validate(&state_using(NIC1, NIC1)).await.status, 200);
         assert!(a.supervisor.plans().is_empty());

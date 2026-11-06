@@ -13,7 +13,7 @@ export const tabs = () => screen.queryAllByRole('tab').filter((t) => !isSummary(
 
 export const tab = (d: number): HTMLElement => must(tabs()[d], `tab ${d}`);
 
-/** The tab titles, "name: ingress → egress". */
+/** The tab titles, "ingress → egress" (netdev labels). */
 export const tabTitles = () => tabs().map((t) => (t.textContent ?? '').trim());
 
 function panelOf(t: HTMLElement): HTMLElement {

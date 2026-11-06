@@ -3,9 +3,6 @@
 // file:line it rests on, or says it is UI behaviour. The keys are the label texts, except where one label has two meanings.
 
 export const HELP = {
-  // dpds-controller/src/api.rs:232-237 (valid_name), model.rs:10-11 (MAX_NAME_CHARS = 32)
-  'Link name':
-    'Name of this link. 1 to 32 characters: letters, digits and _ . - (the controller refuses anything else at start). Must be unique among your links.',
   // dpds-controller/src/model.rs:12-15 (one ingress and one egress per port, hairpin allowed), api.rs:295-305 (409 on reuse), dpds/src/main.rs:3-6
   Ingress:
     'Port this link receives packets on. A port can be the ingress of at most one link. The same port may also be the egress (hairpin).',

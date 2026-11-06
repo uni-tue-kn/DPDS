@@ -8,27 +8,29 @@
 //    link's `worker` member are ignored and never written back. The key `theme` is separate.
 //  - A value that cannot be read (not JSON, wrong shape, version != 1, an invalid link) raises a `role="alert"` on every page with a
 //    Reset button; the stored text stays untouched until Reset, and Start is disabled meanwhile.
-//  - Start, validate and hints send exactly { links: [{name, ingress, egress, config}] }, built from the local document, without
+//  - Start, validate and hints send exactly { links: [{ingress, egress, config}] }, built from the local document, without
 //    ids. Without local links nothing is sent. Hints are the host-only ones plus, with local links, the link-dependent ones; merged
 //    by hint id, the link-dependent answer wins.
-//  - Pending restart compares the local links with `emulation.config` (the running start request) by name, only while the
+//  - Pending restart compares the local links with `emulation.config` (the running start request) by ingress port, only while the
 //    emulation is starting or running: `data-testid="pending-restart"` on the Dashboard and the Settings page, `link-pending-restart`
 //    on a differing row. "Load running configuration" shows when the emulation reports a config and the local document has no links.
 //  - Stages are optional: `ConfigDto.delayer`, `.limiter` and `.loss_model` may be null or absent (not added).
-//  - The Settings page (`/settings`, spec 63; the only place that edits links) is one P4TG-style page: a table with one editable row
-//    per link of a DRAFT (the stored links when the page mounts), "Add link", Save and Reset, Import and Export, and toasts. Row `n`
-//    (1-based) has `Name of link <n>`, `Ingress of link <n>` and `Egress of link <n>` controls and the buttons `Histogram of link
-//    <n>`, `Settings of link <n>`, `Duplicate link <n>` and `Delete link <n>`. Nothing reaches the store before Save (ONE write).
+//  - Links have no names (spec 64): a link is told by its ports. A stored or imported extra `name` member is dropped like any unknown member.
+//  - The Settings page (`/settings`, spec 63 and 64; the only place that edits links) is one P4TG-style page: a table (columns RX port,
+//    TX port, Histogram, Settings, Options; no number, name or summary) with one editable row per link of a DRAFT (the stored links
+//    when the page mounts), "Add link", Save and Reset, Import and Export, and toasts. Row `n` (1-based) has the selects `RX port of
+//    link <n>` and `TX port of link <n>` and the buttons `Histogram of link <n>`, `Settings of link <n>`, `Duplicate link <n>` and
+//    `Delete link <n>`. Nothing reaches the store before Save (ONE write).
 //    The old routes `/settings/new` and `/settings/:id` are gone (redirect to `/`).
-//  - "Settings of link <n>" opens the "Link settings" modal (title "Link #<n>: <name>"): sections (role group) Buffer, Delayer,
+//  - "Settings of link <n>" opens the "Link settings" modal (title "Link <rx> → <tx>", "Link settings" while a port is missing): sections (role group) Buffer, Delayer,
 //    Limiter, Dropper in an always-open accordion. Delayer, Limiter and Dropper start with a switch "Enable <stage>"; off, the
-//    stage's fields are not rendered. "Histogram of link <n>" opens the "Histogram" modal (title "Histograms of link #<n>: <name>"):
+//    stage's fields are not rendered. "Histogram of link <n>" opens the "Histogram" modal (title "Histograms of link <rx> → <tx>", "Histograms" while a port is missing):
 //    the switch "Delay statistics" and the groups "Delay histogram" and "IAT histogram". Both modals edit a copy: footer Close (also
 //    the header X, Escape) discards it, footer Confirm validates (the fields of the modal only; a problem is a danger Alert inside
 //    the modal, which stays open) and writes it into the draft row. The modal of the footer is told from the header X by the
 //    footer: both are named "Close", so use `closeModal`.
 //  - Feedback is a toast (a `status`, a danger one an `alert`) with the message: "Settings saved successfully.", "Settings reset
-//    successfully.", `Cloned "<name>" to "<copy>"`, "Settings imported successfully.", a warning `Link <n> ("<name>"): <problem>` when
+//    successfully.", "Link duplicated.", "Settings imported successfully.", a warning `Link <n>: <problem>` when
 //    Save finds a problem, a danger one for a failed import, export or write (see `findToast`). A field label's info button is
 //    "About <label>"; it opens an "Info" modal with a Close.
 //  - A field label is a `<label>` whose own text is the plain label: the required marker and the info button are siblings, so
@@ -174,13 +176,12 @@ export function storedDoc(): StoredDoc {
 }
 export const storedLinks = () => storedDoc().links;
 
-const START_LINK_KEYS = ['name', 'ingress', 'egress', 'config'];
+const START_LINK_KEYS = ['ingress', 'egress', 'config'];
 
 /** The start body the document must produce: links without ids and without worker, nothing else. */
 export function startBodyOf(doc: StoredDoc): { links: unknown[] } {
   return {
     links: doc.links.map((l) => ({
-      name: l.name,
       ingress: l.ingress,
       egress: l.egress,
       config: l.config,
@@ -236,22 +237,16 @@ export async function renderSettings(): Promise<UserEvent> {
 /** The data rows of the links table (not the header, not the "No links configured yet." row). */
 export function linkRows(): HTMLElement[] {
   const table = screen.getByRole('table');
-  return Array.from(table.querySelectorAll<HTMLElement>('tbody tr')).filter((r) => r.querySelector('input'));
+  return Array.from(table.querySelectorAll<HTMLElement>('tbody tr')).filter((r) => r.querySelector('select'));
 }
 /** Row `n` (1-based). */
 export const rowOf = (n: number): HTMLElement => must(linkRows()[n - 1], `row ${n}`);
-/** The cell of row `n` under the column `name` (see `COLUMNS`). */
-export function cellOf(n: number, name: string): HTMLElement {
-  const heads = Array.from(screen.getByRole('table').querySelectorAll('thead th')).map((h) => h.textContent?.trim());
-  const at = heads.indexOf(name);
-  if (at < 0) throw new Error(`no column "${name}" in [${heads.join(', ')}]`);
-  return must(rowOf(n).children[at] as HTMLElement | undefined, `cell ${name} of row ${n}`);
-}
-export const cellText = (n: number, name: string): string => cellOf(n, name).textContent?.trim() ?? '';
 
-export const nameInput = (n = 1) => screen.getByLabelText(`Name of link ${n}`) as HTMLInputElement;
-export const portSelect = (role: 'Ingress' | 'Egress', n = 1) =>
-  screen.getByLabelText(`${role} of link ${n}`) as HTMLSelectElement;
+export const portSelect = (role: 'RX' | 'TX', n = 1) =>
+  screen.getByLabelText(`${role} port of link ${n}`) as HTMLSelectElement;
+/** The ports `[rx, tx]` (device names, '' = none) of every row, in table order. */
+export const portsOfRows = (): [string, string][] =>
+  linkRows().map((_, i) => [portSelect('RX', i + 1).value, portSelect('TX', i + 1).value]);
 export const importButton = () => screen.getByRole('button', { name: 'Import' });
 export const exportButton = () => screen.getByRole('button', { name: 'Export' });
 export const addLinkButton = () => screen.getByRole('button', { name: /^add link$/i });
@@ -261,17 +256,11 @@ export const addLink = (user: UserEvent) => user.click(addLinkButton());
 export const clickSave = (user: UserEvent) => user.click(saveButton());
 export const clickReset = (user: UserEvent) => user.click(resetButton());
 
-/** Sets the row's name (replacing it). */
-export async function setName(user: UserEvent, name: string, n = 1): Promise<void> {
-  await user.clear(nameInput(n));
-  if (name !== '') await user.type(nameInput(n), name);
-}
-
-/** Waits until the interfaces are loaded (a usable port is an option of the ingress select of row `n`). */
+/** Waits until the interfaces are loaded (a usable port is an option of the RX select of row `n`). */
 export const portsLoaded = (n = 1) =>
   waitFor(() =>
     expect(
-      within(portSelect('Ingress', n)).getByRole('option', { name: /^(enp101s0f0|0000:65:00\.0)/ }),
+      within(portSelect('RX', n)).getByRole('option', { name: /^(enp101s0f0|0000:65:00\.0)/ }),
     ).toBeInTheDocument(),
   );
 
@@ -283,8 +272,8 @@ function dialogTitled(title: RegExp): HTMLElement | null {
       .find((d) => title.test(d.querySelector('.modal-title')?.textContent?.trim() ?? '')) ?? null
   );
 }
-export const linkDialog = () => dialogTitled(/^Link #\d+/);
-export const histogramDialog = () => dialogTitled(/^Histograms of link #\d+/);
+export const linkDialog = () => dialogTitled(/^Link (settings|.+ → .+)$/);
+export const histogramDialog = () => dialogTitled(/^Histograms( of link .+ → .+)?$/);
 export const infoDialog = () => dialogTitled(/^Info$/);
 /** The open Link settings or Histogram modal (at most one is open). */
 export const openModal = () => linkDialog() ?? histogramDialog();

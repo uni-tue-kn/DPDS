@@ -99,7 +99,7 @@ fn an_unknown_key_in_the_iat_histogram_does_not_deserialize() {
 async fn start_and_validate_refuse_a_bad_iat_histogram_naming_it() {
     for h in bad_iat() {
         let a = TestApp::new(FakeHost::bare_metal());
-        let l = link_cfg("l", "net_null0", "net_null0", with_iat(h.clone()));
+        let l = link_cfg("net_null0", "net_null0", with_iat(h.clone()));
         let r = a.start_links(vec![l.clone()]).await;
         assert_eq!(r.status, 400, "{h}: {}", r.text());
         assert!(
@@ -121,7 +121,7 @@ async fn start_and_validate_refuse_a_bad_iat_histogram_naming_it() {
 async fn start_accepts_an_iat_histogram_and_the_running_config_echoes_it() {
     let a = TestApp::new(FakeHost::bare_metal());
     let h = json!({"bins": 32, "lo_ns": 0.0, "hi_ns": 500.0});
-    let l = link_cfg("l", "net_null0", "net_null0", with_iat(h.clone()));
+    let l = link_cfg("net_null0", "net_null0", with_iat(h.clone()));
     assert_eq!(a.validate(&setup(vec![l.clone()])).await.status, 200);
     let r = a.start_links(vec![l]).await;
     assert_eq!(r.status, 202, "{}", r.text());
@@ -131,10 +131,9 @@ async fn start_accepts_an_iat_histogram_and_the_running_config_echoes_it() {
 
 // ---- the links file -------------------------------------------------------------------------
 
-fn plan(dir: u32, link: &str, rx: &str, tx: &str, lcore: u32) -> DirectionPlan {
+fn plan(dir: u32, rx: &str, tx: &str, lcore: u32) -> DirectionPlan {
     DirectionPlan {
         dir,
-        link: link.into(),
         rx: rx.into(),
         tx: tx.into(),
         lcore,
@@ -146,8 +145,8 @@ fn the_links_file_carries_the_iat_histogram_beside_the_delay_one() {
     let mut c = cfg_bare();
     c["histogram"] = json!({"bins": 16});
     c["iat_histogram"] = json!({"bins": 32, "hi_ns": 500.0});
-    let l = model_link(1, &link_cfg("a-to-b", "net_null0", "net_null1", c));
-    let v = links_file_json(&[l], &[plan(0, "a-to-b", "net_null0", "net_null1", 2)]).unwrap();
+    let l = model_link(1, &link_cfg("net_null0", "net_null1", c));
+    let v = links_file_json(&[l], &[plan(0, "net_null0", "net_null1", 2)]).unwrap();
     let e = &v["links"][0];
     assert_eq!(
         e["iat_histogram"],
@@ -168,8 +167,8 @@ fn the_links_file_has_no_iat_histogram_when_the_config_has_none() {
         c["histogram"] = json!({"bins": 16});
         c
     }] {
-        let l = model_link(1, &link_cfg("a-to-b", "net_null0", "net_null1", c));
-        let v = links_file_json(&[l], &[plan(0, "a-to-b", "net_null0", "net_null1", 2)]).unwrap();
+        let l = model_link(1, &link_cfg("net_null0", "net_null1", c));
+        let v = links_file_json(&[l], &[plan(0, "net_null0", "net_null1", 2)]).unwrap();
         assert!(v["links"][0].get("iat_histogram").is_none(), "{v}");
     }
 }
@@ -178,7 +177,6 @@ fn the_links_file_has_no_iat_histogram_when_the_config_has_none() {
 async fn the_started_links_file_has_the_iat_histogram() {
     let a = TestApp::new(FakeHost::bare_metal());
     let l = link_cfg(
-        "l",
         "net_null0",
         "net_null0",
         with_iat(json!({"bins": 32, "lo_ns": 0.0, "hi_ns": 1000.0})),

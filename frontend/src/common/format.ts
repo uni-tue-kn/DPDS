@@ -47,14 +47,13 @@ export function formatCount(v?: number | null): string {
   return v == null ? NA : v.toLocaleString('en-US');
 }
 
-/** "name: ingress → egress": the one label the dashboard and the links list share. */
+/** "ingress → egress": a link is told by its ports. */
 export function linkLabel(
-  name?: string | null,
   ingress?: string | null,
   egress?: string | null,
   label: PortLabeler = (p) => p ?? undefined,
 ): string {
-  return `${name || '?'}: ${label(ingress) || '?'} → ${label(egress) || '?'}`;
+  return `${label(ingress) || '?'} → ${label(egress) || '?'}`;
 }
 
 // These four formatters match P4TG's SendReceiveMonitor output exactly.

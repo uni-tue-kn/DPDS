@@ -73,8 +73,8 @@ dpds <EAL args...> -- [--config <path>] [--config0 <path>] [--config1 <path>] | 
 ```
 
 - `--config` is the config of every link without its own (default `config.json`); `--config0` and
-  `--config1` set links `dir0` (port 0 -> port 1, or port 0 -> port 0 with one port) and `dir1`
-  (port 1 -> port 0). They allow one or two ports.
+  `--config1` set the link of direction 0 (port 0 -> port 1, or port 0 -> port 0 with one port) and
+  of direction 1 (port 1 -> port 0). They allow one or two ports.
 - `--links` takes a links file with any number of links (below); it excludes the `--config*` flags.
 - DPDS needs exactly `1 + number of links` lcores: the main lcore and one worker per link.
 - DPDS locks its memory (`mlockall`) at startup. If a finite `RLIMIT_MEMLOCK` prevents that it warns
@@ -138,17 +138,18 @@ Stop with `Ctrl-C`.
 
 ```json
 { "links": [
-  { "name": "a-to-b", "ingress": "<PCI0>", "egress": "<PCI1>", "config": { ... } },
-  { "name": "b-to-c", "ingress": "<PCI1>", "egress": "<PCI2>", "config": { ... } },
-  { "name": "c-to-a", "ingress": "<PCI2>", "egress": "<PCI0>", "config": { ... } }
+  { "ingress": "<PCI0>", "egress": "<PCI1>", "config": { ... } },
+  { "ingress": "<PCI1>", "egress": "<PCI2>", "config": { ... } },
+  { "ingress": "<PCI2>", "egress": "<PCI0>", "config": { ... } }
 ] }
 ```
 
 This ring over three NICs runs with `-l 0-3 -a <PCI0> -a <PCI1> -a <PCI2> -- --links ring.json`.
 
-- Required per link: `name` (1-32 characters of `A-Za-z0-9_.-`, unique), `ingress` and `egress`
-  (DPDK device names: PCI address or vdev name) and `config` (below). A port is the ingress of at
-  most one link and the egress of at most one; `ingress == egress` loops back.
+- Required per link: `ingress` and `egress` (DPDK device names: PCI address or vdev name) and
+  `config` (below). A link has no name: it is identified by its ports, `link <ingress> -> <egress>`
+  in messages. A port is the ingress of at most one link and the egress of at most one;
+  `ingress == egress` loops back.
 - Optional: `lcore` (for all links or none), `delay_stats: false` (no delay statistics or histogram
   for the link), `histogram` / `iat_histogram` (`{"bins": 1..4096, "lo_ns": .., "hi_ns": ..}`,
   every field optional). Unknown keys and inconsistencies are startup errors naming the culprit.

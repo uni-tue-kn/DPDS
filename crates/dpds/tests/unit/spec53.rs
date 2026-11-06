@@ -8,7 +8,7 @@
 //! LinkSpec.iat_histogram / LinkDirection.iat_histogram: HistogramSpec
 //!     the link-level `"iat_histogram": {bins, lo_ns, hi_ns}` of the links file, beside
 //!     `"histogram"`; absent = `HistogramSpec::default()`; validated like `histogram`, an error
-//!     names the link and "IAT histogram".
+//!     names the link (`link <ingress> -> <egress>`) and "IAT histogram".
 //! ```
 //!
 //! IAT tests use `initialization_rate_pps = 15_625_000`: default hi = 256 ns.
@@ -126,8 +126,8 @@ fn cfg() -> Value {
     })
 }
 
-fn link(name: &str, ingress: &str, egress: &str, extra: Value) -> Value {
-    let mut l = json!({ "name": name, "ingress": ingress, "egress": egress, "config": cfg() });
+fn link(ingress: &str, egress: &str, extra: Value) -> Value {
+    let mut l = json!({ "ingress": ingress, "egress": egress, "config": cfg() });
     for (k, v) in extra.as_object().unwrap() {
         l[k] = v.clone();
     }
@@ -141,16 +141,15 @@ fn parse(links: Vec<Value>) -> Result<Vec<dpds::links::LinkSpec>, String> {
 #[test]
 fn an_iat_histogram_is_parsed_per_link_and_independent_of_the_delay_one() {
     let links = parse(vec![
-        link("a", "p0", "p1", json!({ "iat_histogram": { "bins": 100 } })),
+        link("p0", "p1", json!({ "iat_histogram": { "bins": 100 } })),
         link(
-            "b",
             "p1",
             "p2",
             json!({ "iat_histogram": { "lo_ns": 10.0, "hi_ns": 20.5 },
                     "histogram": { "bins": 7 } }),
         ),
-        link("c", "p3", "p3", json!({ "iat_histogram": {} })),
-        link("d", "p4", "p0", json!({})),
+        link("p3", "p3", json!({ "iat_histogram": {} })),
+        link("p4", "p0", json!({})),
     ])
     .unwrap();
     assert_eq!(links[0].iat_histogram, spec(Some(100), None, None));
@@ -171,24 +170,12 @@ fn a_bad_iat_histogram_is_an_error_naming_the_link_and_the_iat_histogram() {
         json!({ "lo_ns": 5.0, "hi_ns": 5.0 }),
         json!({ "lo_ns": 9.0, "hi_ns": 5.0 }),
     ] {
-        let e = parse(vec![link(
-            "iat-link",
-            "p",
-            "q",
-            json!({ "iat_histogram": bad }),
-        )])
-        .unwrap_err();
-        assert!(e.contains("iat-link"), "{bad}: {e}");
+        let e = parse(vec![link("p", "q", json!({ "iat_histogram": bad }))]).unwrap_err();
+        assert!(e.contains("link p -> q"), "{bad}: {e}");
         assert!(e.contains("IAT histogram"), "{bad}: {e}");
     }
     // a bad delay histogram does not talk about the IAT one
-    let e = parse(vec![link(
-        "iat-link",
-        "p",
-        "q",
-        json!({ "histogram": { "bins": 0 } }),
-    )])
-    .unwrap_err();
+    let e = parse(vec![link("p", "q", json!({ "histogram": { "bins": 0 } }))]).unwrap_err();
     assert!(!e.contains("IAT"), "{e}");
 }
 
@@ -203,7 +190,7 @@ fn wrong_types_and_unknown_keys_of_the_iat_histogram_are_errors() {
         json!(3),
     ] {
         assert!(
-            parse(vec![link("x", "p", "q", json!({ "iat_histogram": bad }))]).is_err(),
+            parse(vec![link("p", "q", json!({ "iat_histogram": bad }))]).is_err(),
             "{bad}"
         );
     }
@@ -212,8 +199,8 @@ fn wrong_types_and_unknown_keys_of_the_iat_histogram_are_errors() {
 #[test]
 fn directions_carry_the_iat_histogram_spec_of_their_link() {
     let links = parse(vec![
-        link("a", "P0", "P1", json!({ "iat_histogram": { "bins": 10 } })),
-        link("b", "P1", "P2", json!({})),
+        link("P0", "P1", json!({ "iat_histogram": { "bins": 10 } })),
+        link("P1", "P2", json!({})),
     ])
     .unwrap();
     let ids = vec![("P0".to_string(), 0u16), ("P1".into(), 1), ("P2".into(), 2)];

@@ -42,7 +42,7 @@ fn a_leftover_state_file_of_the_old_layout_is_never_read() {
     for garbage in [
         "{garbage".to_string(),
         r#"{"links":[],"settings":{"main_lcore":null,"eal_extra_args":[],"poll_interval_ms":500,"mlx5_devargs":"x"},"next_id":1}"#.to_string(),
-        json!({"links":[{"id":1,"name":"a","ports":["net_null0"],"configs":[cfg_json(1.0e6,0.0)]}],
+        json!({"links":[{"id":1,"ports":["net_null0"],"configs":[cfg_json(1.0e6,0.0)]}],
                "settings":{"main_lcore":null,"eal_extra_args":[],"poll_interval_ms":500},
                "next_id":2}).to_string(),
     ] {
@@ -91,12 +91,12 @@ fn serving_and_a_start_attempt_write_no_file_into_the_working_directory_or_home(
         (
             "POST",
             "/api/host/hints",
-            Some(setup(vec![link("l", "net_null0", "net_null0")]).body()),
+            Some(setup(vec![link("net_null0", "net_null0")]).body()),
         ),
         (
             "POST",
             "/api/emulation/start",
-            Some(setup(vec![link("l", "net_null0", "net_null0")]).body()),
+            Some(setup(vec![link("net_null0", "net_null0")]).body()),
         ),
     ] {
         let _ = http(&addr, m, p, b.as_ref()).unwrap();
@@ -223,7 +223,7 @@ fn the_crate_has_no_store_module_and_no_state_dir_code() {
 #[tokio::test]
 async fn the_stored_config_routes_are_404() {
     let a = TestApp::new(FakeHost::bare_metal());
-    let link_body = link("x", "net_null0", "net_null0");
+    let link_body = link("net_null0", "net_null0");
     let preset = json!({"name": "p", "config": cfg_json(1.0e6, 0.0)});
     let doc = json!({"format": "dpds-controller-export", "version": 2,
                      "links": [], "presets": []});
@@ -261,7 +261,7 @@ async fn the_stored_config_routes_are_404() {
 #[tokio::test]
 async fn the_removed_routes_stay_404_while_an_emulation_runs() {
     let a = TestApp::new(FakeHost::bare_metal());
-    a.start_ok(vec![link("l", "net_null0", "net_null0")]).await;
+    a.start_ok(vec![link("net_null0", "net_null0")]).await;
     for p in ["/api/links", "/api/presets", "/api/settings", "/api/export"] {
         assert_eq!(a.get(p).await.status, 404, "{p}");
     }
@@ -272,20 +272,20 @@ async fn the_removed_routes_stay_404_while_an_emulation_runs() {
 #[tokio::test]
 async fn nothing_is_remembered_between_starts() {
     let a = TestApp::new(FakeHost::bare_metal());
-    a.start_ok(vec![link("first", NIC0, NIC1)]).await;
+    a.start_ok(vec![link(NIC0, NIC1)]).await;
     assert_eq!(a.post("/api/emulation/stop", json!({})).await.status, 202);
     // after the stop the configuration is gone from the controller
     let v = a.get("/api/emulation").await.json();
     assert_eq!(v["state"], "stopped", "{v}");
     assert!(absent(&v, "config"), "{v}");
     assert_eq!(v["directions"], json!([]), "{v}");
-    // the next start uses the next body, not a merge with the previous one: the port `first`
-    // used is free again, `first` is no name anyone remembers
-    a.start_ok(vec![link("second", NIC0, INTEL)]).await;
+    // the next start uses the next body, not a merge with the previous one: the ingress the
+    // first body used is free again
+    a.start_ok(vec![link(NIC0, INTEL)]).await;
     let plans = a.supervisor.plans();
     assert_eq!(plans.len(), 2);
     assert_eq!(plans[1].links_json["links"].as_array().unwrap().len(), 1);
-    assert_eq!(plans[1].links_json["links"][0]["name"], "second");
+    assert_eq!(plans[1].links_json["links"][0]["ingress"], NIC0);
     assert_eq!(plans[1].links_json["links"][0]["egress"], INTEL);
 }
 
@@ -294,7 +294,7 @@ async fn a_second_controller_over_the_same_host_knows_nothing_of_the_first() {
     // two routers = two controller processes: the configuration of one is invisible to the other
     let host = FakeHost::bare_metal();
     let first = TestApp::new(FakeHost::bare_metal());
-    first.start_ok(vec![link("l", NIC0, NIC1)]).await;
+    first.start_ok(vec![link(NIC0, NIC1)]).await;
     let second = router_over(host.roots());
     let v = call(&second, "GET", "/api/emulation", None).await.json();
     assert_eq!(v["state"], "stopped", "{v}");

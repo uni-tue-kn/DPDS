@@ -288,7 +288,7 @@ fn rig() -> Rig {
 impl Rig {
     /// A fake `dpds` with `pid` goes up and the REST start is called: a new run.
     async fn start_run(&mut self, pid: u32, started_at: u64) {
-        self.start_run_links(pid, started_at, vec![link("l", "net_null0", "net_null0")])
+        self.start_run_links(pid, started_at, vec![link("net_null0", "net_null0")])
             .await;
     }
 
@@ -633,7 +633,7 @@ async fn a_vf_port_has_null_physical_counters_in_samples_totals_and_stats() {
         device: "0x101e".into(),
         ..Nic::mlx5(NIC0, "ens1f0", Some(0))
     });
-    let links = vec![link("a", NIC0, NIC1), link("b", NIC1, NIC0)];
+    let links = vec![link(NIC0, NIC1), link(NIC1, NIC0)];
     r.start_run_links(4242, 1_700_000_000, links).await;
     let v = r
         .wait_history("a sample at 2 s", 15, |v| newest_t(v) >= 2.0)
@@ -1336,41 +1336,41 @@ async fn openapi_lists_elapsed_ms_on_the_stats_view() {
 // ---- run_id and links ------------------------------------------------------------
 //
 // `GET /api/stats/history` also returns `run_id` (u64, one more with every new run the controller
-// sees, null before any run) and `links: [{name, ingress, egress}]` of that run in link-index order,
+// sees, null before any run) and `links: [{ingress, egress}]` of that run in link-index order,
 // both kept after the stop like the samples and replaced together when a new run begins. Before any run `links` is `[]`; the link objects have
-// exactly the three fields (no `config`, no `worker`); a new run's id is the previous one plus 1;
+// exactly the two fields (no `config`, no `worker`); a new run's id is the previous one plus 1;
 // an answer never pairs the `run_id` of one run with the `links` or `started_at` of another; a
 // request that is refused (400) changes neither.
 
-/// The two links of the runs below, with names and ports that differ from run to run so that a
+/// The links of the runs below, with ports that differ from run to run so that a
 /// mixed-up run or link order shows.
 fn links_a() -> Vec<Value> {
     vec![
-        link("alpha", "net_null0", "net_null1"),
-        link("beta", "net_null1", "net_null0"),
+        link("net_null0", "net_null1"),
+        link("net_null1", "net_null0"),
     ]
 }
 
 fn links_b() -> Vec<Value> {
     vec![
-        link("gamma", "net_null2", "net_null3"),
-        link("delta", "net_null3", "net_null2"),
-        link("epsilon", "net_null4", "net_null4"),
+        link("net_null2", "net_null3"),
+        link("net_null3", "net_null2"),
+        link("net_null4", "net_null4"),
     ]
 }
 
 fn links_a_json() -> Value {
     json!([
-        {"name": "alpha", "ingress": "net_null0", "egress": "net_null1"},
-        {"name": "beta", "ingress": "net_null1", "egress": "net_null0"},
+        {"ingress": "net_null0", "egress": "net_null1"},
+        {"ingress": "net_null1", "egress": "net_null0"},
     ])
 }
 
 fn links_b_json() -> Value {
     json!([
-        {"name": "gamma", "ingress": "net_null2", "egress": "net_null3"},
-        {"name": "delta", "ingress": "net_null3", "egress": "net_null2"},
-        {"name": "epsilon", "ingress": "net_null4", "egress": "net_null4"},
+        {"ingress": "net_null2", "egress": "net_null3"},
+        {"ingress": "net_null3", "egress": "net_null2"},
+        {"ingress": "net_null4", "egress": "net_null4"},
     ])
 }
 
@@ -1524,7 +1524,7 @@ async fn a_refused_start_changes_neither_run_id_nor_links() {
     // 400: no links at all; 400: a port name the start refuses
     for body in [
         setup(vec![]).body(),
-        setup(vec![link("zeta", "bad port!", "net_null0")]).body(),
+        setup(vec![link("bad port!", "net_null0")]).body(),
     ] {
         let resp = call(&r.router, "POST", "/api/emulation/start", Some(body)).await;
         assert_eq!(resp.status, 400, "{}", resp.text());
@@ -1577,14 +1577,10 @@ async fn openapi_documents_run_id_and_links_on_the_history() {
     let item_props = item["properties"]
         .as_object()
         .unwrap_or_else(|| panic!("the items of links have no properties: {links}"));
-    for k in ["name", "ingress", "egress"] {
+    for k in ["ingress", "egress"] {
         assert!(item_props.contains_key(k), "a link has {k}: {item}");
     }
-    assert_eq!(
-        item_props.len(),
-        3,
-        "a link is {{name, ingress, egress}}: {item}"
-    );
+    assert_eq!(item_props.len(), 2, "a link is {{ingress, egress}}: {item}");
 }
 
 // ---- a reader never applies a stale supervisor status -----------------------------
@@ -1928,7 +1924,7 @@ impl Rig {
         self.live = None;
         self.live = Some(counting(&self.runtime_dir, pid));
         self.supervisor.set_next_run(pid, started_at);
-        let body = setup(vec![link("l", "net_null0", "net_null0")]).body();
+        let body = setup(vec![link("net_null0", "net_null0")]).body();
         let r = call(&self.router, "POST", "/api/emulation/start", Some(body)).await;
         assert_eq!(r.status, 202, "{}", r.text());
         self.speed_up_poller();
@@ -2157,7 +2153,7 @@ async fn totals_are_kept_after_the_stop_with_the_last_poll() {
     // a refused start changes nothing
     for body in [
         setup(vec![]).body(),
-        setup(vec![link("zeta", "bad port!", "net_null0")]).body(),
+        setup(vec![link("bad port!", "net_null0")]).body(),
     ] {
         let resp = call(&r.router, "POST", "/api/emulation/start", Some(body)).await;
         assert_eq!(resp.status, 400, "{}", resp.text());

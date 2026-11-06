@@ -258,7 +258,7 @@ function limiterRate(v: UnitValue, frame: number | null): number {
 }
 
 /** The average frame size in bytes, null when empty; an invalid value is refused even if no rate field needs it. */
-export function frameToDto(f: ConfigForm): number | null {
+function frameToDto(f: ConfigForm): number | null {
   if (f.avg_frame_size.trim() === '') return null;
   const n = parseFrame(f.avg_frame_size);
   if (n === null) throw new Error('Average frame size must be a number of at least 64 (bytes)');
@@ -296,7 +296,7 @@ export function portError(port: string): string | null {
     : `"${port}" is neither a PCI address (0000:65:00.0) nor a vdev (net_null0, net_ring0)`;
 }
 
-export function delayerToDto(f: ConfigForm, frame: number | null): DelayerDto {
+function delayerToDto(f: ConfigForm, frame: number | null): DelayerDto {
   if (!DISTRIBUTIONS.includes(f.distribution)) throw new Error(`Delayer distribution "${f.distribution}" is unknown`);
   return {
     distribution: f.distribution,
@@ -308,7 +308,7 @@ export function delayerToDto(f: ConfigForm, frame: number | null): DelayerDto {
   };
 }
 
-export function lossToDto(f: ConfigForm): LossModelDto {
+function lossToDto(f: ConfigForm): LossModelDto {
   return f.loss_type === 'Random'
     ? { type: 'Random', p: prob(f.random_p, 'Random loss probability') }
     : {
@@ -320,13 +320,13 @@ export function lossToDto(f: ConfigForm): LossModelDto {
       };
 }
 
-export function limiterToDto(f: ConfigForm, frame: number | null) {
+function limiterToDto(f: ConfigForm, frame: number | null) {
   if (!LIMITER_MODES.includes(f.limiter_mode)) throw new Error(`Unknown limiter mode "${f.limiter_mode}"`);
   return { mode: f.limiter_mode, rate_bps: limiterRate(f.rate_bps, frame) };
 }
 
 /** The buffer capacity as an integer packet count; a number of packets that is not a non-negative whole one is refused. */
-export function bufferCapacity(v: UnitValue): number {
+function bufferCapacity(v: UnitValue): number {
   const label = 'Buffer capacity';
   const n = toBase(v, PACKET_UNITS);
   if (n === null) throw new Error(`${label} must be a number`);
@@ -345,7 +345,7 @@ function checkAccuracy(f: ConfigForm) {
 }
 
 /** An optional histogram: null while all three fields are empty; `name` prefixes the messages ("Histogram", "IAT histogram"). */
-export function histogramToDto(name: string, bins: string, lo: UnitValue, hi: UnitValue): HistogramDto | null {
+function histogramToDto(name: string, bins: string, lo: UnitValue, hi: UnitValue): HistogramDto | null {
   const b = optInt(bins, `${name} bins`);
   const lo_ns = lo.text.trim() === '' ? null : unitNum(lo, TIME_UNITS, `${name} lo`);
   const hi_ns = hi.text.trim() === '' ? null : unitNum(hi, TIME_UNITS, `${name} hi`);
@@ -367,7 +367,7 @@ function configToDto(f: ConfigForm, frame: number | null): ConfigDto {
   };
 }
 
-/** What a link stores beside its name: the config and the UI-only frame size (left out when empty). */
+/** What a link stores beside its ports: the config and the UI-only frame size (left out when empty). */
 export interface FormDto {
   config: ConfigDto;
   avg_frame_size_byte?: number;
@@ -447,15 +447,10 @@ export function rangeAdvice(
   return { aligned: false, width: '', suggested, exponent: Math.log2(next) };
 }
 
-/** The controller's link-name rule (`valid_name` in `api.rs`). */
-export const LINK_NAME = /^[A-Za-z0-9_.-]{1,32}$/;
-export const LINK_NAME_RULE = 'Name must be 1 to 32 characters: letters A-Z a-z, digits, underscore, dot or dash';
-
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
 /**
- * What is wrong with a stored or imported link, or null when the form would accept it unchanged: the name rule,
- * non-empty ports, an optional frame size, and a config that survives the form's own round trip
+ * What is wrong with a stored or imported link, or null when the form would accept it unchanged: non-empty ports, an optional frame size, and a config that survives the form's own round trip
  * (`configToForm` then the conversion of `formToDto`, minus the delay accuracy rule).
  */
 export function linkProblem(v: unknown): string | null {
@@ -464,7 +459,6 @@ export function linkProblem(v: unknown): string | null {
     if (typeof v.id !== 'number' || !Number.isInteger(v.id) || v.id < 1) {
       throw new Error('Link id must be a positive whole number');
     }
-    if (typeof v.name !== 'string' || !LINK_NAME.test(v.name)) throw new Error(LINK_NAME_RULE);
     if (typeof v.ingress !== 'string' || v.ingress === '') throw new Error('Ingress port is required');
     if (typeof v.egress !== 'string' || v.egress === '') throw new Error('Egress port is required');
     const frame = v.avg_frame_size_byte ?? null;

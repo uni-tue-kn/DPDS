@@ -15,7 +15,7 @@ fn pool_bytes_for(links: u64) -> u64 {
 }
 
 fn one_link_nic0() -> Setup {
-    setup(vec![link("l", NIC0, NIC0)])
+    setup(vec![link(NIC0, NIC0)])
 }
 
 #[test]
@@ -104,7 +104,7 @@ fn vdev_links(n: u32) -> Setup {
         (0..n)
             .map(|i| {
                 let p = format!("net_null{i}");
-                link(&format!("l{i}"), &p, &p)
+                link(&p, &p)
             })
             .collect(),
     )
@@ -148,7 +148,7 @@ fn hugepages_hint(need_factor_per_node: f64, links: u64) -> Value {
             } else {
                 format!("net_null{i}")
             };
-            link(&format!("l{i}"), &port, &port)
+            link(&port, &port)
         })
         .collect();
     hints_json(&host, &setup(links))
@@ -192,9 +192,9 @@ fn no_hugepages_configured_without_links_still_warns_at_least() {
 #[test]
 fn numa_automatic_workers_on_the_nic_node_are_ok() {
     let host = FakeHost::bare_metal();
-    let local = setup(vec![link("l", NIC1, NIC1)]);
+    let local = setup(vec![link(NIC1, NIC1)]);
     assert_level(&hints_json(&host, &local), "numa", "ok", "ok");
-    let pair = setup(vec![link("a-to-b", NIC1, NIC0), link("b-to-a", NIC0, NIC1)]);
+    let pair = setup(vec![link(NIC1, NIC0), link(NIC0, NIC1)]);
     assert_level(&hints_json(&host, &pair), "numa", "ok", "ok");
 }
 
@@ -204,11 +204,7 @@ fn numa_a_worker_spilled_to_the_other_node_warns() {
     let extra = "0000:b4:00.0";
     host.add_nic(&Nic::mlx5(extra, "enp180s0", Some(1)));
     // three links whose ingress NICs sit on node 1: the third spills to node 0
-    let links = [NIC1, INTEL, extra]
-        .iter()
-        .enumerate()
-        .map(|(i, p)| link(&format!("l{i}"), p, p))
-        .collect();
+    let links = [NIC1, INTEL, extra].iter().map(|p| link(p, p)).collect();
     assert_level(&hints_json(&host, &setup(links)), "numa", "warn", "warn");
 }
 
@@ -216,7 +212,7 @@ fn numa_a_worker_spilled_to_the_other_node_warns() {
 fn numa_unknown_on_a_vm_is_not_a_problem() {
     let h = hints_json(
         &FakeHost::vm(),
-        &setup(vec![link("l", "0000:00:05.0", "0000:00:05.0")]),
+        &setup(vec![link("0000:00:05.0", "0000:00:05.0")]),
     );
     assert_level(&h, "numa", "ok", "info");
 }
@@ -257,7 +253,7 @@ fn the_irqbalance_hint_is_gone_a_running_irqbalance_is_no_hint_of_its_own() {
 fn iommu_matters_only_when_a_vfio_nic_is_used() {
     let host = FakeHost::bare_metal();
     host.rebind(INTEL, "vfio-pci", true);
-    let vfio = setup(vec![link("l", INTEL, INTEL)]);
+    let vfio = setup(vec![link(INTEL, INTEL)]);
     assert_level(&hints_json(&host, &vfio), "iommu", "ok", "ok");
 
     host.iommu(false);
@@ -277,7 +273,7 @@ fn mtu_below_1500_on_a_used_nic_warns() {
     assert_level(&hints_json(&host, &one_link_nic0()), "mtu", "warn", "warn");
     // not used by the link -> no complaint
     assert_level(
-        &hints_json(&host, &setup(vec![link("l", NIC1, NIC1)])),
+        &hints_json(&host, &setup(vec![link(NIC1, NIC1)])),
         "mtu",
         "ok",
         "ok",
@@ -288,7 +284,7 @@ fn mtu_below_1500_on_a_used_nic_warns() {
 fn mtu_above_1500_is_fine() {
     let host = FakeHost::bare_metal(); // NIC1 has 9000
     assert_level(
-        &hints_json(&host, &setup(vec![link("l", NIC1, NIC1)])),
+        &hints_json(&host, &setup(vec![link(NIC1, NIC1)])),
         "mtu",
         "ok",
         "ok",
@@ -299,10 +295,7 @@ fn mtu_above_1500_is_fine() {
 fn mtu_of_an_egress_only_and_of_an_ingress_only_nic_counts() {
     let host = FakeHost::bare_metal();
     host.write("sys/class/net/ens1f0/mtu", "1400\n"); // NIC0
-    for l in [
-        link("ingress-only", NIC0, NIC1),
-        link("egress-only", NIC1, NIC0),
-    ] {
+    for l in [link(NIC0, NIC1), link(NIC1, NIC0)] {
         assert_level(&hints_json(&host, &setup(vec![l])), "mtu", "warn", "warn");
     }
 }
@@ -337,17 +330,14 @@ fn maxreadreq_only_looks_at_used_nics() {
     let h = hints_json(&FakeHost::bare_metal(), &one_link_nic0());
     assert_level(&h, &nic_id("pcie_maxreadreq", NIC0), "ok", "ok");
     assert!(!ids(&h).contains(&nic_id("pcie_maxreadreq", INTEL)), "{h}");
-    let h = hints_json(
-        &FakeHost::bare_metal(),
-        &setup(vec![link("l", INTEL, INTEL)]),
-    );
+    let h = hints_json(&FakeHost::bare_metal(), &setup(vec![link(INTEL, INTEL)]));
     assert_level(&h, &nic_id("pcie_maxreadreq", INTEL), "warn", "warn");
 }
 
 #[test]
 fn maxreadreq_looks_at_both_the_ingress_and_the_egress_nic() {
     // INTEL has 512 in the fixture; NIC0 has 4096
-    for l in [link("in", INTEL, NIC0), link("out", NIC0, INTEL)] {
+    for l in [link(INTEL, NIC0), link(NIC0, INTEL)] {
         let h = hints_json(&FakeHost::bare_metal(), &setup(vec![l]));
         assert_level(&h, &nic_id("pcie_maxreadreq", INTEL), "warn", "warn");
         assert_level(&h, &nic_id("pcie_maxreadreq", NIC0), "ok", "ok");
@@ -357,11 +347,7 @@ fn maxreadreq_looks_at_both_the_ingress_and_the_egress_nic() {
 #[test]
 fn a_ring_through_three_nics_needs_three_isolated_cores() {
     let host = FakeHost::bare_metal(); // 4 isolated
-    let ring = setup(vec![
-        link("a-to-b", NIC0, NIC1),
-        link("b-to-c", NIC1, INTEL),
-        link("c-to-a", INTEL, NIC0),
-    ]);
+    let ring = setup(vec![link(NIC0, NIC1), link(NIC1, INTEL), link(INTEL, NIC0)]);
     assert_level(&hints_json(&host, &ring), "isolated_cores", "ok", "ok");
     // with only 2 isolated cores the ring (three links) does not fit, a pair (two links) does
     host.cpus(8, Some("2-3"), &[(0, "0-3"), (1, "4-7")]);
@@ -372,7 +358,7 @@ fn a_ring_through_three_nics_needs_three_isolated_cores() {
         "error",
         "error",
     );
-    let pair = setup(vec![link("a-to-b", NIC0, NIC1), link("b-to-a", NIC1, NIC0)]);
+    let pair = setup(vec![link(NIC0, NIC1), link(NIC1, NIC0)]);
     assert_level(&hints_json(&host, &pair), "isolated_cores", "ok", "ok");
 }
 
@@ -403,7 +389,7 @@ fn unreadable_config_space_is_info_not_a_failure() {
 fn vm_has_no_readable_pcie_state() {
     let h = hints_json(
         &FakeHost::vm(),
-        &setup(vec![link("l", "0000:00:05.0", "0000:00:05.0")]),
+        &setup(vec![link("0000:00:05.0", "0000:00:05.0")]),
     );
     assert_level(
         &h,
@@ -471,7 +457,7 @@ async fn get_hints_do_not_change_when_an_emulation_runs() {
     // the controller keeps no configuration: GET answers the same before and during a run
     let a = TestApp::new(FakeHost::bare_metal());
     let before = a.get("/api/host/hints").await.json();
-    a.start_ok(vec![link("l", NIC1, NIC1)]).await;
+    a.start_ok(vec![link(NIC1, NIC1)]).await;
     assert_eq!(a.get("/api/host/hints").await.json(), before);
 }
 
@@ -479,7 +465,7 @@ async fn get_hints_do_not_change_when_an_emulation_runs() {
 async fn post_hints_add_the_link_dependent_ones_for_the_body() {
     let a = TestApp::new(FakeHost::bare_metal());
     let host_only = a.get("/api/host/hints").await.json();
-    let body = setup(vec![link("l", INTEL, INTEL)]).body();
+    let body = setup(vec![link(INTEL, INTEL)]).body();
     let r = a.post("/api/host/hints", body).await;
     assert_eq!(r.status, 200, "{}", r.text());
     let h = r.json();
@@ -493,7 +479,7 @@ async fn post_hints_add_the_link_dependent_ones_for_the_body() {
     }
     assert_level(&h, &nic_id("pcie_maxreadreq", INTEL), "warn", "warn");
     // the same host, another body, another answer: the body is the only input
-    let body = setup(vec![link("l", NIC0, NIC0)]).body();
+    let body = setup(vec![link(NIC0, NIC0)]).body();
     let h2 = a.post("/api/host/hints", body).await.json();
     assert_level(&h2, &nic_id("pcie_maxreadreq", NIC0), "ok", "ok");
     assert!(
@@ -514,7 +500,7 @@ async fn post_hints_with_no_links_equal_the_get_hints() {
 #[tokio::test]
 async fn post_hints_refuse_a_malformed_body_and_a_wrong_content_type() {
     let a = TestApp::new(FakeHost::bare_metal());
-    let mut unknown = setup(vec![link("l", NIC0, NIC0)]).body();
+    let mut unknown = setup(vec![link(NIC0, NIC0)]).body();
     unknown["presets"] = serde_json::json!([]);
     for body in [
         serde_json::json!({}),
@@ -530,7 +516,7 @@ async fn post_hints_refuse_a_malformed_body_and_a_wrong_content_type() {
             "POST",
             "/api/host/hints",
             Some("text/plain"),
-            setup(vec![link("l", NIC0, NIC0)])
+            setup(vec![link(NIC0, NIC0)])
                 .body()
                 .to_string()
                 .into_bytes(),
@@ -545,7 +531,7 @@ async fn post_hints_start_nothing_and_store_nothing() {
     let a = TestApp::new(FakeHost::bare_metal());
     let before = a.get("/api/emulation").await.json();
     let r = a
-        .post("/api/host/hints", setup(vec![link("l", NIC0, NIC1)]).body())
+        .post("/api/host/hints", setup(vec![link(NIC0, NIC1)]).body())
         .await;
     assert_eq!(r.status, 200);
     assert!(a.supervisor.plans().is_empty());
@@ -556,7 +542,7 @@ async fn post_hints_start_nothing_and_store_nothing() {
 async fn post_hints_know_the_uplink_and_the_drain_timeout_of_the_body() {
     let a = TestApp::new(FakeHost::bare_metal());
     let h = a
-        .post("/api/host/hints", setup(vec![link("m", MGMT, NIC1)]).body())
+        .post("/api/host/hints", setup(vec![link(MGMT, NIC1)]).body())
         .await
         .json();
     let m: Vec<&Value> = h
@@ -573,7 +559,7 @@ async fn post_hints_know_the_uplink_and_the_drain_timeout_of_the_body() {
     h.addr("ens1f0", "192.168.1.5");
     let a2 = TestApp::new(h);
     let h2 = a2
-        .post("/api/host/hints", setup(vec![link("m", NIC0, NIC1)]).body())
+        .post("/api/host/hints", setup(vec![link(NIC0, NIC1)]).body())
         .await
         .json();
     assert_eq!(
@@ -585,7 +571,7 @@ async fn post_hints_know_the_uplink_and_the_drain_timeout_of_the_body() {
         1,
         "{h2}"
     );
-    let mut slow = link("crawler", "net_null0", "net_null0");
+    let mut slow = link("net_null0", "net_null0");
     slow["config"]["buffer_capacity"] = serde_json::json!(1000);
     slow["config"]["limiter"] = serde_json::json!({"mode": "Spacer", "rate_bps": 1.0e3});
     let h = a

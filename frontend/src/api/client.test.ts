@@ -66,8 +66,8 @@ describe('api client (real module)', () => {
   it('startEmulation POSTs the start request (`{links}` without ids, no settings, no worker) as JSON to /api/emulation/start, untouched', async () => {
     const body = {
       links: [
-        { name: 'a-b', ingress: '0000:65:00.0', egress: '0000:65:00.1', config: fx.config() },
-        { name: 'b-a', ingress: '0000:65:00.1', egress: '0000:65:00.0', config: fx.config2() },
+        { ingress: '0000:65:00.0', egress: '0000:65:00.1', config: fx.config() },
+        { ingress: '0000:65:00.1', egress: '0000:65:00.0', config: fx.config2() },
       ],
     };
     reply(202, fx.emulation('starting'));
@@ -81,7 +81,7 @@ describe('api client (real module)', () => {
 
   it('getHostHintsFor POSTs the start request as JSON to /api/host/hints and returns the hints', async () => {
     const body = {
-      links: [{ name: 'a-b', ingress: '0000:65:00.0', egress: '0000:65:00.1', config: fx.config() }],
+      links: [{ ingress: '0000:65:00.0', egress: '0000:65:00.1', config: fx.config() }],
     };
     reply(200, fx.hints());
     await expect(client.getHostHintsFor(body)).resolves.toEqual(fx.hints());
@@ -95,7 +95,7 @@ describe('api client (real module)', () => {
   // `getHostHintsFor(req, { recheck: true })` makes the controller read the NIC firmware again; the body is unchanged.
   describe('getHostHintsFor recheck (spec 34)', () => {
     const body = () => ({
-      links: [{ name: 'a-b', ingress: '0000:65:00.0', egress: '0000:65:00.1', config: fx.config() }],
+      links: [{ ingress: '0000:65:00.0', egress: '0000:65:00.1', config: fx.config() }],
     });
 
     it('{ recheck: true } POSTs /api/host/hints?recheck=true with the same JSON body and returns the hints', async () => {

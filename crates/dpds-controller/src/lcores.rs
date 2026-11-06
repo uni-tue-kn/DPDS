@@ -13,7 +13,6 @@ use crate::model::RunConfig;
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct DirectionPlan {
     pub dir: u32,
-    pub link: String,
     pub rx: String,
     pub tx: String,
     pub lcore: u32,
@@ -77,7 +76,6 @@ pub fn assign_lcores(roots: &HostRoots, config: &RunConfig) -> Result<Assignment
         let local = node.and_then(|n| free.iter().position(|c| roots.node_of_cpu(*c) == Some(n)));
         plans.push(DirectionPlan {
             dir: i as u32,
-            link: l.name.clone(),
             rx: l.ingress.clone(),
             tx: l.egress.clone(),
             lcore: free.remove(local.unwrap_or(0)),

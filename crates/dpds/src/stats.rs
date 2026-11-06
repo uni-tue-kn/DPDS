@@ -369,8 +369,6 @@ pub struct DirectionInfo {
     pub config: String,
     pub pool_size: u32,
     pub raw_free: bool,
-    /// Link name (`default` without `--links`).
-    pub link: String,
     /// DPDK device names of the receiving and transmitting port.
     pub rx_name: String,
     pub tx_name: String,
@@ -382,10 +380,9 @@ pub struct DirectionInfo {
 /// `port<i>_rx_ring_requested`, `port<i>_tx_ring_requested`; then
 /// `num_directions`, `num_links` and per direction `d` `dir<d>_rx_port`,
 /// `dir<d>_tx_port`, `dir<d>_lcore`, `dir<d>_config` (string),
-/// `dir<d>_pool_size`, `dir<d>_raw_free` (0 or 1), `dir<d>_link` (string, the
-/// link name; `d` is the link's index), `dir<d>_rx_name` and `dir<d>_tx_name`
-/// (strings, DPDK device names), `dir<d>_delay_stats` (0 or 1). That is
-/// `3 + 5 * ports + 10 * links` keys, which must stay within
+/// `dir<d>_pool_size`, `dir<d>_raw_free` (0 or 1), `dir<d>_rx_name` and
+/// `dir<d>_tx_name` (strings, DPDK device names; `d` is the link's index),
+/// `dir<d>_delay_stats` (0 or 1). That is `3 + 5 * ports + 9 * links` keys, which must stay within
 /// [`MAX_TELEMETRY_DICT_ENTRIES`](crate::consts::MAX_TELEMETRY_DICT_ENTRIES).
 pub fn ports_reply(ports: &[PortInfo], directions: &[DirectionInfo], num_links: usize) -> Reply {
     let mut reply = vec![uint("num_ports", ports.len() as u64)];
@@ -411,7 +408,6 @@ pub fn ports_reply(ports: &[PortInfo], directions: &[DirectionInfo], num_links: 
         reply.push(string(&format!("dir{d}_config"), dir.config.as_str()));
         reply.push(uint(&format!("dir{d}_pool_size"), dir.pool_size as u64));
         reply.push(uint(&format!("dir{d}_raw_free"), dir.raw_free as u64));
-        reply.push(string(&format!("dir{d}_link"), dir.link.as_str()));
         reply.push(string(&format!("dir{d}_rx_name"), dir.rx_name.as_str()));
         reply.push(string(&format!("dir{d}_tx_name"), dir.tx_name.as_str()));
         reply.push(uint(&format!("dir{d}_delay_stats"), dir.delay_stats as u64));

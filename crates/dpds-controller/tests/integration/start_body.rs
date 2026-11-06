@@ -1,7 +1,7 @@
 //! The running configuration (`GET /api/emulation`) and `POST /api/emulation/validate`.
 //!
 //! `GET /api/emulation` reports, while the emulation is starting, running, stopping or failed,
-//! the configuration it was started with in `config`: `{links: [{id, name, ingress, egress,
+//! the configuration it was started with in `config`: `{links: [{id, ingress, egress,
 //! config}]}`. It is the
 //! start body as accepted (PCI addresses in lower case, the order kept, optional stages left
 //! out as they were sent) with an id per link; `directions` and `main_lcore` are the planned
@@ -21,8 +21,8 @@ fn app() -> TestApp {
     TestApp::new(FakeHost::bare_metal())
 }
 
-fn one(name: &str, ingress: &str, egress: &str) -> Value {
-    link(name, ingress, egress)
+fn one(ingress: &str, egress: &str) -> Value {
+    link(ingress, egress)
 }
 
 fn config_of(v: &Value) -> &Value {
@@ -56,20 +56,20 @@ async fn a_stopped_controller_reports_no_configuration() {
 #[tokio::test]
 async fn the_start_response_already_carries_the_configuration() {
     let a = app();
-    let v = a.start_ok(vec![one("a-to-b", NIC0, NIC1)]).await;
-    assert_eq!(config_of(&v)["links"][0]["name"], "a-to-b", "{v}");
+    let v = a.start_ok(vec![one(NIC0, NIC1)]).await;
+    assert_eq!(config_of(&v)["links"][0]["ingress"], NIC0, "{v}");
     assert_eq!(v["directions"].as_array().unwrap().len(), 1, "{v}");
 }
 
 #[tokio::test]
 async fn the_running_configuration_is_the_start_body_as_accepted() {
     let a = app();
-    let mut l0 = link("a-to-b", "0000:17:00.0", "0000:65:00.0");
+    let mut l0 = link("0000:17:00.0", "0000:65:00.0");
     l0["config"] = cfg_full(2.0e6, 1.0e5, 4.0e9);
     l0["config"]["seed"] = json!(9);
     l0["config"]["delay_stats"] = json!(false);
     l0["config"]["histogram"] = json!({"bins": 64});
-    let l1 = link_cfg("loop", "net_null0", "net_null0", cfg_bare());
+    let l1 = link_cfg("net_null0", "net_null0", cfg_bare());
     let s = setup(vec![l0.clone(), l1.clone()]);
     let r = a.start(&s).await;
     assert_eq!(r.status, 202, "{}", r.text());
@@ -104,8 +104,7 @@ async fn the_running_configuration_is_the_start_body_as_accepted() {
 #[tokio::test]
 async fn pci_ports_are_reported_in_lower_case() {
     let a = app();
-    a.start_ok(vec![one("up", "0000:B3:00.0", "0000:B3:00.0")])
-        .await;
+    a.start_ok(vec![one("0000:B3:00.0", "0000:B3:00.0")]).await;
     let v = a.get("/api/emulation").await.json();
     assert_eq!(config_of(&v)["links"][0]["ingress"], INTEL, "{v}");
     assert_eq!(config_of(&v)["links"][0]["egress"], INTEL, "{v}");
@@ -114,26 +113,19 @@ async fn pci_ports_are_reported_in_lower_case() {
 #[tokio::test]
 async fn directions_and_main_lcore_are_the_planned_lcores_of_the_running_config() {
     let a = app();
-    let s = setup(vec![one("a-to-b", NIC0, NIC1), one("b-to-a", NIC1, NIC0)]);
+    let s = setup(vec![one(NIC0, NIC1), one(NIC1, NIC0)]);
     assert_eq!(a.start(&s).await.status, 202);
     let v = a.get("/api/emulation").await.json();
     assert_eq!(v["main_lcore"], 0);
     let d = v["directions"].as_array().unwrap();
     assert_eq!(d.len(), 2);
-    for (i, (link, rx, tx)) in [("a-to-b", NIC0, NIC1), ("b-to-a", NIC1, NIC0)]
-        .iter()
-        .enumerate()
-    {
+    for (i, (rx, tx)) in [(NIC0, NIC1), (NIC1, NIC0)].iter().enumerate() {
         assert_eq!(
-            (
-                d[i]["dir"].clone(),
-                d[i]["link"].clone(),
-                d[i]["rx"].clone(),
-                d[i]["tx"].clone()
-            ),
-            (json!(i), json!(link), json!(rx), json!(tx)),
+            (d[i]["dir"].clone(), d[i]["rx"].clone(), d[i]["tx"].clone()),
+            (json!(i), json!(rx), json!(tx)),
             "{d:?}"
         );
+        assert!(d[i].get("link").is_none(), "links have no name: {d:?}");
     }
     // the worker prefers the NUMA node of the INGRESS NIC (NIC0: node 0, NIC1: node 1)
     assert!([2, 3].contains(&(d[0]["lcore"].as_u64().unwrap() as u32)));
@@ -154,7 +146,7 @@ async fn there_is_no_pending_restart_any_more() {
         .json()
         .get("pending_restart")
         .is_none());
-    a.start_ok(vec![one("l", "net_null0", "net_null0")]).await;
+    a.start_ok(vec![one("net_null0", "net_null0")]).await;
     assert!(a
         .get("/api/emulation")
         .await
@@ -163,9 +155,7 @@ async fn there_is_no_pending_restart_any_more() {
         .is_none());
     // a refused start while running changes nothing the controller reports
     let before = a.get("/api/emulation").await.json();
-    let r = a
-        .start_links(vec![one("other", "net_null1", "net_null1")])
-        .await;
+    let r = a.start_links(vec![one("net_null1", "net_null1")]).await;
     assert_eq!(r.status, 409);
     assert_eq!(a.get("/api/emulation").await.json(), before);
 }
@@ -180,7 +170,7 @@ async fn the_configuration_is_reported_in_every_state_but_stopped() {
         (State::Stopped, false),
     ] {
         let a = app();
-        a.start_ok(vec![one("l", "net_null0", "net_null0")]).await;
+        a.start_ok(vec![one("net_null0", "net_null0")]).await;
         a.supervisor.force_status(status(state));
         let v = a.get("/api/emulation").await.json();
         assert_eq!(
@@ -190,7 +180,11 @@ async fn the_configuration_is_reported_in_every_state_but_stopped() {
             v["config"]
         );
         if reported {
-            assert_eq!(config_of(&v)["links"][0]["name"], "l", "{state:?}");
+            assert_eq!(
+                config_of(&v)["links"][0]["ingress"],
+                "net_null0",
+                "{state:?}"
+            );
             assert_eq!(v["directions"].as_array().unwrap().len(), 1, "{state:?}");
         } else {
             assert_eq!(v["directions"], json!([]), "{state:?}");
@@ -203,22 +197,21 @@ async fn a_failed_start_still_reports_what_it_tried_to_run() {
     let a = app();
     a.supervisor
         .fail_next_start("dpds exited with status 1", &["EAL: Error"]);
-    a.start_ok(vec![one("l", "net_null0", "net_null0")]).await;
+    a.start_ok(vec![one("net_null0", "net_null0")]).await;
     let v = a.get("/api/emulation").await.json();
     assert_eq!(v["state"], "failed");
-    assert_eq!(config_of(&v)["links"][0]["name"], "l", "{v}");
+    assert_eq!(config_of(&v)["links"][0]["ingress"], "net_null0", "{v}");
     // a retry with another body replaces it
-    a.start_ok(vec![one("other", "net_null1", "net_null1")])
-        .await;
+    a.start_ok(vec![one("net_null1", "net_null1")]).await;
     let v = a.get("/api/emulation").await.json();
-    assert_eq!(config_of(&v)["links"][0]["name"], "other", "{v}");
+    assert_eq!(config_of(&v)["links"][0]["ingress"], "net_null1", "{v}");
     assert_eq!(config_of(&v)["links"].as_array().unwrap().len(), 1, "{v}");
 }
 
 #[tokio::test]
 async fn stop_clears_the_configuration() {
     let a = app();
-    a.start_ok(vec![one("l", "net_null0", "net_null0")]).await;
+    a.start_ok(vec![one("net_null0", "net_null0")]).await;
     assert_eq!(a.post("/api/emulation/stop", json!({})).await.status, 202);
     let v = a.get("/api/emulation").await.json();
     assert_eq!(v["state"], "stopped");
@@ -228,12 +221,9 @@ async fn stop_clears_the_configuration() {
 #[tokio::test]
 async fn the_second_start_while_running_changes_nothing() {
     let a = app();
-    a.start_ok(vec![one("first", NIC0, NIC1)]).await;
+    a.start_ok(vec![one(NIC0, NIC1)]).await;
     let before = a.get("/api/emulation").await.json();
-    for links in [
-        vec![one("first", NIC0, NIC1)],
-        vec![one("second", INTEL, INTEL)],
-    ] {
+    for links in [vec![one(NIC0, NIC1)], vec![one(INTEL, INTEL)]] {
         let r = a.start_links(links).await;
         assert_eq!(r.status, 409, "{}", r.text());
         r.message();
@@ -248,8 +238,8 @@ async fn the_histogram_expects_the_running_configuration() {
     // delayer expects zero delay, one with a Normal delay expects its distribution
     let a = app();
     a.start_ok(vec![
-        link_cfg("a-to-b", NIC0, NIC1, cfg_bare()),
-        link_cfg("b-to-a", NIC1, NIC0, cfg_json(1.0e6, 1.0e5)),
+        link_cfg(NIC0, NIC1, cfg_bare()),
+        link_cfg(NIC1, NIC0, cfg_json(1.0e6, 1.0e5)),
     ])
     .await;
     let s = snapshot(
@@ -299,7 +289,7 @@ async fn the_histogram_expects_the_running_configuration() {
 #[tokio::test]
 async fn validate_answers_the_plan_without_starting_anything() {
     let a = app();
-    let s = setup(vec![one("a-to-b", NIC0, NIC1), one("b-to-a", NIC1, NIC0)]);
+    let s = setup(vec![one(NIC0, NIC1), one(NIC1, NIC0)]);
     let r = a.validate(&s).await;
     assert_eq!(r.status, 200, "{}", r.text());
     let v = r.json();
@@ -307,12 +297,8 @@ async fn validate_answers_the_plan_without_starting_anything() {
     let d = v["directions"].as_array().unwrap();
     assert_eq!(d.len(), 2, "{v}");
     assert_eq!(
-        (d[0]["dir"].clone(), d[0]["link"].clone()),
-        (json!(0), json!("a-to-b"))
-    );
-    assert_eq!(
-        (d[1]["dir"].clone(), d[1]["link"].clone()),
-        (json!(1), json!("b-to-a"))
+        (d[0]["dir"].clone(), d[1]["dir"].clone()),
+        (json!(0), json!(1))
     );
     assert_eq!(
         (d[0]["rx"].clone(), d[0]["tx"].clone()),
@@ -336,7 +322,7 @@ async fn validate_answers_the_plan_without_starting_anything() {
 #[tokio::test]
 async fn validate_plans_what_start_launches() {
     let a = app();
-    let s = setup(vec![one("a-to-b", NIC0, NIC1), one("b-to-a", NIC1, NIC0)]);
+    let s = setup(vec![one(NIC0, NIC1), one(NIC1, NIC0)]);
     let planned = parse_plan(&a.validate(&s).await.json());
     assert_eq!(a.start(&s).await.status, 202);
     let plan = &a.supervisor.plans()[0];
@@ -353,23 +339,20 @@ async fn validate_plans_what_start_launches() {
 #[tokio::test]
 async fn validate_gives_the_same_errors_as_start() {
     let a = app();
-    let mut bad_cfg = one("c", "net_null0", "net_null1");
+    let mut bad_cfg = one("net_null0", "net_null1");
     bad_cfg["config"]["delayer"]["std_ns"] = json!(-1.0);
-    let mut no_rate = one("r", "net_null0", "net_null1");
+    let mut no_rate = one("net_null0", "net_null1");
     no_rate["config"]["delayer"]
         .as_object_mut()
         .unwrap()
         .remove("initialization_rate_pps");
+    let mut named = one("net_null0", "net_null0");
+    named["name"] = json!("x"); // links have no name: an unknown field
     let cases: Vec<(&str, Setup, u16, &str)> = vec![
-        (
-            "bad name",
-            setup(vec![one("a b", "net_null0", "net_null0")]),
-            400,
-            "link name",
-        ),
+        ("link name", setup(vec![named]), 400, "name"),
         (
             "bad port",
-            setup(vec![one("x", "eth0", "net_null0")]),
+            setup(vec![one("eth0", "net_null0")]),
             400,
             "port",
         ),
@@ -382,22 +365,11 @@ async fn validate_gives_the_same_errors_as_start() {
         ),
         (
             "port reuse",
-            setup(vec![one("first", NIC0, NIC1), one("second", NIC0, INTEL)]),
+            setup(vec![one(NIC0, NIC1), one(NIC0, INTEL)]),
             409,
-            "first",
+            "already the ingress of link",
         ),
-        (
-            "duplicate name",
-            setup(vec![one("a", NIC0, NIC1), one("a", INTEL, INTEL)]),
-            409,
-            "a",
-        ),
-        (
-            "management nic",
-            setup(vec![one("m", MGMT, NIC1)]),
-            409,
-            MGMT,
-        ),
+        ("management nic", setup(vec![one(MGMT, NIC1)]), 409, MGMT),
         ("nothing", setup(vec![]), 400, "nothing to start"),
     ];
     for (what, s, status, named) in cases {
@@ -415,12 +387,12 @@ async fn validate_gives_the_same_errors_as_start() {
 async fn validate_does_not_care_about_the_state_of_the_emulation() {
     // a frontend validates its configuration while another one runs
     let a = app();
-    a.start_ok(vec![one("running", NIC0, NIC1)]).await;
-    let r = a.validate(&setup(vec![one("next", INTEL, INTEL)])).await;
+    a.start_ok(vec![one(NIC0, NIC1)]).await;
+    let r = a.validate(&setup(vec![one(INTEL, INTEL)])).await;
     assert_eq!(r.status, 200, "{}", r.text());
     for st in [State::Starting, State::Stopping, State::Failed] {
         a.supervisor.force_status(status(st));
-        let r = a.validate(&setup(vec![one("next", INTEL, INTEL)])).await;
+        let r = a.validate(&setup(vec![one(INTEL, INTEL)])).await;
         assert_eq!(r.status, 200, "{st:?}: {}", r.text());
     }
     // ... and it neither started nor changed anything
@@ -430,7 +402,7 @@ async fn validate_does_not_care_about_the_state_of_the_emulation() {
 #[tokio::test]
 async fn validate_needs_a_json_content_type_and_a_known_body() {
     let a = app();
-    let body = setup(vec![one("l", "net_null0", "net_null0")]).body();
+    let body = setup(vec![one("net_null0", "net_null0")]).body();
     let r = a
         .request_raw(
             "POST",

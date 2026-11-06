@@ -108,7 +108,6 @@ export function config3(): ConfigDto {
 export function link(over: Partial<Link> = {}): Link {
   return {
     id: 1,
-    name: 'a-b',
     ingress: '0000:65:00.0',
     egress: '0000:65:00.1',
     config: config(),
@@ -120,7 +119,6 @@ export function link(over: Partial<Link> = {}): Link {
 export function linkRev(over: Partial<Link> = {}): Link {
   return {
     id: 3,
-    name: 'b-a',
     ingress: '0000:65:00.1',
     egress: '0000:65:00.0',
     config: config2(),
@@ -130,7 +128,7 @@ export function linkRev(over: Partial<Link> = {}): Link {
 
 /** Hairpin: ingress == egress. */
 export function loopLink(over: Partial<Link> = {}): Link {
-  return { id: 2, name: 'loop', ingress: 'net_null0', egress: 'net_null0', config: config(), ...over };
+  return { id: 2, ingress: 'net_null0', egress: 'net_null0', config: config(), ...over };
 }
 
 export function iface(over: Partial<Interface> = {}): Interface {
@@ -244,8 +242,8 @@ export function commandsHint(over: Partial<Hint> = {}): Hint {
 
 export function plan(): DirectionPlan[] {
   return [
-    { dir: 0, link: 'a-b', rx: '0000:65:00.0', tx: '0000:65:00.1', lcore: 3 },
-    { dir: 1, link: 'b-a', rx: '0000:65:00.1', tx: '0000:65:00.0', lcore: 4 },
+    { dir: 0, rx: '0000:65:00.0', tx: '0000:65:00.1', lcore: 3 },
+    { dir: 1, rx: '0000:65:00.1', tx: '0000:65:00.0', lcore: 4 },
   ];
 }
 
@@ -295,7 +293,6 @@ export function counters(over: Partial<Counters> = {}): Counters {
 export function dirStats(dir: number, over: Partial<DirectionStats> = {}): DirectionStats {
   return {
     dir,
-    link: dir === 0 ? 'a-b' : 'b-a',
     rx: dir === 0 ? '0000:65:00.0' : '0000:65:00.1',
     tx: dir === 0 ? '0000:65:00.1' : '0000:65:00.0',
     rx_pps: 1234567,
@@ -393,7 +390,7 @@ export function iatHistogram(dir: number, over: Partial<HistogramView> = {}): Hi
 /**
  * What `GET /api/emulation` reports as `config` while an emulation is starting/running: the accepted start request
  * (links in start-body shape) plus the controller's own extras (assigned id/dir, planned lcore), which the frontend must
- * ignore. Defaults to `fx.link()` / `fx.linkRev()` (named a-b and b-a).
+ * ignore. Defaults to `fx.link()` / `fx.linkRev()`.
  */
 export function runningConfig(links: LinkInput[] = [link(), linkRev()]): RunningConfig {
   return {
@@ -401,7 +398,6 @@ export function runningConfig(links: LinkInput[] = [link(), linkRev()]): Running
       id: 100 + i,
       dir: i,
       lcore: 3 + i,
-      name: l.name,
       ingress: l.ingress,
       egress: l.egress,
       config: l.config,
@@ -444,13 +440,13 @@ export function historySample(t_ms: number, over: Partial<HistorySample> = {}): 
 }
 
 /**
- * The `links` of `GET /api/stats/history`, in link-index order: the same links, names and ports as `dirStats(0)`,
+ * The `links` of `GET /api/stats/history`, in link-index order: the same links and ports as `dirStats(0)`,
  * `dirStats(1)` (the PCI addresses of `interfaces()`, which the dashboard shows as netdev names).
  */
 export function historyLinks(): HistoryView['links'] {
   return [
-    { name: 'a-b', ingress: '0000:65:00.0', egress: '0000:65:00.1' },
-    { name: 'b-a', ingress: '0000:65:00.1', egress: '0000:65:00.0' },
+    { ingress: '0000:65:00.0', egress: '0000:65:00.1' },
+    { ingress: '0000:65:00.1', egress: '0000:65:00.0' },
   ];
 }
 

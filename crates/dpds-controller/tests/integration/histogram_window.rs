@@ -91,13 +91,8 @@ struct Rig {
 /// and `b-to-a` (direction 1, Normal), started through the API (the configuration the histogram's
 /// expected counts follow is the one the emulation was started with).
 fn rig() -> Rig {
-    let l0 = link_cfg(
-        "a-to-b",
-        NIC0,
-        NIC1,
-        cfg("DeterministicDistribution", 150.0, 0.0),
-    );
-    let l1 = link_cfg("b-to-a", NIC1, NIC0, cfg("NormalDistribution", 150.0, 30.0));
+    let l0 = link_cfg(NIC0, NIC1, cfg("DeterministicDistribution", 150.0, 0.0));
+    let l1 = link_cfg(NIC1, NIC0, cfg("NormalDistribution", 150.0, 30.0));
     let clock = ClockTelemetry::new();
     let host = FakeHost::bare_metal();
     let router = api::router(Deps {

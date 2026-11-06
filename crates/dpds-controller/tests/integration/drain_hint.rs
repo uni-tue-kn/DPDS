@@ -27,8 +27,8 @@ fn drain_hints(hints: &Value) -> (Vec<Value>, String) {
     (found, text)
 }
 
-fn with_config(name: &str, port: &str, cfg: Value) -> Value {
-    link_cfg(name, port, port, cfg)
+fn with_config(port: &str, cfg: Value) -> Value {
+    link_cfg(port, port, cfg)
 }
 
 /// Limiter stage at `rate_bps` (`on`; absent when not), , buffer of `capacity` packets: the drain takes
@@ -48,16 +48,22 @@ fn a_slow_limiter_link_gets_a_warning_naming_the_link_and_the_systemd_limit() {
     // capacity 1000: 12.336 Mbit at 1 kb/s = 12336 s
     let host = FakeHost::bare_metal();
     let state = setup(vec![
-        with_config("crawler", "net_null0", limited(1.0e6, 1.0e3, 1000, true)),
-        link("quick", "net_null1", "net_null1"),
+        with_config("net_null0", limited(1.0e6, 1.0e3, 1000, true)),
+        link("net_null1", "net_null1"),
     ]);
     let (found, text) = drain_hints(&hints_json(&host, &state));
     assert!(!found.is_empty(), "no drain_timeout hint");
     for h in &found {
         assert_eq!(h["level"], "warn", "{h}");
     }
-    assert!(text.contains("crawler"), "names the link: {text}");
-    assert!(!text.contains("quick"), "does not name a fast link: {text}");
+    assert!(
+        text.contains("link net_null0 -> net_null0"),
+        "names the link by its ports: {text}"
+    );
+    assert!(
+        !text.contains("link net_null1 -> net_null1"),
+        "does not name a fast link: {text}"
+    );
     assert!(text.contains("TimeoutStopSec"), "{text}");
     assert!(text.contains("600"), "{text}");
 }
@@ -67,36 +73,40 @@ fn a_slow_link_is_judged_on_its_own_config_not_its_partner_in_a_pair() {
     // a bidirectional pair is two links: only the slow direction is named
     let host = FakeHost::bare_metal();
     let state = setup(vec![
-        link_cfg("slow-dir", NIC0, NIC1, limited(1.0e6, 1.0e3, 1000, true)),
-        link("fast-dir", NIC1, NIC0),
+        link_cfg(NIC0, NIC1, limited(1.0e6, 1.0e3, 1000, true)),
+        link(NIC1, NIC0),
     ]);
     let (found, text) = drain_hints(&hints_json(&host, &state));
     assert!(!found.is_empty());
-    assert!(text.contains("slow-dir"), "{text}");
-    assert!(!text.contains("fast-dir"), "{text}");
+    assert!(text.contains(&format!("link {NIC0} -> {NIC1}")), "{text}");
+    assert!(!text.contains(&format!("link {NIC1} -> {NIC0}")), "{text}");
 }
 
 #[test]
 fn a_long_delay_alone_triggers_it_and_each_slow_link_is_named() {
     let host = FakeHost::bare_metal();
     let state = setup(vec![
-        with_config("slow-a", "net_null0", cfg_json(700.0e9, 0.0)),
-        with_config("slow-b", "net_null1", limited(1.0e6, 1.0e3, 1000, true)),
-        link("quick", "net_null2", "net_null2"),
+        with_config("net_null0", cfg_json(700.0e9, 0.0)),
+        with_config("net_null1", limited(1.0e6, 1.0e3, 1000, true)),
+        link("net_null2", "net_null2"),
     ]);
     let (found, text) = drain_hints(&hints_json(&host, &state));
     assert!(!found.is_empty());
-    assert!(text.contains("slow-a") && text.contains("slow-b"), "{text}");
-    assert!(!text.contains("quick"), "{text}");
+    assert!(
+        text.contains("link net_null0 -> net_null0")
+            && text.contains("link net_null1 -> net_null1"),
+        "{text}"
+    );
+    assert!(!text.contains("link net_null2 -> net_null2"), "{text}");
 }
 
 #[test]
 fn the_threshold_is_590_seconds_of_drain_timeout() {
     // drain_timeout = mean + 5 s margin: 584 s -> 589 s, 586 s -> 591 s
     let host = FakeHost::bare_metal();
-    let under = setup(vec![with_config("u", "net_null0", cfg_json(584.0e9, 0.0))]);
+    let under = setup(vec![with_config("net_null0", cfg_json(584.0e9, 0.0))]);
     assert!(drain_hints(&hints_json(&host, &under)).0.is_empty());
-    let over = setup(vec![with_config("o", "net_null0", cfg_json(586.0e9, 0.0))]);
+    let over = setup(vec![with_config("net_null0", cfg_json(586.0e9, 0.0))]);
     assert!(!drain_hints(&hints_json(&host, &over)).0.is_empty());
 }
 
@@ -105,17 +115,15 @@ fn normal_links_and_an_inactive_limiter_give_no_hint() {
     let host = FakeHost::bare_metal();
     for state in [
         Setup::default(),
-        setup(vec![link("a", "net_null0", "net_null0")]),
-        setup(vec![link("a-to-b", NIC0, NIC1), link("b-to-a", NIC1, NIC0)]),
+        setup(vec![link("net_null0", "net_null0")]),
+        setup(vec![link(NIC0, NIC1), link(NIC1, NIC0)]),
         // the limiter is off: its limit / rate does not count (like in drain_timeout)
         setup(vec![with_config(
-            "off",
             "net_null0",
             limited(1.0e6, 1.0e3, 1000, false),
         )]),
         // fast limiter, big buffer: 100_000 * 1542 * 8 = 1.2336 Gbit at 100 Gb/s = 12.3 ms
         setup(vec![with_config(
-            "fast",
             "net_null0",
             limited(1.0e6, 100.0e9, 100_000, true),
         )]),
@@ -133,7 +141,6 @@ fn the_limiter_part_of_the_estimate_is_the_derived_limit_over_the_rate() {
     // 1500 * 8 bit per slot the first would stay below 590 s.)
     let host = FakeHost::bare_metal();
     let over = setup(vec![with_config(
-        "over",
         "net_null0",
         limited(1.0e6, 21_080.0, 1000, true),
     )]);
@@ -142,7 +149,6 @@ fn the_limiter_part_of_the_estimate_is_the_derived_limit_over_the_rate() {
         "590.2 s reaches the threshold"
     );
     let under = setup(vec![with_config(
-        "under",
         "net_null0",
         limited(1.0e6, 21_200.0, 1000, true),
     )]);
@@ -155,27 +161,24 @@ fn the_estimate_grows_with_the_buffer_capacity() {
     let host = FakeHost::bare_metal();
     let state = setup(vec![
         with_config(
-            "small",
             "net_null0",
             limited(1.0e6, 1.0e3, 10, true), // 121.76 s
         ),
         with_config(
-            "big",
             "net_null1",
             limited(1.0e6, 1.0e3, 1000, true), // 12336 s
         ),
     ]);
     let (found, text) = drain_hints(&hints_json(&host, &state));
     assert!(!found.is_empty());
-    assert!(text.contains("big"), "{text}");
-    assert!(!text.contains("small"), "{text}");
+    assert!(text.contains("link net_null1 -> net_null1"), "{text}");
+    assert!(!text.contains("link net_null0 -> net_null0"), "{text}");
 }
 
 #[test]
 fn the_hint_text_no_longer_mentions_limit_bit() {
     let host = FakeHost::bare_metal();
     let state = setup(vec![with_config(
-        "crawler",
         "net_null0",
         limited(1.0e6, 1.0e3, 1000, true),
     )]);
@@ -190,7 +193,7 @@ fn the_hint_text_no_longer_mentions_limit_bit() {
 #[tokio::test]
 async fn the_hint_is_served_by_the_api() {
     let a = TestApp::new(FakeHost::bare_metal());
-    let mut slow = link("crawler", "net_null0", "net_null1");
+    let mut slow = link("net_null0", "net_null1");
     slow["config"]["limiter"] = json!({"mode": "Spacer", "rate_bps": 1.0e3});
     slow["config"]["buffer_capacity"] = json!(1000);
     let r = a.post("/api/host/hints", setup(vec![slow]).body()).await;
@@ -198,7 +201,7 @@ async fn the_hint_is_served_by_the_api() {
     let (found, text) = drain_hints(&r.json());
     assert!(!found.is_empty());
     assert!(
-        text.contains("crawler") && text.contains("TimeoutStopSec"),
+        text.contains("link net_null0 -> net_null1") && text.contains("TimeoutStopSec"),
         "{text}"
     );
     // GET has no links to judge
@@ -210,7 +213,7 @@ async fn the_hint_is_served_by_the_api() {
     let r = b
         .post(
             "/api/host/hints",
-            setup(vec![link("quick", "net_null0", "net_null1")]).body(),
+            setup(vec![link("net_null0", "net_null1")]).body(),
         )
         .await;
     assert!(drain_hints(&r.json()).0.is_empty());
@@ -230,7 +233,7 @@ fn links_without_a_limiter_or_a_delayer_give_no_drain_hint() {
         ("no delayer", no_delayer),
         ("limiter only, fast", limiter_only),
     ] {
-        let s = setup(vec![with_config("l", "net_null0", cfg)]);
+        let s = setup(vec![with_config("net_null0", cfg)]);
         let hints = hints_json(&host, &s);
         let (found, _) = drain_hints(&hints);
         assert!(found.is_empty(), "{what}: {found:?}");
@@ -251,10 +254,10 @@ fn a_slow_limiter_alone_is_named_even_without_a_delayer() {
     cfg["limiter"] = json!({"mode": "Spacer", "rate_bps": 1.0e3});
     let (found, text) = drain_hints(&hints_json(
         &host,
-        &setup(vec![with_config("crawler", "net_null0", cfg)]),
+        &setup(vec![with_config("net_null0", cfg)]),
     ));
     assert!(!found.is_empty());
-    assert!(text.contains("crawler"), "{text}");
+    assert!(text.contains("link net_null0 -> net_null0"), "{text}");
 }
 
 #[test]
@@ -266,10 +269,10 @@ fn a_delayer_alone_is_named_when_it_is_long_even_without_a_limiter() {
         "initialization_rate_pps": 1.0});
     let (found, text) = drain_hints(&hints_json(
         &host,
-        &setup(vec![with_config("slow", "net_null0", cfg)]),
+        &setup(vec![with_config("net_null0", cfg)]),
     ));
     assert!(!found.is_empty());
-    assert!(text.contains("slow"), "{text}");
+    assert!(text.contains("link net_null0 -> net_null0"), "{text}");
 }
 
 #[tokio::test]
@@ -281,7 +284,7 @@ async fn the_drain_timeout_of_a_link_without_stages_is_the_margin_alone() {
         "initialization_rate_pps": 1.0});
     for (cfg, want) in [(cfg_bare(), 5.0), (dly_only, 7.0)] {
         let a2 = TestApp::new(FakeHost::bare_metal());
-        a2.start_ok(vec![link_cfg("l", "net_null0", "net_null0", cfg)])
+        a2.start_ok(vec![link_cfg("net_null0", "net_null0", cfg)])
             .await;
         let t = a2.supervisor.plans()[0].drain_timeout.as_secs_f64();
         assert!((t - want).abs() < 1e-6, "{t} vs {want}");

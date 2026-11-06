@@ -269,13 +269,13 @@ export default function Dashboard() {
     const stored = storedLinks[dir];
     if (finished || (!live && hasHistory)) {
       const l = links[dir];
-      return l ? linkLabel(l.name, l.ingress, l.egress, label) : `Link ${dir}`;
+      return l ? linkLabel(l.ingress, l.egress, label) : `Link ${dir}`;
     }
-    if (!live && stored) return linkLabel(stored.name, stored.ingress, stored.egress, label);
+    if (!live && stored) return linkLabel(stored.ingress, stored.egress, label);
     const s = live?.find((d) => d.dir === dir);
     const p = plan(dir);
     if (!s && !p) return `Link ${dir}`;
-    return linkLabel(s?.link ?? p?.link, s?.rx ?? p?.rx, s?.tx ?? p?.tx, label);
+    return linkLabel(s?.rx ?? p?.rx, s?.tx ?? p?.tx, label);
   };
   const activeTab = selected !== undefined && shown.includes(Number(selected)) ? selected : SUMMARY_TAB;
   const stopping = state === 'stopping';

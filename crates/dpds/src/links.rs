@@ -2,13 +2,13 @@
 //!
 //! ```json
 //! { "links": [
-//!   { "name": "a-to-b", "ingress": "0000:65:00.0", "egress": "0000:65:00.1",
+//!   { "ingress": "0000:65:00.0", "egress": "0000:65:00.1",
 //!     "config": { <dpds_core::Config> },
 //!     "lcore": 3,                                                (optional)
 //!     "histogram": {"bins": 100, "lo_ns": 0, "hi_ns": 2e6},      (optional)
 //!     "iat_histogram": {"bins": 100, "lo_ns": 0, "hi_ns": 256},  (optional, like histogram)
 //!     "delay_stats": true },                                     (optional)
-//!   { "name": "loop", "ingress": "net_null0", "egress": "net_null0", "config": { <Config> } }
+//!   { "ingress": "net_null0", "egress": "net_null0", "config": { <Config> } }
 //! ] }
 //! ```
 //!
@@ -23,7 +23,7 @@
 //! the intended-delay / lateness statistics and the delay histogram of that
 //! link (counters and drop causes stay). An unknown key is an error naming it.
 //!
-//! `/dpds/ports` must fit DPDK's 256-key telemetry dict (`3 + 5 * ports + 10 *
+//! `/dpds/ports` must fit DPDK's 256-key telemetry dict (`3 + 5 * ports + 9 *
 //! links` keys, `ports` = distinct ports named by the links).
 
 use std::collections::HashSet;
@@ -36,13 +36,9 @@ use serde::Deserialize;
 use crate::consts::MAX_TELEMETRY_DICT_ENTRIES;
 use crate::delay_stats::HistogramSpec;
 
-/// Longest link name.
-pub const MAX_NAME_LEN: usize = 32;
-
 /// One validated link of the file.
 #[derive(Debug, Clone)]
 pub struct LinkSpec {
-    pub name: String,
     /// Device name of the receiving port.
     pub ingress: String,
     /// Device name of the transmitting port.
@@ -55,6 +51,13 @@ pub struct LinkSpec {
     pub iat_histogram: HistogramSpec,
     /// Whether the link records delay statistics (default `true`).
     pub delay_stats: bool,
+}
+
+impl LinkSpec {
+    /// The label used in messages: `link <ingress> -> <egress>`.
+    pub fn label(&self) -> String {
+        format!("link {} -> {}", self.ingress, self.egress)
+    }
 }
 
 /// A problem with the links file or how it fits the probed ports and lcores;
@@ -83,7 +86,6 @@ struct RawFile {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawLink {
-    name: String,
     ingress: String,
     egress: String,
     config: Config,
@@ -101,14 +103,6 @@ struct RawHistogram {
     hi_ns: Option<f64>,
 }
 
-fn valid_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= MAX_NAME_LEN
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
-}
-
 /// Parses and validates the text of a links file (needs no EAL).
 pub fn parse_links(json: &str) -> Result<Vec<LinkSpec>, LinksError> {
     let raw: RawFile =
@@ -117,31 +111,22 @@ pub fn parse_links(json: &str) -> Result<Vec<LinkSpec>, LinksError> {
         return err("the links file has no link");
     }
 
-    let mut names = HashSet::new();
     let mut ingresses = HashSet::new();
     let mut egresses = HashSet::new();
     let mut lcores = HashSet::new();
     let mut links = Vec::new();
     for raw in raw.links {
-        let name = raw.name;
-        if !valid_name(&name) {
-            return err(format!(
-                "invalid link name '{name}': 1 to {MAX_NAME_LEN} characters of [A-Za-z0-9_.-]"
-            ));
-        }
-        if !names.insert(name.clone()) {
-            return err(format!("duplicate link name '{name}'"));
-        }
+        let label = format!("link {} -> {}", raw.ingress, raw.egress);
         for (role, port, seen) in [
             ("ingress", &raw.ingress, &mut ingresses),
             ("egress", &raw.egress, &mut egresses),
         ] {
             if port.is_empty() {
-                return err(format!("link '{name}': the {role} port name is empty"));
+                return err(format!("{label}: the {role} port name is empty"));
             }
             if !seen.insert(port.clone()) {
                 return err(format!(
-                    "port '{port}' is the {role} of more than one link (link '{name}'): a port \
+                    "port '{port}' is the {role} of more than one link ({label}): a port \
                      is the ingress of at most one link and the egress of at most one link"
                 ));
             }
@@ -157,23 +142,22 @@ pub fn parse_links(json: &str) -> Result<Vec<LinkSpec>, LinksError> {
         let histogram = spec_of(raw.histogram);
         histogram
             .validate()
-            .map_err(|e| LinksError(format!("link '{name}': {e}")))?;
+            .map_err(|e| LinksError(format!("{label}: {e}")))?;
         let iat_histogram = spec_of(raw.iat_histogram);
         iat_histogram
             .validate()
-            .map_err(|e| LinksError(format!("link '{name}': IAT histogram: {e}")))?;
+            .map_err(|e| LinksError(format!("{label}: IAT histogram: {e}")))?;
 
         if let Some(lcore) = raw.lcore {
             if !lcores.insert(lcore) {
                 return err(format!(
-                    "lcore {lcore} is listed more than once (link '{name}'): every link needs \
+                    "lcore {lcore} is listed more than once ({label}): every link needs \
                      its own lcore"
                 ));
             }
         }
 
         links.push(LinkSpec {
-            name,
             ingress: raw.ingress,
             egress: raw.egress,
             config: raw.config,
@@ -185,21 +169,21 @@ pub fn parse_links(json: &str) -> Result<Vec<LinkSpec>, LinksError> {
     }
 
     let ports = distinct_ports(&links).len();
-    let keys = 3 + 5 * ports + 10 * links.len();
+    let keys = 3 + 5 * ports + 9 * links.len();
     if keys > MAX_TELEMETRY_DICT_ENTRIES {
         return err(format!(
             "{ports} ports and {} links are too many: the /dpds/ports telemetry reply needs 3 + \
-             5 * ports + 10 * links = {keys} keys, DPDK's dict holds at most \
+             5 * ports + 9 * links = {keys} keys, DPDK's dict holds at most \
              {MAX_TELEMETRY_DICT_ENTRIES}",
             links.len()
         ));
     }
 
     if links.iter().any(|l| l.lcore.is_some()) && links.iter().any(|l| l.lcore.is_none()) {
-        let missing: Vec<&str> = links
+        let missing: Vec<String> = links
             .iter()
             .filter(|l| l.lcore.is_none())
-            .map(|l| l.name.as_str())
+            .map(LinkSpec::label)
             .collect();
         return err(format!(
             "either every link has \"lcore\" or none: missing for link(s) {missing:?}"
@@ -256,9 +240,9 @@ pub fn resolve_directions(
             .ok_or_else(|| {
                 let names: Vec<&str> = probed.iter().map(|(n, _)| n.as_str()).collect();
                 LinksError(format!(
-                    "link '{}': {role} port '{port}' is not a probed DPDK device (probed: \
+                    "{}: {role} port '{port}' is not a probed DPDK device (probed: \
                      {names:?}); allow it with -a / --vdev",
-                    link.name
+                    link.label()
                 ))
             })
     };
@@ -294,15 +278,15 @@ pub fn resolve_directions(
             let lcore = link.lcore.unwrap_or_default();
             if lcore == main_lcore {
                 return err(format!(
-                    "link '{}': lcore {lcore} is the main lcore, it cannot run a link",
-                    link.name
+                    "{}: lcore {lcore} is the main lcore, it cannot run a link",
+                    link.label()
                 ));
             }
             if !workers.contains(&lcore) {
                 return err(format!(
-                    "link '{}': lcore {lcore} is not an EAL worker lcore (workers: \
+                    "{}: lcore {lcore} is not an EAL worker lcore (workers: \
                      {workers:?}, main lcore {main_lcore})",
-                    link.name
+                    link.label()
                 ));
             }
             dir.lcore = lcore;

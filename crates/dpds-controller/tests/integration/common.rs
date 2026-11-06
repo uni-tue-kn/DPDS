@@ -666,16 +666,16 @@ pub fn dto_from(v: Value) -> ConfigDto {
 
 /// A link of a start body: `ingress` -> `egress` with the default config (Normal 1 ms /
 /// 0.1 ms). A link in a start body has no `id` and no `worker` (cores are automatic).
-pub fn link(name: &str, ingress: &str, egress: &str) -> Value {
+pub fn link(ingress: &str, egress: &str) -> Value {
     json!({
-        "name": name, "ingress": ingress, "egress": egress,
+        "ingress": ingress, "egress": egress,
         "config": cfg_json(1.0e6, 1.0e5),
     })
 }
 
 /// Like [`link`] with an explicit config JSON.
-pub fn link_cfg(name: &str, ingress: &str, egress: &str, config: Value) -> Value {
-    json!({ "name": name, "ingress": ingress, "egress": egress, "config": config })
+pub fn link_cfg(ingress: &str, egress: &str, config: Value) -> Value {
+    json!({ "ingress": ingress, "egress": egress, "config": config })
 }
 
 /// The typed `model::Link` (as the running configuration carries it) of a start-body link and
@@ -711,7 +711,7 @@ pub fn setup(links: Vec<Value>) -> Setup {
 
 /// One harmless vdev hairpin, for hint tests that need "some link" without caring which.
 pub fn filler() -> Setup {
-    setup(vec![link("filler", "net_null9", "net_null9")])
+    setup(vec![link("net_null9", "net_null9")])
 }
 
 pub const NIC0: &str = "0000:17:00.0"; // mlx5, NUMA 0
@@ -893,7 +893,6 @@ pub fn hints_json(host: &FakeHost, setup: &Setup) -> Value {
 #[derive(Debug, Clone)]
 pub struct Dir {
     pub dir: u32,
-    pub link: String,
     pub rx: String,
     pub tx: String,
     pub lcore: u32,
@@ -921,7 +920,6 @@ pub fn parse_plan(v: &Value) -> Assignment {
             .iter()
             .map(|d| Dir {
                 dir: n(&d["dir"]),
-                link: s(&d["link"]),
                 rx: s(&d["rx"]),
                 tx: s(&d["tx"]),
                 lcore: n(&d["lcore"]),
@@ -1771,14 +1769,14 @@ pub fn set_xstats(snap: &mut Snapshot, port: usize, pairs: &[(&str, u64)]) {
     }
 }
 
-/// Two ports (0, 1), two links `a-to-b` (dir0: port 0 -> 1) and `b-to-a` (dir1: port 1 -> 0).
+/// Two ports (0, 1), two links (dir0: port 0 -> 1, dir1: port 1 -> 0).
 pub fn snapshot(dirs: [DirSample; 2], ports: [PortSample; 2]) -> Snapshot {
     let ports_reply = json!({
         "num_ports": 2, "num_links": 2, "num_directions": 2,
         "port0_name": "0000:17:00.0", "port1_name": "0000:65:00.0",
-        "dir0_link": "a-to-b", "dir0_rx_name": "0000:17:00.0", "dir0_tx_name": "0000:65:00.0",
+        "dir0_rx_name": "0000:17:00.0", "dir0_tx_name": "0000:65:00.0",
         "dir0_rx_port": 0, "dir0_tx_port": 1, "dir0_lcore": 2,
-        "dir1_link": "b-to-a", "dir1_rx_name": "0000:65:00.0", "dir1_tx_name": "0000:17:00.0",
+        "dir1_rx_name": "0000:65:00.0", "dir1_tx_name": "0000:17:00.0",
         "dir1_rx_port": 1, "dir1_tx_port": 0, "dir1_lcore": 6,
     });
     let dir_json = |d: &DirSample| {

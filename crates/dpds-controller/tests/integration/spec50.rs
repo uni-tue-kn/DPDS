@@ -368,7 +368,7 @@ async fn a_start_that_fails_leaves_no_copy_of_the_run_before() {
 
 fn two_links() -> Vec<Value> {
     vec![
-        link_cfg("a-to-b", NIC0, NIC1, cfg("NormalDistribution", 150.0, 30.0)),
-        link_cfg("b-to-a", NIC1, NIC0, cfg("NormalDistribution", 150.0, 30.0)),
+        link_cfg(NIC0, NIC1, cfg("NormalDistribution", 150.0, 30.0)),
+        link_cfg(NIC1, NIC0, cfg("NormalDistribution", 150.0, 30.0)),
     ]
 }

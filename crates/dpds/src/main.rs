@@ -5,8 +5,8 @@
 //! The EAL main lcore handles signals and polls the NIC hardware counters; each
 //! worker runs RX -> DPDS -> TX (`dpds::forward::run`). The links come from the
 //! `--links` file or, with `--config*`, from the one or two probed ports: one
-//! port is a hairpin link `dir0`, two ports are `dir0` (port 0 -> port 1) and
-//! `dir1` (port 1 -> port 0).
+//! port is a hairpin link, two ports are the links port 0 -> port 1 and
+//! port 1 -> port 0.
 
 use std::error::Error;
 use std::process::ExitCode;
@@ -174,7 +174,6 @@ struct Direction {
     worker: Worker,
     /// The config file, or the links file.
     config: String,
-    link: String,
     rx_name: String,
     tx_name: String,
     lcore: u32,
@@ -274,15 +273,14 @@ struct Layout {
     sources: Vec<String>,
 }
 
-/// The `--config*` mode: one port is the link `dir0` from the port to itself,
-/// two ports are `dir0` (port 0 -> port 1) and `dir1` (port 1 -> port 0).
+/// The `--config*` mode: one port is a link from the port to itself,
+/// two ports are the links port 0 -> port 1 and port 1 -> port 0.
 fn shorthand_links(cli: &dpds::cli::Cli, probed: &[(String, u16)]) -> Result<Layout> {
     validate_port_count(probed.len())?;
     let paths = cli.direction_configs(probed.len())?;
     let mut links = Vec::new();
     for (d, path) in paths.iter().enumerate() {
         links.push(LinkSpec {
-            name: format!("dir{d}"),
             ingress: probed[d].0.clone(),
             egress: probed[(d + 1) % probed.len()].0.clone(),
             config: Config::from_file(path).map_err(Box::<dyn Error>::from)?,
@@ -341,7 +339,7 @@ fn run() -> Result<()> {
     let mut ranges = Vec::new();
     for (d, dir) in dirs.iter().enumerate() {
         let label = if cli.links.is_some() {
-            format!("link '{}'", layout.links[dir.link].name)
+            layout.links[dir.link].label()
         } else {
             layout.sources[d].clone()
         };
@@ -437,9 +435,9 @@ fn run() -> Result<()> {
         }
         let raw_free =
             ports[rx_port as usize].mbuf_fast_free() && ports[tx_port as usize].mbuf_fast_free();
-        let link = layout.links[dir.link].name.clone();
+        let link = layout.links[dir.link].label();
         println!(
-            "Direction {d}: lcore {lcore}, link {link}, port {rx_port} -> port {tx_port}, \
+            "Direction {d}: lcore {lcore}, {link}, port {rx_port} -> port {tx_port}, \
              config {}, pool {pool_name} with {} mbufs on socket {pool_socket}, free: {}",
             layout.sources[d],
             pool_sizes[d],
@@ -452,7 +450,6 @@ fn run() -> Result<()> {
         directions.push(Direction {
             worker: Worker::new(buffer, rx_port, tx_port),
             config: layout.sources[d].clone(),
-            link,
             rx_name: name_of(rx_port),
             tx_name: name_of(tx_port),
             lcore,
@@ -532,7 +529,6 @@ fn serve(
             config: d.config.clone(),
             pool_size,
             raw_free: d.raw_free,
-            link: d.link.clone(),
             rx_name: d.rx_name.clone(),
             tx_name: d.tx_name.clone(),
             delay_stats: d.delay_stats,

@@ -434,7 +434,7 @@ async fn openapi_documents_the_new_fields_and_the_route() {
 
 fn two_links() -> Vec<Value> {
     vec![
-        link_cfg("a-to-b", NIC0, NIC1, cfg("NormalDistribution", 150.0, 30.0)),
-        link_cfg("b-to-a", NIC1, NIC0, cfg("NormalDistribution", 150.0, 30.0)),
+        link_cfg(NIC0, NIC1, cfg("NormalDistribution", 150.0, 30.0)),
+        link_cfg(NIC1, NIC0, cfg("NormalDistribution", 150.0, 30.0)),
     ]
 }

@@ -37,7 +37,7 @@ const twoDirections = () =>
 
 /** The tab titles once the interface list has turned PCI addresses into netdev names. */
 const findTitles = async (titles: string[]) => waitFor(() => expect(tabTitles()).toEqual(titles), SLOW);
-const TITLES = ['a-b: enp101s0f0 → enp101s0f1', 'b-a: enp101s0f1 → enp101s0f0'];
+const TITLES = ['enp101s0f0 → enp101s0f1', 'enp101s0f1 → enp101s0f0'];
 
 async function clickWhenEnabled(user: ReturnType<typeof userEvent.setup>, name: string) {
   const button = runButton(name);
@@ -394,7 +394,12 @@ describe('Dashboard: running configuration', () => {
     api.getEmulation.mockResolvedValue(fx.runningEmulation());
     renderApp('/');
     await user.click(await screen.findByRole('button', { name: 'Load running configuration' }));
-    await waitFor(() => expect(storedDoc().links.map((l) => l.name)).toEqual(['a-b', 'b-a']));
+    await waitFor(() =>
+      expect(storedDoc().links.map((l) => [l.ingress, l.egress])).toEqual([
+        ['0000:65:00.0', '0000:65:00.1'],
+        ['0000:65:00.1', '0000:65:00.0'],
+      ]),
+    );
     expect(screen.queryByRole('button', { name: 'Load running configuration' })).not.toBeInTheDocument();
     expect(screen.queryByTestId('pending-restart')).not.toBeInTheDocument();
   });

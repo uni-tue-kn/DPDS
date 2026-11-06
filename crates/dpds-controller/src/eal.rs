@@ -74,16 +74,15 @@ pub fn eal_argv(i: &EalInput) -> Vec<String> {
 /// them and `delay_stats: false` only when delay statistics are off.
 pub fn links_file_json(links: &[Link], directions: &[DirectionPlan]) -> Result<Value, DtoError> {
     let mut out = Vec::with_capacity(links.len());
-    for l in links {
+    for (i, l) in links.iter().enumerate() {
         let core = l.config.to_core()?;
         let config = serde_json::to_value(core).map_err(|e| DtoError::new(e.to_string()))?;
         let mut entry = json!({
-            "name": l.name,
             "ingress": l.ingress,
             "egress": l.egress,
             "config": config,
         });
-        if let Some(d) = directions.iter().find(|d| d.link == l.name) {
+        if let Some(d) = directions.iter().find(|d| d.dir as usize == i) {
             entry["lcore"] = json!(d.lcore);
         }
         if l.config.delay_stats == Some(false) {

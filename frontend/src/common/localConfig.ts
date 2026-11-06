@@ -18,7 +18,6 @@ const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'obj
  */
 const cleanLink = (l: Link): Link => ({
   id: l.id,
-  name: l.name,
   ingress: l.ingress,
   egress: l.egress,
   config: l.config,
@@ -27,21 +26,16 @@ const cleanLink = (l: Link): Link => ({
 
 /**
  * What is wrong with a list of links, or null when it is fine: the first link the form would not accept unchanged
- * (named by position and name), or the first repeated id or name.
+ * (named by position), or the first repeated id.
  */
 export function linksProblem(links: unknown[]): string | null {
   const ids = new Map<unknown, number>();
-  const names = new Map<unknown, number>();
   for (const [i, l] of links.entries()) {
-    const name = isObject(l) && typeof l.name === 'string' && l.name !== '' ? ` ("${l.name}")` : '';
-    const where = `Link ${i + 1}${name}`;
     const problem = linkProblem(l);
-    if (problem !== null) return `${where}: ${problem}`;
-    const { id, name: n } = l as Link;
+    if (problem !== null) return `Link ${i + 1}: ${problem}`;
+    const { id } = l as Link;
     if (ids.has(id)) return `Duplicate link id ${id}: links ${ids.get(id)} and ${i + 1}`;
-    if (names.has(n)) return `Duplicate link name "${n}": links ${names.get(n)} and ${i + 1}`;
     ids.set(id, i + 1);
-    names.set(n, i + 1);
   }
   return null;
 }
@@ -128,7 +122,6 @@ export function replaceLinks(links: Link[]): void {
 export function startRequestOf(doc: LocalConfig): StartRequest {
   return {
     links: doc.links.map((l) => ({
-      name: l.name,
       ingress: l.ingress,
       egress: l.egress,
       config: l.config,

@@ -6,11 +6,11 @@
 //! once as ingress and at most once as egress. Direction index = link index (file order).
 //!
 //! `parse_links` rejects: invalid JSON, a missing key (`config.delayer.initialization_rate_pps`
-//! included), no link, an unknown key at any level, a bad name (empty, over `MAX_NAME_LEN` = 32,
-//! or a char outside [A-Za-z0-9_.-]), a duplicate name, an empty ingress or egress, a port that
-//! is the ingress (egress) of two links, `lcore` on some links only or twice, a bad `histogram`
+//! included), no link, an unknown key at any level, a `name` key (links have no
+//! names; messages label a link `link <ingress> -> <egress>`), an empty ingress or egress, a
+//! port that is the ingress (egress) of two links, `lcore` on some links only or twice, a bad `histogram`
 //! (`bins` not in 1..=4096, negative `lo_ns`/`hi_ns`, `lo_ns >= hi_ns`), and a `/dpds/ports`
-//! reply over 256 keys (`3 + 5 * ports + 10 * links`). `lcore`, `histogram` and `delay_stats`
+//! reply over 256 keys (`3 + 5 * ports + 9 * links`). `lcore`, `histogram` and `delay_stats`
 //! are optional.
 //!
 //! `resolve_directions(links, probed, main_lcore, workers)` returns one `LinkDirection` per link
@@ -26,7 +26,7 @@ use std::path::Path;
 
 use dpds::delay_stats::HistogramSpec;
 use dpds::links::{
-    load_links, parse_links, resolve_directions, LinkDirection, LinkSpec, LinksError, MAX_NAME_LEN,
+    load_links, parse_links, resolve_directions, LinkDirection, LinkSpec, LinksError,
 };
 use serde_json::{json, Value};
 
@@ -52,18 +52,18 @@ fn cfg(capacity: u64) -> Value {
 }
 
 /// A link: `ingress` -> `egress` with a config of buffer capacity `cap`.
-fn link(name: &str, ingress: &str, egress: &str, cap: u64) -> Value {
-    json!({ "name": name, "ingress": ingress, "egress": egress, "config": cfg(cap) })
+fn link(ingress: &str, egress: &str, cap: u64) -> Value {
+    json!({ "ingress": ingress, "egress": egress, "config": cfg(cap) })
 }
 
-fn link_l(name: &str, ingress: &str, egress: &str, cap: u64, lcore: Value) -> Value {
-    let mut l = link(name, ingress, egress, cap);
+fn link_l(ingress: &str, egress: &str, cap: u64, lcore: Value) -> Value {
+    let mut l = link(ingress, egress, cap);
     l["lcore"] = lcore;
     l
 }
 
-fn link_h(name: &str, ingress: &str, egress: &str, cap: u64, hist: Value) -> Value {
-    let mut l = link(name, ingress, egress, cap);
+fn link_h(ingress: &str, egress: &str, cap: u64, hist: Value) -> Value {
+    let mut l = link(ingress, egress, cap);
     l["histogram"] = hist;
     l
 }
@@ -91,36 +91,26 @@ fn links_of(links: Vec<Value>) -> Vec<LinkSpec> {
 /// n links; n = 1 is a hairpin).
 fn ring(n: usize) -> Vec<Value> {
     (0..n)
-        .map(|i| {
-            link(
-                &format!("r{i}"),
-                &format!("p{i}"),
-                &format!("p{}", (i + 1) % n),
-                1,
-            )
-        })
+        .map(|i| link(&format!("p{i}"), &format!("p{}", (i + 1) % n), 1))
         .collect()
 }
 
 /// `n` one-way links `w<i>: a<i> -> b<i>` (2n ports, n links).
 fn one_way(n: usize) -> Vec<Value> {
     (0..n)
-        .map(|i| link(&format!("w{i}"), &format!("a{i}"), &format!("b{i}"), 1))
+        .map(|i| link(&format!("a{i}"), &format!("b{i}"), 1))
         .collect()
 }
 
 /// The classic bidirectional pair as two links.
 fn pair(a: &str, b: &str) -> Vec<Value> {
-    vec![
-        link(&format!("{a}-to-{b}"), a, b, 11),
-        link(&format!("{b}-to-{a}"), b, a, 22),
-    ]
+    vec![link(a, b, 11), link(b, a, 22)]
 }
 
 /// The documented example file: a pair (P0 <-> P1) and a hairpin on P2.
 fn spec_file() -> String {
     let mut links = pair("P0", "P1");
-    links.push(link("loop", "P2", "P2", 33));
+    links.push(link("P2", "P2", 33));
     file(links)
 }
 
@@ -130,20 +120,17 @@ fn spec_file() -> String {
 fn the_documented_file_parses_with_its_configs_in_order() {
     let links = parse_links(&spec_file()).unwrap();
     assert_eq!(links.len(), 3);
-    assert_eq!(links[0].name, "P0-to-P1");
     assert_eq!(
         (links[0].ingress.as_str(), links[0].egress.as_str()),
         ("P0", "P1")
     );
     assert_eq!(links[0].config.buffer_capacity, 11);
     assert_eq!(links[0].config.delayer.mean_ns, 1000.0);
-    assert_eq!(links[1].name, "P1-to-P0");
     assert_eq!(
         (links[1].ingress.as_str(), links[1].egress.as_str()),
         ("P1", "P0")
     );
     assert_eq!(links[1].config.buffer_capacity, 22);
-    assert_eq!(links[2].name, "loop");
     assert_eq!(
         (links[2].ingress.as_str(), links[2].egress.as_str()),
         ("P2", "P2")
@@ -166,7 +153,7 @@ fn a_config_may_use_every_dpds_core_field_incl_the_seed() {
     let mut c = cfg(5);
     c["seed"] = json!(42);
     c["loss_model"] = json!({ "GilbertElliot": [0.01, 0.3, 1.0, 0.5, true] });
-    let l = json!({ "name": "x", "ingress": "p", "egress": "q", "config": c });
+    let l = json!({ "ingress": "p", "egress": "q", "config": c });
     let links = parse_links(&file(vec![l])).unwrap();
     assert_eq!(links[0].config.seed, Some(42));
 }
@@ -179,11 +166,10 @@ fn syntax_and_structure_errors_are_errors_not_panics() {
         "{}",
         r#"{"links": 3}"#,
         r#"{"links": [{}]}"#,
-        r#"{"links": [{"name": "a", "ingress": "p", "egress": "q"}]}"#,
-        r#"{"links": [{"name": "a", "ingress": "p", "egress": "q", "config": {"buffer_capacity": 1}}]}"#,
-        r#"{"links": [{"name": 1, "ingress": "p", "egress": "q", "config": {}}]}"#,
-        r#"{"links": [{"name": "a", "ingress": 1, "egress": "q", "config": {}}]}"#,
-        r#"{"links": [{"name": "a", "ingress": ["p"], "egress": "q", "config": {}}]}"#,
+        r#"{"links": [{"ingress": "p", "egress": "q"}]}"#,
+        r#"{"links": [{"ingress": "p", "egress": "q", "config": {"buffer_capacity": 1}}]}"#,
+        r#"{"links": [{"ingress": 1, "egress": "q", "config": {}}]}"#,
+        r#"{"links": [{"ingress": ["p"], "egress": "q", "config": {}}]}"#,
     ] {
         assert!(parse_links(bad).is_err(), "{bad:?}");
     }
@@ -191,8 +177,8 @@ fn syntax_and_structure_errors_are_errors_not_panics() {
 
 #[test]
 fn a_missing_required_key_is_an_error_naming_it() {
-    for missing in ["name", "ingress", "egress", "config"] {
-        let mut l = link("x", "p", "q", 1);
+    for missing in ["ingress", "egress", "config"] {
+        let mut l = link("p", "q", 1);
         l.as_object_mut().unwrap().remove(missing);
         let e = err_of(vec![l]);
         assert!(e.contains(missing), "{missing}: {e}");
@@ -202,7 +188,7 @@ fn a_missing_required_key_is_an_error_naming_it() {
 #[test]
 fn a_config_without_initialization_rate_pps_is_an_error_naming_the_field() {
     // Required in every link config (no default), also with correlation off.
-    let mut l = link("x", "p", "q", 1);
+    let mut l = link("p", "q", 1);
     l["config"]["delayer"]
         .as_object_mut()
         .unwrap()
@@ -213,9 +199,9 @@ fn a_config_without_initialization_rate_pps_is_an_error_naming_the_field() {
 
 #[test]
 fn the_initialization_rate_of_a_link_config_is_read_per_link() {
-    let mut a = link("a", "p", "q", 1);
+    let mut a = link("p", "q", 1);
     a["config"]["delayer"]["initialization_rate_pps"] = json!(2.5e6);
-    let mut b = link("b", "q", "p", 1);
+    let mut b = link("q", "p", 1);
     b["config"]["delayer"]["initialization_rate_pps"] = json!(40_000);
     let links = parse_links(&file(vec![a, b])).unwrap();
     assert_eq!(links[0].config.delayer.initialization_rate_pps, 2.5e6);
@@ -228,44 +214,20 @@ fn no_link_at_all_is_an_error() {
 }
 
 #[test]
-fn names_follow_the_documented_rule() {
-    let ok32 = "a".repeat(MAX_NAME_LEN);
-    assert_eq!(MAX_NAME_LEN, 32);
-    for good in ["a", "A-b", "x_1.2-Z", "0", ok32.as_str()] {
-        assert!(
-            parse_links(&file(vec![link(good, "p", "q", 1)])).is_ok(),
-            "{good:?}"
-        );
-    }
-    let long = "a".repeat(MAX_NAME_LEN + 1);
-    for bad in [
-        "",
-        "a b",
-        "a/b",
-        "ä",
-        "a:b",
-        "a,b",
-        "a\"b",
-        "a\nb",
-        long.as_str(),
-    ] {
-        let e = err_of(vec![link(bad, "p", "q", 1)]);
-        assert!(!e.is_empty(), "{bad:?}");
-    }
+fn a_link_name_is_an_unknown_field() {
+    // link names are gone: a `name` key is rejected like any other unknown key
+    let mut l = link("p", "q", 1);
+    l["name"] = json!("a-to-b");
+    let e = err_of(vec![l]);
+    assert!(e.contains("name") && e.contains("unknown field"), "{e}");
 }
 
 #[test]
-fn a_duplicate_name_is_an_error_naming_it() {
-    let e = err_of(vec![link("same", "p", "q", 1), link("same", "r", "s", 1)]);
-    assert!(e.contains("same"), "{e}");
-}
-
-#[test]
-fn an_empty_ingress_or_egress_is_an_error_naming_the_link() {
-    let e = err_of(vec![link("blank-in", "", "q", 1)]);
-    assert!(e.contains("blank-in"), "{e}");
-    let e = err_of(vec![link("blank-out", "p", "", 1)]);
-    assert!(e.contains("blank-out"), "{e}");
+fn an_empty_ingress_or_egress_is_an_error_naming_the_link_by_its_ports() {
+    let e = err_of(vec![link("", "q", 1)]);
+    assert!(e.contains("link  -> q") && e.contains("ingress"), "{e}");
+    let e = err_of(vec![link("p", "", 1)]);
+    assert!(e.contains("link p -> ") && e.contains("egress"), "{e}");
 }
 
 #[test]
@@ -287,20 +249,13 @@ fn a_ring_a_hairpin_and_a_bidirectional_pair_are_valid_files() {
     assert_eq!(links_of(pair("a", "b")).len(), 2);
     // a port that is only ever an egress, and one that is only an ingress
     assert_eq!(links_of(one_way(3)).len(), 3);
-    assert!(parse_links(&file(vec![
-        link("fan", "a", "b", 1),
-        link("fan2", "c", "b2", 1)
-    ]))
-    .is_ok());
+    assert!(parse_links(&file(vec![link("a", "b", 1), link("c", "b2", 1)])).is_ok());
 }
 
 #[test]
 fn a_port_may_be_ingress_of_one_link_and_egress_of_another_with_different_partners() {
     // b: egress of a-to-b, ingress of b-to-c; a and c are different partners
-    let links = links_of(vec![
-        link("a-to-b", "a", "b", 1),
-        link("b-to-c", "b", "c", 2),
-    ]);
+    let links = links_of(vec![link("a", "b", 1), link("b", "c", 2)]);
     assert_eq!(links.len(), 2);
 }
 
@@ -331,15 +286,15 @@ fn conflict_of(links: Vec<Value>) -> String {
 #[test]
 fn a_port_used_twice_as_ingress_is_an_error_naming_it() {
     let e = conflict_of(vec![
-        link("one", "0000:65:00.0", "x", 1),
-        link("two", "0000:65:00.0", "y", 1),
+        link("0000:65:00.0", "x", 1),
+        link("0000:65:00.0", "y", 1),
     ]);
     assert!(e.contains("0000:65:00.0"), "{e}");
     assert!(e.contains("ingress"), "{e}");
     // a hairpin's ingress counts too
     let e = conflict_of(vec![
-        link("hp", "net_null0", "net_null0", 1),
-        link("two", "net_null0", "y", 1),
+        link("net_null0", "net_null0", 1),
+        link("net_null0", "y", 1),
     ]);
     assert!(e.contains("net_null0") && e.contains("ingress"), "{e}");
 }
@@ -347,15 +302,15 @@ fn a_port_used_twice_as_ingress_is_an_error_naming_it() {
 #[test]
 fn a_port_used_twice_as_egress_is_an_error_naming_it() {
     let e = conflict_of(vec![
-        link("one", "x", "0000:65:00.1", 1),
-        link("two", "y", "0000:65:00.1", 1),
+        link("x", "0000:65:00.1", 1),
+        link("y", "0000:65:00.1", 1),
     ]);
     assert!(e.contains("0000:65:00.1"), "{e}");
     assert!(e.contains("egress"), "{e}");
     // a hairpin's egress counts too
     let e = conflict_of(vec![
-        link("hp", "net_null0", "net_null0", 1),
-        link("two", "x", "net_null0", 1),
+        link("net_null0", "net_null0", 1),
+        link("x", "net_null0", 1),
     ]);
     assert!(e.contains("net_null0") && e.contains("egress"), "{e}");
 }
@@ -363,30 +318,30 @@ fn a_port_used_twice_as_egress_is_an_error_naming_it() {
 #[test]
 fn a_port_used_twice_as_ingress_and_twice_as_egress_is_an_error_naming_it() {
     // p is ingress of both links and egress of both: two links p -> p
-    let e = conflict_of(vec![link("a", "p", "p", 1), link("b", "p", "p", 1)]);
+    let e = conflict_of(vec![link("p", "p", 1), link("p", "p", 1)]);
     assert!(e.contains('p'), "{e}");
     let e = conflict_of(vec![
-        link("a", "net_null0", "net_null1", 1),
-        link("b", "net_null0", "net_null1", 1),
+        link("net_null0", "net_null1", 1),
+        link("net_null0", "net_null1", 1),
     ]);
     assert!(e.contains("net_null0") || e.contains("net_null1"), "{e}");
 }
 
 #[test]
 fn the_same_ingress_and_egress_pair_listed_twice_is_a_conflict() {
-    let e = conflict_of(vec![link("a", "x", "y", 1), link("b", "x", "y", 1)]);
+    let e = conflict_of(vec![link("x", "y", 1), link("x", "y", 1)]);
     assert!(e.contains('x') || e.contains('y'), "{e}");
 }
 
 #[test]
 fn the_v1_keys_are_unknown_fields_naming_the_key() {
     // keys of the old per-direction shape (ports / configs / lcores / histograms)
-    let old = r#"{ "links": [ { "name": "ab", "ports": ["p0", "p1"], "configs": [] } ] }"#;
+    let old = r#"{ "links": [ { "ports": ["p0", "p1"], "configs": [] } ] }"#;
     let e = err_text(old);
     assert!(e.contains("ports"), "{e}");
     assert!(e.contains("unknown field"), "serde's wording: {e}");
     for key in ["ports", "configs", "lcores", "histograms"] {
-        let mut l = link("ab", "p0", "p1", 1);
+        let mut l = link("p0", "p1", 1);
         l[key] = json!([]);
         let e = err_of(vec![l]);
         assert!(e.contains(key), "{key}: {e}");
@@ -414,7 +369,7 @@ fn load_links_reads_a_file_and_reports_a_missing_one_with_its_path() {
     let old = dir.path().join("old.json");
     std::fs::write(
         &old,
-        r#"{ "links": [ { "name": "a", "ports": ["p"], "configs": [] } ] }"#,
+        r#"{ "links": [ { "ports": ["p"], "configs": [] } ] }"#,
     )
     .unwrap();
     let e = load_links(&old).unwrap_err().to_string();
@@ -444,11 +399,8 @@ fn resolve(links: &[LinkSpec], ids: &[(String, u16)]) -> Result<Vec<LinkDirectio
 #[test]
 fn there_is_one_direction_per_link_in_file_order() {
     let mut v = pair("P0", "P1");
-    v.push(link("loop", "P2", "P2", 33));
-    v.extend([
-        link("c-to-d", "P3", "P4", 44),
-        link("d-to-c", "P4", "P3", 55),
-    ]);
+    v.push(link("P2", "P2", 33));
+    v.extend([link("P3", "P4", 44), link("P4", "P3", 55)]);
     let links = links_of(v);
     let ids = probed(&[("P0", 0), ("P1", 1), ("P2", 2), ("P3", 3), ("P4", 4)]);
     let d = resolve(&links, &ids).unwrap();
@@ -480,9 +432,9 @@ fn there_is_one_direction_per_link_in_file_order() {
 fn a_ring_of_three_ports_maps_each_link_to_its_own_ingress_and_egress() {
     // A -> B, B -> C, C -> A
     let links = links_of(vec![
-        link("a-to-b", "A", "B", 1),
-        link("b-to-c", "B", "C", 2),
-        link("c-to-a", "C", "A", 3),
+        link("A", "B", 1),
+        link("B", "C", 2),
+        link("C", "A", 3),
     ]);
     let ids = probed(&[("A", 0), ("B", 1), ("C", 2)]);
     let d = resolve(&links, &ids).unwrap();
@@ -502,9 +454,9 @@ fn ports_are_resolved_by_device_name_not_by_port_id_order() {
     // The links list the later-created / higher-addressed device first; the
     // port ids are not in listing order and not alphabetical either.
     let links = links_of(vec![
-        link("x", "0000:83:00.0", "0000:17:00.0", 100),
-        link("y", "0000:17:00.0", "0000:83:00.0", 200),
-        link("z", "net_null9", "net_null9", 300),
+        link("0000:83:00.0", "0000:17:00.0", 100),
+        link("0000:17:00.0", "0000:83:00.0", 200),
+        link("net_null9", "net_null9", 300),
     ]);
     let ids = probed(&[("0000:17:00.0", 0), ("0000:83:00.0", 1), ("net_null9", 2)]);
     let d = resolve(&links, &ids).unwrap();
@@ -530,12 +482,12 @@ fn ports_are_resolved_by_device_name_not_by_port_id_order() {
 
 #[test]
 fn an_ingress_or_egress_that_is_not_probed_is_an_error_naming_it() {
-    let links = links_of(vec![link("ab", "P0", "P9", 1)]);
+    let links = links_of(vec![link("P0", "P9", 1)]);
     let e = resolve(&links, &probed(&[("P0", 0)]))
         .unwrap_err()
         .to_string();
     assert!(e.contains("P9"), "egress: {e}");
-    let links = links_of(vec![link("ab", "P9", "P0", 1)]);
+    let links = links_of(vec![link("P9", "P0", 1)]);
     let e = resolve(&links, &probed(&[("P0", 0)]))
         .unwrap_err()
         .to_string();
@@ -544,16 +496,16 @@ fn an_ingress_or_egress_that_is_not_probed_is_an_error_naming_it() {
 
 #[test]
 fn a_probed_port_that_no_link_uses_is_an_error_naming_it() {
-    let links = links_of(vec![link("ab", "P0", "P1", 1)]);
+    let links = links_of(vec![link("P0", "P1", 1)]);
     let e = resolve(&links, &probed(&[("P0", 0), ("P1", 1), ("P2", 2)]))
         .unwrap_err()
         .to_string();
     assert!(e.contains("P2"), "{e}");
     // a ring of three with a fourth probed port
     let links = links_of(vec![
-        link("a", "P0", "P1", 1),
-        link("b", "P1", "P2", 1),
-        link("c", "P2", "P0", 1),
+        link("P0", "P1", 1),
+        link("P1", "P2", 1),
+        link("P2", "P0", 1),
     ]);
     let e = resolve(
         &links,
@@ -566,7 +518,7 @@ fn a_probed_port_that_no_link_uses_is_an_error_naming_it() {
 
 #[test]
 fn a_single_hairpin_link_works() {
-    let links = links_of(vec![link("l", "net_null0", "net_null0", 7)]);
+    let links = links_of(vec![link("net_null0", "net_null0", 7)]);
     let d = resolve(&links, &probed(&[("net_null0", 0)])).unwrap();
     assert_eq!(d.len(), 1);
     assert_eq!((d[0].rx_port, d[0].tx_port), (0, 0));
@@ -576,13 +528,13 @@ fn a_single_hairpin_link_works() {
 #[test]
 fn a_probed_port_used_only_as_egress_or_only_as_ingress_works() {
     // P1 is only an egress, P0 only an ingress
-    let links = links_of(vec![link("one-way", "P0", "P1", 5)]);
+    let links = links_of(vec![link("P0", "P1", 5)]);
     let d = resolve(&links, &probed(&[("P0", 0), ("P1", 1)])).unwrap();
     assert_eq!(d.len(), 1);
     assert_eq!((d[0].rx_port, d[0].tx_port), (0, 1));
     // fan-in to one egress from different ingress ports is NOT allowed, but a
     // chain where the middle port is both is
-    let links = links_of(vec![link("a", "P0", "P1", 1), link("b", "P1", "P2", 2)]);
+    let links = links_of(vec![link("P0", "P1", 1), link("P1", "P2", 2)]);
     let d = resolve(&links, &probed(&[("P0", 0), ("P1", 1), ("P2", 2)])).unwrap();
     assert_eq!(
         d.iter().map(|x| (x.rx_port, x.tx_port)).collect::<Vec<_>>(),
@@ -603,11 +555,10 @@ fn spec(bins: Option<usize>, lo: Option<f64>, hi: Option<f64>) -> HistogramSpec 
 #[test]
 fn a_histogram_is_parsed_per_link_with_every_field_optional() {
     let links = links_of(vec![
-        link_h("a", "p0", "p1", 1, json!({ "bins": 100 })),
-        link_h("b", "p1", "p2", 2, json!({ "lo_ns": 10.0, "hi_ns": 20.5 })),
-        link_h("c", "p3", "p3", 3, json!({})),
+        link_h("p0", "p1", 1, json!({ "bins": 100 })),
+        link_h("p1", "p2", 2, json!({ "lo_ns": 10.0, "hi_ns": 20.5 })),
+        link_h("p3", "p3", 3, json!({})),
         link_h(
-            "d",
             "p4",
             "p0",
             4,
@@ -631,7 +582,7 @@ fn the_documented_limits_are_inclusive() {
         json!({ "lo_ns": 0.0, "hi_ns": 0.001 }),
     ] {
         assert!(
-            parse_links(&file(vec![link_h("x", "p", "q", 1, h.clone())])).is_ok(),
+            parse_links(&file(vec![link_h("p", "q", 1, h.clone())])).is_ok(),
             "{h}"
         );
     }
@@ -648,18 +599,12 @@ fn bad_histograms_are_errors_naming_the_link() {
         json!({ "lo_ns": 5.0, "hi_ns": 5.0 }),
         json!({ "lo_ns": 9.0, "hi_ns": 5.0 }),
     ] {
-        let e = err_of(vec![link_h("hist-link", "p", "q", 1, bad.clone())]);
-        assert!(e.contains("hist-link"), "{bad}: {e}");
+        let e = err_of(vec![link_h("p", "q", 1, bad.clone())]);
+        assert!(e.contains("link p -> q"), "{bad}: {e}");
     }
     // a bins value above the maximum names the maximum
     for bins in [4097, 100_000] {
-        let e = err_of(vec![link_h(
-            "hist-link",
-            "p",
-            "q",
-            1,
-            json!({ "bins": bins }),
-        )]);
+        let e = err_of(vec![link_h("p", "q", 1, json!({ "bins": bins }))]);
         assert!(e.contains("4096"), "bins {bins}: {e}");
     }
     // values of the wrong JSON type are errors too (the message need not name the link)
@@ -670,14 +615,14 @@ fn bad_histograms_are_errors_naming_the_link() {
         json!({ "lo_ns": "x" }),
     ] {
         assert!(
-            parse_links(&file(vec![link_h("x", "p", "q", 1, bad.clone())])).is_err(),
+            parse_links(&file(vec![link_h("p", "q", 1, bad.clone())])).is_err(),
             "{bad}"
         );
     }
     // not an object (an array is an error)
     for bad in [json!([]), json!([{}]), json!(3), json!("x")] {
         assert!(
-            parse_links(&file(vec![link_h("x", "p", "q", 1, bad.clone())])).is_err(),
+            parse_links(&file(vec![link_h("p", "q", 1, bad.clone())])).is_err(),
             "{bad}"
         );
     }
@@ -686,9 +631,9 @@ fn bad_histograms_are_errors_naming_the_link() {
 #[test]
 fn directions_carry_the_histogram_spec_of_their_link() {
     let links = links_of(vec![
-        link_h("a", "P0", "P1", 11, json!({ "bins": 10 })),
-        link_h("b", "P1", "P2", 22, json!({ "lo_ns": 1.0, "hi_ns": 2.0 })),
-        link("c", "P2", "P0", 33),
+        link_h("P0", "P1", 11, json!({ "bins": 10 })),
+        link_h("P1", "P2", 22, json!({ "lo_ns": 1.0, "hi_ns": 2.0 })),
+        link("P2", "P0", 33),
     ]);
     let ids = probed(&[("P0", 0), ("P1", 1), ("P2", 2)]);
     let d = resolve(&links, &ids).unwrap();
@@ -702,9 +647,9 @@ fn directions_carry_the_histogram_spec_of_their_link() {
 #[test]
 fn lcore_is_optional_and_parsed_per_link() {
     let links = links_of(vec![
-        link_l("a", "p0", "p1", 1, json!(7)),
-        link_l("b", "p1", "p0", 2, json!(2)),
-        link_l("c", "p2", "p2", 3, json!(3)),
+        link_l("p0", "p1", 1, json!(7)),
+        link_l("p1", "p0", 2, json!(2)),
+        link_l("p2", "p2", 3, json!(3)),
     ]);
     assert_eq!(
         links[0].lcore,
@@ -718,8 +663,8 @@ fn lcore_is_optional_and_parsed_per_link() {
 #[test]
 fn a_repeated_lcore_is_an_error_naming_it() {
     let e = err_of(vec![
-        link_l("x", "a", "b", 1, json!(4)),
-        link_l("y", "b", "a", 2, json!(4)),
+        link_l("a", "b", 1, json!(4)),
+        link_l("b", "a", 2, json!(4)),
     ]);
     assert!(e.contains('4') && e.contains("lcore"), "{e}");
 }
@@ -727,14 +672,8 @@ fn a_repeated_lcore_is_an_error_naming_it() {
 #[test]
 fn mixing_links_with_and_without_lcore_is_an_error() {
     for links in [
-        vec![
-            link_l("with", "a", "b", 1, json!(1)),
-            link("without", "b", "a", 2),
-        ],
-        vec![
-            link("without", "a", "b", 1),
-            link_l("with", "b", "a", 2, json!(1)),
-        ],
+        vec![link_l("a", "b", 1, json!(1)), link("b", "a", 2)],
+        vec![link("a", "b", 1), link_l("b", "a", 2, json!(1))],
     ] {
         let e = err_of(links);
         assert!(e.contains("lcore"), "{e}");
@@ -753,7 +692,7 @@ fn lcore_of_the_wrong_json_type_is_an_error() {
         json!({}),
     ] {
         assert!(
-            parse_links(&file(vec![link_l("x", "a", "b", 1, bad.clone())])).is_err(),
+            parse_links(&file(vec![link_l("a", "b", 1, bad.clone())])).is_err(),
             "{bad}"
         );
     }
@@ -761,9 +700,9 @@ fn lcore_of_the_wrong_json_type_is_an_error() {
 
 fn ring_links(lcores: Option<[u32; 3]>) -> Vec<LinkSpec> {
     let mut v = vec![
-        link("a-to-b", "P0", "P1", 11),
-        link("b-to-c", "P1", "P2", 22),
-        link("c-to-a", "P2", "P0", 33),
+        link("P0", "P1", 11),
+        link("P1", "P2", 22),
+        link("P2", "P0", 33),
     ];
     if let Some(l) = lcores {
         for (link, lcore) in v.iter_mut().zip(l) {
@@ -802,8 +741,8 @@ fn explicit_lcores_are_honoured_literally_even_in_descending_order() {
     assert_eq!(d.iter().map(|x| x.lcore).collect::<Vec<_>>(), [7, 2, 3]);
     // the classic pair, `-l 0-2` with link 0 on 2 and link 1 on 1
     let links = links_of(vec![
-        link_l("ab", "P0", "P1", 1, json!(2)),
-        link_l("ba", "P1", "P0", 2, json!(1)),
+        link_l("P0", "P1", 1, json!(2)),
+        link_l("P1", "P0", 2, json!(1)),
     ]);
     let d = resolve_directions(&links, &probed(&IDS[..2]), 0, &[1, 2]).unwrap();
     assert_eq!((d[0].lcore, d[1].lcore), (2, 1));
@@ -812,8 +751,8 @@ fn explicit_lcores_are_honoured_literally_even_in_descending_order() {
 #[test]
 fn the_main_lcore_cannot_run_a_link() {
     let links = links_of(vec![
-        link_l("ab", "P0", "P1", 1, json!(0)),
-        link_l("ba", "P1", "P0", 2, json!(1)),
+        link_l("P0", "P1", 1, json!(0)),
+        link_l("P1", "P0", 2, json!(1)),
     ]);
     let e = resolve_directions(&links, &probed(&IDS[..2]), 0, &[1, 2])
         .unwrap_err()
@@ -824,8 +763,8 @@ fn the_main_lcore_cannot_run_a_link() {
 #[test]
 fn an_lcore_that_is_not_an_eal_worker_is_an_error_naming_it() {
     let links = links_of(vec![
-        link_l("ab", "P0", "P1", 1, json!(1)),
-        link_l("ba", "P1", "P0", 2, json!(9)),
+        link_l("P0", "P1", 1, json!(1)),
+        link_l("P1", "P0", 2, json!(9)),
     ]);
     let e = resolve_directions(&links, &probed(&IDS[..2]), 0, &[1, 2])
         .unwrap_err()
@@ -836,7 +775,7 @@ fn an_lcore_that_is_not_an_eal_worker_is_an_error_naming_it() {
 #[test]
 fn every_worker_lcore_must_be_used() {
     // one hairpin link on lcore 1, but the EAL has workers 1 and 2
-    let links = links_of(vec![link_l("l", "P0", "P0", 1, json!(1))]);
+    let links = links_of(vec![link_l("P0", "P0", 1, json!(1))]);
     let e = resolve_directions(&links, &probed(&IDS[..1]), 0, &[1, 2])
         .unwrap_err()
         .to_string();
@@ -860,7 +799,7 @@ fn a_typo_of_an_optional_link_key_is_an_error_naming_it() {
         "ingres",
         "egres",
     ] {
-        let mut l = link("ab", "p0", "p1", 1);
+        let mut l = link("p0", "p1", 1);
         l[typo] = json!(1);
         let e = err_of(vec![l]);
         assert!(e.contains(typo), "{typo}: {e}");
@@ -870,23 +809,23 @@ fn a_typo_of_an_optional_link_key_is_an_error_naming_it() {
 
 #[test]
 fn an_unknown_top_level_key_is_an_error_naming_it() {
-    let text = format!(r#"{{ "links": [{}], "lnks": [] }}"#, link("a", "p", "q", 1));
+    let text = format!(r#"{{ "links": [{}], "lnks": [] }}"#, link("p", "q", 1));
     let e = err_text(&text);
     assert!(e.contains("lnks"), "{e}");
 }
 
 #[test]
 fn an_unknown_key_in_the_histogram_is_an_error_naming_it() {
-    let l = link_h("ab", "p0", "p1", 1, json!({ "bins": 10, "lo": 5.0 }));
+    let l = link_h("p0", "p1", 1, json!({ "bins": 10, "lo": 5.0 }));
     let e = err_text(&file(vec![l]));
     assert!(e.contains("lo"), "{e}");
-    let l = link_h("ab", "p0", "p1", 1, json!({ "bin_ns": 10 }));
+    let l = link_h("p0", "p1", 1, json!({ "bin_ns": 10 }));
     assert!(err_text(&file(vec![l])).contains("bin_ns"));
 }
 
 #[test]
 fn every_documented_key_is_accepted() {
-    let mut l = link("ab", "p0", "p1", 1);
+    let mut l = link("p0", "p1", 1);
     l["histogram"] = json!({ "bins": 10, "lo_ns": 0, "hi_ns": 100.0 });
     l["lcore"] = json!(2);
     l["delay_stats"] = json!(false);
@@ -900,11 +839,11 @@ fn every_documented_key_is_accepted() {
 
 #[test]
 fn delay_stats_is_a_bool_per_link_default_true() {
-    let mut a = link("a", "p0", "p1", 1);
+    let mut a = link("p0", "p1", 1);
     a["delay_stats"] = json!(false);
-    let mut b = link("b", "p1", "p2", 2);
+    let mut b = link("p1", "p2", 2);
     b["delay_stats"] = json!(true);
-    let c = link("c", "p2", "p0", 3);
+    let c = link("p2", "p0", 3);
     let links = links_of(vec![a, b, c]);
     assert!(!links[0].delay_stats);
     assert!(links[1].delay_stats);
@@ -920,7 +859,7 @@ fn delay_stats_of_the_wrong_type_is_an_error() {
         json!(0),
         json!("true"),
     ] {
-        let mut l = link("typelink", "p0", "p1", 1);
+        let mut l = link("p0", "p1", 1);
         l["delay_stats"] = bad.clone();
         assert!(parse_links(&file(vec![l])).is_err(), "{bad}");
     }
@@ -929,9 +868,9 @@ fn delay_stats_of_the_wrong_type_is_an_error() {
 #[test]
 fn delay_stats_may_be_mixed_with_and_without_lcore() {
     // unlike `lcore`, `delay_stats` is per link and optional everywhere
-    let mut a = link_l("a", "p0", "p1", 1, json!(1));
+    let mut a = link_l("p0", "p1", 1, json!(1));
     a["delay_stats"] = json!(false);
-    let b = link_l("b", "p1", "p0", 1, json!(2));
+    let b = link_l("p1", "p0", 1, json!(2));
     let links = links_of(vec![a, b]);
     assert!(!links[0].delay_stats);
     assert!(links[1].delay_stats);
@@ -940,13 +879,13 @@ fn delay_stats_may_be_mixed_with_and_without_lcore() {
 #[test]
 fn directions_carry_the_delay_stats_switch_of_their_link() {
     // a: on, b: off, c: off, d: on
-    let mut a = link("a", "P0", "P1", 1);
+    let mut a = link("P0", "P1", 1);
     a["delay_stats"] = json!(true);
-    let mut b = link("b", "P1", "P2", 2);
+    let mut b = link("P1", "P2", 2);
     b["delay_stats"] = json!(false);
-    let mut c = link("c", "P4", "P4", 3);
+    let mut c = link("P4", "P4", 3);
     c["delay_stats"] = json!(false);
-    let d = link("d", "P3", "P0", 4);
+    let d = link("P3", "P0", 4);
     let links = links_of(vec![a, b, c, d]);
     let ids = probed(&[("P0", 0), ("P1", 1), ("P2", 2), ("P3", 3), ("P4", 4)]);
     let d = resolve_directions(&links, &ids, 0, &[1, 2, 3, 4]).unwrap();
@@ -958,10 +897,10 @@ fn directions_carry_the_delay_stats_switch_of_their_link() {
 
 // ── /dpds/ports dict limit ──────────────────────────────────────────
 //
-// `/dpds/ports` has `3 + 5 * ports + 10 * links` keys (ports = distinct
-// ports of the links) and DPDK's dict holds 256: a ring of 16 fits (243), a
-// ring of 17 does not (258). With ports != links the formula decides: 12
-// one-way links over 24 ports are 3 + 120 + 120 = 243 (fits), 13 are 263.
+// `/dpds/ports` has `3 + 5 * ports + 9 * links` keys (ports = distinct
+// ports of the links) and DPDK's dict holds 256: a ring of 18 fits (255), a
+// ring of 19 does not (269). With ports != links the formula decides: 13
+// one-way links over 26 ports are 3 + 130 + 117 = 250 (fits), 14 are 269.
 
 fn assert_fits(links: Vec<Value>, what: &str) {
     let n = links.len();
@@ -974,31 +913,31 @@ fn assert_too_many(links: Vec<Value>, what: &str) {
 }
 
 #[test]
-fn a_ring_of_sixteen_ports_fits_and_seventeen_do_not() {
-    assert_fits(ring(16), "16-ring: 243 keys");
-    assert_too_many(ring(17), "17-ring: 258 keys");
+fn a_ring_of_eighteen_ports_fits_and_nineteen_do_not() {
+    assert_fits(ring(18), "18-ring: 255 keys");
+    assert_too_many(ring(19), "19-ring: 269 keys");
     assert_too_many(ring(40), "40-ring");
 }
 
 #[test]
 fn the_limit_counts_distinct_ports_and_links_with_the_new_formula() {
-    // 2 links per pair over 2 ports: 8 pairs = 16 links, 16 ports = 243
+    // 2 links per pair over 2 ports: 9 pairs = 18 links, 18 ports = 255
     let pairs = |n: usize| -> Vec<Value> {
         (0..n)
             .flat_map(|i| pair(&format!("a{i}"), &format!("b{i}")))
             .collect()
     };
-    assert_fits(pairs(8), "8 bidirectional pairs: 16 ports, 16 links, 243");
-    assert_too_many(pairs(9), "9 pairs: 18 ports, 18 links, 273");
+    assert_fits(pairs(9), "9 bidirectional pairs: 18 ports, 18 links, 255");
+    assert_too_many(pairs(10), "10 pairs: 20 ports, 20 links, 283");
     // one-way links: twice as many ports as links
-    assert_fits(one_way(12), "12 one-way links: 24 ports, 12 links, 243");
-    assert_too_many(one_way(13), "13 one-way links: 26 ports, 13 links, 263");
+    assert_fits(one_way(13), "13 one-way links: 26 ports, 13 links, 250");
+    assert_too_many(one_way(14), "14 one-way links: 28 ports, 14 links, 269");
     // hairpins: one port per link
     let hairpins = |n: usize| -> Vec<Value> {
         (0..n)
-            .map(|i| link(&format!("h{i}"), &format!("p{i}"), &format!("p{i}"), 1))
+            .map(|i| link(&format!("p{i}"), &format!("p{i}"), 1))
             .collect()
     };
-    assert_fits(hairpins(16), "16 hairpins: 243");
-    assert_too_many(hairpins(17), "17 hairpins: 258");
+    assert_fits(hairpins(18), "18 hairpins: 255");
+    assert_too_many(hairpins(19), "19 hairpins: 269");
 }

@@ -20,7 +20,6 @@ function canon(v: unknown): string {
 
 const linkKey = (l: StartLink) =>
   canon({
-    name: l.name,
     ingress: l.ingress,
     egress: l.egress,
     config: l.config,
@@ -29,7 +28,7 @@ const linkKey = (l: StartLink) =>
 export interface Pending {
   /** Anything differs: a link changed, was added or removed. */
   any: boolean;
-  /** Names of the local links that differ from the running one or are new. */
+  /** Ingress ports of the local links that differ from the running one or are new. */
   links: Set<string>;
 }
 
@@ -43,8 +42,8 @@ export function pendingRestart(local: LocalConfig, emulation: EmulationView | un
   const running = emulation?.config;
   if (!running || local.links.length === 0 || (emulation?.state !== 'starting' && emulation?.state !== 'running'))
     return NONE;
-  const byName = new Map(running.links.map((l) => [l.name, linkKey(l)]));
-  const links = new Set(local.links.filter((l) => byName.get(l.name) !== linkKey(l)).map((l) => l.name));
-  const removed = running.links.some((r) => !local.links.some((l) => l.name === r.name));
+  const byIngress = new Map(running.links.map((l) => [l.ingress, linkKey(l)]));
+  const links = new Set(local.links.filter((l) => byIngress.get(l.ingress) !== linkKey(l)).map((l) => l.ingress));
+  const removed = running.links.some((r) => !local.links.some((l) => l.ingress === r.ingress));
   return { any: links.size > 0 || removed, links };
 }

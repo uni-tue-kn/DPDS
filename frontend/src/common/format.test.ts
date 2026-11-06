@@ -79,9 +79,9 @@ describe('rates and labels', () => {
     expect(formatCount(undefined)).toBe('n/a');
   });
 
-  it('a link is "name: ingress → egress" with ports through the labeler and "?" for what is missing', () => {
-    expect(linkLabel('a-b', '0000:65:00.0', '0000:65:00.1', (p) => `net-${p?.slice(-1)}`)).toBe('a-b: net-0 → net-1');
-    expect(linkLabel('', null, undefined)).toBe('?: ? → ?');
+  it('a link is "ingress → egress" with ports through the labeler and "?" for what is missing', () => {
+    expect(linkLabel('0000:65:00.0', '0000:65:00.1', (p) => `net-${p?.slice(-1)}`)).toBe('net-0 → net-1');
+    expect(linkLabel(null, undefined)).toBe('? → ?');
   });
 
   it('a count that is null is the sum of the others, null only when both are', () => {

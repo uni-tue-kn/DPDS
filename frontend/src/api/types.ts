@@ -55,7 +55,6 @@ export interface ConfigDto {
 /** One direction: packets arriving on `ingress` leave on `egress` (DPDK device names) with `config` applied. */
 export interface Link {
   id: number;
-  name: string;
   ingress: string;
   egress: string;
   config: ConfigDto;
@@ -117,7 +116,6 @@ export interface OnlineView {
 
 export interface DirectionPlan {
   dir: number;
-  link: string;
   rx: string;
   tx: string;
   lcore: number;
@@ -226,7 +224,6 @@ export interface HistorySample {
 
 /** A link of the run, as the controller ran it. */
 export interface HistoryLink {
-  name: string;
   ingress: string;
   egress: string;
 }

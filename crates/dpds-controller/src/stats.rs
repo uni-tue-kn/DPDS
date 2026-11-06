@@ -140,7 +140,6 @@ impl NicXstats {
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct DirectionStats {
     pub dir: u32,
-    pub link: Option<String>,
     pub rx: Option<String>,
     pub tx: Option<String>,
     /// Rates over the window between the last two polls; 0 without a window.
@@ -283,7 +282,6 @@ impl From<&Counters> for HistoryTotals {
 /// A link of the run a history belongs to, to title its charts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct HistoryLink {
-    pub name: String,
     pub ingress: String,
     pub egress: String,
 }
@@ -532,7 +530,6 @@ pub fn compute_stats(prev: Option<&Snapshot>, cur: &Snapshot, vfs: &HashSet<Stri
             let delay = |key: &str| if delay_stats { num(c, key) } else { None };
             let mut s = DirectionStats {
                 dir: d as u32,
-                link: text(&cur.ports, &format!("dir{d}_link")),
                 rx: text(&cur.ports, &format!("dir{d}_rx_name")),
                 tx: text(&cur.ports, &format!("dir{d}_tx_name")),
                 rx_pps: 0.0,

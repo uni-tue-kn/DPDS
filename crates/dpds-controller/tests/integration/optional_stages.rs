@@ -57,7 +57,7 @@ fn noop() -> Config {
 async fn file_config(config: Value) -> Value {
     let a = app();
     let r = a
-        .start_links(vec![link_cfg("l", "net_null0", "net_null0", config)])
+        .start_links(vec![link_cfg("net_null0", "net_null0", config)])
         .await;
     assert_eq!(r.status, 202, "{}", r.text());
     a.supervisor.plans()[0].links_json["links"][0]["config"].clone()
@@ -119,7 +119,7 @@ async fn the_other_config_fields_survive_a_config_without_stages() {
     c["reordering"] = json!(true);
     c["seed"] = json!(11);
     let a = app();
-    let mut l = link_cfg("l", "net_null0", "net_null0", c);
+    let mut l = link_cfg("net_null0", "net_null0", c);
     l["config"]["delay_stats"] = json!(false);
     l["config"]["histogram"] = json!({"bins": 32, "lo_ns": 0.0, "hi_ns": 1000.0});
     assert_eq!(a.start_links(vec![l]).await.status, 202);
@@ -136,8 +136,8 @@ async fn links_with_and_without_stages_can_run_side_by_side() {
     let a = app();
     let r = a
         .start_links(vec![
-            link_cfg("plain", NIC0, NIC1, cfg_bare()),
-            link_cfg("full", NIC1, NIC0, cfg_full(1.0e6, 1.0e5, 1.0e9)),
+            link_cfg(NIC0, NIC1, cfg_bare()),
+            link_cfg(NIC1, NIC0, cfg_full(1.0e6, 1.0e5, 1.0e9)),
         ])
         .await;
     assert_eq!(r.status, 202, "{}", r.text());
@@ -151,7 +151,7 @@ async fn links_with_and_without_stages_can_run_side_by_side() {
 #[tokio::test]
 async fn the_internal_rate_of_the_noop_delayer_is_never_reported_to_clients() {
     let a = app();
-    a.start_ok(vec![link_cfg("l", "net_null0", "net_null0", cfg_bare())])
+    a.start_ok(vec![link_cfg("net_null0", "net_null0", cfg_bare())])
         .await;
     let v = a.get("/api/emulation").await.json();
     let text = v["config"].to_string();
@@ -162,7 +162,7 @@ async fn the_internal_rate_of_the_noop_delayer_is_never_reported_to_clients() {
 #[tokio::test]
 async fn the_drain_timeout_of_a_link_without_stages_is_the_margin_alone() {
     let a = app();
-    a.start_ok(vec![link_cfg("l", "net_null0", "net_null0", cfg_bare())])
+    a.start_ok(vec![link_cfg("net_null0", "net_null0", cfg_bare())])
         .await;
     let t = a.supervisor.plans()[0].drain_timeout.as_secs_f64();
     assert!((t - 5.0).abs() < 1e-9, "{t}");
@@ -176,7 +176,7 @@ async fn limiter_activate_is_a_400_naming_the_field_whatever_the_value() {
         let a = app();
         let mut c = cfg_json(1.0e6, 0.0);
         c["limiter"] = json!({"mode": "Spacer", "activate": activate, "rate_bps": 1.0e9});
-        let s = setup(vec![link_cfg("l", "net_null0", "net_null0", c)]);
+        let s = setup(vec![link_cfg("net_null0", "net_null0", c)]);
         for r in [
             a.start(&s).await,
             a.validate(&s).await,
@@ -219,7 +219,7 @@ async fn a_present_stage_without_a_required_field_is_a_400_naming_it() {
         let mut c = cfg_bare();
         c[stage] = value.clone();
         let r = a
-            .start_links(vec![link_cfg("l", "net_null0", "net_null0", c)])
+            .start_links(vec![link_cfg("net_null0", "net_null0", c)])
             .await;
         assert_eq!(r.status, 400, "{stage} {value}: {}", r.text());
         assert!(r.message().contains(named), "{stage} {value}: {}", r.text());
@@ -285,7 +285,7 @@ async fn a_present_stage_is_validated_with_the_old_rules() {
         for (k, v) in stage.as_object().unwrap() {
             c[k] = v.clone();
         }
-        let s = setup(vec![link_cfg("l", "net_null0", "net_null0", c)]);
+        let s = setup(vec![link_cfg("net_null0", "net_null0", c)]);
         let r = a.start(&s).await;
         assert_eq!(r.status, 400, "{what}: {}", r.text());
         assert!(r.message().contains(named), "{what}: {}", r.text());
@@ -310,7 +310,7 @@ async fn a_valid_present_stage_is_accepted_next_to_missing_ones() {
             c[k] = v.clone();
         }
         let r = a
-            .start_links(vec![link_cfg("l", "net_null0", "net_null0", c)])
+            .start_links(vec![link_cfg("net_null0", "net_null0", c)])
             .await;
         assert_eq!(r.status, 202, "{what}: {}", r.text());
     }
@@ -325,7 +325,7 @@ async fn the_correlation_rate_is_required_with_the_delayer_and_never_without_it(
     let mut c = cfg_bare();
     c["delayer"] = d;
     let r = a
-        .start_links(vec![link_cfg("l", "net_null0", "net_null0", c)])
+        .start_links(vec![link_cfg("net_null0", "net_null0", c)])
         .await;
     assert_eq!(r.status, 400, "{}", r.text());
     assert!(r.message().contains("initialization_rate_pps"));
@@ -333,7 +333,7 @@ async fn the_correlation_rate_is_required_with_the_delayer_and_never_without_it(
     let mut c = cfg_bare();
     c["initialization_rate_pps"] = json!(1.0);
     let r = a
-        .start_links(vec![link_cfg("l", "net_null0", "net_null0", c)])
+        .start_links(vec![link_cfg("net_null0", "net_null0", c)])
         .await;
     assert_eq!(r.status, 400, "{}", r.text());
     assert!(r.message().contains("initialization_rate_pps"));
@@ -345,14 +345,14 @@ async fn the_other_config_fields_keep_their_rules_without_stages() {
     let mut c = cfg_bare();
     c["buffer_capacity"] = json!(2_147_483_649u64);
     let r = a
-        .start_links(vec![link_cfg("l", "net_null0", "net_null0", c)])
+        .start_links(vec![link_cfg("net_null0", "net_null0", c)])
         .await;
     assert_eq!(r.status, 400, "{}", r.text());
     assert!(r.message().contains("buffer_capacity"));
     let mut c = cfg_bare();
     c["histogram"] = json!({"bins": 4097});
     let r = a
-        .start_links(vec![link_cfg("l", "net_null0", "net_null0", c)])
+        .start_links(vec![link_cfg("net_null0", "net_null0", c)])
         .await;
     assert_eq!(r.status, 400, "{}", r.text());
     assert!(
@@ -363,7 +363,6 @@ async fn the_other_config_fields_keep_their_rules_without_stages() {
     // a config without a buffer is still incomplete
     let r = a
         .start_links(vec![link_cfg(
-            "l",
             "net_null0",
             "net_null0",
             json!({"reordering": false}),
@@ -417,7 +416,7 @@ async fn hints_for_links_without_stages_are_the_ordinary_ones() {
     let r = a
         .post(
             "/api/host/hints",
-            setup(vec![link_cfg("l", NIC0, NIC0, cfg_bare())]).body(),
+            setup(vec![link_cfg(NIC0, NIC0, cfg_bare())]).body(),
         )
         .await;
     assert_eq!(r.status, 200, "{}", r.text());

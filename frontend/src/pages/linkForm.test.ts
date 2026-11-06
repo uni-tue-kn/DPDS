@@ -21,7 +21,6 @@ import {
   GBIT,
   INIT_RATE_UNITS,
   LIMITER_RATE_UNITS,
-  LINK_NAME,
   MPPS,
   MS,
   PACKETS,
@@ -39,7 +38,7 @@ import {
   withAccuracy,
 } from './linkForm';
 import type { ConfigForm } from './linkForm';
-import { derivedLimitText, rowSummary } from './linkSummary';
+import { derivedLimitText } from './linkSummary';
 
 // Pure logic of the config form: unit conversion, `formToDto` validation and the stored-value round trip. Nothing is rendered.
 
@@ -644,14 +643,7 @@ describe('configToForm and formToDto round-trip a stored config exactly', () => 
   });
 });
 
-describe('link rules: name, ports and what the form accepts unchanged', () => {
-  it.each(['a', 'a-b', 'A-z_0.9', 'x'.repeat(32)])('the name %j is valid', (n) => {
-    expect(LINK_NAME.test(n)).toBe(true);
-  });
-  it.each(['', 'has space', 'x'.repeat(33), 'ä-b', 'a/b'])('the name %j is not', (n) => {
-    expect(LINK_NAME.test(n)).toBe(false);
-  });
-
+describe('link rules: ports and what the form accepts unchanged', () => {
   it.each(['0000:65:00.0', '0000:b3:00.7', 'net_null0', 'net_ring12'])('the port %s is valid', (p) => {
     expect(portError(p)).toBeNull();
   });
@@ -663,12 +655,15 @@ describe('link rules: name, ports and what the form accepts unchanged', () => {
     for (const l of [fx.link(), fx.linkRev(), fx.loopLink()]) expect(linkProblem(l)).toBeNull();
   });
 
+  it('an extra name member is no problem, whatever it holds (links have no names any more)', () => {
+    for (const name of ['old', '', 'has space', 'x'.repeat(40)]) expect(linkProblem({ ...fx.link(), name })).toBeNull();
+  });
+
   it.each([
     ['not an object', 'x', /not an object/],
     ['id 0', { ...fx.link(), id: 0 }, /id/i],
     ['id 1.5', { ...fx.link(), id: 1.5 }, /id/i],
     ['a string id', { ...fx.link(), id: '1' }, /id/i],
-    ['a bad name', { ...fx.link(), name: 'a b' }, /Name/],
     ['no ingress', { ...fx.link(), ingress: '' }, /Ingress/],
     ['no egress', { ...fx.link(), egress: undefined }, /Egress/],
     ['a frame size below 64', { ...fx.link(), avg_frame_size_byte: 63 }, /frame/i],
@@ -693,38 +688,7 @@ describe('link rules: name, ports and what the form accepts unchanged', () => {
   });
 });
 
-describe('summaries of a config (the table cells) and the derived limit', () => {
-  const summary = (c: ConfigDto) => rowSummary(configToForm(c));
-
-  it('Delay: distribution with mean / std, the deterministic one without a std, "none" without a delayer', () => {
-    expect(summary(fx.config()).delay).toBe(`Normal 1 ${MU} / 10 ns`);
-    const det = {
-      ...fx.config(),
-      delayer: { ...must(fx.config().delayer), distribution: 'DeterministicDistribution' as const },
-    };
-    expect(summary(det).delay).toBe(`Deterministic 1 ${MU}`);
-    expect(summary(fx.configBare()).delay).toBe('none');
-  });
-
-  it('Limiter and Loss', () => {
-    expect(summary({ ...fx.config(), limiter: { mode: 'Spacer', rate_bps: 1e10 } }).limiter).toBe('spacing 10 Gbit/s');
-    expect(summary({ ...fx.config(), limiter: { mode: 'TokenBucketFilter', rate_bps: 1e9 } }).limiter).toBe(
-      'policing 1 Gbit/s',
-    );
-    expect(summary(fx.configBare()).limiter).toBe('none');
-    expect(summary(fx.config()).loss).toBe('Random p=0');
-    expect(
-      summary({ ...fx.config(), loss_model: { type: 'GilbertElliot', p: 0.01, r: 0.2, h: 0.3, k: 0.9 } }).loss,
-    ).toBe('Gilbert-Elliott p=0.01, r=0.2, h=0.3, k=0.9');
-    expect(summary(fx.configBare()).loss).toBe('none');
-  });
-
-  it('a cell whose values are not valid yet is null; the others stay', () => {
-    const s = rowSummary(form({ buffer_capacity: uv('', 0) }));
-    expect(s.buffer).toBeNull();
-    expect(s.histogram).not.toBeNull();
-  });
-
+describe('the derived limit', () => {
   it('the derived limit is capacity x 1542 B x 8 bit; no number while the capacity is no valid count', () => {
     expect(derivedLimitText('100000')).toContain('1233.6 Mbit');
     expect(derivedLimitText('1000')).toContain('12.336 Mbit');

@@ -661,7 +661,6 @@ mod with_feature {
             config: config.to_string(),
             pool_size: pool,
             raw_free: raw,
-            link: format!("link{rx}"),
             rx_name: format!("rx{rx}"),
             tx_name: format!("tx{tx}"),
             delay_stats: true,
@@ -696,10 +695,8 @@ mod with_feature {
         // a link is one direction: `num_links` equals `num_directions`
         assert_eq!(uint(&r, "num_directions"), 2);
         assert_eq!(uint(&r, "num_links"), 2);
-        assert_eq!(string(&r, "dir0_link"), "link0");
         assert_eq!(string(&r, "dir0_rx_name"), "rx0");
         assert_eq!(string(&r, "dir0_tx_name"), "tx1");
-        assert_eq!(string(&r, "dir1_link"), "link1");
         assert_eq!(string(&r, "dir1_rx_name"), "rx1");
         assert_eq!(string(&r, "dir1_tx_name"), "tx0");
         assert_eq!(uint(&r, "dir0_rx_port"), 0);
@@ -716,8 +713,8 @@ mod with_feature {
         assert_eq!(uint(&r, "dir1_raw_free"), 0);
         assert_eq!(
             r.len(),
-            1 + 2 * 5 + 2 + 2 * 10,
-            "num_ports + five fields per port + num_directions + num_links + ten per direction"
+            1 + 2 * 5 + 2 + 2 * 9,
+            "num_ports + five fields per port + num_directions + num_links + nine per direction"
         );
     }
 
@@ -746,7 +743,6 @@ mod with_feature {
                 "dir0_config",
                 "dir0_pool_size",
                 "dir0_raw_free",
-                "dir0_link",
                 "dir0_rx_name",
                 "dir0_tx_name",
                 "dir0_delay_stats",
@@ -769,7 +765,7 @@ mod with_feature {
         assert!(keys(&r)
             .iter()
             .all(|k| !k.starts_with("port1_") && !k.starts_with("dir1_")));
-        assert_eq!(r.len(), 1 + 5 + 2 + 10);
+        assert_eq!(r.len(), 1 + 5 + 2 + 9);
     }
 
     #[test]
@@ -784,11 +780,10 @@ mod with_feature {
     }
 
     #[test]
-    fn ports_reply_of_a_ring_names_link_and_devices_per_link() {
+    fn ports_reply_of_a_ring_names_the_devices_per_link() {
         // ring A -> B, B -> C, C -> A over port ids 2, 0, 1 (ids are not in link
         // order); every link is one direction with its own ingress/egress.
-        let mk = |rx, tx, link: &str, rxn: &str, txn: &str| DirectionInfo {
-            link: link.into(),
+        let mk = |rx, tx, rxn: &str, txn: &str| DirectionInfo {
             rx_name: rxn.into(),
             tx_name: txn.into(),
             ..dir(rx, tx, 1 + rx as u32, "links.json", 7, false)
@@ -800,21 +795,20 @@ mod with_feature {
                 port("net_null2", 1, 1, 1, 1),
             ],
             &[
-                mk(2, 0, "a-to-b", "net_null2", "net_pcap0"),
-                mk(0, 1, "b-to-c", "net_pcap0", "net_pcap1"),
-                mk(1, 2, "c-to-a", "net_pcap1", "net_null2"),
+                mk(2, 0, "net_null2", "net_pcap0"),
+                mk(0, 1, "net_pcap0", "net_pcap1"),
+                mk(1, 2, "net_pcap1", "net_null2"),
             ],
             3,
         );
         assert_eq!(uint(&r, "num_ports"), 3);
         assert_eq!(uint(&r, "num_directions"), 3);
         assert_eq!(uint(&r, "num_links"), 3, "one direction per link");
-        for (d, link, rxn, txn) in [
-            (0, "a-to-b", "net_null2", "net_pcap0"),
-            (1, "b-to-c", "net_pcap0", "net_pcap1"),
-            (2, "c-to-a", "net_pcap1", "net_null2"),
+        for (d, rxn, txn) in [
+            (0, "net_null2", "net_pcap0"),
+            (1, "net_pcap0", "net_pcap1"),
+            (2, "net_pcap1", "net_null2"),
         ] {
-            assert_eq!(string(&r, &format!("dir{d}_link")), link);
             assert_eq!(string(&r, &format!("dir{d}_rx_name")), rxn);
             assert_eq!(string(&r, &format!("dir{d}_tx_name")), txn);
         }
@@ -825,13 +819,13 @@ mod with_feature {
         );
         assert_eq!(uint(&r, "dir0_tx_port"), 0);
         assert_eq!(uint(&r, "dir2_tx_port"), 2);
-        assert_eq!(r.len(), 3 + 3 * 5 + 3 * 10);
+        assert_eq!(r.len(), 3 + 3 * 5 + 3 * 9);
         assert!(r.iter().all(|(k, _)| k.len() < 64));
     }
 
     #[test]
     fn ports_reply_of_one_way_links_has_more_ports_than_links() {
-        // two links a -> b and c -> d over four ports: 3 + 5 * 4 + 10 * 2 keys
+        // two links a -> b and c -> d over four ports: 3 + 5 * 4 + 9 * 2 keys
         let r = ports_reply(
             &[
                 port("a", 1, 1, 1, 1),
@@ -848,7 +842,7 @@ mod with_feature {
         assert_eq!(uint(&r, "num_ports"), 4);
         assert_eq!(uint(&r, "num_directions"), 2);
         assert_eq!(uint(&r, "num_links"), 2);
-        assert_eq!(r.len(), 3 + 5 * 4 + 10 * 2);
+        assert_eq!(r.len(), 3 + 5 * 4 + 9 * 2);
     }
 
     #[test]
@@ -880,12 +874,12 @@ mod with_feature {
     }
 
     #[test]
-    fn ports_reply_has_three_plus_five_per_port_plus_ten_per_direction_keys() {
+    fn ports_reply_has_three_plus_five_per_port_plus_nine_per_direction_keys() {
         // RTE_TEL_MAX_DICT_ENTRIES is 256: this is the formula `--links`
         // validation (tests/unit/links.rs, "dict limit") must use: 3 + 5 per
-        // distinct port + 10 per link. In a ring (one link per port) 16 ports
-        // fit (243 keys) and 17 do not (258).
-        for (n_ports, fits) in [(1usize, true), (2, true), (16, true), (17, false)] {
+        // distinct port + 9 per link. In a ring (one link per port) 18 ports
+        // fit (255 keys) and 19 do not (269).
+        for (n_ports, fits) in [(1usize, true), (2, true), (18, true), (19, false)] {
             let ports: Vec<PortInfo> = (0..n_ports)
                 .map(|i| port(&format!("p{i}"), 1, 1, 1, 1))
                 .collect();
@@ -893,7 +887,7 @@ mod with_feature {
                 .map(|i| dir(i, i, 1 + i as u32, "links.json", 1, false))
                 .collect();
             let r = ports_reply(&ports, &dirs, n_ports);
-            assert_eq!(r.len(), 3 + 5 * n_ports + 10 * n_ports, "{n_ports} ports");
+            assert_eq!(r.len(), 3 + 5 * n_ports + 9 * n_ports, "{n_ports} ports");
             assert_eq!(r.len() <= 256, fits, "{n_ports} ports: {} keys", r.len());
         }
     }

@@ -19,10 +19,9 @@ fn port(name: &str, driver: Option<&str>) -> EalPort {
     }
 }
 
-fn plan_dir(dir: u32, link: &str, rx: &str, tx: &str, lcore: u32) -> DirectionPlan {
+fn plan_dir(dir: u32, rx: &str, tx: &str, lcore: u32) -> DirectionPlan {
     DirectionPlan {
         dir,
-        link: link.into(),
         rx: rx.into(),
         tx: tx.into(),
         lcore,
@@ -180,17 +179,14 @@ fn special_core() -> Config {
 #[test]
 fn links_file_json_is_v2_one_entry_per_directed_link() {
     let links = vec![
-        model_link(1, &link("a-to-b", NIC0, NIC1)),
-        model_link(2, &link("b-to-a", NIC1, NIC0)),
-        model_link(
-            3,
-            &link_cfg("loop", "net_null0", "net_null0", special_cfg()),
-        ),
+        model_link(1, &link(NIC0, NIC1)),
+        model_link(2, &link(NIC1, NIC0)),
+        model_link(3, &link_cfg("net_null0", "net_null0", special_cfg())),
     ];
     let dirs = vec![
-        plan_dir(0, "a-to-b", NIC0, NIC1, 7),
-        plan_dir(1, "b-to-a", NIC1, NIC0, 2),
-        plan_dir(2, "loop", "net_null0", "net_null0", 3),
+        plan_dir(0, NIC0, NIC1, 7),
+        plan_dir(1, NIC1, NIC0, 2),
+        plan_dir(2, "net_null0", "net_null0", 3),
     ];
     let mut v = links_file_json(&links, &dirs).unwrap();
     // `delay_stats` is optional and defaults to true: an explicit `true` is the same file
@@ -207,11 +203,11 @@ fn links_file_json_is_v2_one_entry_per_directed_link() {
     assert_eq!(
         v,
         json!({ "links": [
-            { "name": "a-to-b", "ingress": NIC0, "egress": NIC1,
+            { "ingress": NIC0, "egress": NIC1,
               "config": default_cfg.clone(), "lcore": 7 },
-            { "name": "b-to-a", "ingress": NIC1, "egress": NIC0,
+            { "ingress": NIC1, "egress": NIC0,
               "config": default_cfg.clone(), "lcore": 2 },
-            { "name": "loop", "ingress": "net_null0", "egress": "net_null0",
+            { "ingress": "net_null0", "egress": "net_null0",
               "config": serde_json::to_value(special_core()).unwrap(), "lcore": 3 },
         ]})
     );
@@ -224,13 +220,10 @@ fn links_file_json_carries_each_links_initialization_rate_in_its_config() {
     let mut b = cfg_json(1.0e6, 1.0e5);
     b["delayer"]["initialization_rate_pps"] = json!(7.5e6);
     let links = vec![
-        model_link(1, &link_cfg("slow", NIC0, NIC1, a)),
-        model_link(2, &link_cfg("fast", NIC1, NIC0, b)),
+        model_link(1, &link_cfg(NIC0, NIC1, a)),
+        model_link(2, &link_cfg(NIC1, NIC0, b)),
     ];
-    let dirs = vec![
-        plan_dir(0, "slow", NIC0, NIC1, 2),
-        plan_dir(1, "fast", NIC1, NIC0, 3),
-    ];
+    let dirs = vec![plan_dir(0, NIC0, NIC1, 2), plan_dir(1, NIC1, NIC0, 3)];
     let v = links_file_json(&links, &dirs).unwrap();
     assert_eq!(
         v["links"][0]["config"]["delayer"]["initialization_rate_pps"],
@@ -246,8 +239,8 @@ fn links_file_json_carries_each_links_initialization_rate_in_its_config() {
 
 #[test]
 fn links_file_json_has_none_of_the_v1_keys() {
-    let l = vec![model_link(1, &link("a-to-b", NIC0, NIC1))];
-    let d = [plan_dir(0, "a-to-b", NIC0, NIC1, 2)];
+    let l = vec![model_link(1, &link(NIC0, NIC1))];
+    let d = [plan_dir(0, NIC0, NIC1, 2)];
     let v = links_file_json(&l, &d).unwrap();
     for k in [
         "ports",
@@ -257,6 +250,7 @@ fn links_file_json_has_none_of_the_v1_keys() {
         "workers",
         "worker",
         "id",
+        "name",
     ] {
         assert!(
             v["links"][0].get(k).is_none(),
@@ -266,20 +260,17 @@ fn links_file_json_has_none_of_the_v1_keys() {
 }
 
 #[test]
-fn lcores_are_taken_by_link_name_from_the_direction_plan_in_any_order() {
-    // links in one order, plans in another: the lcore is looked up by link name
+fn lcores_are_taken_by_direction_index_from_the_direction_plan_in_any_order() {
+    // links in one order, plans in another: the lcore is looked up by direction index
     let links = vec![
-        model_link(1, &link("first", NIC0, NIC1)),
-        model_link(2, &link("second", NIC1, NIC0)),
+        model_link(1, &link(NIC0, NIC1)),
+        model_link(2, &link(NIC1, NIC0)),
     ];
-    let dirs = vec![
-        plan_dir(1, "second", NIC1, NIC0, 2),
-        plan_dir(0, "first", NIC0, NIC1, 7),
-    ];
+    let dirs = vec![plan_dir(1, NIC1, NIC0, 2), plan_dir(0, NIC0, NIC1, 7)];
     let v = links_file_json(&links, &dirs).unwrap();
-    assert_eq!(v["links"][0]["name"], "first");
+    assert_eq!(v["links"][0]["ingress"], NIC0);
     assert_eq!(v["links"][0]["lcore"], 7);
-    assert_eq!(v["links"][1]["name"], "second");
+    assert_eq!(v["links"][1]["ingress"], NIC1);
     assert_eq!(v["links"][1]["lcore"], 2);
 }
 
@@ -291,14 +282,14 @@ fn links_file_json_histogram_and_delay_stats_only_when_set() {
     let mut bins_only = cfg_json(1.0e6, 1.0e5);
     bins_only["histogram"] = json!({"bins": 100});
     let links = vec![
-        model_link(1, &link("plain", NIC0, NIC1)),
-        model_link(2, &link_cfg("off", NIC1, NIC0, off)),
-        model_link(3, &link_cfg("bins", INTEL, INTEL, bins_only)),
+        model_link(1, &link(NIC0, NIC1)),
+        model_link(2, &link_cfg(NIC1, NIC0, off)),
+        model_link(3, &link_cfg(INTEL, INTEL, bins_only)),
     ];
     let dirs = vec![
-        plan_dir(0, "plain", NIC0, NIC1, 2),
-        plan_dir(1, "off", NIC1, NIC0, 3),
-        plan_dir(2, "bins", INTEL, INTEL, 6),
+        plan_dir(0, NIC0, NIC1, 2),
+        plan_dir(1, NIC1, NIC0, 3),
+        plan_dir(2, INTEL, INTEL, 6),
     ];
     let v = links_file_json(&links, &dirs).unwrap();
     let l = &v["links"];
@@ -323,13 +314,13 @@ fn links_file_json_histogram_and_delay_stats_only_when_set() {
 fn links_file_json_has_no_limit_bit_in_the_limiter_of_a_link() {
     let links = vec![model_link(
         1,
-        &link_cfg("lim", "net_null0", "net_null0", {
+        &link_cfg("net_null0", "net_null0", {
             let mut c = cfg_json(1.0e6, 0.0);
             c["limiter"] = json!({"mode": "TokenBucketFilter", "rate_bps": 2.0e9});
             c
         }),
     )];
-    let d = [plan_dir(0, "lim", "net_null0", "net_null0", 1)];
+    let d = [plan_dir(0, "net_null0", "net_null0", 1)];
     let v = links_file_json(&links, &d).unwrap();
     let text = v.to_string();
     assert!(!text.contains("limit_bit"), "{text}");
@@ -347,9 +338,9 @@ fn links_file_json_has_no_limit_bit_in_the_limiter_of_a_link() {
 fn links_file_json_fails_for_an_invalid_config() {
     let l = model_link(
         1,
-        &link_cfg("bad", "net_null0", "net_null0", cfg_json(1.0e6, -1.0)),
+        &link_cfg("net_null0", "net_null0", cfg_json(1.0e6, -1.0)),
     );
-    let d = [plan_dir(0, "bad", "net_null0", "net_null0", 1)];
+    let d = [plan_dir(0, "net_null0", "net_null0", 1)];
     assert!(links_file_json(&[l], &d).is_err());
 }
 
@@ -381,8 +372,8 @@ fn noop_core() -> Config {
 }
 
 fn file_config(cfg: serde_json::Value) -> serde_json::Value {
-    let l = model_link(1, &link_cfg("l", "net_null0", "net_null0", cfg));
-    let d = [plan_dir(0, "l", "net_null0", "net_null0", 1)];
+    let l = model_link(1, &link_cfg("net_null0", "net_null0", cfg));
+    let d = [plan_dir(0, "net_null0", "net_null0", 1)];
     links_file_json(&[l], &d).unwrap()["links"][0]["config"].clone()
 }
 

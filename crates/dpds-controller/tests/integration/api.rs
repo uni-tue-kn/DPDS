@@ -21,8 +21,8 @@ async fn start_ok(a: &TestApp, links: Vec<Value>) -> Value {
     a.start_ok(links).await
 }
 
-fn one(name: &str, ingress: &str, egress: &str) -> Value {
-    link(name, ingress, egress)
+fn one(ingress: &str, egress: &str) -> Value {
+    link(ingress, egress)
 }
 
 // ---- online / interfaces / hints ----------------------------------------
@@ -83,7 +83,7 @@ async fn host_hints_have_no_mprq_hint_and_never_discuss_devargs() {
 #[tokio::test]
 async fn start_with_a_whole_body_is_a_202_with_the_emulation_view() {
     let a = app();
-    let r = a.start_links(vec![one("a-to-b", NIC0, NIC1)]).await;
+    let r = a.start_links(vec![one(NIC0, NIC1)]).await;
     assert_eq!(r.status, 202, "{}", r.text());
     let v = r.json();
     assert!(
@@ -93,31 +93,11 @@ async fn start_with_a_whole_body_is_a_202_with_the_emulation_view() {
 }
 
 #[tokio::test]
-async fn link_name_validation() {
-    let ok32 = "a".repeat(32);
-    for (i, name) in [ok32.as_str(), "a_b.c-D9"].iter().enumerate() {
-        let a = app();
-        let p = format!("net_null{i}");
-        let r = a.start_links(vec![one(name, &p, &p)]).await;
-        assert_eq!(r.status, 202, "{name}: {}", r.text());
-    }
-    for bad in ["", &"a".repeat(33), "a b", "a/b", "ä", "a,b"] {
-        let a = app();
-        let r = a
-            .start_links(vec![one(bad, "net_null9", "net_null9")])
-            .await;
-        assert_eq!(r.status, 400, "name {bad:?}");
-        r.message();
-        assert!(a.supervisor.plans().is_empty());
-    }
-}
-
-#[tokio::test]
 async fn link_structure_validation() {
     // control: the same shape with valid values is accepted (so the 400s below are about the values)
     assert_eq!(
         app()
-            .start_links(vec![one("x", "net_null0", "net_null1")])
+            .start_links(vec![one("net_null0", "net_null1")])
             .await
             .status,
         202
@@ -127,31 +107,35 @@ async fn link_structure_validation() {
     let cases = [
         (
             "empty ingress",
-            json!({"name":"x","ingress":"","egress":"net_null0","config":cfg()}),
+            json!({"ingress":"","egress":"net_null0","config":cfg()}),
         ),
         (
             "empty egress",
-            json!({"name":"x","ingress":"net_null0","egress":"","config":cfg()}),
+            json!({"ingress":"net_null0","egress":"","config":cfg()}),
         ),
         (
             "bad ingress",
-            json!({"name":"x","ingress":"eth0","egress":"net_null0","config":cfg()}),
+            json!({"ingress":"eth0","egress":"net_null0","config":cfg()}),
         ),
         (
             "bad egress",
-            json!({"name":"x","ingress":"net_null0","egress":"0000:65:00","config":cfg()}),
+            json!({"ingress":"net_null0","egress":"0000:65:00","config":cfg()}),
         ),
         (
             "pcap vdev as egress",
-            json!({"name":"x","ingress":"net_null0","egress":"net_pcap0","config":cfg()}),
+            json!({"ingress":"net_null0","egress":"net_pcap0","config":cfg()}),
         ),
         (
             "vdev with devargs as ingress",
-            json!({"name":"x","ingress":"net_null0,size=64","egress":"net_null1","config":cfg()}),
+            json!({"ingress":"net_null0,size=64","egress":"net_null1","config":cfg()}),
+        ),
+        (
+            "link name",
+            json!({"name":"x","ingress":"net_null0","egress":"net_null1","config":cfg()}),
         ),
         (
             "invalid config",
-            json!({"name":"x","ingress":"net_null0","egress":"net_null1","config":cfg_json(1e6,-1.0)}),
+            json!({"ingress":"net_null0","egress":"net_null1","config":cfg_json(1e6,-1.0)}),
         ),
     ];
     for (what, l) in cases {
@@ -160,6 +144,8 @@ async fn link_structure_validation() {
         let m = r.message();
         match what {
             "invalid config" => assert!(m.contains("std_ns"), "{m}"),
+            // links have no name: an unknown field
+            "link name" => assert!(m.contains("name"), "{m}"),
             "empty ingress" | "bad ingress" => assert!(m.to_lowercase().contains("port"), "{m}"),
             _ => {}
         }
@@ -176,8 +162,8 @@ async fn the_paired_link_shape_is_refused() {
     let a = app();
     let cfg = cfg_json(1e6, 0.0);
     let cases = [
-        json!({"name":"x","ports":["net_null0","net_null1"],"configs":[cfg.clone(),cfg.clone()]}),
-        json!({"name":"x","ports":["net_null0"],"configs":[cfg.clone()],"workers":[2]}),
+        json!({"ports":["net_null0","net_null1"],"configs":[cfg.clone(),cfg.clone()]}),
+        json!({"ports":["net_null0"],"configs":[cfg.clone()],"workers":[2]}),
     ];
     for l in cases {
         let r = a.start_links(vec![l.clone()]).await;
@@ -192,13 +178,13 @@ async fn incomplete_directed_links_are_refused() {
     let a = app();
     let cfg = cfg_json(1e6, 0.0);
     let cases = [
-        json!({"name":"x","egress":"net_null1","config":cfg.clone()}),
-        json!({"name":"x","ingress":"net_null1","config":cfg.clone()}),
-        json!({"name":"x","ingress":"net_null0","egress":"net_null1"}),
-        json!({"name":"x","ingress":"net_null0","egress":"net_null1","config":cfg.clone(),"worker":"two"}),
-        json!({"name":"x","ingress":"net_null0","egress":"net_null1","config":cfg.clone(),"worker":[2]}),
-        json!({"name":"x","ingress":["net_null0"],"egress":"net_null1","config":cfg.clone()}),
-        json!({"name":"x","ingress":"net_null0","egress":"net_null1","config":cfg.clone(),"worker":-1}),
+        json!({"egress":"net_null1","config":cfg.clone()}),
+        json!({"ingress":"net_null1","config":cfg.clone()}),
+        json!({"ingress":"net_null0","egress":"net_null1"}),
+        json!({"ingress":"net_null0","egress":"net_null1","config":cfg.clone(),"worker":"two"}),
+        json!({"ingress":"net_null0","egress":"net_null1","config":cfg.clone(),"worker":[2]}),
+        json!({"ingress":["net_null0"],"egress":"net_null1","config":cfg.clone()}),
+        json!({"ingress":"net_null0","egress":"net_null1","config":cfg.clone(),"worker":-1}),
     ];
     for l in cases {
         let r = a.start_links(vec![l.clone()]).await;
@@ -218,7 +204,7 @@ async fn a_link_in_the_body_has_no_id_and_no_other_extras() {
         ("comment", json!("x")),
         ("lcore", json!(2)),
     ] {
-        let mut l = one("x", "net_null0", "net_null0");
+        let mut l = one("net_null0", "net_null0");
         l[extra] = value;
         let r = a.start_links(vec![l]).await;
         assert_eq!(r.status, 400, "{extra}: {}", r.text());
@@ -230,7 +216,7 @@ async fn a_link_in_the_body_has_no_id_and_no_other_extras() {
 #[tokio::test]
 async fn the_body_denies_unknown_fields_at_the_top_level() {
     let a = app();
-    let base = || setup(vec![one("x", "net_null0", "net_null0")]).body();
+    let base = || setup(vec![one("net_null0", "net_null0")]).body();
     for key in [
         "presets",
         "version",
@@ -279,7 +265,7 @@ async fn malformed_bodies_get_a_json_message() {
         .await;
     assert_eq!(r.status, 400, "{}", r.status);
     r.message();
-    let mut l = one("x", "net_null0", "net_null0");
+    let mut l = one("net_null0", "net_null0");
     l["config"]["delayer"]["distribution"] = json!("Bogus");
     let r = a.start_links(vec![l]).await;
     assert_eq!(r.status, 400, "{}", r.status);
@@ -288,31 +274,15 @@ async fn malformed_bodies_get_a_json_message() {
 }
 
 #[tokio::test]
-async fn duplicate_link_names_in_a_body_are_a_409() {
-    let a = app();
-    let r = a
-        .start_links(vec![
-            one("a", NIC0, NIC1),
-            one("a", "net_null0", "net_null1"),
-        ])
-        .await;
-    assert_eq!(r.status, 409, "{}", r.text());
-    r.message();
-    assert!(a.supervisor.plans().is_empty());
-}
-
-#[tokio::test]
 async fn a_port_reused_as_ingress_is_a_409_naming_the_other_link_and_the_port() {
     let a = app();
-    // NIC0 is already the ingress of `first`; the egress differs
-    let r = a
-        .start_links(vec![one("first", NIC0, NIC1), one("second", NIC0, INTEL)])
-        .await;
+    // NIC0 is already the ingress of the first link; the egress differs
+    let r = a.start_links(vec![one(NIC0, NIC1), one(NIC0, INTEL)]).await;
     assert_eq!(r.status, 409, "{}", r.text());
     let m = r.message();
     assert!(
-        m.contains("first"),
-        "the message must name the other link: {m}"
+        m.contains(&format!("link {NIC0} -> {NIC1}")),
+        "the message must name the other link by its ports: {m}"
     );
     assert!(m.contains(NIC0), "the message must name the port: {m}");
     assert!(a.supervisor.plans().is_empty());
@@ -321,14 +291,12 @@ async fn a_port_reused_as_ingress_is_a_409_naming_the_other_link_and_the_port() 
 #[tokio::test]
 async fn a_port_reused_as_egress_is_a_409_naming_the_other_link_and_the_port() {
     let a = app();
-    let r = a
-        .start_links(vec![one("first", NIC0, NIC1), one("second", INTEL, NIC1)])
-        .await;
+    let r = a.start_links(vec![one(NIC0, NIC1), one(INTEL, NIC1)]).await;
     assert_eq!(r.status, 409, "{}", r.text());
     let m = r.message();
     assert!(
-        m.contains("first"),
-        "the message must name the other link: {m}"
+        m.contains(&format!("link {NIC0} -> {NIC1}")),
+        "the message must name the other link by its ports: {m}"
     );
     assert!(m.contains(NIC1), "the message must name the port: {m}");
     assert!(a.supervisor.plans().is_empty());
@@ -336,24 +304,21 @@ async fn a_port_reused_as_egress_is_a_409_naming_the_other_link_and_the_port() {
 
 #[tokio::test]
 async fn a_hairpin_conflicts_like_any_other_link() {
-    // net_null0 is taken as ingress and as egress by `loop`
-    for other in [
-        one("x", "net_null0", "net_null1"),
-        one("y", "net_null1", "net_null0"),
-    ] {
+    // net_null0 is taken as ingress and as egress by the first link
+    for other in [one("net_null0", "net_null1"), one("net_null1", "net_null0")] {
         let a = app();
         let r = a
-            .start_links(vec![one("loop", "net_null0", "net_null0"), other])
+            .start_links(vec![one("net_null0", "net_null0"), other])
             .await;
         assert_eq!(r.status, 409, "{}", r.text());
-        assert!(r.message().contains("loop"));
+        assert!(r.message().contains("link net_null0 -> net_null0"));
     }
     // a different port is fine
     let a = app();
     let r = a
         .start_links(vec![
-            one("loop", "net_null0", "net_null0"),
-            one("z", "net_null1", "net_null1"),
+            one("net_null0", "net_null0"),
+            one("net_null1", "net_null1"),
         ])
         .await;
     assert_eq!(r.status, 202, "{}", r.text());
@@ -364,11 +329,7 @@ async fn a_port_may_be_ingress_of_one_link_and_egress_of_another() {
     let a = app();
     // the classic bidirectional pair is simply two links, and INTEL is free for a hairpin
     let r = a
-        .start_links(vec![
-            one("a-to-b", NIC0, NIC1),
-            one("b-to-a", NIC1, NIC0),
-            one("c", INTEL, INTEL),
-        ])
+        .start_links(vec![one(NIC0, NIC1), one(NIC1, NIC0), one(INTEL, INTEL)])
         .await;
     assert_eq!(r.status, 202, "{}", r.text());
 }
@@ -376,7 +337,7 @@ async fn a_port_may_be_ingress_of_one_link_and_egress_of_another() {
 #[tokio::test]
 async fn a_hairpin_link_is_accepted_and_reported() {
     let a = app();
-    let r = a.start_links(vec![one("loop", NIC0, NIC0)]).await;
+    let r = a.start_links(vec![one(NIC0, NIC0)]).await;
     assert_eq!(r.status, 202, "{}", r.text());
     let v = a.get("/api/emulation").await.json();
     assert_eq!(v["config"]["links"][0]["ingress"], NIC0, "{v}");
@@ -386,29 +347,24 @@ async fn a_hairpin_link_is_accepted_and_reported() {
 #[tokio::test]
 async fn a_three_link_ring_is_accepted_in_body_order() {
     let a = app();
-    let ring = [
-        ("a-to-b", NIC0, NIC1),
-        ("b-to-c", NIC1, INTEL),
-        ("c-to-a", INTEL, NIC0),
-    ];
-    a.start_ok(ring.iter().map(|(n, i, e)| one(n, i, e)).collect())
+    let ring = [(NIC0, NIC1), (NIC1, INTEL), (INTEL, NIC0)];
+    a.start_ok(ring.iter().map(|(i, e)| one(i, e)).collect())
         .await;
     let v = a.get("/api/emulation").await.json();
-    let got: Vec<(String, String, String)> = v["config"]["links"]
+    let got: Vec<(String, String)> = v["config"]["links"]
         .as_array()
         .unwrap()
         .iter()
         .map(|l| {
             (
-                l["name"].as_str().unwrap().into(),
                 l["ingress"].as_str().unwrap().into(),
                 l["egress"].as_str().unwrap().into(),
             )
         })
         .collect();
-    let want: Vec<(String, String, String)> = ring
+    let want: Vec<(String, String)> = ring
         .iter()
-        .map(|(n, i, e)| (n.to_string(), i.to_string(), e.to_string()))
+        .map(|(i, e)| (i.to_string(), e.to_string()))
         .collect();
     assert_eq!(got, want);
 }
@@ -435,13 +391,9 @@ async fn emulation_when_stopped_and_empty() {
 #[tokio::test]
 async fn start_hands_the_supervisor_a_complete_launch_plan() {
     let a = app();
-    let mut b = one("b-to-a", NIC1, NIC0);
+    let mut b = one(NIC1, NIC0);
     b["config"] = cfg_json(2.0e6, 1.0e5);
-    let links = vec![
-        one("a-to-b", NIC0, NIC1),
-        b,
-        one("loop", "net_null0", "net_null0"),
-    ];
+    let links = vec![one(NIC0, NIC1), b, one("net_null0", "net_null0")];
 
     let v = start_ok(&a, links.clone()).await;
     assert!(
@@ -473,9 +425,15 @@ async fn start_hands_the_supervisor_a_complete_launch_plan() {
     assert_eq!(
         plan.directions
             .iter()
-            .map(|d| d.link.as_str())
+            .map(|d| (d.rx.as_str(), d.tx.as_str()))
             .collect::<Vec<_>>(),
-        ["a-to-b", "b-to-a", "loop"]
+        links
+            .iter()
+            .map(|l| (
+                l["ingress"].as_str().unwrap(),
+                l["egress"].as_str().unwrap()
+            ))
+            .collect::<Vec<_>>()
     );
     assert_eq!(
         plan.directions.iter().map(|d| d.dir).collect::<Vec<_>>(),
@@ -558,11 +516,7 @@ async fn a_three_link_ring_plans_three_workers_and_three_ports_once() {
     let a = app();
     start_ok(
         &a,
-        vec![
-            one("a-to-b", NIC0, NIC1),
-            one("b-to-c", NIC1, INTEL),
-            one("c-to-a", INTEL, NIC0),
-        ],
+        vec![one(NIC0, NIC1), one(NIC1, INTEL), one(INTEL, NIC0)],
     )
     .await;
     let plan = &a.supervisor.plans()[0];
@@ -598,7 +552,7 @@ async fn a_three_link_ring_plans_three_workers_and_three_ports_once() {
 #[tokio::test]
 async fn a_hairpin_is_one_port_one_worker() {
     let a = app();
-    start_ok(&a, vec![one("loop", "net_null0", "net_null0")]).await;
+    start_ok(&a, vec![one("net_null0", "net_null0")]).await;
     let plan = &a.supervisor.plans()[0];
     assert_eq!(plan.directions.len(), 1);
     assert_eq!(
@@ -619,7 +573,7 @@ async fn a_hairpin_is_one_port_one_worker() {
 #[tokio::test]
 async fn the_devargs_stay_fixed_and_the_main_lcore_is_automatic() {
     let a = app();
-    let r = a.start(&setup(vec![one("l", NIC0, NIC0)])).await;
+    let r = a.start(&setup(vec![one(NIC0, NIC0)])).await;
     assert_eq!(r.status, 202, "{}", r.text());
     let plan = &a.supervisor.plans()[0];
     assert_eq!(plan.main_lcore, 0);
@@ -630,7 +584,7 @@ async fn the_devargs_stay_fixed_and_the_main_lcore_is_automatic() {
 #[tokio::test]
 async fn start_stop_state_transitions() {
     let a = app();
-    start_ok(&a, vec![one("loop", "net_null0", "net_null0")]).await;
+    start_ok(&a, vec![one("net_null0", "net_null0")]).await;
 
     let v = a.get("/api/emulation").await.json();
     assert_eq!(v["state"], "running");
@@ -641,9 +595,7 @@ async fn start_stop_state_transitions() {
     assert!(!v["log_tail"].as_array().unwrap().is_empty());
 
     // can't start twice, not even with the same body
-    let r = a
-        .start_links(vec![one("loop", "net_null0", "net_null0")])
-        .await;
+    let r = a.start_links(vec![one("net_null0", "net_null0")]).await;
     assert_eq!(r.status, 409);
     r.message();
     assert_eq!(a.supervisor.plans().len(), 1);
@@ -665,9 +617,7 @@ async fn start_is_refused_while_starting_or_stopping() {
     let a = app();
     for s in [State::Starting, State::Stopping] {
         a.supervisor.force_status(status(s));
-        let r = a
-            .start_links(vec![one("loop", "net_null0", "net_null0")])
-            .await;
+        let r = a.start_links(vec![one("net_null0", "net_null0")]).await;
         assert_eq!(r.status, 409, "{s:?}");
     }
     assert!(a.supervisor.plans().is_empty());
@@ -682,9 +632,7 @@ async fn failed_start_is_reported_with_error_and_log_tail_and_can_be_retried() {
         "dpds exited with status 1",
         &["EAL: Error", "dpds: cannot create mbuf pool"],
     );
-    let r = a
-        .start_links(vec![one("loop", "net_null0", "net_null0")])
-        .await;
+    let r = a.start_links(vec![one("net_null0", "net_null0")]).await;
     assert_eq!(r.status, 202);
 
     let v = a.get("/api/emulation").await.json();
@@ -697,7 +645,7 @@ async fn failed_start_is_reported_with_error_and_log_tail_and_can_be_retried() {
     assert!(absent(&v, "pid"));
 
     // retry from failed, with a body again
-    start_ok(&a, vec![one("loop", "net_null0", "net_null0")]).await;
+    start_ok(&a, vec![one("net_null0", "net_null0")]).await;
     assert_eq!(a.get("/api/emulation").await.json()["state"], "running");
     assert_eq!(a.supervisor.plans().len(), 2);
 }
@@ -708,7 +656,7 @@ async fn start_with_not_enough_isolated_cores_is_a_400_and_does_not_spawn() {
     let links = (0..5)
         .map(|i| {
             let p = format!("net_null{i}");
-            one(&format!("l{i}"), &p, &p)
+            one(&p, &p)
         })
         .collect();
     let r = a.start_links(links).await;
@@ -729,7 +677,7 @@ async fn start_without_the_telemetry_build_of_dpds_is_a_400() {
         dpds_has_telemetry: false,
         is_root: false,
     });
-    let body = setup(vec![one("l", "net_null0", "net_null0")]).body();
+    let body = setup(vec![one("net_null0", "net_null0")]).body();
     let r = call(&router, "POST", "/api/emulation/start", Some(body)).await;
     assert_eq!(r.status, 400, "{}", r.text());
     assert!(r.message().contains("telemetry"), "{}", r.text());
@@ -803,8 +751,8 @@ async fn stats_serve_the_computed_view_of_the_cached_snapshots() {
     assert_close(f(&v["directions"][0], "rx_pps"), 4000.0);
     assert_close(f(&v["directions"][0], "rx_bps"), 4000.0 * 100.0 * 8.0);
     assert!(v.get("ports").is_none(), "{v}");
-    assert_eq!(v["directions"][0]["link"], "a-to-b");
-    assert_eq!(v["directions"][1]["link"], "b-to-a");
+    // links have no name: a direction is identified by its index
+    assert!(v["directions"][0].get("link").is_none(), "{v}");
 }
 
 #[tokio::test]

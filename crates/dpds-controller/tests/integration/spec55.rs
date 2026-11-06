@@ -111,7 +111,7 @@ async fn post_ok(a: &TestApp, query: &str, s: &Setup) -> Value {
 }
 
 fn link_on(pci: &str) -> Setup {
-    setup(vec![link("l", pci, pci)])
+    setup(vec![link(pci, pci)])
 }
 
 fn detail(h: &Value, id: &str) -> String {
@@ -429,7 +429,7 @@ async fn post_uses_the_warm_cache_and_runs_no_firmware_query() {
     let (a, exec, _) = warm_app();
     get_ok(&a, "").await;
     let fw = nic_id("firmware", NIC0);
-    for s in [link_on(NIC0), setup(vec![link("l", NIC0, NIC1)])] {
+    for s in [link_on(NIC0), setup(vec![link(NIC0, NIC1)])] {
         let h = post_ok(&a, "", &s).await;
         assert_eq!(
             (mst(&exec, BDF0), mst(&exec, NIC1)),

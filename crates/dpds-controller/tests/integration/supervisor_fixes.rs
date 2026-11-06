@@ -41,7 +41,7 @@ fn plan(bin: PathBuf, runtime_dir: &Path) -> LaunchPlan {
         dpds_bin: bin,
         runtime_dir: runtime_dir.to_path_buf(),
         links_file: links_file.clone(),
-        links_json: json!({"links":[{"name":"l","ingress":"net_null0","egress":"net_null0","config":{},"lcore":1}]}),
+        links_json: json!({"links":[{"ingress":"net_null0","egress":"net_null0","config":{},"lcore":1}]}),
         argv: vec![
             "--".into(),
             "--links".into(),
@@ -49,7 +49,6 @@ fn plan(bin: PathBuf, runtime_dir: &Path) -> LaunchPlan {
         ],
         directions: vec![DirectionPlan {
             dir: 0,
-            link: "l".into(),
             rx: "net_null0".into(),
             tx: "net_null0".into(),
             lcore: 1,
@@ -62,7 +61,7 @@ fn plan(bin: PathBuf, runtime_dir: &Path) -> LaunchPlan {
 fn ports_reply(cmd: &str) -> Option<Value> {
     (cmd == "/dpds/ports").then(|| {
         json!({"num_ports": 1, "num_links": 1, "num_directions": 1,
-               "port0_name": "net_null0", "dir0_link": "l", "dir0_rx_name": "net_null0",
+               "port0_name": "net_null0", "dir0_rx_name": "net_null0",
                "dir0_tx_name": "net_null0", "dir0_rx_port": 0, "dir0_tx_port": 0,
                "dir0_lcore": 1})
     })

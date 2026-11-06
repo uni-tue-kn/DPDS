@@ -1,5 +1,5 @@
 // Tables of invalid and edge-case links for the stored-document and import checks (localStore.test.ts). A link is valid only if the
-// link form would accept it unchanged (name rule, non-empty ports, a config that survives the form round trip, optional frame size).
+// link form would accept it unchanged (non-empty ports, a config that survives the form round trip, optional frame size).
 // Each entry is a whole link, built on `fx.link()`.
 import * as fx from './fixtures';
 
@@ -55,10 +55,6 @@ export const INVALID_LINKS: InvalidLink[] = [
     problem: /rate/i,
   },
   { label: 'a fractional seed', link: withConfig({ seed: 1.5 }), problem: /seed/i },
-  { label: 'an empty name', link: link({ name: '' }), problem: /name/i },
-  { label: 'a name with a space', link: link({ name: 'has space' }), problem: /name/i },
-  { label: 'a name of 33 characters', link: link({ name: 'x'.repeat(33) }), problem: /name/i },
-  { label: 'a name with a non-ASCII letter', link: link({ name: 'ä-b' }), problem: /name/i },
   { label: 'an empty ingress', link: link({ ingress: '' }), problem: /ingress/i },
   { label: 'an empty egress', link: link({ egress: '' }), problem: /egress/i },
   { label: 'a frame size below 64', link: link({ avg_frame_size_byte: 63 }), problem: /frame/i },
@@ -69,8 +65,6 @@ export const INVALID_LINKS: InvalidLink[] = [
 export const EDGE_LINKS: [string, Loose][] = [
   ['frame size 64', link({ avg_frame_size_byte: 64 })],
   ['frame size null', link({ avg_frame_size_byte: null })],
-  ['a name of 32 characters', link({ name: 'x'.repeat(32) })],
-  ['a name with . - _ and digits', link({ name: 'A-z_0.9' })],
   ['a config without stages', link({ config: fx.configBare() })],
   ['config2 (every stage, Gilbert-Elliott, histogram)', link({ config: fx.config2() })],
   ['config3', link({ config: fx.config3() })],

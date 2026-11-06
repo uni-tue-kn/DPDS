@@ -34,7 +34,7 @@ use crate::hints::{
 };
 use crate::host::HostRoots;
 use crate::lcores::{assign_lcores, DirectionPlan};
-use crate::model::{Link, RunConfig, StartLink, StartRequest, MAX_NAME_CHARS};
+use crate::model::{Link, RunConfig, StartLink, StartRequest};
 use crate::nic_hints::FirmwareCache;
 use crate::sessions::SessionTracker;
 use crate::stats::{
@@ -250,29 +250,11 @@ pub struct PlanView {
 
 // ---- helpers -----------------------------------------------------------------
 
-fn valid_name(n: &str) -> bool {
-    !n.is_empty()
-        && n.len() <= MAX_NAME_CHARS
-        && n.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
-}
-
-/// The link-name rule shared by every path that accepts or launches links.
-fn check_link_name(name: &str) -> Result<(), ApiError> {
-    if valid_name(name) {
-        Ok(())
-    } else {
-        Err(ApiError::bad(format!(
-            "link name {name:?} is invalid: a link name must be 1 to {MAX_NAME_CHARS} characters of A-Z a-z 0-9 _ . -"
-        )))
-    }
-}
-
 /// Most keys of the `/dpds/ports` telemetry dict of `dpds` (DPDK's
 /// `RTE_TEL_MAX_DICT_ENTRIES`).
 const MAX_TELEMETRY_DICT_ENTRIES: usize = 256;
 
-/// `dpds` publishes `3 + 5 * distinct ports + 10 * links` keys in one telemetry dict and
+/// `dpds` publishes `3 + 5 * distinct ports + 9 * links` keys in one telemetry dict and
 /// refuses to start above 256: refuse such a setup here, before it is launched.
 fn check_dict_limit(links: &[Link]) -> Result<(), ApiError> {
     let mut ports: Vec<&str> = Vec::new();
@@ -284,10 +266,10 @@ fn check_dict_limit(links: &[Link]) -> Result<(), ApiError> {
             }
         }
     }
-    let entries = 3 + 5 * ports.len() + 10 * count;
+    let entries = 3 + 5 * ports.len() + 9 * count;
     if entries > MAX_TELEMETRY_DICT_ENTRIES {
         return Err(ApiError::bad(format!(
-            "{count} links over {} ports need {entries} telemetry entries (3 + 5 per port + 10 per link), more than the limit of {MAX_TELEMETRY_DICT_ENTRIES} of dpds",
+            "{count} links over {} ports need {entries} telemetry entries (3 + 5 per port + 9 per link), more than the limit of {MAX_TELEMETRY_DICT_ENTRIES} of dpds",
             ports.len()
         )));
     }
@@ -296,18 +278,11 @@ fn check_dict_limit(links: &[Link]) -> Result<(), ApiError> {
 
 /// Validates a link of the configuration against the links before it.
 fn validate_link(l: &Link, before: &[Link]) -> Result<(), ApiError> {
-    check_link_name(&l.name)?;
     validate::port_name(&l.ingress).map_err(ApiError::bad)?;
     validate::port_name(&l.egress).map_err(ApiError::bad)?;
     l.config
         .to_core()
         .map_err(|e| ApiError::bad(format!("config: {e}")))?;
-    if let Some(o) = before.iter().find(|o| o.name == l.name) {
-        return Err(ApiError::conflict(format!(
-            "a link named {} already exists",
-            o.name
-        )));
-    }
     check_ports_free(l, before)
 }
 
@@ -316,14 +291,18 @@ fn check_ports_free(l: &Link, others: &[Link]) -> Result<(), ApiError> {
     for o in others {
         if o.ingress == l.ingress {
             return Err(ApiError::conflict(format!(
-                "port {} is already the ingress of link {} (link {})",
-                l.ingress, o.name, l.name
+                "port {} is already the ingress of {} ({})",
+                l.ingress,
+                o.label(),
+                l.label()
             )));
         }
         if o.egress == l.egress {
             return Err(ApiError::conflict(format!(
-                "port {} is already the egress of link {} (link {})",
-                l.egress, o.name, l.name
+                "port {} is already the egress of {} ({})",
+                l.egress,
+                o.label(),
+                l.label()
             )));
         }
     }
@@ -415,8 +394,8 @@ impl App {
             let found = find(&interfaces, port);
             if let Some(i) = found.filter(|i| i.uplink) {
                 return Err(ApiError::conflict(format!(
-                    "link {}: port {port} cannot be used: {}",
-                    link.name,
+                    "{}: port {port} cannot be used: {}",
+                    link.label(),
                     i.reason.as_deref().unwrap_or("it is a host uplink")
                 )));
             }
@@ -480,11 +459,11 @@ fn check_hugepages(roots: &HostRoots, config: &RunConfig) -> Result<(), ApiError
     };
     Err(ApiError::bad(format!(
         "the links need about {} of hugepage memory for their mbuf pools, but only {} are free; \
-         link \"{}\" needs about {} (buffer capacity {} packets). \
+         {} needs about {} (buffer capacity {} packets). \
          Lower its buffer capacity or reserve more hugepages.",
         mib(need),
         mib(free),
-        link.name,
+        link.label(),
         mib(*n),
         link.config.buffer_capacity
     )))
@@ -570,7 +549,7 @@ fn compute_host_hints(app: &App, recheck: bool) -> Vec<Hint> {
 }
 
 /// The host hints plus the ones that depend on the links of a configuration. The body is
-/// validated like the start body (400 naming the field, 409 for a duplicate link name or a reused
+/// validated like the start body (400 naming the field, 409 for a reused
 /// port; links may be empty, which gives the host hints), but nothing is planned, started or
 /// kept, so a port the host uses is a hint, not a 409. Hints suggest root commands for an
 /// administrator; DPDS runs none of them. The firmware query of a NIC is cached until the controller
@@ -688,7 +667,6 @@ async fn start(
             .links
             .iter()
             .map(|l| HistoryLink {
-                name: l.name.clone(),
                 ingress: l.ingress.clone(),
                 egress: l.egress.clone(),
             })

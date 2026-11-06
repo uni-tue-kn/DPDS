@@ -7,15 +7,15 @@ import { pendingRestart } from '../common/pendingRestart';
 import LoadRunning from './LoadRunning';
 import InfoBox from '../components/InfoBox';
 import PageTitle from '../components/PageTitle';
-import { errorMessage } from '../common/format';
+import { errorMessage, linkLabel } from '../common/format';
 import { useToast } from '../common/toast';
+import { labelerOf } from '../common/portLabel';
 import { useLoad } from '../common/useLoad';
 import HistogramModal from './HistogramModal';
 import LinkSettingsModal from './LinkSettingsModal';
 import { HELP } from './fieldHelp';
-import { addedRow, copiedRow, copyName, draftLinks, portUsers, rowsOf } from './linkDraft';
+import { addedRow, copiedRow, draftLinks, portUsers, rowsOf } from './linkDraft';
 import type { DraftRow, Role } from './linkDraft';
-import { rowSummary } from './linkSummary';
 import type { Interface, Link } from '../api/types';
 
 function readText(file: File): Promise<string> {
@@ -48,15 +48,17 @@ function downloadLinks() {
   setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
-const COLUMNS = ['#', 'Name', 'Ingress', 'Egress', 'Buffer', 'Delay', 'Limiter', 'Loss', 'Histogram', 'Options'];
+const COLUMNS = ['RX port', 'TX port', 'Histogram', 'Settings', 'Options'];
 /** The columns whose heading has an info button. */
-const HEAD_HELP: Record<string, keyof typeof HELP> = { Name: 'Link name', Ingress: 'Ingress', Egress: 'Egress' };
+const HEAD_HELP: Record<string, keyof typeof HELP> = { 'RX port': 'Ingress', 'TX port': 'Egress' };
 
-function optionLabel(i: Interface, usedBy: string | undefined, role: Role): string {
+const portName = (role: Role) => (role === 'ingress' ? 'RX port' : 'TX port');
+
+function optionLabel(i: Interface, used: boolean, role: Role): string {
   const base = i.netdev ?? i.pci;
   const reasons: string[] = [];
   if (!i.dpds_usable || i.uplink) reasons.push(i.reason ?? (i.uplink ? 'uplink' : 'not usable'));
-  if (usedBy !== undefined) reasons.push(`already used as ${role} by ${usedBy}`);
+  if (used) reasons.push(`already used as ${portName(role)} by another link`);
   return reasons.length === 0 ? base : `${base} - ${reasons.join('; ')}`;
 }
 
@@ -73,30 +75,22 @@ function PortSelect({
   n: number;
   value: string;
   interfaces: Interface[];
-  users: Map<string, string>;
+  users: Set<string>;
   onChange: (v: string) => void;
 }) {
   // A stored port that is not a discovered interface (e.g. a vdev) stays selectable as its own option.
   const unknown = value !== '' && !interfaces.some((i) => i.pci === value);
   return (
-    <Form.Select
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      aria-label={`${role === 'ingress' ? 'Ingress' : 'Egress'} of link ${n}`}
-    >
+    <Form.Select value={value} onChange={(e) => onChange(e.target.value)} aria-label={`${portName(role)} of link ${n}`}>
       <option value="">Select a port...</option>
       {unknown && <option value={value}>{value}</option>}
       {interfaces.map((i) => (
         <option key={i.pci} value={i.pci} disabled={!i.dpds_usable || i.uplink || users.has(i.pci)}>
-          {optionLabel(i, users.get(i.pci), role)}
+          {optionLabel(i, users.has(i.pci), role)}
         </option>
       ))}
     </Form.Select>
   );
-}
-
-function SummaryCell({ text }: { text: string | null }) {
-  return <td>{text ?? <span className="text-danger">invalid</span>}</td>;
 }
 
 type Open = { kind: 'link' | 'histogram'; key: number };
@@ -106,6 +100,7 @@ export default function Settings() {
   const emulation = useLoad(api.getEmulation);
   const interfaces = useLoad(api.getInterfaces);
   const showToast = useToast();
+  const label = labelerOf(interfaces.data);
   // The draft: the stored links, edited here and stored only by Save. Save, Reset and Import replace it explicitly; a
   // change of the store by something else (another tab, Load running configuration) replaces it only while it is clean.
   const [rows, setRows] = useState<DraftRow[]>(() => rowsOf(doc.links));
@@ -134,14 +129,12 @@ export default function Settings() {
   const pending = pendingRestart(doc, emulation.data);
   const update = (key: number, patch: Partial<DraftRow>) =>
     setRows((rs) => rs.map((r) => (r.key === key ? { ...r, ...patch } : r)));
-  const modalAt = open === null ? -1 : rows.findIndex((r) => r.key === open.key);
-  const modalRow = modalAt < 0 ? undefined : rows[modalAt];
-  const modalName = modalRow?.name.trim() ? `: ${modalRow.name.trim()}` : '';
+  const modalRow = open === null ? undefined : rows.find((r) => r.key === open.key);
+  const modalPorts = modalRow?.ingress && modalRow.egress ? linkLabel(modalRow.ingress, modalRow.egress, label) : null;
 
   const duplicate = (at: number) => {
-    const copy = copyName(rows[at].name, rows);
-    setRows([...rows.slice(0, at + 1), copiedRow(rows[at], copy), ...rows.slice(at + 1)]);
-    showToast(`Cloned "${rows[at].name}" to "${copy}"`, 'success');
+    setRows([...rows.slice(0, at + 1), copiedRow(rows[at]), ...rows.slice(at + 1)]);
+    showToast('Link duplicated.', 'success');
   };
 
   const save = () => {
@@ -251,23 +244,8 @@ export default function Settings() {
         <tbody>
           {rows.map((r, at) => {
             const n = at + 1;
-            const s = rowSummary(r.config);
             return (
               <tr key={r.key}>
-                <td>{n}</td>
-                <td>
-                  <Form.Control
-                    type="text"
-                    value={r.name}
-                    aria-label={`Name of link ${n}`}
-                    onChange={(e) => update(r.key, { name: e.target.value })}
-                  />
-                  {pending.links.has(r.name) && (
-                    <Badge pill bg="warning" text="dark" className="mt-1" data-testid="link-pending-restart">
-                      pending restart
-                    </Badge>
-                  )}
-                </td>
                 {(['ingress', 'egress'] as const).map((role) => (
                   <td key={role}>
                     <PortSelect
@@ -278,33 +256,35 @@ export default function Settings() {
                       users={portUsers(rows, r.key, role)}
                       onChange={(v) => update(r.key, { [role]: v })}
                     />
+                    {role === 'ingress' && pending.links.has(r.ingress) && (
+                      <Badge pill bg="warning" text="dark" className="mt-1" data-testid="link-pending-restart">
+                        pending restart
+                      </Badge>
+                    )}
                   </td>
                 ))}
-                <SummaryCell text={s.buffer} />
-                <SummaryCell text={s.delay} />
-                <SummaryCell text={s.limiter} />
-                <SummaryCell text={s.loss} />
                 <td>
                   <button
                     type="button"
-                    className="btn btn-config border-0 p-0 me-2"
+                    className="btn btn-config border-0 p-0"
                     aria-label={`Histogram of link ${n}`}
                     onClick={() => setOpen({ kind: 'histogram', key: r.key })}
                   >
                     <i className="bi bi-bar-chart-line-fill" aria-hidden="true" />
                   </button>
-                  {s.histogram ?? <span className="text-danger">invalid</span>}
+                </td>
+                <td>
+                  <button
+                    type="button"
+                    className="btn btn-config border-0 p-0"
+                    aria-label={`Settings of link ${n}`}
+                    onClick={() => setOpen({ kind: 'link', key: r.key })}
+                  >
+                    <i className="bi bi-gear-wide-connected" aria-hidden="true" />
+                  </button>
                 </td>
                 <td>
                   <div className="d-flex align-items-center justify-content-end gap-2">
-                    <Button
-                      size="sm"
-                      variant="outline-secondary"
-                      aria-label={`Settings of link ${n}`}
-                      onClick={() => setOpen({ kind: 'link', key: r.key })}
-                    >
-                      <i className="bi bi-sliders" aria-hidden="true" />
-                    </Button>
                     <Button
                       size="sm"
                       variant="outline-secondary"
@@ -335,7 +315,7 @@ export default function Settings() {
       </Table>
       <Row className="mb-3">
         <Col className="text-start">
-          <Button variant="primary" disabled={corrupt} onClick={() => setRows([...rows, addedRow(rows)])}>
+          <Button variant="primary" disabled={corrupt} onClick={() => setRows([...rows, addedRow()])}>
             <i className="bi bi-plus" aria-hidden="true" /> Add link
           </Button>
         </Col>
@@ -353,7 +333,7 @@ export default function Settings() {
       {modalRow && open?.kind === 'link' && (
         <LinkSettingsModal
           key={open.key}
-          title={`Link #${modalAt + 1}${modalName}`}
+          title={modalPorts ? `Link ${modalPorts}` : 'Link settings'}
           initial={modalRow.config}
           onConfirm={(config) => {
             update(modalRow.key, { config });
@@ -365,7 +345,7 @@ export default function Settings() {
       {modalRow && open?.kind === 'histogram' && (
         <HistogramModal
           key={open.key}
-          title={`Histograms of link #${modalAt + 1}${modalName}`}
+          title={modalPorts ? `Histograms of link ${modalPorts}` : 'Histograms'}
           initial={modalRow.config}
           onConfirm={(config) => {
             update(modalRow.key, { config });

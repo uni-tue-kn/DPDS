@@ -65,7 +65,7 @@ fn probe(vendor: &str, device: &str, physfn: bool) -> Probe {
     for tool in ["mstconfig", "mlxconfig"] {
         fake_mst(&exec, tool, NIC0, MstState::untuned());
     }
-    let hints = hints_json(&host, &setup(vec![link("l", NIC0, NIC0)]));
+    let hints = hints_json(&host, &setup(vec![link(NIC0, NIC0)]));
     let tool_calls = exec
         .calls()
         .into_iter()
@@ -206,11 +206,8 @@ async fn stats_of(device: &str, ports: [&str; 2], window: bool) -> Value {
     let host = FakeHost::bare_metal();
     set_device(&host, MLX, device);
     let app = TestApp::new(host);
-    app.start_ok(vec![
-        link("a-to-b", ports[0], ports[1]),
-        link("b-to-a", ports[1], ports[0]),
-    ])
-    .await;
+    app.start_ok(vec![link(ports[0], ports[1]), link(ports[1], ports[0])])
+        .await;
     let mut cur = loaded(1);
     for key in ["port0_name", "dir0_rx_name", "dir1_tx_name"] {
         cur.ports[key] = json!(ports[0]);

@@ -20,15 +20,15 @@ fn app() -> TestApp {
 }
 
 /// A one-link start body.
-fn one(name: &str, ingress: &str, egress: &str) -> Setup {
-    setup(vec![link(name, ingress, egress)])
+fn one(ingress: &str, egress: &str) -> Setup {
+    setup(vec![link(ingress, egress)])
 }
 
 // ---- port names ------------------------------------------------------------
 
 #[tokio::test]
 async fn valid_pci_and_vdev_names_are_accepted() {
-    for (i, port) in [
+    for port in [
         "0000:65:00.0",
         "0000:b3:00.7",
         "ffff:ff:1f.3",
@@ -39,26 +39,22 @@ async fn valid_pci_and_vdev_names_are_accepted() {
         "net_ring0123",
     ]
     .iter()
-    .enumerate()
     {
         // as a hairpin (ingress and egress) and as the egress of a link from a vdev;
         // validate answers the plan, so the lcore plan of an unknown PCI address is fine too
         let a = app();
-        let r = a.validate(&one(&format!("l{i}"), port, port)).await;
+        let r = a.validate(&one(port, port)).await;
         assert_eq!(r.status, 200, "{port}: {}", r.text());
-        let r = a.validate(&one(&format!("m{i}"), "net_null9", port)).await;
+        let r = a.validate(&one("net_null9", port)).await;
         assert_eq!(r.status, 200, "{port} as egress: {}", r.text());
     }
 }
 
 #[tokio::test]
 async fn vdev_ports_start() {
-    for (i, port) in ["net_null0", "net_null12", "net_ring0", "net_ring0123"]
-        .iter()
-        .enumerate()
-    {
+    for port in ["net_null0", "net_null12", "net_ring0", "net_ring0123"].iter() {
         let a = app();
-        let r = a.start(&one(&format!("l{i}"), port, port)).await;
+        let r = a.start(&one(port, port)).await;
         assert_eq!(r.status, 202, "{port}: {}", r.text());
     }
 }
@@ -66,29 +62,36 @@ async fn vdev_ports_start() {
 #[tokio::test]
 async fn pci_addresses_are_reported_in_lower_case_and_conflict_across_case() {
     let a = app();
-    a.start_ok(vec![link("up", "0000:B3:00.0", "0000:B3:00.1")])
-        .await;
+    a.start_ok(vec![link("0000:B3:00.0", "0000:B3:00.1")]).await;
     let v = a.get("/api/emulation").await.json();
     assert_eq!(v["config"]["links"][0]["ingress"], "0000:b3:00.0", "{v}");
     assert_eq!(v["config"]["links"][0]["egress"], "0000:b3:00.1", "{v}");
-    // the same ingress in another case is the same port: 409 naming the first link
+    // the same ingress in another case is the same port: 409 naming the first link by its ports
     let b = app();
     let r = b
         .start_links(vec![
-            link("up", "0000:B3:00.0", "0000:B3:00.1"),
-            link("again", "0000:b3:00.0", "0000:b3:00.2"),
+            link("0000:B3:00.0", "0000:B3:00.1"),
+            link("0000:b3:00.0", "0000:b3:00.2"),
         ])
         .await;
     assert_eq!(r.status, 409, "{}", r.text());
-    assert!(r.message().contains("up"), "{}", r.text());
+    assert!(
+        r.message().contains("already the ingress of link"),
+        "{}",
+        r.text()
+    );
     let r = b
         .start_links(vec![
-            link("up", "0000:B3:00.0", "0000:B3:00.1"),
-            link("again2", "0000:b3:00.3", "0000:B3:00.1"),
+            link("0000:B3:00.0", "0000:B3:00.1"),
+            link("0000:b3:00.3", "0000:B3:00.1"),
         ])
         .await;
     assert_eq!(r.status, 409, "{}", r.text());
-    assert!(r.message().contains("up"), "{}", r.text());
+    assert!(
+        r.message().contains("already the egress of link"),
+        "{}",
+        r.text()
+    );
 }
 
 /// Two links whose ports differ only in the case of the hex digits name the same
@@ -100,29 +103,29 @@ async fn ports_that_differ_only_in_case_are_a_reused_port_on_start_validate_and_
         (
             "ingress",
             [
-                link("first", "0000:AB:00.0", "0000:17:00.0"),
-                link("second", "0000:ab:00.0", "0000:65:00.0"),
+                link("0000:AB:00.0", "0000:17:00.0"),
+                link("0000:ab:00.0", "0000:65:00.0"),
             ],
         ),
         (
             "ingress, the lower-case link first",
             [
-                link("first", "0000:ab:00.0", "0000:17:00.0"),
-                link("second", "0000:AB:00.0", "0000:65:00.0"),
+                link("0000:ab:00.0", "0000:17:00.0"),
+                link("0000:AB:00.0", "0000:65:00.0"),
             ],
         ),
         (
             "egress",
             [
-                link("first", "0000:17:00.0", "0000:Af:00.1"),
-                link("second", "0000:65:00.0", "0000:aF:00.1"),
+                link("0000:17:00.0", "0000:Af:00.1"),
+                link("0000:65:00.0", "0000:aF:00.1"),
             ],
         ),
         (
             "ingress in mixed case",
             [
-                link("first", "0000:Ab:Cd.0", "0000:17:00.0"),
-                link("second", "0000:aB:cD.0", "0000:65:00.0"),
+                link("0000:Ab:Cd.0", "0000:17:00.0"),
+                link("0000:aB:cD.0", "0000:65:00.0"),
             ],
         ),
     ];
@@ -136,9 +139,14 @@ async fn ports_that_differ_only_in_case_are_a_reused_port_on_start_validate_and_
             let a = app();
             let r = a.post(path, s.body()).await;
             assert_eq!(r.status, 409, "{route}, {what}: {}", r.text());
+            let role = if what.starts_with("egress") {
+                "egress"
+            } else {
+                "ingress"
+            };
             assert!(
-                r.message().contains("first"),
-                "{route}, {what} names the first link: {}",
+                r.message().contains(&format!("already the {role} of link")),
+                "{route}, {what} names the first link by its ports: {}",
                 r.text()
             );
             assert!(
@@ -153,8 +161,8 @@ async fn ports_that_differ_only_in_case_are_a_reused_port_on_start_validate_and_
 #[tokio::test]
 async fn ports_that_differ_in_case_and_in_the_digits_are_two_ports() {
     let s = setup(vec![
-        link("first", "0000:AB:00.0", "0000:17:00.0"),
-        link("second", "0000:ab:00.1", "0000:65:00.0"),
+        link("0000:AB:00.0", "0000:17:00.0"),
+        link("0000:ab:00.1", "0000:65:00.0"),
     ]);
     for path in [
         "/api/emulation/validate",
@@ -220,19 +228,16 @@ const BAD_PORTS: &[&str] = &[
 async fn invalid_port_names_are_a_400_naming_the_value() {
     // control: valid ports in the same body shape are accepted
     assert_eq!(
-        app()
-            .start(&one("ok", "net_null0", "net_null1"))
-            .await
-            .status,
+        app().start(&one("net_null0", "net_null1")).await.status,
         202
     );
     for bad in BAD_PORTS {
         let a = app();
         for as_ingress in [true, false] {
             let s = if as_ingress {
-                one("x", bad, "net_null1")
+                one(bad, "net_null1")
             } else {
-                one("x", "net_null1", bad)
+                one("net_null1", bad)
             };
             let r = a.start(&s).await;
             assert_eq!(
@@ -276,7 +281,7 @@ async fn a_settings_member_with_mlx5_devargs_is_a_400_naming_settings_whatever_t
         json!(["txq_mpw_en=1"]),
     ] {
         let a = app();
-        let mut body = one("l", "net_null0", "net_null0").body();
+        let mut body = one("net_null0", "net_null0").body();
         body["settings"] = json!({ "mlx5_devargs": d });
         let r = a.post("/api/emulation/start", body).await;
         assert_eq!(r.status, 400, "{d}: {}", r.text());
@@ -290,11 +295,11 @@ async fn a_settings_member_with_mlx5_devargs_is_a_400_naming_settings_whatever_t
 #[tokio::test]
 async fn buffer_capacity_up_to_two_to_the_31_is_valid_above_it_is_a_400() {
     let a = app();
-    let mut l = link("big", "net_null0", "net_null0");
+    let mut l = link("net_null0", "net_null0");
     l["config"]["buffer_capacity"] = json!(2_147_483_648u64);
     assert_eq!(a.validate(&setup(vec![l])).await.status, 200);
     for over in [2_147_483_649u64, 4_294_967_296, u64::MAX] {
-        let mut l = link("bigger", "net_null1", "net_null1");
+        let mut l = link("net_null1", "net_null1");
         l["config"]["buffer_capacity"] = json!(over);
         let r = a.start_links(vec![l]).await;
         assert_eq!(r.status, 400, "{over}: {}", r.text());
@@ -317,20 +322,20 @@ fn the_dto_rejects_a_buffer_capacity_above_two_to_the_31() {
 // ---- delay accuracy mode -----------------------------------------
 
 /// A link config with `reordering`, the delayer's correlation and an optional limiter mode.
-fn accuracy_link(name: &str, reordering: bool, correlation: bool, limiter: Option<&str>) -> Value {
+fn accuracy_link(reordering: bool, correlation: bool, limiter: Option<&str>) -> Value {
     let mut c = cfg_json(1.0e6, 1.0e5);
     c["reordering"] = json!(reordering);
     c["delayer"]["activate_correlation"] = json!(correlation);
     if let Some(mode) = limiter {
         c["limiter"] = json!({ "mode": mode, "rate_bps": 1.0e9 });
     }
-    link_cfg(name, "net_null0", "net_null0", c)
+    link_cfg("net_null0", "net_null0", c)
 }
 
 #[tokio::test]
 async fn reordering_with_correlation_is_a_400_naming_the_combination_on_start_and_validate() {
     let a = app();
-    let s = setup(vec![accuracy_link("l", true, true, None)]);
+    let s = setup(vec![accuracy_link(true, true, None)]);
     for (route, r) in [
         ("start", a.start(&s).await),
         ("validate", a.validate(&s).await),
@@ -349,7 +354,7 @@ async fn reordering_with_correlation_is_a_400_naming_the_combination_on_start_an
 async fn reordering_with_the_spacer_limiter_is_a_400_naming_the_combination_on_start_and_validate()
 {
     let a = app();
-    let s = setup(vec![accuracy_link("l", true, false, Some("Spacer"))]);
+    let s = setup(vec![accuracy_link(true, false, Some("Spacer"))]);
     for (route, r) in [
         ("start", a.start(&s).await),
         ("validate", a.validate(&s).await),
@@ -366,7 +371,7 @@ async fn reordering_with_the_spacer_limiter_is_a_400_naming_the_combination_on_s
 
 #[tokio::test]
 async fn the_allowed_delay_accuracy_combinations_validate_and_start() {
-    for (i, (reordering, correlation, limiter)) in [
+    for (reordering, correlation, limiter) in [
         (false, false, None),
         (false, true, None),
         (false, false, Some("Spacer")),
@@ -374,17 +379,9 @@ async fn the_allowed_delay_accuracy_combinations_validate_and_start() {
         (false, true, Some("TokenBucketFilter")),
         (true, false, None),
         (true, false, Some("TokenBucketFilter")),
-    ]
-    .into_iter()
-    .enumerate()
-    {
+    ] {
         let a = app();
-        let s = setup(vec![accuracy_link(
-            &format!("l{i}"),
-            reordering,
-            correlation,
-            limiter,
-        )]);
+        let s = setup(vec![accuracy_link(reordering, correlation, limiter)]);
         let why =
             format!("reordering {reordering}, correlation {correlation}, limiter {limiter:?}");
         let r = a.validate(&s).await;

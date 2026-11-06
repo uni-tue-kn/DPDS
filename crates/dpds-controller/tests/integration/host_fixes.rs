@@ -22,8 +22,8 @@ async fn an_absurd_buffer_capacity_makes_the_hugepage_need_saturate_not_wrap() {
     let mut cfg = cfg_json(1.0e6, 0.0);
     cfg["buffer_capacity"] = json!(u64::MAX);
     let links = vec![
-        link_cfg("a", "net_null0", "net_null0", cfg.clone()),
-        link_cfg("b", "net_null1", "net_null1", cfg),
+        link_cfg("net_null0", "net_null0", cfg.clone()),
+        link_cfg("net_null1", "net_null1", cfg),
     ];
     let r = a.post("/api/host/hints", setup(links).body()).await;
     match r.status {
@@ -43,8 +43,8 @@ async fn an_absurd_buffer_capacity_makes_the_hugepage_need_saturate_not_wrap() {
     let mut cfg = cfg_json(1.0e6, 0.0);
     cfg["buffer_capacity"] = json!(2_147_483_648u64);
     let links = vec![
-        link_cfg("a", "net_null0", "net_null0", cfg.clone()),
-        link_cfg("b", "net_null1", "net_null1", cfg),
+        link_cfg("net_null0", "net_null0", cfg.clone()),
+        link_cfg("net_null1", "net_null1", cfg),
     ];
     let hints = hints_json(&a.host, &setup(links));
     assert_eq!(hint(&hints, "hugepages")["level"], "error");
@@ -89,8 +89,8 @@ fn isolated_cores_that_are_offline_are_never_assigned() {
     let a = plan_for(
         &h,
         &setup(vec![
-            link("a", "net_null0", "net_null0"),
-            link("b", "net_null1", "net_null1"),
+            link("net_null0", "net_null0"),
+            link("net_null1", "net_null1"),
         ]),
     )
     .unwrap();
@@ -101,9 +101,9 @@ fn isolated_cores_that_are_offline_are_never_assigned() {
     let e = plan_for(
         &h,
         &setup(vec![
-            link("a", "net_null0", "net_null0"),
-            link("b", "net_null1", "net_null1"),
-            link("c", "net_null2", "net_null2"),
+            link("net_null0", "net_null0"),
+            link("net_null1", "net_null1"),
+            link("net_null2", "net_null2"),
         ]),
     )
     .unwrap_err()
@@ -119,8 +119,8 @@ fn an_isolated_core_in_a_hole_of_the_online_list_is_skipped() {
     let a = plan_for(
         &h,
         &setup(vec![
-            link("a", "net_null0", "net_null0"),
-            link("b", "net_null1", "net_null1"),
+            link("net_null0", "net_null0"),
+            link("net_null1", "net_null1"),
         ]),
     )
     .unwrap();
@@ -224,7 +224,7 @@ async fn handlers_that_read_sysfs_do_not_block_the_async_workers() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_concurrent_starts_launch_exactly_once() {
     let a = TestApp::new(FakeHost::bare_metal());
-    let body = setup(vec![link("l", "net_null0", "net_null0")]).body();
+    let body = setup(vec![link("net_null0", "net_null0")]).body();
     // the supervisor needs 300 ms to take the plan: the window in which a second
     // start could pass the state check
     a.supervisor.set_start_delay(Duration::from_millis(300));

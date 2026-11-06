@@ -100,7 +100,7 @@ fn rates_and_drop_shares_from_two_snapshots() {
     let v = view(Some(&prev()), &cur());
     let d0 = &v["directions"][0];
     assert_eq!(d0["dir"], 0);
-    assert_eq!(d0["link"], "a-to-b");
+    assert!(d0.get("link").is_none(), "links have no name: {d0}");
     assert_eq!(d0["rx"], NIC0);
     assert_eq!(d0["tx"], NIC1);
     assert_close(f(d0, "rx_pps"), 1_000_000.0);
@@ -120,7 +120,6 @@ fn direction_one_uses_port_one_for_rx_and_port_zero_for_tx() {
     let v = view(Some(&prev()), &cur());
     let d1 = &v["directions"][1];
     assert_eq!(d1["dir"], 1);
-    assert_eq!(d1["link"], "b-to-a");
     assert_eq!(d1["rx"], NIC1);
     assert_eq!(d1["tx"], NIC0);
     assert_close(f(d1, "rx_pps"), 1000.0);
@@ -277,23 +276,16 @@ fn delay_histogram_for_unknown_direction_is_none() {
 
 // ---- rings and hairpins -------------------------------------------------------------
 
-/// Ports 0, 1, 2 (a, b, c), links `a-to-b` (0 -> 1), `b-to-c` (1 -> 2), `c-to-a` (2 -> 0) and
-/// the hairpin `loop` on port 3 (3 -> 3). Port counters are chosen so that every mapping error
+/// Ports 0, 1, 2 (a, b, c), links 0 -> 1, 1 -> 2, 2 -> 0 and the hairpin on port 3 (3 -> 3). Port counters are chosen so that every mapping error
 /// changes a number: ibytes = 1000 * (port + 1) per second, obytes = 100_000 * (port + 1).
 fn ring_snapshot(t_s: u64) -> dpds_controller::stats::Snapshot {
     let names = ["0000:17:00.0", "0000:65:00.0", "0000:b3:00.0", "net_null0"];
-    let links = [
-        ("a-to-b", 0usize, 1usize),
-        ("b-to-c", 1, 2),
-        ("c-to-a", 2, 0),
-        ("loop", 3, 3),
-    ];
+    let links = [(0usize, 1usize), (1, 2), (2, 0), (3, 3)];
     let mut ports = json!({"num_ports": 4, "num_links": 4, "num_directions": 4});
     for (p, n) in names.iter().enumerate() {
         ports[format!("port{p}_name")] = json!(n);
     }
-    for (d, (link, rx, tx)) in links.iter().enumerate() {
-        ports[format!("dir{d}_link")] = json!(link);
+    for (d, (rx, tx)) in links.iter().enumerate() {
         ports[format!("dir{d}_rx_port")] = json!(rx);
         ports[format!("dir{d}_tx_port")] = json!(tx);
         ports[format!("dir{d}_rx_name")] = json!(names[*rx]);
@@ -332,15 +324,14 @@ fn ring_links_map_rx_to_the_ingress_port_and_tx_to_the_egress_port() {
     let dirs = v["directions"].as_array().unwrap();
     assert_eq!(dirs.len(), 4);
     let want = [
-        ("a-to-b", "0000:17:00.0", "0000:65:00.0", 0usize, 1usize),
-        ("b-to-c", "0000:65:00.0", "0000:b3:00.0", 1, 2),
-        ("c-to-a", "0000:b3:00.0", "0000:17:00.0", 2, 0),
-        ("loop", "net_null0", "net_null0", 3, 3),
+        ("0000:17:00.0", "0000:65:00.0", 0usize, 1usize),
+        ("0000:65:00.0", "0000:b3:00.0", 1, 2),
+        ("0000:b3:00.0", "0000:17:00.0", 2, 0),
+        ("net_null0", "net_null0", 3, 3),
     ];
-    for (d, (link, rx, tx, rx_port, tx_port)) in want.iter().enumerate() {
+    for (d, (rx, tx, rx_port, tx_port)) in want.iter().enumerate() {
         let x = &dirs[d];
         assert_eq!(x["dir"], d, "{x}");
-        assert_eq!(x["link"], *link);
         assert_eq!(x["rx"], *rx);
         assert_eq!(x["tx"], *tx);
         // +1 s: rx_bps = delta ibytes of the INGRESS port * 8, tx_bps = delta obytes of the EGRESS port * 8

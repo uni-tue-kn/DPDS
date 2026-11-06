@@ -33,11 +33,7 @@ pub const TOTAL: u64 = 10_000;
 /// emulation was started with.
 pub fn app_with(c0: Value, c1: Value) -> TestApp {
     let a = TestApp::new(FakeHost::bare_metal());
-    let body = setup(vec![
-        link_cfg("a-to-b", NIC0, NIC1, c0),
-        link_cfg("b-to-a", NIC1, NIC0, c1),
-    ])
-    .body();
+    let body = setup(vec![link_cfg(NIC0, NIC1, c0), link_cfg(NIC1, NIC0, c1)]).body();
     let router = a.router.clone();
     let r =
         block_on(async move { call(&router, "POST", "/api/emulation/start", Some(body)).await });
