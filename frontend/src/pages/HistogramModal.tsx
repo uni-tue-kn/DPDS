@@ -2,7 +2,7 @@ import { Col, Form, Row } from 'react-bootstrap';
 import ConfigModal from './ConfigModal';
 import { fieldKit } from './ConfigFields';
 import { InfoHelp } from './FieldLabel';
-import { histogramProblem, isPowerOfTwo, rangeAdvice } from './linkForm';
+import { histogramProblem, isPowerOfTwo, rangeAdvice, withHistogramDefaults } from './linkForm';
 import type { ConfigForm } from './linkForm';
 import { TIME_UNITS } from '../common/units';
 
@@ -33,10 +33,10 @@ function HistogramBody({ value, onChange }: { value: ConfigForm; onChange: (next
         <legend className="visually-hidden">Delay histogram</legend>
         <h5 className="mb-2">Delay histogram</h5>
         <p className="mb-3">
-          How long packets stay in the link, from arrival until they are enqueued for transmission. Empty fields are
-          chosen automatically.
+          How long packets stay in the link, from arrival until they are enqueued for transmission. Empty fields become
+          the defaults.
         </p>
-        {text('hist_bins', 'Histogram bins', { hint: `Empty: 256 bins, mean +- 6 std. Max 4096.${binsHint}` })}
+        {text('hist_bins', 'Histogram bins', { hint: `Default: 16 bins. Max 4096.${binsHint}` })}
         {unitField('hist_lo', 'Histogram lo', TIME_UNITS)}
         {unitField('hist_hi', 'Histogram hi', TIME_UNITS)}
         {advice && (
@@ -87,7 +87,7 @@ function HistogramBody({ value, onChange }: { value: ConfigForm; onChange: (next
       <fieldset>
         <legend className="visually-hidden">IAT histogram</legend>
         <h5 className="mb-2">IAT histogram</h5>
-        <p className="mb-3">The gaps between consecutive departures of the link. Empty fields use the defaults.</p>
+        <p className="mb-3">The gaps between consecutive departures of the link. Empty fields become the defaults.</p>
         {text('iat_bins', 'IAT histogram bins')}
         {unitField('iat_lo', 'IAT histogram lo', TIME_UNITS)}
         {unitField('iat_hi', 'IAT histogram hi', TIME_UNITS)}
@@ -109,7 +109,13 @@ export default function HistogramModal({
   onClose: () => void;
 }) {
   return (
-    <ConfigModal title={title} initial={initial} problem={histogramProblem} onConfirm={onConfirm} onClose={onClose}>
+    <ConfigModal
+      title={title}
+      initial={initial}
+      problem={histogramProblem}
+      onConfirm={(f) => onConfirm(withHistogramDefaults(f))}
+      onClose={onClose}
+    >
       {(value, onChange) => <HistogramBody value={value} onChange={onChange} />}
     </ConfigModal>
   );

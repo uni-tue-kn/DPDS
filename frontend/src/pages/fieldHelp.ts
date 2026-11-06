@@ -55,22 +55,22 @@ export const HELP = {
   // dpds-controller/src/dto.rs (delay = arrival until enqueued into the TX descriptors)
   'Delay statistics':
     'Record the delay (from arrival until the packet is enqueued into the NIC\u2019s TX descriptors), the lateness (that enqueue time minus the scheduled send time) and the delay histogram of this link. Off: dpds skips that work; the counters and drop causes stay.',
-  // the cap is 4096 bins (dpds-controller MAX_HISTOGRAM_BINS, dpds MAX_BINS); 256 is the default
+  // the cap is 4096 bins (dpds-controller MAX_HISTOGRAM_BINS, dpds MAX_BINS); the defaults are P4TG's
   'Histogram bins':
-    'Number of equal-width bins of the delay histogram: a whole number from 1 to 4096. Empty: 256 bins. A power of two is only a suggestion.',
+    'Number of equal-width bins of the delay histogram: a whole number from 1 to 4096. Default: 16 bins (an empty field becomes the default). A power of two is only a suggestion.',
   // dpds/src/delay_stats.rs:30-31 (range [lo, lo + bins x width)), 131-152 (automatic window), 206-221 (from_spec), 229-231 (underflow); dpds-controller/src/dto.rs:130-143
   'Histogram lo':
-    'Lower edge of the histogram range (included), the start of the first bin; delays below it are counted as underflow. Stored in ns; finite, at least 0 and below Histogram hi. Empty: the mean \u2212 6 std, but not below 0.',
+    'Lower edge of the histogram range (included), the start of the first bin; delays below it are counted as underflow. Stored in ns; finite, at least 0 and below Histogram hi. Default: 1024 ns (an empty field becomes the default).',
   // dpds/src/delay_stats.rs:131-160 (automatic window incl. the Spacer allowance and 2 * TX_MAX_WAIT_NS), 206-221, 229-231; dpds-controller/src/dto.rs:130-143
   'Histogram hi':
-    'Upper edge of the histogram range (excluded); delays from it on are counted as overflow. Stored in ns; finite and above Histogram lo. Empty: the mean + 6 std (plus the queueing allowance of an active Spacer) + 20 \u00b5s, twice the 10 \u00b5s TX staging wait, so the range is always at least 20 \u00b5s wide. A value you enter is used as given.',
-  // the IAT histogram is the delay histogram's HistogramDto; defaults lo 0, hi 4e9 / initialization rate, 256 bins
+    'Upper edge of the histogram range (excluded); delays from it on are counted as overflow. Stored in ns; finite and above Histogram lo. Default: 2048 ns (an empty field becomes the default).',
+  // the IAT histogram is the delay histogram's HistogramDto; defaults are P4TG's
   'IAT histogram bins':
-    'Number of equal-width bins of the inter-arrival time (departure gap) histogram: a whole number from 1 to 4096. Empty: 256 bins.',
+    'Number of equal-width bins of the inter-arrival time (departure gap) histogram: a whole number from 1 to 4096. Default: 16 bins (an empty field becomes the default).',
   'IAT histogram lo':
-    'Lower edge of the IAT histogram range (included); gaps below it are counted as underflow. Stored in ns; finite, at least 0 and below IAT histogram hi. Empty: 0.',
+    'Lower edge of the IAT histogram range (included); gaps below it are counted as underflow. Stored in ns; finite, at least 0 and below IAT histogram hi. Default: 0 ns (an empty field becomes the default).',
   'IAT histogram hi':
-    'Upper edge of the IAT histogram range (excluded); gaps from it on are counted as overflow. Stored in ns; finite and above IAT histogram lo. Empty: 4 x 1e9 / initialization rate (four mean gaps).',
+    'Upper edge of the IAT histogram range (excluded); gaps from it on are counted as overflow. Stored in ns; finite and above IAT histogram lo. Default: 1024 ns (an empty field becomes the default).',
 } as const;
 
 export type HelpKey = keyof typeof HELP;

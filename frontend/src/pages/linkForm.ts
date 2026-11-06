@@ -35,6 +35,14 @@ export const MBIT = 2;
 /** Default unit of the buffer capacity: packets (a zero or empty value shows it). */
 export const PACKETS = 0;
 
+/** The histogram defaults of P4TG: an empty field is its default (bins, lo and hi in ns). */
+export const HIST_BINS = 16;
+export const HIST_LO_NS = 1024;
+export const HIST_HI_NS = 2048;
+export const IAT_BINS = 16;
+export const IAT_LO_NS = 0;
+export const IAT_HI_NS = 1024;
+
 /**
  * The units of the two rate fields once a frame size is known: own family first, so an index into the own family means the
  * same unit with and without the other one.
@@ -127,19 +135,19 @@ export function defaultConfigForm(): ConfigForm {
     reordering: false,
     seed: '',
     avg_frame_size: '',
-    hist_bins: '',
-    hist_lo: emptyUnit(MS),
-    hist_hi: emptyUnit(MS),
-    iat_bins: '',
-    iat_lo: emptyUnit(MS),
-    iat_hi: emptyUnit(MS),
+    hist_bins: String(HIST_BINS),
+    hist_lo: fromBase(HIST_LO_NS, TIME_UNITS, MS),
+    hist_hi: fromBase(HIST_HI_NS, TIME_UNITS, MS),
+    iat_bins: String(IAT_BINS),
+    iat_lo: fromBase(IAT_LO_NS, TIME_UNITS, MS),
+    iat_hi: fromBase(IAT_HI_NS, TIME_UNITS, MS),
     delay_stats: true,
   };
 }
 
 const str = (v: number | null | undefined) => (v == null ? '' : String(v));
-const optUnit = (v: number | null | undefined, units: Unit[], dflt: number) =>
-  v == null ? emptyUnit(dflt) : fromBase(v, units, dflt);
+const bins = (v: number | null | undefined, dflt: number) => String(v ?? dflt);
+const timeNs = (v: number | null | undefined, dflt: number) => fromBase(v ?? dflt, TIME_UNITS, MS);
 
 /** `frame`: the stored average frame size of the link that holds `c` (null or absent: none). */
 export function configToForm(c: ConfigDto, frame?: number | null): ConfigForm {
@@ -152,12 +160,12 @@ export function configToForm(c: ConfigDto, frame?: number | null): ConfigForm {
     reordering: c.reordering,
     seed: str(c.seed),
     avg_frame_size: str(frame),
-    hist_bins: str(c.histogram?.bins),
-    hist_lo: optUnit(c.histogram?.lo_ns, TIME_UNITS, MS),
-    hist_hi: optUnit(c.histogram?.hi_ns, TIME_UNITS, MS),
-    iat_bins: str(c.iat_histogram?.bins),
-    iat_lo: optUnit(c.iat_histogram?.lo_ns, TIME_UNITS, MS),
-    iat_hi: optUnit(c.iat_histogram?.hi_ns, TIME_UNITS, MS),
+    hist_bins: bins(c.histogram?.bins, HIST_BINS),
+    hist_lo: timeNs(c.histogram?.lo_ns, HIST_LO_NS),
+    hist_hi: timeNs(c.histogram?.hi_ns, HIST_HI_NS),
+    iat_bins: bins(c.iat_histogram?.bins, IAT_BINS),
+    iat_lo: timeNs(c.iat_histogram?.lo_ns, IAT_LO_NS),
+    iat_hi: timeNs(c.iat_histogram?.hi_ns, IAT_HI_NS),
     delay_stats: c.delay_stats ?? true,
   };
   const d = c.delayer;
@@ -271,10 +279,6 @@ function int(s: string, label: string): number {
   return n;
 }
 
-function optInt(s: string, label: string): number | null {
-  return s.trim() === '' ? null : int(s, label);
-}
-
 /** A seed is a u64 on the wire but a JSON number here: only integers up to 2^53-1 survive the round trip. */
 function seed(s: string): number | null {
   const t = s.trim();
@@ -344,16 +348,41 @@ function checkAccuracy(f: ConfigForm) {
   }
 }
 
-/** An optional histogram: null while all three fields are empty; `name` prefixes the messages ("Histogram", "IAT histogram"). */
-function histogramToDto(name: string, bins: string, lo: UnitValue, hi: UnitValue): HistogramDto | null {
-  const b = optInt(bins, `${name} bins`);
-  const lo_ns = lo.text.trim() === '' ? null : unitNum(lo, TIME_UNITS, `${name} lo`);
-  const hi_ns = hi.text.trim() === '' ? null : unitNum(hi, TIME_UNITS, `${name} hi`);
-  return b == null && lo_ns == null && hi_ns == null ? null : { bins: b, lo_ns, hi_ns };
+const binsOrDefault = (s: string, dflt: number) => (s.trim() === '' ? String(dflt) : s);
+const timeOrDefault = (v: UnitValue, dflt: number) => (v.text.trim() === '' ? fromBase(dflt, TIME_UNITS, MS) : v);
+
+/** The form with every empty histogram field replaced by its default. */
+export const withHistogramDefaults = (f: ConfigForm): ConfigForm => ({
+  ...f,
+  hist_bins: binsOrDefault(f.hist_bins, HIST_BINS),
+  hist_lo: timeOrDefault(f.hist_lo, HIST_LO_NS),
+  hist_hi: timeOrDefault(f.hist_hi, HIST_HI_NS),
+  iat_bins: binsOrDefault(f.iat_bins, IAT_BINS),
+  iat_lo: timeOrDefault(f.iat_lo, IAT_LO_NS),
+  iat_hi: timeOrDefault(f.iat_hi, IAT_HI_NS),
+});
+
+/** A histogram with explicit values: an empty field is its default; `name` prefixes the messages ("Histogram", "IAT histogram"). */
+function histogramToDto(
+  name: string,
+  b: string,
+  lo: UnitValue,
+  hi: UnitValue,
+  d: [number, number, number],
+): HistogramDto {
+  return {
+    bins: int(binsOrDefault(b, d[0]), `${name} bins`),
+    lo_ns: unitNum(timeOrDefault(lo, d[1]), TIME_UNITS, `${name} lo`),
+    hi_ns: unitNum(timeOrDefault(hi, d[2]), TIME_UNITS, `${name} hi`),
+  };
 }
 
+const delayHistogram = (f: ConfigForm) =>
+  histogramToDto('Histogram', f.hist_bins, f.hist_lo, f.hist_hi, [HIST_BINS, HIST_LO_NS, HIST_HI_NS]);
+const iatHistogram = (f: ConfigForm) =>
+  histogramToDto('IAT histogram', f.iat_bins, f.iat_lo, f.iat_hi, [IAT_BINS, IAT_LO_NS, IAT_HI_NS]);
+
 function configToDto(f: ConfigForm, frame: number | null): ConfigDto {
-  const iat_histogram = histogramToDto('IAT histogram', f.iat_bins, f.iat_lo, f.iat_hi);
   return {
     buffer_capacity: bufferCapacity(f.buffer_capacity),
     reordering: reorderingActive(f),
@@ -361,8 +390,8 @@ function configToDto(f: ConfigForm, frame: number | null): ConfigDto {
     limiter: f.limiter_added ? limiterToDto(f, frame) : null,
     loss_model: f.dropper_added ? lossToDto(f) : null,
     seed: seed(f.seed),
-    histogram: histogramToDto('Histogram', f.hist_bins, f.hist_lo, f.hist_hi),
-    ...(iat_histogram && { iat_histogram }),
+    histogram: delayHistogram(f),
+    iat_histogram: iatHistogram(f),
     delay_stats: f.delay_stats,
   };
 }
@@ -406,8 +435,8 @@ export const stageProblem = (f: ConfigForm): string | null =>
 /** The first problem of the delay and IAT histogram fields (the checks of the Histogram modal), or null. */
 export const histogramProblem = (f: ConfigForm): string | null =>
   problemOf(() => {
-    histogramToDto('Histogram', f.hist_bins, f.hist_lo, f.hist_hi);
-    histogramToDto('IAT histogram', f.iat_bins, f.iat_lo, f.iat_hi);
+    delayHistogram(f);
+    iatHistogram(f);
   });
 
 /** `formToDto` without the delay accuracy rule, so a stored link that breaks it stays listed and openable to be fixed. */

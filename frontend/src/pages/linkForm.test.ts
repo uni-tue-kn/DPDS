@@ -56,6 +56,17 @@ const full = (over: Partial<ConfigForm> = {}): ConfigForm =>
     ...over,
   });
 const cfgOf = (f: ConfigForm): ConfigDto => formToDto(f).config;
+/** The histogram defaults of P4TG, in the wire form every saved link carries. */
+const DELAY_DEFAULT = { bins: 16, lo_ns: 1024, hi_ns: 2048 };
+const IAT_DEFAULT = { bins: 16, lo_ns: 0, hi_ns: 1024 };
+const emptyHistogramFields = {
+  hist_bins: '',
+  hist_lo: uv('', 2),
+  hist_hi: uv('', 2),
+  iat_bins: '',
+  iat_lo: uv('', 2),
+  iat_hi: uv('', 2),
+};
 /** The message of the refusal; fails when the form is accepted. */
 function refusal(f: ConfigForm): string {
   try {
@@ -220,7 +231,7 @@ describe('units: changing the unit of a field', () => {
 });
 
 describe('formToDto: what is sent, in base units', () => {
-  it('a new form with no stage is Buffer and Statistics only: nothing else, no IAT histogram, no frame size', () => {
+  it('a new form with no stage is Buffer, Statistics and the default histograms: nothing else, no frame size', () => {
     expect(formToDto(defaultConfigForm())).toStrictEqual({
       config: {
         buffer_capacity: 100000,
@@ -229,7 +240,8 @@ describe('formToDto: what is sent, in base units', () => {
         limiter: null,
         loss_model: null,
         seed: null,
-        histogram: null,
+        histogram: DELAY_DEFAULT,
+        iat_histogram: IAT_DEFAULT,
         delay_stats: true,
       },
     });
@@ -536,31 +548,40 @@ describe('formToDto: delay accuracy', () => {
 });
 
 describe('formToDto: histograms', () => {
-  it('all fields empty: no histogram and no IAT histogram; delay statistics pass through either way', () => {
-    const c = cfgOf(form({ delay_stats: false }));
-    expect(c.histogram).toBeNull();
-    expect(c).not.toHaveProperty('iat_histogram');
+  it('a new form has the six P4TG defaults, shown in the largest fitting unit (0 in the default unit)', () => {
+    const f = defaultConfigForm();
+    const us = at(TIME_UNITS, MU);
+    expect([f.hist_bins, f.hist_lo, f.hist_hi]).toEqual(['16', uv('1.024', us), uv('2.048', us)]);
+    expect([f.iat_bins, f.iat_lo, f.iat_hi]).toEqual(['16', uv('0', MS), uv('1.024', us)]);
+  });
+
+  it('empty fields are sent as the explicit defaults, never null; delay statistics pass through either way', () => {
+    const c = cfgOf(form({ ...emptyHistogramFields, delay_stats: false }));
+    expect(c.histogram).toStrictEqual(DELAY_DEFAULT);
+    expect(c.iat_histogram).toStrictEqual(IAT_DEFAULT);
     expect(c.delay_stats).toBe(false);
   });
 
-  it('bins, lo and hi are sent as typed in base units; the unset ones are null', () => {
+  it('bins, lo and hi are sent as typed in base units; each empty one is its own default', () => {
     expect(cfgOf(form({ hist_bins: '64', hist_lo: uv('1', 2), hist_hi: uv('9', 1) })).histogram).toEqual({
       bins: 64,
       lo_ns: 1e6,
       hi_ns: 9000,
     });
-    expect(cfgOf(form({ iat_bins: '4096' })).iat_histogram).toEqual({ bins: 4096, lo_ns: null, hi_ns: null });
-    expect(cfgOf(form({ hist_bins: '4096' })).histogram?.bins).toBe(4096); // the cap is the controller's
+    const only = (over: Partial<ConfigForm>) => cfgOf(form({ ...emptyHistogramFields, ...over }));
+    expect(only({ iat_bins: '4096' }).iat_histogram).toEqual({ ...IAT_DEFAULT, bins: 4096 });
+    expect(only({ hist_bins: '4096' }).histogram).toEqual({ ...DELAY_DEFAULT, bins: 4096 }); // the cap is the controller's
+    expect(only({ hist_hi: uv('3', 2) }).histogram).toEqual({ ...DELAY_DEFAULT, hi_ns: 3e6 });
   });
 
   it('an explicit lo of 0 is a value, not "empty"', () => {
-    expect(cfgOf(form({ iat_lo: uv('0', 0) })).iat_histogram).toEqual({ bins: null, lo_ns: 0, hi_ns: null });
+    expect(cfgOf(form({ hist_lo: uv('0', 0) })).histogram).toEqual({ ...DELAY_DEFAULT, lo_ns: 0 });
   });
 
   it('the two histograms do not leak into each other', () => {
     const c = cfgOf(form({ hist_bins: '64', iat_bins: '128', iat_hi: uv('2', 3) }));
-    expect(c.histogram).toEqual({ bins: 64, lo_ns: null, hi_ns: null });
-    expect(c.iat_histogram).toEqual({ bins: 128, lo_ns: null, hi_ns: 2e9 });
+    expect(c.histogram).toEqual({ ...DELAY_DEFAULT, bins: 64 });
+    expect(c.iat_histogram).toEqual({ ...IAT_DEFAULT, bins: 128, hi_ns: 2e9 });
   });
 
   it('a bad value names its own histogram: IAT fields say "IAT histogram", delay fields say "Histogram"', () => {
@@ -576,15 +597,32 @@ describe('configToForm and formToDto round-trip a stored config exactly', () => 
   const strip = (c: ConfigDto) => JSON.parse(JSON.stringify(dropNulls(c))) as unknown;
 
   it.each([
-    ['config', fx.config()],
+    ['config', fx.config({ histogram: DELAY_DEFAULT })],
     ['config2 (every stage, Gilbert-Elliott, histogram)', fx.config2()],
     [
       'config3 with the token bucket (its Spacer is display-only)',
       { ...fx.config3(), limiter: { mode: 'TokenBucketFilter' as const, rate_bps: 5e9 } },
     ],
-    ['no stages', fx.configBare()],
+    ['no stages', fx.configBare({ histogram: DELAY_DEFAULT })],
   ])('%s', (_n, c) => {
-    expect(strip(cfgOf(configToForm(c)))).toEqual(strip(c));
+    expect(strip(cfgOf(configToForm(c)))).toEqual(strip({ iat_histogram: IAT_DEFAULT, ...c }));
+  });
+
+  it('a stored histogram or IAT histogram that is null, absent or has a null member opens with the defaults there', () => {
+    const { histogram: _h, ...absent } = fx.config();
+    const nullMembers = { bins: null, lo_ns: null, hi_ns: null };
+    for (const c of [
+      fx.config({ histogram: null, iat_histogram: null }),
+      absent as ConfigDto,
+      fx.config({ histogram: nullMembers, iat_histogram: {} }),
+    ]) {
+      const f = configToForm(c);
+      expect(f.hist_bins).toBe('16');
+      expect(cfgOf(f).histogram).toStrictEqual(DELAY_DEFAULT);
+      expect(cfgOf(f).iat_histogram).toStrictEqual(IAT_DEFAULT);
+    }
+    const partial = cfgOf(configToForm(fx.config({ histogram: { bins: 64, lo_ns: null, hi_ns: 5000 } })));
+    expect(partial.histogram).toStrictEqual({ bins: 64, lo_ns: 1024, hi_ns: 5000 });
   });
 
   const withDelayer = (over: Partial<NonNullable<ConfigDto['delayer']>>): ConfigDto => ({

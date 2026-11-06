@@ -12,9 +12,9 @@ import {
   clickSave,
   closeModal,
   confirmModal,
-  exportButton,
   expectRequired,
   expectStartBody,
+  exportButton,
   findToast,
   footerButton,
   histogramDialog,
@@ -23,6 +23,7 @@ import {
   linkDialog,
   linkRows,
   modalAlert,
+  numberField,
   openHistogram,
   openModal,
   openSettings,
@@ -32,15 +33,15 @@ import {
   portsOfRows,
   queryToast,
   rawStore,
+  removeStages,
   renderApp,
   renderSettings,
-  removeStages,
   resetButton,
   rowOf,
+  STORAGE_KEY,
   saveButton,
   seedLinks,
   seedRaw,
-  STORAGE_KEY,
   stageSwitch,
   storedDoc,
   storedLinks,
@@ -50,8 +51,8 @@ import {
 } from '../test/helpers';
 import { api } from '../test/mockApi';
 import { must } from '../test/must';
-import { HELP } from './fieldHelp';
 import type { HelpKey } from './fieldHelp';
+import { HELP } from './fieldHelp';
 
 // The Settings page as flows (spec 63): the draft and Save, Add / Duplicate / Delete, the two modals (Close discards, Confirm commits,
 // an invalid Confirm shows an alert in the modal), the fields of the modals, Save validation, Reset, Import / Export, pending restart,
@@ -102,6 +103,15 @@ afterEach(() => {
   Reflect.deleteProperty(URL, 'revokeObjectURL');
 });
 
+/** `config` with every missing histogram value replaced by its default, as a save writes it. */
+function explicitHistograms(config: ConfigDto): ConfigDto {
+  return {
+    ...config,
+    histogram: { bins: 16, lo_ns: 1024, hi_ns: 2048, ...dropNulls(config.histogram ?? {}) },
+    iat_histogram: { bins: 16, lo_ns: 0, hi_ns: 1024, ...dropNulls(config.iat_histogram ?? {}) },
+  };
+}
+
 describe('the draft: nothing is stored before Save', () => {
   it('Add, a port, a modal Confirm, Duplicate and Delete write nothing; Save writes once', async () => {
     const user = await page([fx.link(), fx.loopLink({ id: 2 })]);
@@ -135,7 +145,11 @@ describe('the draft: nothing is stored before Save', () => {
       [3, '0000:65:00.1'],
       [10, 'net_null0'],
     ]);
-    expect(dropNulls(must(storedLinks()[1]))).toEqual(dropNulls(fx.loopLink({ id: 10 }))); // an untouched row is saved as it was
+    const untouched = fx.loopLink({ id: 10 });
+    // an untouched row is saved as it was, its histograms with explicit (default) values
+    expect(dropNulls(must(storedLinks()[1]))).toEqual(
+      dropNulls({ ...untouched, config: explicitHistograms(untouched.config) }),
+    );
   });
 
   it('two new rows get the ids max + 1 and max + 2 at save time (the first id of an empty store is 1)', async () => {
@@ -253,8 +267,8 @@ describe('creating a link end to end', () => {
       limiter: { mode: 'Spacer', rate_bps: 5e9 },
       loss_model: { type: 'Random', p: 0.01 },
       seed: null,
-      histogram: { bins: 64, lo_ns: 1e6, hi_ns: null },
-      iat_histogram: { bins: 32, lo_ns: null, hi_ns: null },
+      histogram: { bins: 64, lo_ns: 1e6, hi_ns: 2048 },
+      iat_histogram: { bins: 32, lo_ns: 0, hi_ns: 1024 },
       delay_stats: true,
     };
     const saved = storedLinks();
@@ -421,7 +435,7 @@ describe('the table: rows, ports, Add link, Duplicate, Delete', () => {
     await findToast('Settings saved successfully.');
     const [kept, copy] = storedLinks();
     expect([kept.id, copy.id]).toEqual([3, 4]);
-    expect(dropNulls(copy.config)).toEqual(dropNulls(source.config));
+    expect(dropNulls(copy.config)).toEqual(dropNulls(explicitHistograms(source.config)));
     expect(copy.avg_frame_size_byte).toBe(1518);
   });
 
@@ -590,6 +604,7 @@ describe('the Histogram modal: Close discards, Confirm commits', () => {
     const user = await page();
     const writes = watchStoreWrites();
     await openHistogram(user, 1);
+    await user.clear(screen.getByLabelText('Histogram bins'));
     await user.type(screen.getByLabelText('Histogram bins'), '64');
     await user.click(screen.getByLabelText('Delay statistics'));
     await confirmModal(user);
@@ -638,7 +653,34 @@ describe('the Histogram modal: Close discards, Confirm commits', () => {
     await confirmModal(user);
     await clickSave(user);
     await findToast('Settings saved successfully.');
-    expect(must(storedLinks()[0]).config.histogram).toEqual({ bins: null, lo_ns: 0, hi_ns: 4096 });
+    expect(must(storedLinks()[0]).config.histogram).toEqual({ bins: 16, lo_ns: 0, hi_ns: 4096 });
+  });
+
+  it('the fields come prefilled with the defaults; an emptied field is the default again, also when saved', async () => {
+    const user = await page();
+    const dialog = await openHistogram(user, 1);
+    expect(numberField(dialog, 'Histogram bins')).toHaveValue(16);
+    expect(numberField(dialog, 'IAT histogram bins')).toHaveValue(16);
+    expect(numberField(dialog, 'Histogram lo')).toHaveValue(1.024);
+    expect(numberField(dialog, 'Histogram hi')).toHaveValue(2.048);
+    expect(unitSelect(dialog, 'Histogram hi')).toHaveDisplayValue(MU);
+    expect(numberField(dialog, 'IAT histogram lo')).toHaveValue(0);
+    expect(numberField(dialog, 'IAT histogram hi')).toHaveValue(1.024);
+    await typeInto(user, dialog, 'Histogram bins', '64');
+    await typeInto(user, dialog, 'Histogram hi', '');
+    await typeInto(user, dialog, 'IAT histogram bins', '');
+    await confirmModal(user);
+    expect(modalAlert()).toBeNull();
+    const reopened = await openHistogram(user, 1);
+    expect(numberField(reopened, 'Histogram bins')).toHaveValue(64);
+    expect(numberField(reopened, 'Histogram hi')).toHaveValue(2.048);
+    expect(numberField(reopened, 'IAT histogram bins')).toHaveValue(16);
+    await closeModal(user);
+    await clickSave(user);
+    await findToast('Settings saved successfully.');
+    const { histogram, iat_histogram } = must(storedLinks()[0]).config;
+    expect(histogram).toStrictEqual({ bins: 64, lo_ns: 1024, hi_ns: 2048 });
+    expect(iat_histogram).toStrictEqual({ bins: 16, lo_ns: 0, hi_ns: 1024 });
   });
 });
 
