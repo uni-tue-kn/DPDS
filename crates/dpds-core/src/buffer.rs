@@ -282,7 +282,7 @@ impl Buffer {
         let time_to_send_ns = current_time_ns + self.delayer.delayer_sample_ns(current_time_ns);
 
         // Add the 4 L2 FEC bytes that were removed from the length.
-        let packet_length_byte = packet_length_byte + 4;
+        let packet_length_byte = packet_length_byte.saturating_add(4);
 
         let limiter_result = self
             .limiter

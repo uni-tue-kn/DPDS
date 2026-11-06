@@ -54,7 +54,7 @@ impl Limiter {
         self.last_update_ns = f64::max(self.last_update_ns, time_to_sent_ns);
 
         // The packet length excludes the L1 overhead.
-        let packet_size_in_bit = ((packet_length_byte + L1_OVERHEAD) * 8) as f64;
+        let packet_size_in_bit = (f64::from(packet_length_byte) + f64::from(L1_OVERHEAD)) * 8.;
 
         match self.mode {
             LimiterMode::Spacer => self.spacer_calculate_offset_ns(
