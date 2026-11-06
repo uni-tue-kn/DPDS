@@ -15,6 +15,7 @@ import {
   findTabs,
   hasTab,
   lossDonut,
+  panelOf,
   pillText,
   queryDelayBar,
   queryRadio,
@@ -635,12 +636,16 @@ describe('Dashboard (spec 35 F3): one tab per link', () => {
     expect(within(activePanel()).getByTestId('chart-line')).toBeInTheDocument();
   });
 
-  it('no tabs while running but the stats have no directions yet (the run gives the tabs, spec 39)', async () => {
+  // Spec 60 R2. Was: 'no tabs while running but the stats have no directions yet (the run gives the tabs, spec 39)' (no tablist).
+  // The Summary tab stays mounted, the link tabs are the stored links, until the run reports directions.
+  it('while running but the stats have no directions yet the Summary tab stays, with the stored links as tabs (spec 60 R2)', async () => {
+    seedStore({ links: [fx.link(), fx.linkRev()] });
     api.getStats.mockResolvedValue(fx.stats([]));
     await open();
-    expect(tabs()).toHaveLength(0);
-    expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
-    expect(screen.queryAllByRole('tabpanel', { hidden: true })).toHaveLength(0);
+    expect(screen.getAllByRole('tablist')).toHaveLength(1);
+    expect(summaryTab()).toBeInTheDocument();
+    expect(tabs().map((_, d) => tabTitle(d))).toEqual(['a-b: enp101s0f0 → enp101s0f1', 'b-a: enp101s0f1 → enp101s0f0']);
+    expect(screen.getAllByRole('tabpanel', { hidden: true })).toHaveLength(3);
   });
 
   it('API calls still use the link index, not the link name', async () => {
@@ -719,18 +724,27 @@ describe('Dashboard (spec 35 F3, spec 54 L1): the tab of an ended run has no bad
     expect(screen.queryByText('Stopped', { selector: '.badge' })).not.toBeInTheDocument();
   });
 
-  // Spec 54 L3. Was: 'a new start clears the tabs of the old run' (no tab while "starting"). The dashboard now stays rendered
-  // while a run starts (dashboardSpec54.test.tsx).
-  it('a start does not clear the tabs of the old run: they stay while "starting"', async () => {
+  // Spec 60 R1/R2. Was (spec 54 L3): 'a start does not clear the tabs of the old run: they stay while "starting"' (the old run's tabs and
+  // data stayed). Now the tablist and the Summary tab stay mounted, the charts carry no samples and the tabs are the stored links.
+  it('while "starting" the tablist and the Summary tab stay, the charts carry no samples of the old run (spec 60)', async () => {
+    seedStore({ links: [fx.link(), fx.linkRev()] });
     serveHistory({ startedAt: 1762000000, samples: { '0': fx.historySamples(0, 3), '1': fx.historySamples(0, 3) } });
     ended('stopped');
     await open();
     await tick(1000);
     expect(hasTab(1)).toBe(true);
+    const list = screen.getByRole('tablist');
+    const summary = summaryTab();
+    expect(rxData(within(panelOf(summary)).getByTestId('chart-line'))).toHaveLength(3);
     api.getEmulation.mockResolvedValue(fx.emulation('starting'));
     api.getStats.mockResolvedValue(fx.stats([], { stale: true, age_ms: undefined }));
     await tick(2500);
-    expect(tabs()).toHaveLength(2);
+    expect(screen.getByRole('tablist')).toBe(list);
+    expect(summaryTab()).toBe(summary);
+    expect(tabs().map((_, d) => tabTitle(d))).toEqual(['a-b: enp101s0f0 → enp101s0f1', 'b-a: enp101s0f1 → enp101s0f0']);
+    for (const t of [summary, tab(0), tab(1)]) {
+      expect(rxData(within(panelOf(t)).getByTestId('chart-line'))).toEqual([]);
+    }
   });
 });
 

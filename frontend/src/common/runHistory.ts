@@ -79,11 +79,14 @@ export function useRunHistory(): {
   history: History;
   links: HistoryLink[];
   totals: Record<string, HistoryTotals>;
+  /** The run the series belong to: undefined before the first answer, null while nothing ran. */
+  runId: number | null | undefined;
   error?: string;
 } {
   const [history, setHistory] = useState<History>({});
   const [links, setLinks] = useState<HistoryLink[]>([]);
   const [totals, setTotals] = useState<Record<string, HistoryTotals>>({});
+  const [runId, setRunId] = useState<number | null>();
   const [error, setError] = useState<string>();
 
   useEffect(() => {
@@ -111,6 +114,7 @@ export function useRunHistory(): {
           }
           setLinks(h.links);
           setTotals(h.totals);
+          setRunId(h.run_id);
           setError(undefined);
         } catch (err) {
           if (alive) setError(errorMessage(err));
@@ -126,7 +130,7 @@ export function useRunHistory(): {
     };
   }, []);
 
-  return { history, links, totals, error };
+  return { history, links, totals, runId, error };
 }
 
 /**

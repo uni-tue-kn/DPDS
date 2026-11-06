@@ -1,7 +1,17 @@
 import { fireEvent, screen, within } from '@testing-library/react';
 import { vi } from 'vitest';
 import type { HistorySample, HistoryView } from '../api/types';
-import { CAUSES, card, delayBar, expectState, hasTab, queryRadio, tab, tabBadge } from '../test/dashboardUi';
+import {
+  CAUSES,
+  card,
+  delayBar,
+  expectState,
+  hasTab,
+  queryRadio,
+  summaryTab,
+  tab,
+  tabBadge,
+} from '../test/dashboardUi';
 import * as fx from '../test/fixtures';
 import { renderApp, seedStore, tick } from '../test/helpers';
 import type { HistoryServer } from '../test/mockApi';
@@ -614,11 +624,15 @@ describe('Dashboard (spec 29, round 2): the final charts of a stopped run stay u
     expect(rxOf(0)).toEqual(Array(5).fill(1.5));
   });
 
-  // Spec 54 L3. Was: 'a new start clears them: once the state is "starting" no card is left'. The tabs stay (under the overlay).
-  it('a new start keeps them: once the state is "starting" the tabs are still there', async () => {
+  // Spec 60 R1/R2. Was (spec 54 L3): 'a new start keeps them: once the state is "starting" the tabs are still there' (the old run's tabs and
+  // data stayed). Now the tablist and the Summary tab stay mounted, the tabs are the stored links and the charts carry no samples.
+  it('once the state is "starting" the tablist and the Summary tab stay, the charts carry no samples (spec 60)', async () => {
+    seedStore({ links: [fx.link(), fx.linkRev()] });
     const { s, stop } = await runThenStop();
     await stop();
     expect(hasTab(0)).toBe(true);
+    const list = screen.getByRole('tablist');
+    const summary = summaryTab();
     // the controller started again: its series is empty so far (a new started_at), the first polls carry no directions yet
     s.runId = 2;
     s.startedAt = S1 + 900;
@@ -626,19 +640,29 @@ describe('Dashboard (spec 29, round 2): the final charts of a stopped run stay u
     api.getEmulation.mockResolvedValue(fx.emulation('starting'));
     api.getStats.mockResolvedValue(fx.stats([], { stale: true, age_ms: undefined }));
     await tick(2500);
+    expect(screen.getByRole('tablist')).toBe(list);
+    expect(summaryTab()).toBe(summary);
     expect(hasTab(0)).toBe(true);
     expect(hasTab(1)).toBe(true);
+    expect(rxOf(0)).toEqual([]);
+    expect(rxOf(1)).toEqual([]);
   });
 
-  it('also when the history still holds the old run at that moment', async () => {
+  // Spec 60 R1. Was: 'also when the history still holds the old run at that moment' (the old run's tabs stayed). Now the old run is not shown.
+  it('also when the history still holds the old run at that moment, the charts carry no samples (spec 60)', async () => {
+    seedStore({ links: [fx.link(), fx.linkRev()] });
     const { stop } = await runThenStop();
     await stop();
+    const list = screen.getByRole('tablist');
     // state "starting", the server's series is still the old run's
     api.getEmulation.mockResolvedValue(fx.emulation('starting'));
     api.getStats.mockResolvedValue(fx.stats([], { stale: true, age_ms: undefined }));
     await tick(1000);
+    expect(screen.getByRole('tablist')).toBe(list);
     expect(hasTab(0)).toBe(true);
     expect(hasTab(1)).toBe(true);
+    expect(rxOf(0)).toEqual([]);
+    expect(rxOf(1)).toEqual([]);
   });
 
   it('pressing Start keeps them when the controller has accepted the request', async () => {

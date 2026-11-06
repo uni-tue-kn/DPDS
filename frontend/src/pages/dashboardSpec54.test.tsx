@@ -173,28 +173,6 @@ describe('spec 54 L3: Start keeps the dashboard rendered under the overlay', () 
     expect(tab(1)).toHaveAttribute('aria-selected', 'true');
   });
 
-  it('after an ended run the old tabs and their final charts stay while the next one starts', async () => {
-    runsWithHistory();
-    const c = await open('stopped');
-    await tick(1500);
-    const before = snapshot();
-    expect(rxOf(before.panels[1])).toEqual(Array(5).fill(1.5));
-    fireEvent.click(startBtn());
-    await tick(0);
-    expect(c.state).toBe('starting');
-    expectKept(before, true, 'request answered');
-    for (let i = 0; i < 4; i++) {
-      await tick(500);
-      expectKept(before, true, `starting +${(i + 1) * 500} ms`);
-      expect(rxOf(before.panels[1]), 'previous content of link 0').toEqual(Array(5).fill(1.5));
-      expect(rxOf(before.panels[2]), 'previous content of link 1').toEqual(Array(5).fill(2.5));
-    }
-    c.state = 'running';
-    api.getStats.mockResolvedValue(LIVE_STATS());
-    await tick(2500);
-    expect(overlay()).toBeNull();
-  });
-
   it('a start the controller refuses (409) removes the overlay and shows the error, the dashboard stays', async () => {
     await open();
     const before = snapshot();
@@ -282,35 +260,6 @@ describe('spec 54 L3: Restart keeps the dashboard rendered under the overlay', (
     fireEvent.click(tab(1));
     return c;
   }
-
-  it('from the click through stopping, stopped and starting until running: same tabs and chart areas, covered, then uncovered', async () => {
-    const c = await openRunning();
-    const before = snapshot();
-    expect(rxOf(before.panels[2])).toEqual(Array(5).fill(2.5));
-    expectKept(before, false, 'running');
-    fireEvent.click(restartBtn());
-    await tick(0);
-    expect(api.stopEmulation).toHaveBeenCalledTimes(1);
-    expectKept(before, true, 'restart clicked');
-    // the controller drains: its stats are empty, the state stays `stopping`
-    api.getStats.mockResolvedValue(STOPPED_STATS());
-    await through(before, true, 'stopping', 4);
-    // the stop is done; the page then sends the start
-    c.state = 'stopped';
-    await through(before, true, 'stopped, start pending', 2);
-    expect(api.startEmulation).toHaveBeenCalledTimes(1);
-    expect(c.state).toBe('starting');
-    await through(before, true, 'starting', 4);
-    for (const d of [1, 2]) expect(rxOf(before.panels[d]), `previous content of panel ${d}`).toHaveLength(5);
-    expect(tab(1)).toHaveAttribute('aria-selected', 'true');
-    // up again
-    c.state = 'running';
-    api.getStats.mockResolvedValue(LIVE_STATS());
-    await tick(2500);
-    expect(overlay()).toBeNull();
-    expect(block()).toBeNull();
-    expect(tabs().map((t) => t.textContent)).toEqual(TITLES);
-  });
 
   it('a start refused after the stop (409) removes the overlay and shows the error', async () => {
     const c = await openRunning();

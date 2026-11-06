@@ -1,7 +1,7 @@
 import { type CSSProperties, useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, Badge, Button, Col, OverlayTrigger, Row, Tab, Tabs, Tooltip } from 'react-bootstrap';
 import * as api from '../api/client';
-import type { EmulationView, StatsView } from '../api/types';
+import type { EmulationView, HistoryLink, HistoryTotals, StatsView } from '../api/types';
 import {
   errorMessage,
   formatBits,
@@ -15,7 +15,7 @@ import { readConfig, startRequestOf, useLocalConfig } from '../common/localConfi
 import { pendingRestart } from '../common/pendingRestart';
 import { startPolling } from '../common/polling';
 import { usePortLabeler } from '../common/portLabel';
-import { NO_SAMPLES, sumHistories, useRunHistory } from '../common/runHistory';
+import { type History, NO_SAMPLES, sumHistories, useRunHistory } from '../common/runHistory';
 import ErrorAlert from '../components/ErrorAlert';
 import Loader from '../components/Loader';
 import LinkCharts from './LinkCharts';
@@ -29,6 +29,10 @@ const POLL_MS = 1000;
 const SUMMARY_TAB = 'summary';
 
 const DASH = '–';
+
+const NO_HISTORY: History = {};
+const NO_LINKS: HistoryLink[] = [];
+const NO_TOTALS: Record<string, HistoryTotals> = {};
 
 // The look of P4TG's SendReceiveMonitor (Stat, StatusIndicator, Time), as inline styles.
 const BOX: CSSProperties = {
@@ -98,7 +102,13 @@ function totalsOf(directions: StatsView['directions']) {
 export default function Dashboard() {
   const [emulation, setEmulation] = useState<EmulationView>();
   const [stats, setStats] = useState<StatsView>();
-  const { history: polledHistory, links: polledLinks, totals: polledTotals, error: historyError } = useRunHistory();
+  const {
+    history: polledHistory,
+    links: polledLinks,
+    totals: polledTotals,
+    runId,
+    error: historyError,
+  } = useRunHistory();
   /** The tab the user chose (the Summary or a link index); the Summary while that link is gone. */
   const [selected, setSelected] = useState<string>();
   const [pollError, setPollError] = useState<string>();
@@ -111,6 +121,8 @@ export default function Dashboard() {
   const { doc, corrupt } = useLocalConfig();
   /** A restart has sent its stop and waits for a poll that reports the end, then starts. */
   const [waiting, setWaiting] = useState(false);
+  /** The run the controller held when Start/Restart was clicked: while it still holds that run, the page shows no run. */
+  const [clearedRun, setClearedRun] = useState<{ id: number | null | undefined }>();
 
   const start = useCallback(async () => {
     try {
@@ -182,6 +194,7 @@ export default function Dashboard() {
     if (busy) return;
     setBusy(which);
     setActionError(undefined);
+    if (which !== 'stop') setClearedRun({ id: runId });
     if (which === 'start') return start();
     try {
       if (which === 'restart') storedRequest(); // a run is never stopped for a start that cannot happen
@@ -194,53 +207,52 @@ export default function Dashboard() {
     }
   };
 
-  // From the Start/Restart click until the run is up the page stays as it is, under the loader's overlay; the controller
-  // drops the old run's series when the new run begins, so the page holds what it had when the click came.
+  // P4TG clears the charts when Start is clicked: from the click until the controller's history belongs to another run
+  // (a new run_id), the page shows no run, neither the old series nor live statistics; the controller serves the old series
+  // until the new run exists, so they stay hidden while it starts too. The charts themselves stay mounted.
+  const cleared = clearedRun !== undefined && clearedRun.id === runId;
+  const noSeries = cleared || state === 'starting';
+  const history = noSeries ? NO_HISTORY : polledHistory;
+  const links = noSeries ? NO_LINKS : polledLinks;
+  const runTotalsByLink = noSeries ? NO_TOTALS : polledTotals;
+  // The Start/Restart click until the run is up: the loader's overlay covers the page.
   const covered = busy === 'start' || busy === 'restart' || state === 'starting';
-  const polled = useMemo(
-    () => ({ history: polledHistory, links: polledLinks, totals: polledTotals }),
-    [polledHistory, polledLinks, polledTotals],
-  );
-  const [held, setHeld] = useState(polled);
-  if (!covered && held !== polled) setHeld(polled);
-  const { history, links, totals: runTotalsByLink } = covered ? held : polled;
+  const shownStats = cleared ? undefined : stats;
 
-  const live = stats && stats.directions.length > 0 ? stats.directions : undefined;
+  const live = shownStats && shownStats.directions.length > 0 ? shownStats.directions : undefined;
   const plan = (dir: number) => emulation?.directions.find((p) => p.dir === dir);
   // The controller reports stale: true with no age_ms for a stopped emulation; that is not "old data".
-  const showStale = state === 'running' && stats?.stale === true && stats.age_ms != null;
+  const showStale = state === 'running' && shownStats?.stale === true && shownStats.age_ms != null;
   // After the run ends (or while it ends) the controller keeps its series until the next start: the final charts stay.
   const ended = state === 'stopping' || state === 'stopped' || state === 'failed' ? state : undefined;
   const hasHistory = Object.values(history).some((list) => list.length > 0);
   const finished = ended !== undefined && hasHistory;
-  // While the next run starts and reports no directions yet, the old run's charts stay too.
-  const starting = state === 'starting';
-  const kept = starting && !live && hasHistory;
 
   // Like live statistics: once the run has ended the rates and the loss are 0 (the charts and donuts keep the run).
   const pills = finished ? ZERO_PILLS : live && totalsOf(live);
   const restartNeeded = pendingRestart(doc, emulation).any;
-  // Before any run the stored links give the (empty) tabs, like P4TG's overview.
-  const beforeRun = !finished && !kept && !live && state !== undefined && state !== 'running';
+  // A dir is the link's index in the start request, so without reported directions or series the stored links give the
+  // (empty) tabs, like P4TG's overview.
+  const noRun = !finished && !live && !hasHistory;
   const storedLinks = doc.links;
   const shown = useMemo(
     () =>
-      finished || kept
-        ? Object.keys(history)
-            .map(Number)
-            .filter(Number.isInteger)
-            .sort((a, b) => a - b)
-        : beforeRun
-          ? storedLinks.map((_, i) => i)
-          : (live ?? []).map((d) => d.dir),
-    [finished, kept, beforeRun, history, live, storedLinks],
+      live
+        ? live.map((d) => d.dir)
+        : hasHistory
+          ? Object.keys(history)
+              .map(Number)
+              .filter(Number.isInteger)
+              .sort((a, b) => a - b)
+          : storedLinks.map((_, i) => i),
+    [live, hasHistory, history, storedLinks],
   );
   const summaryHistory = useMemo(
-    () => sumHistories(shown.map((dir) => (starting && live ? NO_SAMPLES : (history[String(dir)] ?? NO_SAMPLES)))),
-    [shown, history, starting, live],
+    () => sumHistories(shown.map((dir) => history[String(dir)] ?? NO_SAMPLES)),
+    [shown, history],
   );
   const statsOf = (dir: number): LinkStats => {
-    if (finished || kept) {
+    if (finished) {
       const t = runTotalsByLink[String(dir)];
       return t ? statsOfTotals(t) : NO_STATS;
     }
@@ -249,14 +261,14 @@ export default function Dashboard() {
   };
   const summaryStats = shown.map(statsOf).reduce(addStats, NO_STATS);
   const lost = totalDrops(summaryStats.drops);
-  // A finished run is titled by the links of its own history, a live one by its stats or the plan.
+  // A run with series is titled by the links of its own history, a live one by its stats or the plan, no run by the stored links.
   const titleOf = (dir: number) => {
     const stored = storedLinks[dir];
-    if (beforeRun && stored) return linkLabel(stored.name, stored.ingress, stored.egress, label);
-    if (finished || kept) {
+    if (finished || (!live && hasHistory)) {
       const l = links[dir];
       return l ? linkLabel(l.name, l.ingress, l.egress, label) : `Link ${dir}`;
     }
+    if (!live && stored) return linkLabel(stored.name, stored.ingress, stored.egress, label);
     const s = live?.find((d) => d.dir === dir);
     const p = plan(dir);
     if (!s && !p) return `Link ${dir}`;
@@ -304,11 +316,14 @@ export default function Dashboard() {
               )}
             </span>
           )}
-          {stats?.elapsed_ms != null && stats.elapsed_ms >= 1000 && state !== 'stopped' && state !== 'failed' && (
-            <span style={TIME_STYLE} data-testid="pill-elapsed">
-              {secondsToTime(Math.floor(stats.elapsed_ms / 1000))}
-            </span>
-          )}
+          {shownStats?.elapsed_ms != null &&
+            shownStats.elapsed_ms >= 1000 &&
+            state !== 'stopped' &&
+            state !== 'failed' && (
+              <span style={TIME_STYLE} data-testid="pill-elapsed">
+                {secondsToTime(Math.floor(shownStats.elapsed_ms / 1000))}
+              </span>
+            )}
           {pills && pills.rxL2 > 0 && 1 - pills.txL2 / pills.rxL2 > 0.001 && (
             <span data-testid="loss-pct">
               <i className="bi bi-exclamation-circle-fill text-danger" aria-hidden="true" />{' '}
@@ -396,43 +411,41 @@ export default function Dashboard() {
             </pre>
           </details>
         )}
-        {(shown.length > 0 || beforeRun) && (
-          <Tabs id="link-tabs" transition={false} activeKey={activeTab} onSelect={(k) => k && setSelected(k)}>
-            <Tab eventKey={SUMMARY_TAB} title="Summary">
-              <div className="pt-3">
-                <LinkCharts
-                  active={activeTab === SUMMARY_TAB}
-                  history={summaryHistory}
-                  stats={summaryStats}
-                  empty={beforeRun}
-                />
-              </div>
-            </Tab>
-            {shown.map((dir) => {
-              const s = live?.find((d) => d.dir === dir);
-              return (
-                <Tab key={dir} eventKey={String(dir)} title={titleOf(dir)}>
-                  <div className="pt-3">
-                    <LinkCharts
-                      dir={dir}
-                      active={String(dir) === activeTab}
-                      history={starting && live ? NO_SAMPLES : (history[String(dir)] ?? NO_SAMPLES)}
-                      stats={statsOf(dir)}
-                      empty={beforeRun}
-                      // The link's stored config says whether its run had delay statistics (default: on).
-                      endedStats={(finished || kept) && storedLinks[dir]?.config.delay_stats !== false}
-                      live={
-                        finished || kept || !s
-                          ? undefined
-                          : { delayStats: s.delay_stats === true, meanNs: s.delay_mean_ns, stdNs: s.delay_std_ns }
-                      }
-                    />
-                  </div>
-                </Tab>
-              );
-            })}
-          </Tabs>
-        )}
+        <Tabs id="link-tabs" transition={false} activeKey={activeTab} onSelect={(k) => k && setSelected(k)}>
+          <Tab eventKey={SUMMARY_TAB} title="Summary">
+            <div className="pt-3">
+              <LinkCharts
+                active={activeTab === SUMMARY_TAB}
+                history={summaryHistory}
+                stats={summaryStats}
+                empty={noRun}
+              />
+            </div>
+          </Tab>
+          {shown.map((dir) => {
+            const s = live?.find((d) => d.dir === dir);
+            return (
+              <Tab key={dir} eventKey={String(dir)} title={titleOf(dir)}>
+                <div className="pt-3">
+                  <LinkCharts
+                    dir={dir}
+                    active={String(dir) === activeTab}
+                    history={history[String(dir)] ?? NO_SAMPLES}
+                    stats={statsOf(dir)}
+                    empty={noRun}
+                    // The link's stored config says whether its run had delay statistics (default: on).
+                    endedStats={finished && storedLinks[dir]?.config.delay_stats !== false}
+                    live={
+                      finished || !s
+                        ? undefined
+                        : { delayStats: s.delay_stats === true, meanNs: s.delay_mean_ns, stdNs: s.delay_std_ns }
+                    }
+                  />
+                </div>
+              </Tab>
+            );
+          })}
+        </Tabs>
       </Loader>
     </>
   );
