@@ -91,7 +91,7 @@ jobs:
       - name: Clippy, all features
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-      # --release as in the README ("Testing"): the controller's e2e tests need a
+      # --release as in docs/DEVELOPMENT.md ("Testing"): the controller's e2e tests need a
       # release `dpds` anyway, and the e2e timings are meant for the release profile.
       # --no-fail-fast reports every failing test binary, not just the first.
       # The dpds e2e tests start the real binary on net_null/net_pcap vdevs without root or

@@ -10,7 +10,7 @@ CARGO_FEATURES := $(if $(FEATURES),--features $(FEATURES))
 
 # Maximum-performance build: cross-language LTO inlines DPDK's rx_burst/
 # tx_burst fast path into the Rust loops. Needs a clang/lld with the same LLVM
-# major as rustc (README.md, "Building"). A "Unable to find libclang" or lld/bitcode
+# major as rustc (docs/DEVELOPMENT.md, "Building"). A "Unable to find libclang" or lld/bitcode
 # mismatch error is a host toolchain problem.
 build:
 	cargo build --release -p dpds $(CARGO_FEATURES)
@@ -47,6 +47,6 @@ check-static-link: build
 	else \
 		echo "FAIL: out-of-line calls to hot functions (count, caller -> callee):"; \
 		echo "$$bad"; \
-		echo "Check that clang and rustc report the same LLVM major version (see README.md)."; \
+		echo "Check that clang and rustc report the same LLVM major version (see docs/DEVELOPMENT.md)."; \
 		exit 1; \
 	fi

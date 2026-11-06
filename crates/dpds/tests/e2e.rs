@@ -2298,7 +2298,7 @@ fn default_config_path_is_config_json_in_the_working_directory() {
 
 // README: the "Without hardware" examples run as written
 
-/// One step of the first fenced block under "### Without hardware" in README.md.
+/// One step of the first fenced block under "### Without hardware" in docs/DEVELOPMENT.md.
 #[derive(Debug)]
 enum ReadmeStep {
     /// `cat > <path> <<'EOF' ... EOF` (or `cat <<'EOF' > <path>`): the README writes a file.
@@ -2311,8 +2311,9 @@ enum ReadmeStep {
 /// The steps of the block. DPDS ships no default config, so the examples write theirs inline
 /// (a heredoc into a temporary file) and the dpds commands name that file.
 fn readme_without_hardware_steps() -> Vec<ReadmeStep> {
-    let readme = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../README.md"))
-        .expect("README.md");
+    let readme =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/DEVELOPMENT.md"))
+            .expect("docs/DEVELOPMENT.md");
     parse_without_hardware_steps(&readme)
 }
 

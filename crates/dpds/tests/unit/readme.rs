@@ -9,7 +9,7 @@ fn repo_root() -> PathBuf {
 }
 
 fn readme() -> String {
-    fs::read_to_string(repo_root().join("README.md")).expect("README.md")
+    fs::read_to_string(repo_root().join("docs/DEVELOPMENT.md")).expect("docs/DEVELOPMENT.md")
 }
 
 /// The README's lines with backslash continuations joined.
@@ -81,6 +81,7 @@ fn the_relative_links_of_the_readmes_point_at_existing_files() {
     let mut checked = 0;
     for doc in [
         "README.md",
+        "docs/DEVELOPMENT.md",
         "crates/dpds-core/README.md",
         "frontend/README.md",
     ] {

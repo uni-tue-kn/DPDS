@@ -1,4 +1,4 @@
-# Maximum-performance build (the default for this repo — see README.md):
+# Maximum-performance build (the default for this repo — see docs/DEVELOPMENT.md):
 #
 # - target-cpu=native: DPDK is built for the host CPU by default; build the
 #   Rust side the same way.
@@ -10,7 +10,7 @@
 #
 # Requirements: clang with the SAME LLVM major as rustc (a mismatch does
 # not fail the build — lld silently links the fat objects' machine code
-# instead of inlining their bitcode; see README).  On a host without
+# instead of inlining their bitcode; see docs/DEVELOPMENT.md).  On a host without
 # clang/lld, opt out by overriding the flags (RUSTDOCFLAGS too, for doctests):
 #   RUSTFLAGS='-Ctarget-cpu=native' RUSTDOCFLAGS='' cargo build --release
 [build]
