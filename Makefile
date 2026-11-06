@@ -11,7 +11,7 @@ CARGO_FEATURES := $(if $(FEATURES),--features $(FEATURES))
 
 # Maximum-performance build: cross-language LTO inlines DPDK's rx_burst/
 # tx_burst fast path into the Rust loops. Needs a clang/lld with the same LLVM
-# major as rustc (README, "Building"). If this fails with "Unable to find
+# major as rustc (README.md, "Building"). If this fails with "Unable to find
 # libclang" or an lld/bitcode mismatch, that is a host toolchain problem to
 # fix, not something to route around here.
 build:

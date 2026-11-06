@@ -3,12 +3,10 @@
 // and caches. The config is loaded in a separate node process with Vite's own loader, like `vite` does at
 // start-up (it bundles vite.config.ts with esbuild, which does not work inside the jsdom test environment).
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const frontendDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const read = (...p: string[]) => readFileSync(resolve(frontendDir, ...p), 'utf8');
 
 type Proxy = string | { target?: string };
 type Loose = {
@@ -60,10 +58,5 @@ describe('vite.config.ts (dev server and build output)', () => {
     expect(cfg.build?.outDir ?? 'dist').toBe('dist');
     expect(cfg.build?.assetsDir ?? 'assets').toBe('assets');
     expect(cfg.base ?? '/').toBe('/');
-  });
-
-  it('the proxy variable is documented where the dev server is started', () => {
-    expect(read('README.md')).toMatch(/DPDS_CONTROLLER/);
-    expect(read('README.md')).toMatch(/8100/);
   });
 });

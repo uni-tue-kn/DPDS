@@ -97,7 +97,7 @@ fn main() {
     cc_build.include(&manifest_dir);
     // Cross-language LTO: when clang is available, compile the wrappers to
     // LLVM bitcode so rust-lld can inline rte_eth_rx/tx_burst into the Rust
-    // forwarding loop (see the repository README.md).  clang's LLVM major must match
+    // forwarding loop (see "Building" in the repository README.md).  clang's LLVM major must match
     // rustc's — with an older clang, lld silently uses the machine-code
     // half of the fat objects and nothing is inlined.  -ffat-lto-objects
     // keeps machine code alongside the bitcode so the archive links with

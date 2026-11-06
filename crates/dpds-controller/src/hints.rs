@@ -4,7 +4,7 @@
 //! read. The only tools it runs are read-only queries (see `nic_hints`). The kernel command line
 //! checks name the parameters to add and have no commands.
 //!
-//! Thresholds come from the DPDS README ("Performance Tuning"): isolated
+//! Thresholds follow the "Performance tuning" section of the DPDS README: isolated
 //! cores with `nohz_full` and `rcu_nocbs`, hugepages for the mbuf pools,
 //! workers on the NIC's NUMA node, `performance` governor, interrupts off the
 //! isolated cores, MaxReadReq 4096 (1024 and 2048 are acceptable).
@@ -22,10 +22,11 @@ use crate::lcores::{assign_lcores, Assignment, LcoreError};
 use crate::model::RunConfig;
 use crate::nic_hints::{blocked, nic_hints, FirmwareCache};
 
-/// Mbuf size in hugepage memory (README: about 1.9 KB per mbuf).
+/// Mbuf size in hugepage memory (about 1.9 KB per mbuf: 1664 B data room, 128 B header, mempool
+/// object header; measured 1920 B).
 const BYTES_PER_MBUF: u64 = 1920;
 /// Descriptors per ring `dpds` asks for, plus the pool's cache and burst slack
-/// (README pool formula: capacity + rx + tx + 768 + 64).
+/// (pool size = buffer_capacity + rx + tx + 768 + 64, see `crates/dpds/src/consts.rs`).
 const POOL_EXTRA: u64 = 4096 + 4096 + 768 + 64;
 /// `TimeoutStopSec` of `packaging/dpds-controller.service`; systemd SIGKILLs the
 /// whole cgroup after it, in the middle of a drain.

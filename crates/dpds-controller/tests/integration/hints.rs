@@ -6,7 +6,7 @@
 use crate::common::*;
 use serde_json::Value;
 
-const NEED_PER_MBUF: u64 = 1920; // README: ~1.9 KB per mbuf
+const NEED_PER_MBUF: u64 = 1920; // ~1.9 KB per mbuf
 const PAGE: u64 = 2 * 1024 * 1024;
 
 /// One link with the default 100000 packet buffer: pool = capacity + 2*4096 + 768 + 64.

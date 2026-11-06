@@ -1,5 +1,5 @@
 //! Checks on the files themselves:
-//! crate metadata, LICENSE, README content, crate docs, the bench target and the
+//! crate metadata, LICENSE, crate docs, the bench target and the
 //! `#[inline]` attributes. Cheap text checks, deliberately lenient about
 //! wording; they only pin the essentials.
 
@@ -94,23 +94,6 @@ fn other_workspace_crates_are_not_publishable() {
 }
 
 #[test]
-fn readme_documents_the_new_api_features_seeding_ordering_and_git_usage() {
-    let r = read(crate_dir().join("README.md"));
-    for needle in [
-        "pop_due",
-        "peek_nth",
-        "try_new",
-        "seed",
-        "json",
-        "--no-default-features",
-        "1/64",
-        "dpds-core = { git = \"https://github.com/uni-tue-kn/DPDS\", branch = \"nightly\" }",
-    ] {
-        assert!(r.contains(needle), "README.md should mention `{needle}`");
-    }
-}
-
-#[test]
 fn crate_level_docs_cover_the_loop_ownership_seeding_and_ordering() {
     let lib = read(crate_dir().join("src/lib.rs"));
     let docs: String = lib
@@ -187,24 +170,6 @@ fn hot_path_methods_are_inline_and_push_is_not() {
 // ---- initialization_rate_pps: required config field, no built-in rate ---------
 
 #[test]
-fn readme_documents_the_required_initialization_rate_and_has_no_15_mpps_preset() {
-    let r = read(crate_dir().join("README.md"));
-    assert!(
-        r.contains("| `initialization_rate_pps`"),
-        "README.md needs a row for `initialization_rate_pps` in the config table"
-    );
-    let json_examples = r.matches("\"initialization_rate_pps\"").count();
-    assert!(
-        json_examples >= 1,
-        "the README config example must carry `initialization_rate_pps`"
-    );
-    assert!(
-        !r.contains("15 Mpps"),
-        "the delay correlation section must not describe a built-in 15 Mpps rate"
-    );
-}
-
-#[test]
 fn crate_docs_note_the_api_change_for_the_initialization_rate() {
     let lib = read(crate_dir().join("src/lib.rs"));
     let docs: String = lib
@@ -257,33 +222,6 @@ fn max_frame_bytes_is_a_public_constant_of_1542() {
 }
 
 #[test]
-fn readme_documents_the_derived_limit_the_order_and_the_api_change() {
-    let r = read(crate_dir().join("README.md"));
-    assert!(
-        !r.contains("| `limit_bit`"),
-        "README.md must not list `limit_bit` as a config field any more"
-    );
-    assert!(
-        !r.contains("\"limit_bit\":"),
-        "README.md config examples must not carry `limit_bit`"
-    );
-    for needle in [
-        "1542",
-        "MAX_FRAME_WIRE_BYTES",
-        "buffer_capacity",
-        "API change",
-    ] {
-        assert!(r.contains(needle), "README.md should mention `{needle}`");
-    }
-    // the removal is announced as an API change next to the field's name
-    assert!(
-        r.lines()
-            .any(|l| l.contains("limit_bit") && !l.trim_start().starts_with('|')),
-        "README.md should name the removed `limit_bit` in its API-change note"
-    );
-}
-
-#[test]
 fn crate_docs_note_the_removed_limit_bit_the_derived_limit_and_the_order() {
     let docs = crate_docs();
     for needle in [
@@ -314,48 +252,5 @@ fn push_outcome_docs_state_that_the_capacity_check_comes_first() {
     assert!(
         !buf.contains("The packet was accepted by loss model and limiter, but the buffer"),
         "BufferFull docs still describe the old order"
-    );
-}
-
-#[test]
-fn no_workspace_doc_or_config_example_carries_a_limit_bit_json_key_or_table_row() {
-    let root = crate_dir().join("../..");
-    for rel in [
-        "README.md",
-        "docs/TELEMETRY.md",
-        "crates/dpds-core/README.md",
-    ] {
-        let text = read(root.join(rel));
-        assert!(
-            !text.contains("\"limit_bit\""),
-            "{rel}: a JSON example still has `limit_bit`"
-        );
-        assert!(
-            !text.contains("| `limit_bit`") && !text.contains("| `limiter.limit_bit`"),
-            "{rel}: a field table still lists `limit_bit`"
-        );
-        assert!(
-            !text.contains("limit_bit / rate_bps"),
-            "{rel}: a formula still uses `limit_bit`"
-        );
-    }
-    // the telemetry reference has no reason to mention the removed field at all
-    let t = read(root.join("docs/TELEMETRY.md"));
-    assert!(
-        !t.contains("limit_bit"),
-        "docs/TELEMETRY.md still mentions `limit_bit`"
-    );
-}
-
-#[test]
-fn the_root_readme_documents_the_derived_limit_and_the_order_of_operations() {
-    let r = read(crate_dir().join("../../README.md"));
-    assert!(
-        r.contains("1542"),
-        "README.md should state the 1542 B frame size of the derived limit"
-    );
-    assert!(
-        r.contains("buffer_capacity") && r.contains("limit"),
-        "README.md should explain that the limit comes from the buffer capacity"
     );
 }

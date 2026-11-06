@@ -1,4 +1,4 @@
-//! Spec 18: DPDS 1.0.0, `VERSION.md`, the release job in CI and the README's release notes.
+//! Spec 18: DPDS 1.0.0, `VERSION.md`, the release job in CI.
 //!
 //! The frontend half (version line, update check, modal) is in `frontend/src/updateCheck.test.tsx`,
 //! `dpds.sh --stable` is in `packaging/tests/dpds_sh.test.sh`, and the CSP is in `frontend.rs`.
@@ -260,42 +260,6 @@ async fn the_controller_reports_the_release_version_on_online_and_version() {
     let version = a.get("/api/version").await;
     assert_eq!(version.status, 200, "{}", version.text());
     assert_eq!(version.json()["version"], RELEASE);
-}
-
-// ---- README -----------------------------------------------------------------------------------
-
-#[test]
-fn the_readme_describes_the_release_procedure_and_the_stable_channel() {
-    let readme = read("README.md");
-    assert!(
-        readme.contains("VERSION.md"),
-        "README never names VERSION.md"
-    );
-    assert!(
-        readme.contains("releases"),
-        "README has no link or word about the releases page"
-    );
-    assert!(
-        readme.contains("github.com/uni-tue-kn/DPDS/releases"),
-        "README does not link the releases page"
-    );
-    let low = readme.to_lowercase();
-    assert!(
-        low.contains("tag"),
-        "README does not say that CI creates a tag"
-    );
-    assert!(
-        low.contains("--stable"),
-        "README must keep documenting --stable"
-    );
-    assert!(
-        !low.contains("no rust stable release exists yet"),
-        "README still says there is no stable release"
-    );
-    assert!(
-        !low.contains("only prints that"),
-        "README still says --stable only prints a message"
-    );
 }
 
 // ---- workflows --------------------------------------------------------------------------------

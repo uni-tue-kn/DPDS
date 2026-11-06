@@ -4,8 +4,8 @@
 //! telemetry socket, and the main lcore's [`NicPoller`] (port of preof's
 //! `stats.rs` plus the NIC pieces of its `main.rs`).
 //!
-//! Registration is a no-op without the `telemetry` feature; see
-//! `docs/TELEMETRY.md` for the wire semantics.
+//! Registration is a no-op without the `telemetry` feature. The reply fields are
+//! documented on the counter, epoch and first-loss types (`counters.rs`, `first_loss.rs`).
 
 use crate::counters::{
     epochs_reply, DpdsCounters, DpdsEpochLog, EpochDriver, EpochFirstLoss, FrameSizes, NicEpochLog,

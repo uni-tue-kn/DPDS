@@ -1,228 +1,99 @@
 # dpds-core
 
-`dpds-core` is the core of **DPDS**, a software **network-link emulator**. It
-models the three effects a real network link imposes on packets — **delay**,
-**rate limiting**, and **packet loss** — and exposes them through a small **Rust
-API**. It is used by the packet-processing data plane (the `dpds` crate, which
-runs on [DPDK](https://www.dpdk.org/)); the data plane owns the packets and
-calls into this library to decide *when* (or *whether*) each packet should be
-forwarded.
+`dpds-core` is the emulation library of **DPDS**, a software network-link
+emulator. It models the three effects a real link imposes on packets (**delay**,
+**rate limiting** and **packet loss**) and decides *when*, or *whether*, each
+packet is forwarded. The `dpds` data plane, built on [DPDK](https://www.dpdk.org/),
+owns the packets and calls this library.
 
-The library never copies or interprets packet payloads. It only stores an opaque
-packet pointer together with a computed send time, so it stays agnostic to the
-data plane's packet representation.
+The library never copies or reads packet payloads. It stores an opaque packet
+pointer together with a computed send time.
 
 ## Pipeline
 
 Each packet pushed into a `Buffer` passes through three stages:
 
-| Stage       | Source           | Responsibility                                                                                                                                       |
-| ----------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Delayer** | `src/delayer.rs` | Samples a forwarding delay from a configurable distribution, optionally autocorrelated over time.                                                    |
-| **Limiter** | `src/limiter.rs` | Enforces a rate limit, either as a **Spacer** (spreads packets out in time) or a **Token Bucket Filter** (drops packets that exceed a burst budget). |
-| **Dropper** | `src/dropper.rs` | Decides whether a packet is lost, using a **Random** (Bernoulli) or **Gilbert–Elliott** (bursty) loss model.                                         |
+| Stage       | Source           | Job                                                                                          |
+| ----------- | ---------------- | -------------------------------------------------------------------------------------------- |
+| **Delayer** | `src/delayer.rs` | Samples a delay from a distribution, optionally autocorrelated over time.                    |
+| **Limiter** | `src/limiter.rs` | Rate limit: **Spacer** (spreads packets out) or **Token Bucket Filter** (drops excess).      |
+| **Dropper** | `src/dropper.rs` | Loss model: **Random** (Bernoulli) or **Gilbert–Elliott** (bursty).                          |
 
-The `Buffer` (`src/buffer.rs`) stores admitted packets ordered by their send
-time. With `reordering = false` it is a FIFO `VecDeque`; with `reordering = true`
-it is a min-heap keyed on send time, allowing packets whose sampled delays
-reorder them to be emitted in send-time order.
+The `Buffer` (`src/buffer.rs`) keeps the admitted packets ordered by send time.
+With `reordering = false` it is a FIFO, so a packet with a late send time blocks
+the ones behind it. With `reordering = true` it is a min-heap on the send time and
+packets leave in send-time order (packets pushed at the same instant keep their
+entry order). Reordering is a way to reproduce the configured delay more
+accurately, not a model of network reordering.
 
-### Ordering rule for equal send times
+A push is evaluated in this order: capacity check first (a full buffer rejects the
+packet and touches nothing else), then delay, limiter accounting, loss model and
+limiter verdict. A packet that both the loss model and the limiter reject counts
+as lost.
 
-In reordering mode, packets that enter at the same instant keep their entry
-order. The ordering does not use a sequence number; instead every packet gets a tiny time offset
-so that it sorts the way it entered. (Each heap entry also carries its arrival sequence number,
-only to count `Buffer::out_of_order()`: the departures whose number is below the highest one
-popped before; always 0 in FIFO mode.) The heap key is the send time in fixed
-point with 1/64 ns resolution:
+## Use it
 
-```text
-key = floor(t * 64) + tie
-```
-
-where `t` is the send time in ns (now + delay + limiter offset, before
-truncation) and `tie` counts the packets accepted since the last push whose
-`now_ns` differed (0 for the first packet of an instant, 1 for the next one with
-the same `now_ns`, ...). Each packet entering at the same instant therefore
-sorts 1/64 ns after the previous one. Rejected pushes do not advance `tie`, and
-the key saturates instead of overflowing. `front_time()` and `pop_due()` use
-`key >> 6`, i.e. whole nanoseconds, so the offsets are invisible to the host.
-Packets entering at *different* instants whose keys happen to be exactly equal
-may leave in either order. FIFO mode is unaffected: it keeps push order and truncates the send time
-to whole ns.
-
-Caveat across instants: a burst of `n` packets pushed at one instant shifts its
-last keys by up to `(n - 1)/64` ns, so a packet pushed at a later instant that is
-less than that apart can sort between them. With the 32-packet burst of `dpds`
-that is at most about 0.5 ns; a library user pushing large batches at one
-instant sees correspondingly more.
-
-### Delay correlation
-
-When `activate_correlation` is enabled, the delayer smooths successive samples
-with a rate adaptive exponential moving average (EMA). The smoothing weight
-is derived from the configured `half_life_period_ns` and the measured packet
-rate, so the *effective* correlation half-life stays constant in wall-clock time
-regardless of how fast packets arrive. The rate is re-estimated every 1 ms. The
-smoothed delay starts at `mean_ns`, and the delay spread uses the weight of the
-configured `initialization_rate_pps` from the first packet on, until the first
-1 ms estimate replaces it. There is no built-in rate: the field is required in
-every config. Set it to the expected packet rate of the link, e.g.
-`rate_bps / ((frame_bytes + 20) * 8)` for a link running at `rate_bps` (the
-limiter counts 20 bytes of preamble, start delimiter and inter-packet gap per
-packet), about 8.1 Mpps for 100 Gb/s with 1518 byte frames.
-
-`try_new` validates the initial parameters: `initialization_rate_pps` must be
-finite and at least 1 (with or without correlation), `half_life_period_ns` must
-be finite and not negative, and with correlation active it must not be so long
-that the weight at the initialisation rate reaches 1. A huge finite half-life
-combined with a measured rate far above the initialisation rate can still make
-a later rate update fail, which panics in `delayer_sample_ns`.
-
-## Building and features
-
-Requires a recent stable Rust toolchain (`rust-version = "1.99"`, the version
-the crate is developed and tested with). The crate is not on crates.io; add it
-as a git dependency (Cargo finds the package inside the workspace by name):
+The crate is not on crates.io. Add it as a git dependency (Cargo finds the package
+in the workspace by name), or by path inside this workspace:
 
 ```toml
 dpds-core = { git = "https://github.com/uni-tue-kn/DPDS", branch = "nightly" }
 ```
 
-or, inside this workspace, `dpds-core = { path = "../dpds-core" }`.
+| Feature | Default | Enables                                                                  |
+| ------- | ------- | ------------------------------------------------------------------------ |
+| `json`  | yes     | `Config::from_file` and `ConfigError` (implies `serde`, uses `serde_json`). |
+| `serde` | via `json` | `Serialize` / `Deserialize` for `Config` and the types in it.         |
 
-| Feature            | Default | Enables                                                                                      |
-| ------------------ | ------- | -------------------------------------------------------------------------------------------- |
-| `json`             | yes     | `Config::from_file` and `ConfigError` (implies `serde`, pulls in `serde_json`).              |
-| `serde`            | via `json` | `Serialize`/`Deserialize` for `Config`, `DelayerConfig`, `LimiterConfig`, `LossModel`, ... |
+Without features the crate depends only on `rand` and `rand_distr`; build `Config`
+in code.
 
-Without any feature (`--no-default-features`) the crate depends only on `rand`
-and `rand_distr`; construct `Config` in code. With
-`--no-default-features --features serde` you get the derives but no file
-loading. `crates/dpds` uses the default features.
+## API essentials
 
-## Using the API
+| Item                                         | Purpose                                                                         |
+| -------------------------------------------- | ------------------------------------------------------------------------------- |
+| `Config::from_file(path)`                    | Parse a JSON config (`json` feature).                                           |
+| `Buffer::try_new(config)`                    | Build a buffer; invalid parameters are a `BuildError` naming the parameter. `Buffer::new` panics instead. |
+| `Buffer::push(pkt, len_byte, now_ns) -> bool` | Offer a packet; `false` if it was rejected. `push_outcome` says why (`Accepted { send_time_ns }`, `Lost`, `LimiterDrop`, `BufferFull`). |
+| `Buffer::pop_due(now_ns)`                    | Pop the head packet if its send time is `<= now_ns`. `pop_due_with_time` also returns that time. |
+| `Buffer::front_time()`, `peek_nth(n)`        | Send time of the head, or the n-th packet to pop (FIFO only for `n > 0`).        |
+| `Buffer::len()`, `capacity()`, `is_empty()`  | Occupancy.                                                                      |
 
-The host loads (or builds) a configuration, creates a buffer, then pushes and
-pops packets. Everything is in `dpds_core::buffer` and the crate root:
-
-| Item                                                                  | Purpose                                                                          |
-| --------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| `Config::from_file(path) -> Result<Config, ConfigError>` (`json`)     | Parse a JSON config file (see below). I/O and parse errors are distinct variants. |
-| `Buffer::new(config) -> Buffer`                                       | Create a buffer for the given config; panics on invalid parameters.              |
-| `Buffer::try_new(config) -> Result<Buffer, BuildError>`               | Same, but invalid delay distribution parameters, a negative/NaN/infinite (or, with correlation, absurdly long) `half_life_period_ns` or an unallocatable `buffer_capacity`, or an `initialization_rate_pps` that is not finite or below 1, are an error naming the parameter. |
-| `Buffer::push(&mut self, pkt: *mut c_void, len_byte: u32, now_ns: f64) -> bool` | Offer a packet. Returns `false` if it was dropped or the buffer was full.  |
-| `Buffer::push_outcome(&mut self, pkt, len_byte, now_ns) -> PushOutcome` | Like `push`, but says why a packet was rejected and when an accepted one leaves: `Accepted { send_time_ns }`, `Lost`, `LimiterDrop` or `BufferFull` (**API change: addition**, `push` is a wrapper of it; see the precedence below). |
-| `Buffer::pop_due(&mut self, now_ns: f64) -> Option<*mut c_void>`      | Pop the head packet iff its send time (as `front_time` reports it) is `<= now_ns`. |
-| `Buffer::pop_due_with_time(&mut self, now_ns: f64) -> Option<(*mut c_void, u64)>` | Like `pop_due`, and also returns the whole-ns send time of the popped packet (what `front_time` reported before the pop) (**API change: addition**). |
-| `Buffer::peek_nth(&self, n: usize) -> Option<*mut c_void>`            | The packet that would be popped `n`-th from now, without popping (e.g. to prefetch). FIFO mode: the `n`-th queued entry. Reordering mode: only `n == 0` (the head) is answered, `n > 0` is `None`. |
-| `Buffer::front_time(&self) -> Option<f64>`                            | Send time (ns) of the head packet, `None` if empty.                              |
-| `Buffer::pop(&mut self) -> Option<*mut c_void>`                       | Remove and return the head packet pointer, `None` if empty.                      |
-| `Buffer::is_empty(&self)`, `len(&self)`, `capacity(&self)`            | Occupancy and configured capacity.                                               |
-| `Delayer::try_new(..)`, `Delayer::try_new_seeded(.., seed)`, `Dropper::new(loss_model)`, `Dropper::with_seed(loss_model, seed)` | The individual stages, usable on their own. |
-
-`PushOutcome` (`dpds_core::buffer`) reports the cause of a rejection by the
-order in which a push is evaluated: the capacity is checked first (`BufferFull`;
-nothing else is touched, so the delayer, limiter and dropper state and random
-draws are unchanged), then the delay is sampled, the limiter accounts for the
-packet (also when it is rejected afterwards) and the loss model decides. The
-reported cause is the first that rejects the packet: capacity (`BufferFull`),
-else loss model (`Lost`), else limiter (`LimiterDrop`).
-A packet that both the loss model and the limiter reject is therefore `Lost`, so
-counting `LimiterDrop` can under-count the limiter's own rejections while a loss
-model is active. `Accepted.send_time_ns` is the whole-ns send time `front_time`
-reports for the entry (in reordering mode including the 1/64 ns tie offsets).
-
-
-**API change (emulation order, user-authorised):** the capacity check moved from
-last to first, as described above. Previously a buffer-full packet had already
-consumed a delay sample, limiter capacity and a loss draw.
-
-**API change:** `LimiterConfig.limit_bit` is removed (no Rust field; a
-`limit_bit` key in JSON is a parse error naming the field). The limiter's limit,
-for both modes, is derived: `buffer_capacity * MAX_FRAME_WIRE_BYTES * 8` bit with
-`pub const MAX_FRAME_WIRE_BYTES: u32 = 1542` (1518 B maximum Ethernet frame + 4
-FEC bytes + 20 B L1 overhead, as the limiter counts a packet), computed in `f64`
-(`dpds_core::derived_limit_bit(buffer_capacity)`). Exactly `buffer_capacity`
-maximum-size frames fit. It is the Spacer's fill-state limit and the Token Bucket
-Filter's bucket depth (TBF starts full). Every `LimiterConfig { .. }` struct
-literal must drop `limit_bit`.
-
-`BuildError` implements `std::error::Error`; its message names the offending
-parameter (`mean_ns`, `std_ns`, `half_life_period_ns`,
-`initialization_rate_pps`, `buffer_capacity`). `BuildError` gained the
-`HalfLifePeriod` and `InitializationRate` variants (API change for code that
-matches it exhaustively).
-
-A typical host loop reads the clock once per iteration, pushes the arriving
-packets with that timestamp, then forwards everything that is due:
+A host reads the clock once per iteration, pushes the arrivals, then forwards what is due:
 
 ```rust
 use dpds_core::{buffer::Buffer, Config};
 
-let config = Config::from_file("config.json")?;
-let mut buf = Buffer::try_new(config)?;
+let mut buf = Buffer::try_new(Config::from_file("config.json")?)?;
 
-// per iteration: one clock read
-let now_ns = clock_ns();
+let now_ns = clock_ns(); // one clock read per iteration
 
-// on packet arrival:
 if !buf.push(pkt, pkt_len, now_ns) {
-    // packet was dropped or buffer full -- free it
+    // rejected (loss, limiter or buffer full): free the packet
 }
 
-// forward everything that is due (bounded by a burst budget):
 for _ in 0..32 {
     let Some(pkt) = buf.pop_due(now_ns) else { break };
     // transmit pkt
 }
 ```
 
-> **Safety:** the buffer stores raw packet pointers and does not own or
-> dereference them. The caller must keep each pushed pointer valid until it is
-> popped. `Buffer` is not `Send` because of those pointers; a host that moves
-> it to another thread must vouch that it owns the packets.
+> **Safety:** the buffer stores raw packet pointers and neither owns nor
+> dereferences them. The caller keeps each pushed pointer valid until it is popped.
+> `Buffer` is not `Send` because of those pointers; a host that moves it to another
+> thread must vouch that it owns the packets.
 
-## Required initialization rate
-
-**API change:** `DelayerConfig.initialization_rate_pps` is a new required public
-field (no serde default, no built-in rate), so every `DelayerConfig { .. }`
-struct literal and every JSON config needs it. See "Delay correlation" for how
-to choose it.
-
-## Seeding
-
-**API change:** `Config.seed` is a new public field and `Config` is not
-`#[non_exhaustive]`, so every `Config { .. }` struct literal needs `seed: None`
-(JSON files need no change).
-
-`Config.seed` is an optional `u64` (`"seed": 42` in JSON; absent or `null` means
-`None`). With `None` the delay and loss random number generators are seeded from
-the OS entropy source, as before. With `Some(s)` both are seeded
-deterministically and differently from each other (`SmallRng::seed_from_u64(s)`
-for the delayer and `seed_from_u64(s ^ 0x9E37_79B9_7F4A_7C15)` for the dropper),
-so the same seed and the same sequence of `push` calls give identical results
-and send times. This is meant for tests and reproducible experiments. Seeded
-streams are reproducible only for the same `rand` version and the same target
-word size (`SmallRng` is not portable across them).
-
-## Benchmark
-
-`cargo bench -p dpds-core` runs a small hot-path microbenchmark
-(`benches/hot_path.rs`: 32-packet bursts, push then `pop_due`, per delay, limiter,
-loss and ordering variant) and prints the median ns per packet. Plain
-`cargo test --all-targets` only runs a tiny smoke pass of it. The file documents
-how to profile it with callgrind.
+`cargo bench -p dpds-core` runs a hot-path microbenchmark (`benches/hot_path.rs`).
 
 ## Configuration
 
-`Config::from_file` (feature `json`) parses a JSON file into the `Config` struct. A full example lives
-in [`config.example.json`](config.example.json):
+A JSON file per link (full example: [`config.example.json`](config.example.json)):
 
 ```json
 {
   "buffer_capacity": 100000,
   "reordering": false,
+  "seed": 42,
   "delayer": {
     "distribution": "LogNormalDistribution",
     "mean_ns": 5000000.0,
@@ -242,45 +113,41 @@ in [`config.example.json`](config.example.json):
 }
 ```
 
-### Fields
-
 **Top level**
 
-| Field             | Type    | Meaning                                                                 |
-| ----------------- | ------- | ----------------------------------------------------------------------- |
-| `buffer_capacity` | integer | Maximum number of packets held at once; pushes beyond this are dropped. Also sets the limiter's limit: `buffer_capacity x 1542 B x 8` bit. |
-| `reordering`      | bool    | `false` = FIFO; `true` = emit in send-time order (min-heap), equal send times keep entry order (see above). Not with `activate_correlation` and not with an active `Spacer` limiter; `Buffer::try_new` rejects both. |
-| `seed`            | integer or `null` | Optional. Seeds the delay and loss RNGs deterministically; absent = entropy (see Seeding). |
+| Field             | Meaning                                                                                  |
+| ----------------- | ---------------------------------------------------------------------------------------- |
+| `buffer_capacity` | Maximum number of packets held at once; further pushes are rejected. |
+| `reordering`      | `false` = FIFO, `true` = send-time order. Not with `activate_correlation` and not with an active `Spacer` (use `TokenBucketFilter`); `try_new` rejects both. |
+| `seed`            | Optional integer. Seeds the delay and loss generators, so the same seed and the same pushes give the same decisions (same `rand` version and word size). Absent: OS entropy. |
+
+The limiter's limit is not configured. Both modes derive it from the capacity:
+`buffer_capacity * 1542 * 8` bit (1542 B = a 1518 B frame, 4 FEC bytes and 20 B of
+line overhead, so `buffer_capacity` maximum-size frames fit). It is the Spacer's
+maximum backlog and the Token Bucket Filter's bucket depth (which starts full).
 
 **`delayer`**
 
-| Field                  | Type   | Meaning                                                                                                                        |
-| ---------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------ |
-| `distribution`         | string | One of `DeterministicDistribution`, `NormalDistribution`, `LogNormalDistribution`, `GammaDistribution`, `UniformDistribution`. |
-| `mean_ns`              | float  | Mean delay in nanoseconds.                                                                                                     |
-| `std_ns`               | float  | Standard deviation of the delay in nanoseconds (ignored for `DeterministicDistribution`).                                      |
-| `activate_correlation` | bool   | Enable UTEMA autocorrelation of successive delays.                                                                             |
-| `initialization_rate_pps` | float | Required. Packet rate in packets per second the correlated delay starts with, until the first 1 ms rate estimate replaces it. Use the expected packet rate of the link (about 8.1 Mpps for 100 Gb/s with 1518 byte frames). Finite and at least 1, checked whether or not correlation is active. |
-| `half_life_period_ns`  | float  | Correlation half-life in nanoseconds (only used when correlation is active). Must be finite and not negative (0 is valid), whether or not correlation is active. With correlation, a half-life so long that its smoothing weight is not below 1 is rejected. |
+| Field                     | Meaning                                                                                  |
+| ------------------------- | ---------------------------------------------------------------------------------------- |
+| `distribution`            | `DeterministicDistribution`, `NormalDistribution`, `LogNormalDistribution`, `GammaDistribution` or `UniformDistribution`. |
+| `mean_ns`, `std_ns`       | Mean and standard deviation of the delay in ns (`std_ns` is ignored for `Deterministic`). |
+| `activate_correlation`    | Smooth successive delays with a rate-adaptive exponential moving average.                 |
+| `half_life_period_ns`     | Correlation half-life in ns, finite and not negative.                                     |
+| `initialization_rate_pps` | Required, no default: the expected packet rate of the link (finite, at least 1), used until the first 1 ms rate estimate. About 8.1 Mpps for 100 Gb/s of 1518 B frames. |
 
 **`limiter`**
 
-| Field       | Type   | Meaning                                                                         |
-| ----------- | ------ | ------------------------------------------------------------------------------- |
-| `mode`      | string | `Spacer` or `TokenBucketFilter`.                                                |
-| `activate`  | bool   | Enable rate limiting. When `false` the limiter is a no-op.                      |
-| `rate_bps`  | float  | Target rate in bits per second.                                                 |
+| Field      | Meaning                                              |
+| ---------- | ---------------------------------------------------- |
+| `mode`     | `Spacer` or `TokenBucketFilter`.                     |
+| `activate` | `false` makes the limiter a no-op.                   |
+| `rate_bps` | Target rate in bits per second.                      |
 
-**`loss_model`** — a tagged union, one of:
-
-- `{ "Random": p }` — each packet is dropped independently with probability `p`.
-- `{ "GilbertElliot": [p, r, k, h, state_is_good] }` — bursty loss with a Good/Bad
-  state machine:
-  - `p` — Good → Bad transition probability
-  - `r` — Bad → Good transition probability
-  - `k` — probability of correct transmission while in the Good state
-  - `h` — probability of correct transmission while in the Bad state
-  - `state_is_good` — initial state flag (always reset to `true`/Good on startup)
+**`loss_model`**: `{ "Random": p }` drops each packet independently with probability
+`p`. `{ "GilbertElliot": [p, r, k, h, state_is_good] }` is a two-state model: `p` is
+the Good to Bad and `r` the Bad to Good transition probability, `k` and `h` the
+probability of correct transmission in Good and Bad, `state_is_good` the initial state.
 
 ## License
 

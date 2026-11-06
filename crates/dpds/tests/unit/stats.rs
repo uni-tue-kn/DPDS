@@ -6,7 +6,7 @@
 //! The reply builders return `dpds::reply::Reply` (ordered `(key, Value)`
 //! data), so the exact wire fields are asserted here without an EAL; the
 //! registration shims that copy a `Reply` into a `dpdk::telemetry::Dict` are
-//! covered by the e2e test. Wire semantics follow preof's TELEMETRY.md.
+//! covered by the e2e test. The wire fields follow preof's telemetry replies.
 //!
 //! Builders and tests are telemetry-feature only (they need real counters),
 //! except what must exist in both builds: `Stats`, `DirectionStats`,

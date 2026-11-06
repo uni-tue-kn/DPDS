@@ -3,7 +3,7 @@
 //! The start, validate and hints body is `{links}`. `settings` and a link's `worker` are unknown
 //! fields (400 naming them). The main lcore is the lowest online core that is not isolated, the
 //! workers are the isolated cores handed out automatically, and the EAL argv has no extras.
-//! (The fixed 1000 ms poll is pinned in `telemetry_freshness`; the README in `crates/dpds`.)
+//! (The fixed 1000 ms poll is pinned in `telemetry_freshness`.)
 
 use crate::common::*;
 use serde_json::{json, Value};

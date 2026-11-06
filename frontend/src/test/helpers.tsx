@@ -448,7 +448,7 @@
 //   components/charts.ts must register LineController (mixed bar+line chart).
 // ## Settings (v7 F5): EAL extra arguments are a list, see the header of settings.test.tsx.
 // ## Interfaces / Host hints / Settings: see their test files.
-// ## Static checks (no Docker/nginx files, vite dev proxy, CI without a frontend asset job, README, F6 leftovers): src/static.test.ts.
+// ## Static checks (no Docker/nginx files, vite dev proxy, CI without a frontend asset job, F6 leftovers): src/static.test.ts.
 import { render, act, screen, within } from '@testing-library/react';
 import type { UserEvent } from '@testing-library/user-event';
 import { vi } from 'vitest';

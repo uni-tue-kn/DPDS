@@ -1,6 +1,6 @@
 //! Application-defined telemetry commands.
 //!
-//! DPDK's telemetry thread (spawned by `rte_eal_init`, see README) serves
+//! DPDK's telemetry thread (spawned by `rte_eal_init`) serves
 //! JSON over a Unix socket; every library registers read-only commands on
 //! it.  This module lets the application register its own, so app-level
 //! counters appear in `dpdk-telemetry.py` next to `/ethdev/stats`.

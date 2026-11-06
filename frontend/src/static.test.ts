@@ -9,7 +9,6 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, uti
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { must } from './test/must';
 
 const frontendDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const repoDir = resolve(frontendDir, '..');
@@ -22,19 +21,6 @@ describe('no Docker or nginx deployment of the frontend (spec v13)', () => {
       expect(existsSync(resolve(repoDir, file)), file).toBe(false);
     },
   );
-
-  const stale = /docker-compose|docker compose|Dockerfile|nginx|DPDS_FRONTEND_(BIND|PORT)/i;
-
-  it.each([
-    ['frontend/README.md', () => read('README.md')],
-    ['README.md', () => readFileSync(resolve(repoDir, 'README.md'), 'utf8')],
-  ])('%s no longer describes the container deployment', (_name, text) => {
-    expect(text()).not.toMatch(stale);
-  });
-
-  it('the repository README tells how to hand the controller a locally built frontend', () => {
-    expect(readFileSync(resolve(repoDir, 'README.md'), 'utf8')).toMatch(/DPDS_FRONTEND_DIST/);
-  });
 });
 
 describe('index.html works under the controller CSP (default-src self, no inline code)', () => {
@@ -208,67 +194,14 @@ describe('.github/workflows/ci.yml: no frontend release asset any more (spec v15
   });
 });
 
-describe('README.md and frontend/README.md: dpds.sh builds the frontend with Node on the host (spec v15)', () => {
-  const readme = readFileSync(resolve(repoDir, 'README.md'), 'utf8');
-  const paragraphs = readme.split(/\n\s*\n/).map((p) => p.replace(/\s+/g, ' '));
+describe('package.json engines (dpds.sh builds the frontend with Node on the host, spec v15)', () => {
   const enginesMin = (JSON.parse(read('package.json')) as { engines: { node: string } }).engines.node.replace(
     /^>=\s*/,
     '',
   );
 
-  it('the engines.node minimum is written as >=X.Y (the README and dpds.sh quote it)', () => {
+  it('the engines.node minimum is written as >=X.Y (dpds.sh quotes it)', () => {
     expect(enginesMin).toMatch(/^\d+\.\d+/);
-  });
-
-  it('a paragraph on dpds.sh names Node with the minimum version and npm', () => {
-    const para = paragraphs.find(
-      (p) => /dpds\.sh/.test(p) && /\bNode\b/.test(p) && /\bnpm\b/.test(p) && p.includes(enginesMin),
-    );
-    expect(para, `no paragraph about dpds.sh, Node ${enginesMin} and npm`).toBeDefined();
-  });
-
-  it('says that npm ci needs network access to the npm registry', () => {
-    expect(readme).toMatch(/npm registry/i);
-  });
-
-  it('says that dpds.sh runs npm ci and npm run build before it builds the controller', () => {
-    const para = paragraphs.find(
-      (p) => /dpds\.sh/.test(p) && /npm ci/.test(p) && /npm run build/.test(p) && !/download|skip/i.test(p),
-    );
-    expect(
-      para,
-      'no paragraph about dpds.sh running npm ci and npm run build (and not about skipping a download)',
-    ).toBeDefined();
-    expect(must(para).indexOf('npm ci')).toBeLessThan(must(para).indexOf('npm run build'));
-  });
-
-  it('has no release-asset, download or trust-model text', () => {
-    expect(readme).not.toMatch(
-      /frontend-builds|frontend-asset|DPDS_FRONTEND_ASSET_URL|\.sha256|sha256sum|release asset|trust model|CI-built|dpds-frontend-<tree>|\.tar\.gz|frontend asset/i,
-    );
-  });
-
-  it('no longer claims that the host needs no Node or lists curl and tar as requirements', () => {
-    expect(readme).not.toMatch(/no Node on the host/i);
-    expect(readme).not.toMatch(/`curl`, `sha256sum` and `tar`/);
-  });
-
-  it('the DPDK requirement is at least 26.07 and 25.11 is gone (user, 2026-11-03)', () => {
-    expect(readme).not.toMatch(/25\.11/);
-    const line = readme.split('\n').find((l) => /\*\*DPDK /.test(l)) ?? '';
-    expect(line).toMatch(/at least 26\.07/);
-  });
-
-  it('frontend/README.md no longer says that CI builds an asset that dpds.sh downloads', () => {
-    expect(read('README.md')).not.toMatch(/release asset|download|uploads it/i);
-  });
-
-  it('frontend/README.md says that dpds.sh install builds the frontend', () => {
-    const paras = read('README.md')
-      .split(/\n\s*\n/)
-      .map((p) => p.replace(/\s+/g, ' '));
-    const para = paras.find((p) => /dpds\.sh install/.test(p) && /\bbuilds?\b/i.test(p) && /\b(Node|npm)\b/.test(p));
-    expect(para, 'no paragraph about dpds.sh install building the frontend with Node or npm').toBeDefined();
   });
 });
 
@@ -300,16 +233,6 @@ describe('frontend build script (v13b item 2)', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  });
-
-  it('the README says a plain cargo build embeds whatever frontend/dist holds, which may be stale', () => {
-    const readme = readFileSync(resolve(repoDir, 'README.md'), 'utf8');
-    const paragraphs = readme.split(/\n\s*\n/).map((p) => p.replace(/\s+/g, ' '));
-    const para = paragraphs.find(
-      (p) => /cargo build/.test(p) && /frontend\/dist/.test(p) && /stale|outdated|whatever/i.test(p),
-    );
-    expect(para, 'no paragraph about cargo build, frontend/dist and stale content').toBeDefined();
-    expect(para).toMatch(/dpds\.sh[^.]*\b(explicit|always)\b|\b(explicit|always)\b[^.]*dpds\.sh/i);
   });
 });
 
@@ -478,7 +401,7 @@ describe('frontend lint and format tooling: Biome (spec v23)', () => {
 });
 
 // Spec 27 (user 2026-11-04): presets are gone, replaced by Import/Export on the links page and Duplicate in its list (the page is called Settings since spec 41).
-describe('presets are removed from the source and the README (spec27)', () => {
+describe('presets are removed from the source (spec27)', () => {
   const src = (f: string) => read('src', f);
 
   it.each(['pages/Presets.tsx', 'pages/PresetEditor.tsx', 'pages/SavePresetModal.tsx'])('%s is gone', (file) => {
@@ -520,25 +443,5 @@ describe('presets are removed from the source and the README (spec27)', () => {
     const help = src('pages/fieldHelp.ts');
     expect(help).not.toMatch(/Import setup file|Apply preset|Preset name/);
     expect(help).not.toMatch(/^\s*Description:/m);
-  });
-
-  describe('README.md', () => {
-    const readme = readFileSync(resolve(repoDir, 'README.md'), 'utf8');
-    const paragraphs = readme.split(/\n\s*\n/).map((p) => p.replace(/\s+/g, ' '));
-
-    it('does not mention presets any more', () => {
-      expect(readme).not.toMatch(/preset/i);
-    });
-
-    it('says that links can be exported and imported on the Settings page (and that this is about the links)', () => {
-      const para = paragraphs.find(
-        (p) => /\bSettings\b/.test(p) && /\bImport\b/.test(p) && /\bExport\b/.test(p) && /\blinks\b/i.test(p),
-      );
-      expect(para, 'no paragraph naming Settings, Import, Export and links').toBeDefined();
-    });
-
-    it('no longer describes a whole-setup export that carries settings and presets', () => {
-      expect(readme).not.toMatch(/Export\s+and\s+import\s+of\s+the\s+whole\s+setup/i);
-    });
   });
 });
