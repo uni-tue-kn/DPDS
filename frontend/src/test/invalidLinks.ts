@@ -1,6 +1,6 @@
-// Tables of invalid and edge-case links, shared by the stored-document tests (localStore.test.tsx) and the import tests
-// (linksImportExport.test.tsx). A link is valid only if the link editor would accept it unchanged (name rule, non-empty ports,
-// a config that survives the form round trip, optional frame size). Each entry is a whole link, built on `fx.link()`.
+// Tables of invalid and edge-case links for the stored-document and import checks (localStore.test.ts). A link is valid only if the
+// link form would accept it unchanged (name rule, non-empty ports, a config that survives the form round trip, optional frame size).
+// Each entry is a whole link, built on `fx.link()`.
 import * as fx from './fixtures';
 
 type Loose = Record<string, unknown>;

@@ -417,9 +417,6 @@ export function runningEmulation(
   return emulation(state, { config });
 }
 
-/** The rate chart plots L1 (rx_gbps + rx_mpps * 0.16); tests about something else than the L1 overhead set both Mpps to 0, so L1 = L2 and the plotted value is the rx_gbps given. */
-export const NO_PPS = { rx_mpps: 0, tx_mpps: 0 } as const;
-
 /**
  * One sample of `GET /api/stats/history` (`t_ms`: whole milliseconds since the run started). The defaults are the rates of `dirStats()` in the units of the
  * series (Gbit/s, Mpps) and cumulative drop counts, so a chart built from the history shows what the stats cards show.
@@ -496,16 +493,3 @@ export function totals(over: Partial<HistoryTotals> = {}): HistoryTotals {
 export function historySamples(from: number, count: number, over: Partial<HistorySample> = {}): HistorySample[] {
   return Array.from({ length: count }, (_, i) => historySample((from + i) * 1000, over));
 }
-
-/** The cumulative drop fields of a `HistorySample`, in the order of the donut's causes (and of the loss chart's lines): nine causes. */
-export const DROP_FIELDS = [
-  'loss_drops',
-  'limiter_drops',
-  'buffer_full_drops',
-  'nic_tx_drops',
-  'nic_rx_missed',
-  'nic_rx_nombuf',
-  'nic_rx_port_buffer_discards',
-  'nic_rx_phy_discards',
-  'nic_tx_phy_discards',
-] as const;

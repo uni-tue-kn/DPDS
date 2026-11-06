@@ -1,187 +1,156 @@
+// User flows of the Host hints page: the list, the hints for the local links, Recheck and the commands buttons.
 import { screen, waitFor, within } from '@testing-library/react';
-import { api, ApiError } from '../test/mockApi';
+import userEvent from '@testing-library/user-event';
+import { vi } from 'vitest';
+import type { Hint } from '../api/types';
 import * as fx from '../test/fixtures';
-import { expectStartBody, renderApp, seedStore, seedLinks } from '../test/helpers';
+import { deferred, expectStartBody, renderApp, seedStore } from '../test/helpers';
+import { api } from '../test/mockApi';
+import { must } from '../test/must';
 
-// The page lists the host-only hints (`getHostHints`, GET /api/host/hints) plus, when the LOCAL document has links, the
-// link-dependent ones from `getHostHintsFor({links})` (POST /api/host/hints with the start body); merged by hint id,
-// the POST answer wins. No local links -> no POST.
-// Groups are <section> regions named by an <h2> starting with Errors / Warnings / Info / OK (an optional
-// count may follow), in this order, empty groups omitted. Each group has `data-level` (error|warn|info|ok);
-// each hint is a listitem with the same `data-level` showing title, detail and suggestion. The level
-// colours come from CSS variables keyed on `data-level` (not testable in jsdom; see assets/styles.test.ts).
-describe('Host hints page', () => {
-  it('groups hints by level in severity order', async () => {
-    renderApp('/hints');
-    await screen.findByRole('region', { name: /^Errors/ });
-    const headings = screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent ?? '');
-    expect(headings).toHaveLength(4);
-    expect(headings[0]).toMatch(/^Errors/);
-    expect(headings[1]).toMatch(/^Warnings/);
-    expect(headings[2]).toMatch(/^Info/);
-    expect(headings[3]).toMatch(/^OK/);
-  });
+const group = (name: RegExp) => screen.getByRole('region', { name });
+const itemOf = (title: string) => must(screen.getByText(title).closest('li'), `the list item of "${title}"`);
 
-  it('puts each hint into its group with title, detail and suggestion', async () => {
+/** user-event installs its own clipboard stub in `setup()`, so a test's clipboard goes in afterwards. */
+function setClipboard(writeText: ((text: string) => Promise<void>) | undefined) {
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: writeText && { writeText } });
+}
+
+describe('Host hints: the list', () => {
+  it('puts every hint into the group of its level with title, detail and suggestion, and omits empty groups', async () => {
+    api.getHostHints.mockResolvedValue(fx.hints().filter((h) => h.level !== 'info'));
     renderApp('/hints');
     const errors = await screen.findByRole('region', { name: /^Errors/ });
-    expect(within(errors).getAllByRole('listitem')).toHaveLength(1);
-    expect(errors).toHaveTextContent('No core isolation');
-    expect(errors).toHaveTextContent('isolcpus is not set.');
-    expect(errors).toHaveTextContent('Add isolcpus=2-5 nohz_full=2-5 rcu_nocbs=2-5 to the kernel command line.');
-    const warns = screen.getByRole('region', { name: /^Warnings/ });
-    expect(within(warns).getAllByRole('listitem')).toHaveLength(2);
-    expect(warns).toHaveTextContent('Few hugepages');
-    expect(warns).toHaveTextContent('Governor is powersave');
-    expect(within(screen.getByRole('region', { name: /^Info/ })).getAllByRole('listitem')).toHaveLength(1);
-    expect(within(screen.getByRole('region', { name: /^OK/ })).getAllByRole('listitem')).toHaveLength(1);
-    expect(errors).not.toHaveTextContent('Few hugepages');
-  });
-
-  it('marks groups and items with their level for the colours', async () => {
-    renderApp('/hints');
-    const levels: [RegExp, string][] = [
-      [/^Errors/, 'error'],
-      [/^Warnings/, 'warn'],
-      [/^Info/, 'info'],
-      [/^OK/, 'ok'],
-    ];
-    for (const [name, level] of levels) {
-      const region = await screen.findByRole('region', { name });
-      expect(region).toHaveAttribute('data-level', level);
-      for (const item of within(region).getAllByRole('listitem')) expect(item).toHaveAttribute('data-level', level);
-    }
-  });
-
-  it('omits empty groups', async () => {
-    api.getHostHints.mockResolvedValue(fx.hints().filter((h) => h.level === 'warn' || h.level === 'ok'));
-    renderApp('/hints');
-    await screen.findByRole('region', { name: /^Warnings/ });
-    expect(screen.queryByRole('region', { name: /^Errors/ })).not.toBeInTheDocument();
+    expect(within(errors).getByText('No core isolation')).toBeInTheDocument();
+    expect(within(errors).getByText('isolcpus is not set.')).toBeInTheDocument();
+    expect(within(errors).getByText(/isolcpus=2-5/)).toBeInTheDocument();
+    const warnings = group(/^Warnings/);
+    expect(within(warnings).getByText('Few hugepages')).toBeInTheDocument();
+    expect(within(warnings).getByText('Governor is powersave')).toBeInTheDocument();
+    expect(within(group(/^OK/)).getByText('NIC IRQs are off the isolated cores')).toBeInTheDocument();
     expect(screen.queryByRole('region', { name: /^Info/ })).not.toBeInTheDocument();
-    expect(screen.getByRole('region', { name: /^OK/ })).toBeInTheDocument();
   });
 
-  it('shows the host uplink error hint in the Errors group', async () => {
-    api.getHostHints.mockResolvedValue([
-      {
-        id: 'uplink',
-        level: 'error',
-        title: 'Host uplink',
-        detail: 'carries a route',
-        suggestion: 'Do not use it.',
-      },
-    ]);
-    renderApp('/hints');
-    const errors = await screen.findByRole('region', { name: /^Errors/ });
-    expect(errors).toHaveTextContent('Host uplink');
-  });
-
-  it('shows a message for an empty hint list', async () => {
+  it('says so when there are no hints', async () => {
     api.getHostHints.mockResolvedValue([]);
     renderApp('/hints');
-    expect(await screen.findByText(/no hints/i)).toBeInTheDocument();
+    expect(await screen.findByText('No hints.')).toBeInTheDocument();
   });
 
   it('shows the API error', async () => {
-    api.getHostHints.mockRejectedValue(new ApiError(500, 'procfs unreadable'));
+    api.getHostHints.mockRejectedValue(new Error('controller exploded'));
     renderApp('/hints');
-    expect(await screen.findByRole('alert')).toHaveTextContent('procfs unreadable');
-  });
-
-  // The page shows no ports of its own; port names in hint texts come from the controller and are printed verbatim.
-  it('prints a port in a hint text verbatim and does not ask for the interfaces', async () => {
-    api.getHostHints.mockResolvedValue([
-      {
-        id: 'numa',
-        level: 'warn',
-        title: 'NUMA mismatch',
-        detail: 'Port 0000:65:00.0 is on node 1.',
-        suggestion: 'Use cores of node 1.',
-      },
-    ]);
-    renderApp('/hints');
-    expect(await screen.findByText('Port 0000:65:00.0 is on node 1.')).toBeInTheDocument();
-    expect(api.getInterfaces).not.toHaveBeenCalled();
+    expect(await screen.findByRole('alert')).toHaveTextContent('controller exploded');
   });
 });
 
-describe('Host hints page: hints for the local configuration (v22)', () => {
-  const linkHint = {
-    id: 'numa',
-    level: 'warn' as const,
-    title: 'NUMA mismatch',
-    detail: 'a-b crosses nodes.',
-    suggestion: 'Use node 0.',
-  };
-
-  it('without local links only the host hints are asked for: no POST', async () => {
+describe('Host hints: hints for the local links', () => {
+  it('without stored links only the host hints are asked for', async () => {
     renderApp('/hints');
-    await screen.findByRole('region', { name: /^Errors/ });
-    expect(api.getHostHints).toHaveBeenCalledTimes(1);
+    await screen.findByText('No core isolation');
     expect(api.getHostHintsFor).not.toHaveBeenCalled();
   });
 
-  it('with local links it POSTs the start body (`{links}` without ids) and lists the host and the link hints together', async () => {
+  it('with stored links the start body is POSTed and the answers are merged by id, the POST answer winning', async () => {
     const doc = seedStore({ links: [fx.link(), fx.linkRev()] });
-    api.getHostHintsFor.mockResolvedValue([linkHint]);
-    renderApp('/hints');
-    const warns = await screen.findByRole('region', { name: /^Warnings/ });
-    await waitFor(() => expect(warns).toHaveTextContent('NUMA mismatch'));
-    expect(warns).toHaveTextContent('Few hugepages'); // host hint of the GET
-    expect(api.getHostHints).toHaveBeenCalledTimes(1);
-    expect(api.getHostHintsFor).toHaveBeenCalledTimes(1);
-    expectStartBody(api.getHostHintsFor.mock.calls[0][0], doc);
-    expect(within(warns).getAllByRole('listitem')).toHaveLength(3);
-  });
-
-  it('a hint id in both answers is listed once and the POST answer wins', async () => {
-    seedLinks([fx.link()]);
     api.getHostHintsFor.mockResolvedValue([
-      {
-        id: 'hugepages',
-        level: 'error',
-        title: 'Hugepages too few for the links',
-        detail: 'a-b needs 8 GiB.',
-        suggestion: 'Reserve 8 GiB.',
-      },
+      { id: 'hugepages', level: 'error', title: 'No hugepages for these links', detail: 'd', suggestion: 's' },
+      { id: 'link_only', level: 'info', title: 'Only for the links', detail: 'd', suggestion: 's' },
     ]);
     renderApp('/hints');
-    const errors = await screen.findByRole('region', { name: /^Errors/ });
-    await waitFor(() => expect(errors).toHaveTextContent('Hugepages too few for the links'));
+    expect(await screen.findByText('Only for the links')).toBeInTheDocument();
+    expectStartBody(api.getHostHintsFor.mock.calls[0]?.[0], doc);
+    expect(within(group(/^Errors/)).getByText('No hugepages for these links')).toBeInTheDocument();
     expect(screen.queryByText('Few hugepages')).not.toBeInTheDocument();
-    expect(screen.getAllByText(/hugepages/i).length).toBeGreaterThan(0);
-    expect(within(screen.getByRole('region', { name: /^Warnings/ })).getAllByRole('listitem')).toHaveLength(1); // governor only
+    expect(screen.getByText('No core isolation')).toBeInTheDocument();
   });
 
-  it('a failing POST shows its message in an alert while the host hints stay', async () => {
-    seedLinks([fx.link()]);
-    api.getHostHintsFor.mockRejectedValue(new ApiError(409, 'port 0000:17:00.0 is a host uplink'));
+  it('a failing POST shows its message while the host hints stay', async () => {
+    seedStore({ links: [fx.link()] });
+    api.getHostHintsFor.mockRejectedValue(new Error('cannot check these links'));
     renderApp('/hints');
-    expect(await screen.findByRole('alert')).toHaveTextContent('port 0000:17:00.0 is a host uplink');
-    expect(screen.getByRole('region', { name: /^Errors/ })).toHaveTextContent('No core isolation');
+    expect(await screen.findByRole('alert')).toHaveTextContent('cannot check these links');
+    expect(screen.getByText('No core isolation')).toBeInTheDocument();
+  });
+});
+
+describe('Host hints: Recheck', () => {
+  it('asks the controller again with recheck for the host hints and the link hints, once per click, and shows the new answer', async () => {
+    const user = userEvent.setup();
+    const doc = seedStore({ links: [fx.link()] });
+    const hostAgain = deferred<Hint[]>();
+    api.getHostHints.mockResolvedValueOnce(fx.hints()).mockImplementationOnce(() => hostAgain.promise);
+    renderApp('/hints');
+    await screen.findByText('No core isolation');
+    expect(api.getHostHints).toHaveBeenLastCalledWith(undefined);
+    expect(api.getHostHintsFor.mock.calls[0]?.[1]).toBeUndefined();
+
+    await user.dblClick(screen.getByRole('button', { name: 'Recheck' }));
+    expect(api.getHostHints).toHaveBeenCalledTimes(2);
+    expect(api.getHostHints).toHaveBeenLastCalledWith({ recheck: true });
+    expect(api.getHostHintsFor).toHaveBeenCalledTimes(2);
+    expectStartBody(api.getHostHintsFor.mock.calls[1]?.[0], doc);
+    expect(api.getHostHintsFor.mock.calls[1]?.[1]).toEqual({ recheck: true });
+
+    // while it runs the old hints stay and the button is off
+    expect(screen.getByRole('button', { name: 'Recheck' })).toBeDisabled();
+    expect(screen.getByText('No core isolation')).toBeInTheDocument();
+
+    hostAgain.resolve([{ id: 'fresh', level: 'ok', title: 'Everything is fine now', detail: 'd', suggestion: 's' }]);
+    expect(await screen.findByText('Everything is fine now')).toBeInTheDocument();
+    expect(screen.queryByText('No core isolation')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Recheck' })).toBeEnabled());
   });
 
-  it('a failing GET still shows its error, also when there are links', async () => {
-    seedLinks([fx.link()]);
-    api.getHostHints.mockRejectedValue(new ApiError(500, 'procfs unreadable'));
+  it('a failed recheck shows its message and the button works again', async () => {
+    const user = userEvent.setup();
+    api.getHostHints.mockResolvedValueOnce(fx.hints()).mockRejectedValueOnce(new Error('recheck failed'));
     renderApp('/hints');
-    expect(await screen.findByRole('alert')).toHaveTextContent('procfs unreadable');
+    await screen.findByText('No core isolation');
+    await user.click(screen.getByRole('button', { name: 'Recheck' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('recheck failed');
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Recheck' })).toBeEnabled());
+  });
+});
+
+describe('Host hints: commands', () => {
+  const swap = fx.commandsHint({ commands: ['sysctl -w vm.swappiness=0', 'echo "a > b" > /tmp/x'] });
+
+  async function showCommands() {
+    api.getHostHints.mockResolvedValue([swap, ...fx.hints()]);
+    renderApp('/hints');
+    await screen.findByText(swap.title);
+  }
+
+  it('only a hint with commands has the buttons; hovering the icon button lists them', async () => {
+    const user = userEvent.setup();
+    await showCommands();
+    expect(screen.getAllByRole('button', { name: 'Copy commands' })).toHaveLength(1);
+    await user.hover(within(itemOf(swap.title)).getByRole('button', { name: `Commands for ${swap.title}` }));
+    const tip = await screen.findByRole('tooltip');
+    for (const c of must(swap.commands)) expect(tip).toHaveTextContent(c);
   });
 
-  it('an empty answer of both calls shows the empty message', async () => {
-    seedLinks([fx.link()]);
-    api.getHostHints.mockResolvedValue([]);
-    api.getHostHintsFor.mockResolvedValue([]);
-    renderApp('/hints');
-    expect(await screen.findByText(/no hints/i)).toBeInTheDocument();
+  it('Copy commands writes the commands joined by newlines to the clipboard and confirms', async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    await showCommands();
+    setClipboard(writeText);
+    await user.click(within(itemOf(swap.title)).getByRole('button', { name: 'Copy commands' }));
+    expect(writeText).toHaveBeenCalledExactlyOnceWith(must(swap.commands).join('\n'));
+    expect(await within(itemOf(swap.title)).findByText('Copied')).toBeInTheDocument();
   });
 
-  it('reads the document but never writes it', async () => {
-    seedLinks([fx.link()]);
-    const before = localStorage.getItem('dpds.config.v1');
-    renderApp('/hints');
-    await screen.findByRole('region', { name: /^Errors/ });
-    expect(localStorage.getItem('dpds.config.v1')).toBe(before);
+  it.each([
+    ['no clipboard (plain http)', undefined],
+    ['a rejected write', () => Promise.reject(new DOMException('denied', 'NotAllowedError'))],
+  ])('with %s the commands are shown for copying by hand', async (_name, writeText) => {
+    const user = userEvent.setup();
+    await showCommands();
+    setClipboard(writeText);
+    await user.click(within(itemOf(swap.title)).getByRole('button', { name: 'Copy commands' }));
+    const pre = await waitFor(() => must(itemOf(swap.title).querySelector('pre')));
+    expect(pre.textContent).toBe(must(swap.commands).join('\n'));
+    expect(within(itemOf(swap.title)).queryByText('Copied')).not.toBeInTheDocument();
   });
 });

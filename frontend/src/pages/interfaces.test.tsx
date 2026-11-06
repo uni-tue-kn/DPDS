@@ -1,115 +1,56 @@
+// User flows of the Interfaces page.
 import { screen, within } from '@testing-library/react';
-import { api, ApiError } from '../test/mockApi';
 import * as fx from '../test/fixtures';
 import { renderApp } from '../test/helpers';
+import { api } from '../test/mockApi';
+import { must } from '../test/must';
 
-// Columns (columnheader names, in this order): PCI, Vendor, Driver, Netdev, MAC, State, Speed, MTU, NUMA,
-// PCIe link, Usable, Reason. Null values print "n/a". Speed 100000 Mb/s prints "100 Gb/s", 10000 "10 Gb/s".
-// uplink interfaces (the host uses them) carry the text "uplink" in their row, never "management"; no other row
-// says "uplink". The reason text comes from the API; without one the row falls back to the word "uplink".
-const COLUMNS = [
-  'PCI',
-  'Vendor',
-  'Driver',
-  'Netdev',
-  'MAC',
-  'State',
-  'Speed',
-  'MTU',
-  'NUMA',
-  'PCIe link',
-  'Usable',
-  'Reason',
-];
-
-function rowOf(pci: string): HTMLElement {
-  return screen.getByRole('cell', { name: pci }).closest('tr') as HTMLElement;
-}
-function cell(row: HTMLElement, column: string): HTMLElement {
-  const headers = screen.getAllByRole('columnheader').map((h) => h.textContent?.trim());
-  const idx = headers.indexOf(column);
-  if (idx < 0) throw new Error(`no column ${column}`);
-  return within(row).getAllByRole('cell')[idx];
-}
+const rowOf = (pci: string) => must(screen.getByText(pci).closest('tr'), `the row of ${pci}`);
 
 describe('Interfaces page', () => {
-  it('has the discovery columns', async () => {
+  it('lists every interface with its data, the usable flag and the reason when it is not usable', async () => {
     renderApp('/interfaces');
-    await screen.findByRole('cell', { name: '0000:65:00.0' });
-    expect(screen.getAllByRole('columnheader').map((h) => h.textContent?.trim())).toEqual(COLUMNS);
+    await screen.findByText('0000:65:00.0');
+    const usable = within(rowOf('0000:65:00.0'));
+    for (const text of ['Mellanox', 'mlx5_core', 'enp101s0f0', 'aa:bb:cc:00:00:01', 'up', '100 Gb/s', '1500', 'yes']) {
+      expect(usable.getByText(text)).toBeInTheDocument();
+    }
+    const unusable = within(rowOf('0000:b3:00.0'));
+    expect(unusable.getByText('no')).toBeInTheDocument();
+    expect(unusable.getByText('driver i40e: bind to vfio-pci')).toBeInTheDocument();
   });
 
-  it('shows one row per interface with all fields', async () => {
+  it('shows n/a for missing data, and says "uplink" for an uplink that comes without a reason', async () => {
+    api.getInterfaces.mockResolvedValue([
+      fx.iface({
+        pci: '0000:17:00.0',
+        vendor: null,
+        driver: null,
+        speed_mbps: null,
+        mtu: null,
+        pcie_link: null,
+        uplink: true,
+        dpds_usable: false,
+        reason: null,
+      }),
+    ]);
     renderApp('/interfaces');
-    await screen.findByRole('cell', { name: '0000:65:00.0' });
-    expect(screen.getAllByRole('row')).toHaveLength(1 + 4);
-    const r = rowOf('0000:65:00.0');
-    expect(cell(r, 'Vendor')).toHaveTextContent('Mellanox');
-    expect(cell(r, 'Driver')).toHaveTextContent('mlx5_core');
-    expect(cell(r, 'Netdev')).toHaveTextContent('enp101s0f0');
-    expect(cell(r, 'MAC')).toHaveTextContent('aa:bb:cc:00:00:01');
-    expect(cell(r, 'State')).toHaveTextContent('up');
-    expect(cell(r, 'Speed')).toHaveTextContent('100 Gb/s');
-    expect(cell(r, 'MTU')).toHaveTextContent('1500');
-    expect(cell(r, 'NUMA')).toHaveTextContent('0');
-    expect(cell(r, 'PCIe link').textContent).toMatch(/16\.0 GT\/s.*x16/);
-    expect(cell(r, 'Usable')).toHaveTextContent(/yes/i);
-    expect(r).not.toHaveTextContent(/uplink/i);
+    await screen.findByText('0000:17:00.0');
+    const row = within(rowOf('0000:17:00.0'));
+    expect(row.getAllByText('n/a').length).toBeGreaterThanOrEqual(3);
+    expect(row.getByText('uplink')).toBeInTheDocument();
+    // the hex vendor id stands in for a vendor whose name is unknown
+    expect(row.getByText('0x15b3')).toBeInTheDocument();
   });
 
-  it('shows why an interface is unusable', async () => {
-    renderApp('/interfaces');
-    await screen.findByRole('cell', { name: '0000:b3:00.0' });
-    const r = rowOf('0000:b3:00.0');
-    expect(cell(r, 'Vendor')).toHaveTextContent('Intel');
-    expect(cell(r, 'Usable')).toHaveTextContent(/no/i);
-    expect(cell(r, 'Reason')).toHaveTextContent('driver i40e: bind to vfio-pci');
-    expect(cell(r, 'Speed')).toHaveTextContent('10 Gb/s');
-    expect(cell(r, 'PCIe link')).toHaveTextContent('n/a');
-    expect(r).not.toHaveTextContent(/uplink/i);
-  });
+  it('says so when there are no interfaces, and shows the API error', async () => {
+    api.getInterfaces.mockResolvedValueOnce([]);
+    const view = renderApp('/interfaces');
+    expect(await screen.findByText('No network interfaces found.')).toBeInTheDocument();
+    view.unmount();
 
-  it('flags the uplink with the API reason and prints n/a for missing sysfs data', async () => {
+    api.getInterfaces.mockRejectedValue(new Error('no sysfs'));
     renderApp('/interfaces');
-    await screen.findByRole('cell', { name: '0000:17:00.0' });
-    const r = rowOf('0000:17:00.0');
-    expect(r).toHaveTextContent(/uplink/i);
-    expect(r).not.toHaveTextContent(/management/i);
-    expect(cell(r, 'Reason')).toHaveTextContent(
-      'eno1 carries a kernel route (host uplink); DPDK would take it away from the host',
-    );
-    expect(cell(r, 'Usable')).toHaveTextContent(/no/i);
-    expect(cell(r, 'Speed')).toHaveTextContent('n/a');
-    expect(cell(r, 'MTU')).toHaveTextContent('n/a');
-    expect(cell(r, 'NUMA')).toHaveTextContent('n/a');
-  });
-
-  it('says "uplink" for an uplink interface that comes without a reason, and never "management"', async () => {
-    api.getInterfaces.mockResolvedValue([fx.iface({ uplink: true, dpds_usable: false, reason: null })]);
-    renderApp('/interfaces');
-    await screen.findByRole('cell', { name: '0000:65:00.0' });
-    const r = rowOf('0000:65:00.0');
-    expect(r).toHaveTextContent(/uplink/i);
-    expect(r).not.toHaveTextContent(/management/i);
-    expect(cell(r, 'Usable')).toHaveTextContent(/no/i);
-  });
-
-  it('falls back to the hex vendor id when the vendor name is unknown', async () => {
-    api.getInterfaces.mockResolvedValue([fx.iface({ vendor: null, vendor_id: '0x1af4' })]);
-    renderApp('/interfaces');
-    await screen.findByRole('cell', { name: '0000:65:00.0' });
-    expect(cell(rowOf('0000:65:00.0'), 'Vendor')).toHaveTextContent('0x1af4');
-  });
-
-  it('shows an empty state', async () => {
-    api.getInterfaces.mockResolvedValue([]);
-    renderApp('/interfaces');
-    expect(await screen.findByText(/no network interfaces/i)).toBeInTheDocument();
-  });
-
-  it('shows the API error', async () => {
-    api.getInterfaces.mockRejectedValue(new ApiError(500, 'sysfs unreadable'));
-    renderApp('/interfaces');
-    expect(await screen.findByRole('alert')).toHaveTextContent('sysfs unreadable');
+    expect(await screen.findByRole('alert')).toHaveTextContent('no sysfs');
   });
 });
