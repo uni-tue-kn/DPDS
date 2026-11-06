@@ -4,6 +4,7 @@ import { Navigate, NavLink, Route, Routes } from 'react-router';
 import * as api from './api/client';
 import type { OnlineView } from './api/types';
 import logo from './assets/logo.png';
+import logoDark from './assets/logo-dark.png';
 import { resetConfig, useLocalConfig } from './common/localConfig';
 import { startPolling } from './common/polling';
 import type { Theme } from './common/theme';
@@ -96,7 +97,7 @@ function Sidebar({
   return (
     <div className="sidebar">
       <div className="sidebar-brand">
-        <img src={logo} alt="DPDS logo" draggable={false} />
+        <img src={theme === 'dark' ? logoDark : logo} alt="DPDS logo" draggable={false} />
       </div>
       <nav aria-label="Main navigation" className="nav flex-column">
         {NAV.map((n) => (

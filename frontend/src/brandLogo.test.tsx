@@ -1,9 +1,13 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
+import logo from './assets/logo.png';
+import logoDark from './assets/logo-dark.png';
 import * as fx from './test/fixtures';
 import { renderApp, seedLinks } from './test/helpers';
+import { setPrefersDark } from './test/matchMedia';
 import { must } from './test/must';
 
 const PAGES: [string, string][] = [
@@ -63,6 +67,73 @@ describe('sidebar brand', () => {
     const brand = must(sidebar.querySelector('.sidebar-brand'), 'the sidebar brand');
     const nav = must(sidebar.querySelector('nav'), 'the sidebar nav');
     expect(brand.compareDocumentPosition(nav) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});
+
+// The brand image follows the theme: logo.png in light, logo-dark.png in dark, switching with the toggle; never a second <img>.
+describe('sidebar brand logo follows the theme', () => {
+  const brandImgs = () => {
+    const brand = must(document.querySelector('.sidebar .sidebar-brand'), 'the sidebar brand') as HTMLElement;
+    return Array.from(brand.querySelectorAll('img'));
+  };
+  const brandSrc = () => {
+    const imgs = brandImgs();
+    expect(imgs).toHaveLength(1);
+    return must(imgs[0]).getAttribute('src');
+  };
+  const toggle = () => screen.getByRole('button', { name: 'Toggle dark mode' });
+
+  it('uses two distinct assets', () => {
+    expect(logo).toBeTruthy();
+    expect(logoDark).toBeTruthy();
+    expect(logoDark).not.toBe(logo);
+  });
+
+  it('shows logo.png in the light theme', async () => {
+    renderApp('/');
+    await screen.findByRole('heading', { level: 1, name: 'Dashboard' });
+    expect(brandSrc()).toBe(logo);
+  });
+
+  it('shows logo-dark.png when the stored theme is dark', async () => {
+    localStorage.setItem('theme', 'dark');
+    renderApp('/');
+    await screen.findByRole('heading', { level: 1, name: 'Dashboard' });
+    expect(brandSrc()).toBe(logoDark);
+  });
+
+  it('shows logo-dark.png when the system prefers dark and nothing is stored', async () => {
+    setPrefersDark(true);
+    renderApp('/');
+    await screen.findByRole('heading', { level: 1, name: 'Dashboard' });
+    expect(brandSrc()).toBe(logoDark);
+  });
+
+  it('switches immediately with the toggle, light to dark and back, keeping one img', async () => {
+    const user = userEvent.setup();
+    renderApp('/');
+    await screen.findByRole('heading', { level: 1, name: 'Dashboard' });
+    expect(brandSrc()).toBe(logo);
+
+    await user.click(toggle());
+    expect(brandSrc()).toBe(logoDark);
+
+    await user.click(toggle());
+    expect(brandSrc()).toBe(logo);
+  });
+
+  it('switches from an initial dark theme to light and back', async () => {
+    const user = userEvent.setup();
+    localStorage.setItem('theme', 'dark');
+    renderApp('/');
+    await screen.findByRole('heading', { level: 1, name: 'Dashboard' });
+    expect(brandSrc()).toBe(logoDark);
+
+    await user.click(toggle());
+    expect(brandSrc()).toBe(logo);
+
+    await user.click(toggle());
+    expect(brandSrc()).toBe(logoDark);
   });
 });
 
