@@ -572,7 +572,12 @@ fn a_link_without_any_stage_runs_with_zero_delay() {
     );
     let v = c.wait_for_traffic(1);
     let d0 = &v["directions"][0];
-    assert!(f(d0, "delay_mean_ns") < 1000.0, "zero intended delay: {d0}");
+    // the measured delay includes the TX staging wait (up to TX_MAX_WAIT_NS = 10 us in
+    // crates/dpds/src/consts.rs) and the loop latency of a shared CI runner
+    assert!(
+        f(d0, "delay_mean_ns") < 2.0 * 10_000.0,
+        "zero intended delay: {d0}"
+    );
     assert_eq!(
         d0["counters"]["loss_drops"].as_u64().unwrap_or(0),
         0,
