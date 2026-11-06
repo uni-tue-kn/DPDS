@@ -62,11 +62,7 @@ describe('sidebar (spec 28): icon only', () => {
   it('keyboard focus shows no tooltip either, but still lands on a named link', async () => {
     const user = userEvent.setup();
     renderApp('/');
-    await user.tab();
-    // the first stop is the logo link, the nav links follow
-    expect(must(document.activeElement as HTMLElement | null, 'focused element').getAttribute('aria-label')).toBe(
-      'DPDS on GitHub',
-    );
+    // the sidebar has no logo link any more, so the first stop is the first nav link
     await user.tab();
     const focused = must(document.activeElement as HTMLElement | null, 'focused element');
     expect(LABELS).toContain(focused.getAttribute('aria-label') ?? '');

@@ -5,6 +5,7 @@ import type { Hint, HintLevel } from '../api/types';
 import { startRequestOf, useLocalConfig } from '../common/localConfig';
 import { useLoad } from '../common/useLoad';
 import ErrorAlert from '../components/ErrorAlert';
+import PageTitle from '../components/PageTitle';
 
 const GROUPS: { level: HintLevel; title: string; bg: string }[] = [
   { level: 'error', title: 'Errors', bg: 'danger' },
@@ -106,7 +107,7 @@ export default function Hints() {
   const failed = host.error !== undefined || forLinks.error !== undefined;
   return (
     <>
-      <h1 className="mb-3 d-inline-block me-3 align-middle">Host hints</h1>
+      <PageTitle className="mb-3 d-inline-block me-3 align-middle" title="Host hints" />
       <Button
         type="button"
         size="sm"

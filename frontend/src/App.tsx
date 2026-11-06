@@ -3,7 +3,6 @@ import { Button, Modal, OverlayTrigger, Tooltip } from 'react-bootstrap';
 import { Navigate, NavLink, Route, Routes } from 'react-router';
 import * as api from './api/client';
 import type { OnlineView } from './api/types';
-import logo from './assets/logo.png';
 import { resetConfig, useLocalConfig } from './common/localConfig';
 import { startPolling } from './common/polling';
 import type { Theme } from './common/theme';
@@ -95,11 +94,6 @@ function Sidebar({
   }, [onConnected, onOnline, onOffline]);
   return (
     <div className="sidebar">
-      <div className="sidebar-brand">
-        <a href={REPO_URL} target="_blank" rel="noopener noreferrer" aria-label="DPDS on GitHub">
-          <img src={logo} alt="DPDS logo" draggable={false} />
-        </a>
-      </div>
       <nav aria-label="Main navigation" className="nav flex-column">
         {NAV.map((n) => (
           <NavLink key={n.to} to={n.to} end={n.end} className="nav-link" aria-label={n.label}>

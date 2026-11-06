@@ -17,6 +17,7 @@ import { startPolling } from '../common/polling';
 import { usePortLabeler } from '../common/portLabel';
 import { type History, NO_SAMPLES, sumHistories, useRunHistory } from '../common/runHistory';
 import ErrorAlert from '../components/ErrorAlert';
+import PageTitle from '../components/PageTitle';
 import Loader from '../components/Loader';
 import LinkCharts from './LinkCharts';
 import LoadRunning from './LoadRunning';
@@ -281,7 +282,7 @@ export default function Dashboard() {
 
   return (
     <>
-      <h1 className="mb-3">Dashboard</h1>
+      <PageTitle className="mb-3" title="Dashboard" />
       <Row className="align-items-center mb-3" data-testid="top-row">
         <Col className="col-8 text-start" data-testid="top-pills">
           <span style={STAT_STYLE} data-testid="pill-tx">

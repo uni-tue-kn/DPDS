@@ -15,6 +15,7 @@ import {
 import { pendingRestart } from '../common/pendingRestart';
 import LoadRunning from './LoadRunning';
 import ErrorAlert from '../components/ErrorAlert';
+import PageTitle from '../components/PageTitle';
 import { errorMessage } from '../common/format';
 import { useLoad } from '../common/useLoad';
 import { usePortLabeler } from '../common/portLabel';
@@ -122,7 +123,7 @@ export default function Settings() {
   return (
     <>
       <div className="d-flex justify-content-between align-items-center mb-3">
-        <h1 className="mb-0">Settings</h1>
+        <PageTitle className="mb-0" title="Settings" />
         <div className="text-end">
           <input
             ref={fileInput}

@@ -4,6 +4,7 @@ import { Button, Card, Col, Form, Row } from 'react-bootstrap';
 import { Link as RouterLink, useLocation, useNavigate, useParams } from 'react-router';
 import * as api from '../api/client';
 import ErrorAlert from '../components/ErrorAlert';
+import PageTitle from '../components/PageTitle';
 import { errorMessage } from '../common/format';
 import { useLoad } from '../common/useLoad';
 import { saveLink, useLocalConfig } from '../common/localConfig';
@@ -213,7 +214,7 @@ export default function LinkEditor() {
 
   return (
     <>
-      <h1 className="mb-3">{linkId === undefined ? 'New link' : 'Edit link'}</h1>
+      <PageTitle className="mb-3" title={linkId === undefined ? 'New link' : 'Edit link'} />
       <ErrorAlert message={interfaces.error ?? (missing ? `Link ${id} not found` : undefined)} />
       {ready && (
         <Editor

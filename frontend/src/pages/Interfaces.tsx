@@ -1,6 +1,7 @@
 import { Badge, Table } from 'react-bootstrap';
 import * as api from '../api/client';
 import ErrorAlert from '../components/ErrorAlert';
+import PageTitle from '../components/PageTitle';
 import { formatInt, formatSpeedMbps } from '../common/format';
 import { useLoad } from '../common/useLoad';
 import type { Interface } from '../api/types';
@@ -42,7 +43,7 @@ export default function Interfaces() {
 
   return (
     <>
-      <h1 className="mb-3">Interfaces</h1>
+      <PageTitle className="mb-3" title="Interfaces" />
       <ErrorAlert message={error} />
       {data && data.length === 0 && <p>No network interfaces found.</p>}
       {data && data.length > 0 && (
