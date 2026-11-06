@@ -107,6 +107,14 @@ jobs:
       # telemetry, so that binary is built first. They run one at a time.
       - name: Build dpds with telemetry
         run: cargo build --release -p dpds --features telemetry
+      # Unlike the dpds e2e tests, the controller passes no `--no-huge` (spec 41: no extra EAL
+      # flags), so its `dpds` needs real hugepages. The test links use 4096-mbuf buffers (a few
+      # tens of MiB per link); 1 GiB of 2 MiB pages covers the three-link ring with headroom.
+      # `--in-memory` maps them anonymously, so no hugetlbfs write access (root) is needed.
+      - name: Reserve hugepages
+        run: |
+          sudo sysctl -w vm.nr_hugepages=512
+          test "$(cat /proc/sys/vm/nr_hugepages)" -ge 512
       - name: Test controller end-to-end
         run: cargo test --release -p dpds-controller --test integration -- --ignored --test-threads=1
 
