@@ -1,7 +1,6 @@
-//! Spec 22, optional stages: in the `config` of a link of the start body, `delayer`, `limiter`
-//! and `loss_model` are optional (absent or `null` = the stage is not added). The limiter has no
-//! `activate` flag any more: a present limiter is active. `buffer_capacity`, `reordering`,
-//! `seed`, `histogram` and `delay_stats` stay as they were.
+//! Optional stages: in the `config` of a link of the start body, `delayer`, `limiter`
+//! and `loss_model` are optional (absent or `null` = the stage is not added). A present limiter
+//! is active (there is no `activate` flag).
 //!
 //! A missing stage becomes a no-op `dpds_core` stage in the links file `dpds` receives:
 //! - delayer: `DeterministicDistribution`, mean 0, std 0, no correlation, half-life 0 and an
@@ -169,7 +168,7 @@ async fn the_drain_timeout_of_a_link_without_stages_is_the_margin_alone() {
     assert!((t - 5.0).abs() < 1e-9, "{t}");
 }
 
-// ---- `activate` is gone -------------------------------------------------------------------------
+// ---- no `activate` flag -------------------------------------------------------------------------
 
 #[tokio::test]
 async fn limiter_activate_is_a_400_naming_the_field_whatever_the_value() {

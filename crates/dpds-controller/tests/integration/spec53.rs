@@ -1,7 +1,7 @@
-//! Spec 53, A (controller side): the optional `iat_histogram` of a link config, the same type
-//! as `histogram` (`HistogramDto {bins, lo_ns, hi_ns}`).
+//! The optional `iat_histogram` of a link config, the same type as `histogram`
+//! (`HistogramDto {bins, lo_ns, hi_ns}`).
 //!
-//! # Assumptions
+//! # Contract
 //!
 //! - `ConfigDto.iat_histogram: Option<HistogramDto>`, serialized only when set (like
 //!   `histogram`), so the running configuration echoes it.

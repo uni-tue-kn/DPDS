@@ -1,12 +1,9 @@
-// Spec 50 C (user 2026-11-05: "new buttons in the settings are in the standard blue color of React. Do them in the color schema of
-// DPDS"): the Delay accuracy ToggleButtons (`variant="outline-primary"`, ConfigFieldset.tsx) and the other outline-primary buttons
-// take DPDS's red accent --color-primary (#e74c3c) through Bootstrap's --bs-btn-* variables, like the active sidebar link. jsdom
-// renders no CSS, so the stylesheet itself is pinned. Bootstrap's own `.btn-check:checked + .btn`, `:hover`, `:active` and
-// `:focus-visible` rules read these variables, so setting them on `.btn-outline-primary` covers every state; a rule of the
-// implementation that sets them on a state selector of `.btn-outline-primary` is accepted as well (the last declaration wins).
-// No Bootstrap blue (#0d6efd, rgb 13, 110, 253) may remain in the app's stylesheet.
-// Spec 50 E (user 2026-11-05: "make the diagram for the rate, histogram and so on bigger (higher). They are currently really dense"):
-// `.chart-box`, which holds every line and bar chart, is 250px high (user: 400px was too high, then 1.25 x 200px); the donut keeps its 220px.
+// The Delay accuracy ToggleButtons (`variant="outline-primary"`, ConfigFieldset.tsx) and the other outline-primary buttons take
+// DPDS's red accent --color-primary (#e74c3c) through Bootstrap's --bs-btn-* variables, like the active sidebar link. jsdom renders
+// no CSS, so the stylesheet itself is pinned. Bootstrap's own `.btn-check:checked + .btn`, `:hover`, `:active` and `:focus-visible`
+// rules read these variables, so setting them on `.btn-outline-primary` covers every state; setting them on a state selector of
+// `.btn-outline-primary` is accepted as well (the last declaration wins). No Bootstrap blue (#0d6efd, rgb 13, 110, 253) may remain
+// in the app's stylesheet.
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { must } from '../test/must';
@@ -89,7 +86,7 @@ describe('no Bootstrap blue in the stylesheet (spec 50 C)', () => {
 describe('taller charts (spec 50 E)', () => {
   const flat = css.replace(/\s+/g, ' ');
 
-  // Spec 58 S1 (P4TG): the line and bar charts size themselves by aspect ratio (6 and 4); .chart-box has no fixed height any more.
+  // The line and bar charts size themselves by aspect ratio (6 and 4); .chart-box has no fixed height.
   it('.chart-box has no fixed height (spec 58 S1; was 250px)', () => {
     const rule = must(/\.chart-box \{([^}]*)\}/.exec(flat), 'the .chart-box rule')[1];
     expect(rule).not.toMatch(/(?:^|[;\s])(?:min-|max-)?height:/);

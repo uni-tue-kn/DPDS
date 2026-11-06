@@ -46,7 +46,6 @@ describe('api client (real module)', () => {
     ['getStats', () => client.getStats(), '/api/stats'],
     ['getDelayHistogram', () => client.getDelayHistogram(2), '/api/stats/2/delay_histogram'],
     ['getIatHistogram', () => client.getIatHistogram(2), '/api/stats/2/iat_histogram'],
-    // spec 29
     ['getStatsHistory', () => client.getStatsHistory(), '/api/stats/history'],
     ['getStatsHistory with since_ms', () => client.getStatsHistory(12500), '/api/stats/history?since_ms=12500'],
     // 0 is a real time here (samples newer than 0 s), unlike the histogram window where 0 means absent
@@ -63,7 +62,7 @@ describe('api client (real module)', () => {
     expect((lastCall().init.method ?? 'GET').toUpperCase()).toBe('GET');
   });
 
-  // v22: whole configuration in the request body
+  // whole configuration in the request body
   it('startEmulation POSTs the start request (`{links}` without ids, no settings, no worker) as JSON to /api/emulation/start, untouched', async () => {
     const body = {
       links: [
@@ -93,7 +92,7 @@ describe('api client (real module)', () => {
     expect(JSON.parse(String(init.body))).toEqual(body);
   });
 
-  // Spec 34: `getHostHintsFor(req, { recheck: true })` makes the controller read the NIC firmware again; the body is unchanged.
+  // `getHostHintsFor(req, { recheck: true })` makes the controller read the NIC firmware again; the body is unchanged.
   describe('getHostHintsFor recheck (spec 34)', () => {
     const body = () => ({
       links: [{ name: 'a-b', ingress: '0000:65:00.0', egress: '0000:65:00.1', config: fx.config() }],
@@ -120,7 +119,7 @@ describe('api client (real module)', () => {
       expect(lastCall().url).toBe('/api/host/hints');
     });
 
-    // Spec 55: the GET answers the controller's stored result; `{ recheck: true }` computes it again.
+    // the GET answers the controller's stored result; `{ recheck: true }` computes it again.
     it('getHostHints({ recheck: true }) is a body-less GET of /api/host/hints?recheck=true', async () => {
       reply(200, fx.hints());
       await expect(client.getHostHints({ recheck: true })).resolves.toEqual(fx.hints());
@@ -174,7 +173,7 @@ describe('api client (real module)', () => {
       'deletePreset',
       'exportSetup',
       'importSetup',
-      'applyHostAction', // spec 33: DPDS never changes the host, hints only suggest commands
+      'applyHostAction', // DPDS never changes the host, hints only suggest commands
     ]) {
       expect(client, gone).not.toHaveProperty(gone);
     }
@@ -184,7 +183,7 @@ describe('api client (real module)', () => {
       'getEmulation',
       'getHostHints',
       'getHostHintsFor',
-      'getIatHistogram', // spec 51
+      'getIatHistogram',
       'getInterfaces',
       'getOnline',
       'getStats',

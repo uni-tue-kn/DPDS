@@ -25,13 +25,11 @@ import {
 import { HELP } from './fieldHelp';
 import { must } from '../test/must';
 
-// Spec 26 (user decisions 2026-11-04). Written to the spec, not to an implementation.
-//
-// 1. The Gilbert-Elliott "starts in good state" flag is gone from the UI: no checkbox, no tooltip, no inspect row, no
-//    form member, no DTO member. The GilbertElliot DTO the UI sends is exactly {type, p, r, k, h}.
+// 1. The Gilbert-Elliott "starts in good state" flag does not exist in the UI: no checkbox, no tooltip, no inspect row, no form
+//    member, no DTO member. The GilbertElliot DTO the UI sends is exactly {type, p, r, k, h}.
 // 2. A link name must follow the controller's rule (1 to 32 characters, each of A-Z a-z 0-9 _ . -). Saving a link whose
-//    name breaks it is refused with an alert naming "Name" and stating the rule (tester's choice for "stating": the text
-//    holds the number 32 and the words "letters" or the range "A-Z"); nothing is written. (Spec27 removed presets, and with them the preset-name freedom.)
+//    name breaks it is refused with an alert naming "Name" and stating the rule (the text holds the number 32 and the words
+//    "letters" or the range "A-Z"); nothing is written.
 // 3. A cross-family unit change remembers the value it converted from (text + unit) until the number is edited.
 // 4. The Initialization rate minimum (>= 1 pps) is checked on the exact converted value, before rounding.
 
@@ -223,8 +221,8 @@ describe('link editor: the name follows the controller rule (1 to 32 of A-Z a-z 
     expect(storedLinks()[0].name).toBe('a-b');
   });
 
-  // Spec 27b item 1: a stored link whose name breaks the rule is no longer opened and refused on Save; the document is corrupt
-  // (alert with Reset, stored text untouched, no editor). Renaming a valid link to a bad name is refused in the test above.
+  // A stored link whose name breaks the rule makes the document corrupt (alert with Reset, stored text untouched, no editor).
+  // Renaming a valid link to a bad name is refused in the test above.
   it('editing: a stored link whose name breaks the rule makes the document corrupt: the alert, no form, nothing written', async () => {
     seedLinks([fx.link({ name: 'old name' })]);
     const before = rawStore();
@@ -468,7 +466,7 @@ describe.each(PAGES)('$name: a cross-family unit change remembers the value it c
   });
 });
 
-// The user's own example (2026-11-04): frame 1518 B, 100 Gbit/s -> Mpps (the field shows 8.127), then the user EDITS the
+// Frame 1518 B, 100 Gbit/s -> Mpps (the field shows 8.127), then the user EDITS the
 // number. Whatever the edit, the remembered 100 Gbit/s is gone and the typed number is what counts. Both rate fields.
 // 1 Mpps at 1518 B is 12304000000 bit/s = 12.304 Gbit/s.
 const RATE_FIELDS: [string, (c: ConfigDto) => number | undefined, number, string][] = [
@@ -563,13 +561,11 @@ describe.each(PAGES)(
   },
 );
 
-// ---- 3b. Editing the frame size drops the remembered values (spec26 review, 2026-11-04) -------------------------------
+// ---- 3b. Editing the frame size drops the remembered values -------------------------------
 
 // A cross-family switch makes a rate field show a rounded number while it remembers the exact value it converted from. Any
 // edit of "Average frame size" (change, clear or retype) drops the remembered value of BOTH rate fields: the shown text and unit
-// stay as they are and from then on the SHOWN value is what counts (it is what the user sees, and the old frame no longer
-// applies). Before this rule, save converted the remembered 100 Gbit/s with the NEW frame (148809524 pps while 8.127 Mpps was
-// shown), clearing the frame made save fail with "required to convert ... from Gbit/s", and Mpps -> kpps blanked the field.
+// stay as they are and from then on the SHOWN value is what counts (it is what the user sees, and the old frame does not apply).
 // 1518 B frame: 8.127 Mpps shown for 100 Gbit/s; 8.127 Mpps shown as Gbit/s is 99.995 (exactly 99.994608).
 describe.each(PAGES)('$name: editing the frame size drops the remembered rate values', (page: ConfigPage) => {
   /** Frame 1518, Initialization rate 100 Gbit/s switched to Mpps (shows 8.127, remembers 100 Gbit/s). */

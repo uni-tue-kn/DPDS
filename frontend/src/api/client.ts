@@ -1,8 +1,6 @@
-// REST client of the dpds-controller. Base URL `/api` (same origin: the controller serves the frontend,
-// and the Vite dev proxy forwards it).
-// Every function returns the parsed JSON body. Any non-2xx response rejects with `ApiError`; a network
-// failure rejects with the plain fetch error. Every request carries `X-Session-Id`; every non-GET request carries `Content-Type: application/json`
-// (the controller answers 415 otherwise), also the body-less stop.
+// REST client of the dpds-controller, base URL `/api`. Every function returns the parsed JSON body; a non-2xx response rejects
+// with `ApiError`, a network failure with the plain fetch error. Every request carries `X-Session-Id`; every non-GET request
+// carries `Content-Type: application/json` (the controller answers 415 otherwise), also the body-less stop.
 import type {
   EmulationView,
   Hint,
@@ -27,7 +25,7 @@ export class ApiError extends Error {
 const SESSION_KEY = 'dpds-session-id';
 let sessionId: string | undefined;
 
-/** The id of this browser tab (spec 48), like P4TG's getSessionId: kept in sessionStorage, in memory if that throws. */
+/** The id of this browser tab: kept in sessionStorage, in memory if that throws. */
 function getSessionId(): string {
   if (sessionId) return sessionId;
   try {
@@ -43,7 +41,7 @@ function getSessionId(): string {
     try {
       sessionStorage.setItem(SESSION_KEY, sessionId);
     } catch {
-      // see above
+      // the id stays in memory
     }
   }
   return sessionId;
@@ -76,8 +74,7 @@ export const getInterfaces = () => request<Interface[]>('GET', '/interfaces');
 /** The host hints the controller computed when it started; `recheck` computes them (and the NIC firmware) again. */
 export const getHostHints = (opts?: { recheck?: boolean }) =>
   request<Hint[]>('GET', `/host/hints${opts?.recheck ? '?recheck=true' : ''}`);
-/** Host-only hints (GET) plus the ones that depend on the links (POST with the configuration, nothing is started).
- * `recheck` makes the controller read the NIC firmware again instead of answering from its cache. */
+/** Host-only hints (GET) plus the ones that depend on the links (POST with the configuration; nothing is started). `recheck` makes the controller read the NIC firmware again instead of answering from its cache. */
 export const getHostHintsFor = (req: StartRequest, opts?: { recheck?: boolean }) =>
   request<Hint[]>('POST', `/host/hints${opts?.recheck ? '?recheck=true' : ''}`, req);
 export const getEmulation = () => request<EmulationView>('GET', '/emulation');

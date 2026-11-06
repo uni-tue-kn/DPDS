@@ -33,14 +33,13 @@ struct HalfLifePeriodCounter {
 impl HalfLifePeriodCounter {
     fn new() -> HalfLifePeriodCounter {
         HalfLifePeriodCounter {
-            update_period_ns: 1_000_000., // Update every 1ms
+            update_period_ns: 1_000_000., // 1 ms
             last_update_ns: 0.,
             tracked_packets: 0,
         }
     }
 
     fn track_packet_ppns(&mut self, current_time_ns: f64) -> Option<f64> {
-        // Set the last_update_ns for the first packet to track to the current time
         if self.tracked_packets == 0 {
             self.last_update_ns = current_time_ns;
         }
@@ -57,7 +56,6 @@ impl HalfLifePeriodCounter {
             None
         };
 
-        // Track this packet for the next rate
         self.tracked_packets += 1;
         result
     }
@@ -133,10 +131,8 @@ impl Delayer {
     ///
     /// # Panics
     ///
-    /// If the distribution rejects `mean_ns` / `std_ns`, or `half_life_period_ns`
-    /// is negative, NaN or infinite, or with correlation so long that its
-    /// weight is not below 1; use
-    /// [`Delayer::try_new`] to get an error instead.
+    /// If the parameters are invalid; use [`Delayer::try_new`] to get an error
+    /// instead.
     pub fn new(
         rv_distribution: RVDistribution,
         mean_ns: f64,
@@ -156,13 +152,13 @@ impl Delayer {
         .unwrap_or_else(|e| panic!("{e}"))
     }
 
-    /// Like [`Delayer::new`], but returns an error for invalid distribution
-    /// parameters or a `half_life_period_ns` that is negative, NaN or infinite
-    /// (0 is valid) instead of panicking. An `initialization_rate_pps` that is
-    /// not finite or below 1 is an error too, with or without correlation. With
+    /// Like [`Delayer::new`], but returns a [`BuildError`] instead of
+    /// panicking: invalid distribution parameters, a `half_life_period_ns` that
+    /// is negative, NaN or infinite (0 is valid), an `initialization_rate_pps`
+    /// that is not finite or below 1 (with or without correlation), or, with
     /// `activate_correlation`, a half-life so long that the smoothing weight at
-    /// `initialization_rate_pps` is not below 1 is an error as well. Only the
-    /// initial parameters are validated, see [`Delayer::delayer_sample_ns`].
+    /// `initialization_rate_pps` is not below 1. Only the initial parameters
+    /// are validated, see [`Delayer::delayer_sample_ns`].
     pub fn try_new(
         rv_distribution: RVDistribution,
         mean_ns: f64,
@@ -288,7 +284,6 @@ impl Delayer {
                     self.correlation_weight,
                 );
 
-                // Inline storage: old distribution is dropped in place, no heap churn.
                 self.distribution = Delayer::initialize_rv(
                     self.configured_mean_ns,
                     new_std_ns,
@@ -315,7 +310,7 @@ impl Delayer {
             r_i
         };
 
-        // Clamp negative delays to 0 (e.g. from distributions with heavy left tails)
+        // Heavy left tails can sample negative delays.
         delay.max(0.)
     }
 }

@@ -1,29 +1,22 @@
-//! Spec 30: the delay histogram is read from `dpds` in pages. `/dpds/delay_hist,<dir>,<page>`
-//! holds at most 500 bins (and `page`, `first_bin`, `lo_ns`, `bin_ns`, `num_bins`, `underflow`,
-//! `overflow`); a histogram of up to 4096 bins is `ceil(num_bins / 500)` pages.
+//! The delay histogram is read from `dpds` in pages: `/dpds/delay_hist,<dir>,<page>` holds at most
+//! 500 bins (and `page`, `first_bin`, `lo_ns`, `bin_ns`, `num_bins`, `underflow`, `overflow`), so a
+//! histogram of up to 4096 bins is `ceil(num_bins / 500)` pages. The controller
+//! (`telemetry::poll_once`) reads page 0, then the remaining pages in order, and concatenates the
+//! bins; the REST endpoint returns all of them.
 //!
-//! The controller (`telemetry::poll_once`) reads page 0, then the remaining pages, in order,
-//! and concatenates the bins; the REST endpoint returns all of them.
-//!
-//! # What the tests assume
-//!
-//! - The request for page 0 is `/dpds/delay_hist,<dir>` or `/dpds/delay_hist,<dir>,0` (both are
-//!   page 0 on the `dpds` side, the tests accept either), page `p > 0` is
-//!   `/dpds/delay_hist,<dir>,<p>`. Every page is requested once, in order, per poll, and no page
-//!   beyond the last one (the page count follows from `num_bins` of page 0). A one-page histogram
-//!   costs one request.
+//! - Page 0 is requested as `/dpds/delay_hist,<dir>` or `.../<dir>,0` (the tests accept either),
+//!   page `p > 0` as `.../<dir>,<p>`. Every page is requested once, in order, per poll, and none
+//!   beyond the last (the count follows from `num_bins` of page 0). A one-page histogram costs one
+//!   request.
 //! - Replies carry no parameter in their key, so the controller matches them by send order; the
-//!   page position fields (`page`, `first_bin`) are what lets it detect a mixed-up or cut page.
-//!   A poll that gets a wrong, missing or short page must never publish a histogram that is
-//!   stitched together from the wrong pieces: it either fails (`Err`) or leaves the direction
-//!   without a histogram (`delay_histogram` is `None`). Which of the two is the implementer's
-//!   choice (the old code gave `Null` for a histogram that could not be read).
-//! - The snapshot's internal storage of the bins (spec: `Vec<u64>` rather than
-//!   `serde_json::Value`) is deliberately not pinned: it is invisible through behaviour.
-//!   Tests here read a polled snapshot only through `delay_histogram(&snapshot, dir)`.
+//!   page position fields (`page`, `first_bin`) let it detect a mixed-up or cut page. A poll that
+//!   gets a wrong, missing or short page must never publish a stitched-together histogram: it
+//!   either fails (`Err`) or leaves the direction without one (`delay_histogram` is `None`).
+//! - The snapshot's internal storage of the bins is not pinned; tests read a polled snapshot only
+//!   through `delay_histogram(&snapshot, dir)`.
 //!
-//! The fake socket is `fake_telemetry.rs`: `serving` answers pages from the full histograms of
-//! a snapshot, [`hist_page`] is the slicing.
+//! The fake socket is `fake_telemetry.rs`: `serving` answers pages from the full histograms of a
+//! snapshot, [`hist_page`] is the slicing.
 
 use std::path::PathBuf;
 use std::sync::Arc;

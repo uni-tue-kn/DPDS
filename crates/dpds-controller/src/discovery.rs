@@ -1,4 +1,4 @@
-//! Network interface discovery from sysfs (B5): PCI class 0x02 devices.
+//! Network interface discovery from sysfs: PCI class 0x02 devices.
 
 use std::collections::HashSet;
 use std::fs;

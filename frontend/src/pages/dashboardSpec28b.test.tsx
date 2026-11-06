@@ -6,17 +6,9 @@ import { expectStartBody, renderApp, seedStore, storedDoc, tick } from '../test/
 import { ApiError, api, fakeController, serveHistory } from '../test/mockApi';
 import { must } from '../test/must';
 
-// Spec 28b: fixes from the review of bcca62b (items 1, 3, 4 and 5 here; item 2 is dashboardMemo.test.tsx, item 6 is
-// histogramHintsSpec28b.test.tsx). Spec: scratchpad/spec28b.md. The tester's choices where it is silent are marked "CHOICE".
-//
-// Spec 43 F8 changed the "Restarting…" block: no such button or spinner any more, the run buttons are just disabled while it waits.
-// Spec 35 (2026-11-05) changed this file: Restart was always in the button group (disabled, not absent); the "no RX/TX pills while stopped" block is inverted (the pills stay, "–" before a run, the
-// final values after one); the per-card histogram settings block (item 5) is removed with the controls it was about.
-//
-// Item 1 is about a mismatch between the mocks and the controller: the controller answers `POST /api/emulation/stop` with
-// 202 and state `stopping`, and answers a start with 409 until a later `GET /api/emulation` reports `stopped` or `failed`.
-// These tests run against `fakeController` (src/test/mockApi.ts), which behaves that way and records, for every start,
-// the state the client had last polled.
+// The restart and stop flow against `fakeController` (src/test/mockApi.ts), which behaves like the controller: `POST
+// /api/emulation/stop` answers 202 and state `stopping`, a start is a 409 until a later `GET /api/emulation` reports `stopped` or
+// `failed`, and it records, for every start, the state the client had last polled.
 
 const startBtn = () => screen.queryByRole('button', { name: /^start$/i });
 const stopBtn = () => screen.queryByRole('button', { name: /^stop$/i });
@@ -42,8 +34,7 @@ describe('Dashboard (spec 28b item 1): Restart waits until the stop has finished
     seedStore({ links: [fx.link(), fx.linkRev()] });
   });
 
-  // Spec 43 F8. Was: a disabled "Restarting…" button with a spinner and no Start/Stop/"Stopping…" while the restart waits. P4TG
-  // has no such state: no spinner and no "Restarting…"; while the restart's request is in flight (busy) the buttons are disabled.
+  // No spinner and no "Restarting…" (as in P4TG); while the restart's request is in flight (busy) the buttons are disabled.
   it('the stop request is sent at once and the run buttons are disabled, without a spinner or "Restarting…"', async () => {
     await openRunning();
     await clickRestart();
@@ -199,11 +190,8 @@ describe('Dashboard (spec 28b item 1): Restart waits until the stop has finished
   });
 });
 
-// ---- item 3 ------------------------------------------------------------------------------------------------------------
-
-// Spec 46. Was: 'the pill unit is chosen after rounding' (formatRatePill: 999 996 bit/s is "1.00 Mbit/s", pps units up to Mpps, two
-// decimals everywhere). P4TG's formatBits/formatPacketRate replace it: the unit comes from the magnitude before rounding, trailing
-// zeros are dropped, units go up to Tbit/s and Tpps. The formatters are pinned with literals in common/format.test.ts.
+// P4TG's formatBits/formatPacketRate: the unit comes from the magnitude before rounding, trailing zeros are dropped, units go up to
+// Tbit/s and Tpps. The formatters are pinned with literals in common/format.test.ts.
 describe("Dashboard (spec 28b item 3, spec 46): the pills use P4TG's formatBits and formatPacketRate", () => {
   it('the TX and RX pills read the summed rates in P4TG units', async () => {
     api.getEmulation.mockResolvedValue(fx.emulation('running'));
@@ -219,8 +207,6 @@ describe("Dashboard (spec 28b item 3, spec 46): the pills use P4TG's formatBits 
     expect(screen.getByTestId('pill-tx')).toHaveTextContent('160.94 Kbit/s (999.6 Pps)');
   });
 });
-
-// ---- item 4 ------------------------------------------------------------------------------------------------------------
 
 describe('Dashboard (spec 28b item 4): the action error and the live poll error', () => {
   beforeEach(() => {
@@ -299,8 +285,7 @@ describe('Dashboard (spec 28b item 4): the action error and the live poll error'
   });
 });
 
-// Spec 35 F2, spec 37. Was: 'no RX/TX pills while stopped' (no pill when the stats have no directions; they went away with the run).
-// The pills stay now: "–" while nothing has run, "0 Bit/s (0 Pps)" (spec 46: formatBits(0), formatPacketRate(0)) after it. Full
+// The pills stay while stopped: "–" while nothing has run, "0 Bit/s (0 Pps)" (formatBits(0), formatPacketRate(0)) after it. Full
 // contract: dashboardSpec35.test.tsx, dashboardTopRow.test.tsx.
 describe('Dashboard (spec 28b item 4, spec 37): RX and TX pills when the stats have no directions', () => {
   it('stopped, nothing ever ran: "–" in both pills, not "0 Bit/s (0 Pps)"', async () => {
@@ -348,6 +333,3 @@ describe('Dashboard (spec 28b item 4, spec 37): RX and TX pills when the stats h
     expect(screen.getByTestId('pill-tx')).toHaveTextContent(/^\s*–$/);
   });
 });
-
-// Spec 35 F4. Removed: 'item 5: histogram settings are kept per card' (window, log scale and expected overlay kept across chart
-// switches, per card). The histogram has none of these controls any more (see dashboardP4tg.test.tsx and histogramExtras.test.tsx).

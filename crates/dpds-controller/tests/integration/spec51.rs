@@ -1,7 +1,6 @@
-//! Spec 51 (controller side): C1 `frame_sizes` / `out_of_order` in the counters, T1 controller
-//! side, and C2 `GET /api/stats/{dir}/iat_histogram`.
+//! `frame_sizes` / `out_of_order` in the counters and `GET /api/stats/{dir}/iat_histogram`.
 //!
-//! # Assumptions (the spec gives behaviour, not names)
+//! # Contract
 //!
 //! - `dpds` answers `/dpds/iat_hist,<dir>[,<page>]` like `/dpds/delay_hist` (same eight keys,
 //!   same paging); the poller reads it for every link with delay statistics and stores it in the
@@ -15,7 +14,7 @@
 //!   `overflow`, `edges_ns`, `count`, `percentiles` (same interpolation as the delay histogram),
 //!   no `expected*` keys. 404 without data, for an unknown / non-numeric dir, and for a link
 //!   without delay statistics. After the stop it answers the copy (refreshed while serving and
-//!   right before the stop, cleared at the next start), like spec 50 A.
+//!   right before the stop, cleared at the next start), like the delay histogram.
 //! - The `window_s` parameter is not part of the IAT route and not tested.
 
 use std::sync::Arc;
@@ -64,7 +63,7 @@ async fn stop(a: &TestApp) {
     a.telemetry.cell.lock().unwrap().take();
 }
 
-// ---- C2: the live reply ----------------------------------------------------------------------------
+// ---- the live reply ----------------------------------------------------------------------------
 
 #[tokio::test]
 async fn the_route_answers_the_iat_histogram_of_the_link_not_the_delay_one() {
@@ -128,7 +127,7 @@ async fn the_iat_reply_has_no_expected_values() {
     }
 }
 
-// ---- C2: 404 -------------------------------------------------------------------------------------------------------
+// ---- 404 -------------------------------------------------------------------------------------------------------
 
 #[tokio::test]
 async fn without_a_run_or_data_there_is_a_404_with_a_message() {
@@ -174,7 +173,7 @@ async fn an_unknown_or_malformed_link_is_a_404() {
     }
 }
 
-// ---- C2: the copy after the stop (spec 50 A) -----------------------------------------------------------
+// ---- the copy after the stop -----------------------------------------------------------
 
 #[tokio::test]
 async fn the_copy_of_the_last_served_iat_histogram_is_answered_after_the_stop() {
@@ -285,7 +284,7 @@ async fn a_new_run_copies_its_own_iat_histogram() {
     assert_eq!(bins(&iat(&a).await.json()), json!([3, 6]));
 }
 
-// ---- C2: the poller reads /dpds/iat_hist -------------------------------------------------------------
+// ---- the poller reads /dpds/iat_hist -------------------------------------------------------------
 
 #[test]
 fn poll_once_reads_the_iat_histogram_of_every_link_with_delay_statistics() {
@@ -333,7 +332,7 @@ fn poll_once_reads_the_iat_histogram_of_every_link_with_delay_statistics() {
     );
 }
 
-// ---- C1 / T1: frame_sizes and out_of_order -----------------------------------------------------------------
+// ---- frame_sizes and out_of_order -----------------------------------------------------------------
 
 fn counters_of(s: &Snapshot, prev: Option<&Snapshot>) -> Vec<Value> {
     let v = serde_json::to_value(compute_stats(prev, s)).unwrap();

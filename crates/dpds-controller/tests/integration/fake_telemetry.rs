@@ -3,7 +3,7 @@
 //! `{"version", "pid", "max_output_len"}`, then one reply datagram per request
 //! `{"<command without ,param>": value}`; an unknown command gets `null`.
 //!
-//! Spec 30: `/dpds/delay_hist,<dir>[,<page>]` answers in pages of at most [`PAGE_BINS`] bins like the
+//! `/dpds/delay_hist,<dir>[,<page>]` answers in pages of at most [`PAGE_BINS`] bins like the
 //! real `dpds` ([`hist_page`]); `FakeTelemetryServer::serving` slices the histograms of its snapshot.
 //!
 //! Connections take their behaviour from a script of [`Mode`]s: the n-th accepted
@@ -39,7 +39,7 @@ pub enum Mode {
     CloseOnLaterPage,
 }
 
-/// Bins per page of the real `/dpds/delay_hist` reply (spec 30).
+/// Bins per page of the real `/dpds/delay_hist` reply.
 pub const PAGE_BINS: usize = 500;
 
 /// The reply of `/dpds/delay_hist,<param>` (`param` is `<dir>` or `<dir>,<page>`) for the full

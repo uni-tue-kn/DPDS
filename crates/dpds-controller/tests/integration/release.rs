@@ -1,29 +1,23 @@
-//! Spec 18: DPDS 1.0.0, `VERSION.md`, the release job in CI.
+//! DPDS 1.0.0, `VERSION.md`, the release job in CI. The frontend half is in
+//! `frontend/src/updateCheck.test.tsx`, `dpds.sh --stable` in `packaging/tests/dpds_sh.test.sh`,
+//! the CSP in `frontend.rs`.
 //!
-//! The frontend half (version line, update check, modal) is in `frontend/src/updateCheck.test.tsx`,
-//! `dpds.sh --stable` is in `packaging/tests/dpds_sh.test.sh`, and the CSP is in `frontend.rs`.
-//!
-//! # What these tests assume
-//!
-//! - `VERSION.md` at the repository root: first line `1.0.0` (`RELEASE` below; raise it together
-//!   with every bump). Every crate of the workspace (as `cargo metadata` reports it, so
-//!   `[workspace.package] version` with `version.workspace = true` is fine), `Cargo.lock`,
+//! - `VERSION.md` at the repository root has `1.0.0` as its first line (`RELEASE` below; raise it
+//!   with every bump). Every workspace crate (as `cargo metadata` reports it), `Cargo.lock`,
 //!   `frontend/package.json`, the `packages[""]` entry and the top level of
 //!   `frontend/package-lock.json`, and the README's version badge agree with it.
 //! - `GET /api/online` and `GET /api/version` report that version.
-//! - Workflows live in `.github/workflows/*.yml`. The release job is the only job whose script
-//!   holds `gh release create`; it is in the same workflow file as the check jobs, because
-//!   `needs` cannot cross workflows, and it `needs` every other job of that file.
-//!   `permissions: contents: write` appears once in all workflows, in that job; every workflow
-//!   keeps `contents: read` at the top level.
+//! - The release job is the only job whose script holds `gh release create`; it is in the same
+//!   workflow file as the check jobs, because `needs` cannot cross workflows, and it `needs` every
+//!   other job of that file. `permissions: contents: write` appears once in all workflows, in that
+//!   job; every workflow keeps `contents: read` at the top level.
 //! - The step that runs `gh release create` is self-contained shell: it reads `VERSION.md`,
-//!   decides whether the tag exists, and creates the release, so it can be run here against stub
-//!   `git` and `gh` commands. The stubs keep one set of tags. They answer `git ls-remote`,
-//!   `git tag --list`, `git rev-parse`, `git show-ref`, `git cat-file -e`, `gh release view` and
-//!   `gh api .../git/ref/tags/<t>`, `.../git/matching-refs/tags/<prefix>` (prefix match, like
-//!   GitHub) and `.../releases/tags/<t>`. A run uses `bash -eo pipefail`, `GITHUB_SHA`,
-//!   `GITHUB_REPOSITORY` and no network. The script reads those from the environment, no
-//!   `${{ }}` expression in it (the job's `env:` supplies `GH_TOKEN`).
+//!   decides whether the tag exists and creates the release, so it can be run here against stub
+//!   `git` and `gh` commands that keep one set of tags (they answer `git ls-remote`, `git tag
+//!   --list`, `git rev-parse`, `git show-ref`, `git cat-file -e`, `gh release view` and the
+//!   `gh api` ref, matching-refs and release routes). A run uses `bash -eo pipefail`,
+//!   `GITHUB_SHA`, `GITHUB_REPOSITORY`, no network, and no `${{ }}` expression in the script (the
+//!   job's `env:` supplies `GH_TOKEN`).
 //! - A `VERSION.md` that is not `X.Y.Z` after trimming (first line only, CRLF and surrounding
 //!   white space tolerated) makes the step fail, with no release created.
 
@@ -171,7 +165,7 @@ fn the_readme_version_badge_shows_the_version_of_version_md() {
     );
 }
 
-// ---- README badges (spec 23) ---------------------------------------------------------------------
+// ---- README badges ---------------------------------------------------------------------
 
 const BADGE_BACKEND: &str =
     "![Backend](https://img.shields.io/badge/backend-Rust-b7410e?logo=rust)";
@@ -410,7 +404,7 @@ fn a_release_job_exists_next_to_the_check_jobs() {
     );
 }
 
-/// Spec 23: `rust` became `backend` (with the fmt step), `packaging` became `installer`.
+/// The CI jobs the release job `needs`.
 const CHECK_JOBS: [&str; 3] = ["backend", "frontend", "installer"];
 
 #[test]

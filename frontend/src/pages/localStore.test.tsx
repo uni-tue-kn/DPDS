@@ -16,7 +16,6 @@ import {
   storedOrEmpty,
 } from '../test/helpers';
 
-// Contract: "Local document" and "Corrupt storage" in the v22 block of src/test/helpers.tsx.
 // Never silently drop what is stored: a value that cannot be read raises an alert with a reset button, and stays untouched until
 // the user chooses to reset.
 
@@ -31,7 +30,7 @@ const CORRUPT: [string, string][] = [
   ['links that are not a list', JSON.stringify({ version: 1, links: {} })],
 ];
 
-/** What an earlier session stored as `settings`: still readable, never written back (spec 41). */
+/** What an earlier session stored as `settings`: still readable, never written back. */
 const LEGACY_SETTINGS = { main_lcore: 2, eal_extra_args: ['--no-huge'], poll_interval_ms: 250 };
 
 const alertOf = async () => screen.findByRole('alert');
@@ -211,7 +210,7 @@ describe('spec27: the document has no presets member', () => {
   });
 });
 
-// Spec 27b item 1: a link is valid only if the link editor would accept it unchanged. A stored document with an invalid link is
+// A link is valid only if the link editor would accept it unchanged. A stored document with an invalid link is
 // corrupt like any other unreadable value: the alert with Reset, the stored text untouched, no page that throws.
 describe('spec27b: a stored document with an invalid link is corrupt', () => {
   const docWith = (...links: unknown[]) => JSON.stringify({ version: 1, links });
@@ -293,8 +292,8 @@ describe('spec27b: a stored document with an invalid link is corrupt', () => {
   });
 });
 
-// Spec 27b item 4: writes store exactly { version: 1, links } (spec 41 removed settings). A legacy `presets` member (or any unknown one) of the
-// stored document is dropped on the next write; reading alone still leaves the stored text alone.
+// Writes store exactly { version: 1, links }. Any other member of the stored document (a `settings` or `presets` member, or any
+// unknown one) is dropped on the next write; reading alone still leaves the stored text alone.
 describe('spec27b: every write stores exactly version and links (spec 41: no settings member)', () => {
   const KEYS = ['links', 'version'];
   const legacy = (links: unknown[] = [fx.loopLink()]) =>
@@ -358,7 +357,7 @@ describe('spec27b: every write stores exactly version and links (spec 41: no set
   });
 });
 
-// Spec 27b item 5: the corrupt-config alert tells where the stored text can be saved.
+// The corrupt-config alert tells where the stored text can be saved.
 describe('spec27b: the corrupt-config alert points to Export on the Settings page', () => {
   it.each(['{not json', JSON.stringify({ version: 7, links: [] })])('for the stored text %s', async (raw) => {
     seedRaw(raw);
@@ -386,11 +385,11 @@ describe('no REST calls for the removed routes', () => {
       'getEmulation',
       'getHostHints',
       'getHostHintsFor',
-      'getIatHistogram', // spec 51
+      'getIatHistogram',
       'getInterfaces',
       'getOnline',
       'getStats',
-      'getStatsHistory', // spec 29
+      'getStatsHistory',
       'startEmulation',
       'stopEmulation',
     ]);

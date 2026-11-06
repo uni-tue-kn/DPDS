@@ -2,11 +2,10 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// Spec 52 R1: "From the md breakpoint on, a vertical line separates the donut columns: the left column has a right border
-// `1px solid var(--color-border)` (a CSS class of the app, not an inline style); below md the columns stack and there is no vertical
-// line." Pinned: the class is `donut-divider` (it is on the left column, see dashboardSpec52.test.tsx); index.css has the rule
-// `.donut-divider { border-right: 1px solid var(--color-border); }` inside `@media (min-width: 768px)` (Bootstrap's md) and no rule
-// for the class outside such a block declares a border, so below md there is none.
+// From the md breakpoint on, a vertical line separates the donut columns: the class is `donut-divider` (on the left column, see
+// dashboardSpec52.test.tsx); index.css has the rule `.donut-divider { border-right: 1px solid var(--color-border); }` inside
+// `@media (min-width: 768px)` (Bootstrap's md) and no rule for the class outside such a block declares a border, so below md there
+// is none.
 
 const css = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), 'assets/index.css'), 'utf8').replace(
   /\/\*[\s\S]*?\*\//g,

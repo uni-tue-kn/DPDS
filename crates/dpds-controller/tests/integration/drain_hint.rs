@@ -1,14 +1,11 @@
-//! Spec v7 S6: the stop of `dpds` waits for the drain timeout (the existing rule of
-//! `eal::drain_timeout`: longest `mean + 6 std`, plus `limit / rate` with the limiter on,
-//! plus a 5 s margin; spec20: the limit is the DERIVED `buffer_capacity * 1542 * 8` bit,
-//! there is no `limit_bit` any more), but the systemd unit gives the controller only
-//! `TimeoutStopSec=600`. A host hint with id `drain_timeout` and level `warn` names every
-//! stored link whose drain timeout exceeds 590 s and the 600 s systemd limit. Links that
-//! drain faster (all normal ones) produce no such hint.
-//!
-//! Spec 22: the links come from the body of `POST /api/host/hints`; the limiter is an optional
-//! stage (no `activate` flag: present = on), so "limiter off" is a config without a limiter, and
-//! a link without delayer and limiter drains in the 5 s margin and gets no hint.
+//! The stop of `dpds` waits for the drain timeout (`eal::drain_timeout`: longest `mean + 6 std`,
+//! plus `limit / rate` with the limiter on, plus a 5 s margin; the limit is the derived
+//! `buffer_capacity * 1542 * 8` bit), but the systemd unit gives the controller only
+//! `TimeoutStopSec=600`. A host hint with id `drain_timeout` and level `warn` names every link
+//! of the body whose drain timeout exceeds 590 s and the 600 s systemd limit. Links that drain
+//! faster produce no such hint. The limiter is an optional stage (present = on), so "limiter
+//! off" is a config without a limiter, and a link without delayer and limiter drains in the 5 s
+//! margin and gets no hint.
 
 use crate::common::*;
 use serde_json::{json, Value};

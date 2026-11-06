@@ -5,20 +5,20 @@ use dpdk::mempool::MbufFreer;
 use dpdk::port::rte_pktmbuf_free_bulk;
 use dpdk::{RawMbuf, RxQueue, TxQueue};
 
-/// Receive a burst on queue 0 of `port`.
+/// Receives a burst on queue 0 of `port`.
 pub trait RxBurst {
-    /// Fills `bufs` from the front; returns how many mbufs were received.
+    /// Fills `bufs` from the front; returns how many mbufs arrived.
     fn rx_burst(&mut self, port: u16, bufs: &mut [RawMbuf]) -> u16;
 }
 
-/// Transmit a burst on queue 0 of `port`.
+/// Transmits a burst on queue 0 of `port`.
 pub trait TxBurst {
     /// Returns how many mbufs (from the front) the NIC accepted; the caller
     /// still owns the rest.
     fn tx_burst(&mut self, port: u16, bufs: &mut [RawMbuf]) -> u16;
 }
 
-/// Return mbufs to their mempool.
+/// Returns mbufs to their mempool.
 pub trait MbufFree {
     /// Frees every mbuf in `mbufs` (never called with an empty slice).
     ///
@@ -29,7 +29,6 @@ pub trait MbufFree {
     unsafe fn free_bulk(&mut self, mbufs: &mut [RawMbuf]);
 }
 
-/// RX queue 0 of the direction's RX port.
 pub struct NicRx {
     port: u16,
     queue: RxQueue<'static>,
@@ -49,7 +48,6 @@ impl RxBurst for NicRx {
     }
 }
 
-/// TX queue 0 of the direction's egress port.
 pub struct NicTx {
     port: u16,
     queue: TxQueue<'static>,
@@ -69,8 +67,7 @@ impl TxBurst for NicTx {
     }
 }
 
-/// Frees mbufs with `rte_pktmbuf_free_bulk`: correct for any mbuf (reads
-/// refcount, segments and pool of each one).
+/// Frees mbufs with `rte_pktmbuf_free_bulk`: correct for any mbuf.
 pub struct PktmbufFree;
 
 impl MbufFree for PktmbufFree {
@@ -81,19 +78,18 @@ impl MbufFree for PktmbufFree {
     }
 }
 
-/// Frees mbufs straight back into one mempool with `rte_mbuf_raw_free_bulk`
-/// without reading them. Only valid when every mbuf of the direction is
-/// direct, single-segment, refcount 1 and from this pool. The TX port's
-/// `MBUF_FAST_FREE` promises that for the mbufs the NIC did not accept; the
-/// rejected RX mbufs are single-segment because RX scatter is off and the data
-/// room fits the largest frame.
+/// Frees mbufs straight into one mempool with `rte_mbuf_raw_free_bulk`. Only
+/// valid when every mbuf of the direction is direct, single-segment, refcount 1
+/// and from this pool: `MBUF_FAST_FREE` promises that for mbufs the NIC did not
+/// accept, and RX mbufs are single-segment because RX scatter is off and the
+/// data room fits the largest frame.
 pub struct RawFree(pub MbufFreer);
 
 impl MbufFree for RawFree {
     #[inline(always)]
     unsafe fn free_bulk(&mut self, mbufs: &mut [RawMbuf]) {
-        // SAFETY: the caller upholds the trait's contract; the construction
-        // of `RawFree` promises the pool/refcount/segment conditions.
+        // SAFETY: the caller upholds the trait's contract; constructing `RawFree`
+        // promises the pool/refcount/segment conditions.
         unsafe { self.0.free_bulk(mbufs) };
     }
 }

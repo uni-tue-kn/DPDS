@@ -1,10 +1,9 @@
-//! Expected delay histogram (K3): the CDFs of the delay distributions of `dpds-core`
+//! Expected delay histogram: the CDFs of the delay distributions of `dpds-core`
 //! and the expected count per histogram bin.
 //!
-//! Self-contained instead of `statrs`: everything needed is the regularised
-//! incomplete gamma function (the normal CDF is `P(1/2, z^2/2)`), about 100 lines,
-//! and `statrs` would pull `nalgebra` and `rand` into a controller that otherwise has
-//! neither. The unit tests below check it against known values.
+//! Self-contained instead of `statrs`, which would pull `nalgebra` and `rand` into the
+//! controller. All it needs is the regularised incomplete gamma function (the normal CDF is
+//! `P(1/2, z^2/2)`).
 
 use crate::dto::{DelayerDto, DistributionDto};
 

@@ -15,11 +15,10 @@ import {
 } from '../test/helpers';
 import { must } from '../test/must';
 
-// Spec 45 (frontend part F1-F4): the Reordering checkbox of the Buffer section and the "Activate correlation" checkbox of the
-// Delayer are replaced by one three-way toggle "Delay accuracy" (Basic / Reordering / Correlation) in the Delayer section.
-// The DTO keeps both booleans. Reordering needs the token bucket limiter and excludes correlation. The tooltip text of the
-// toggle is covered in tooltips.test.tsx. The toggle is queried by its radio buttons (react-bootstrap ToggleButtonGroup of
-// type radio, or plain radios), each with the accessible name of its option.
+// The Delayer section has one three-way toggle "Delay accuracy" (Basic / Reordering / Correlation) instead of Reordering and
+// "Activate correlation" checkboxes. The DTO keeps both booleans. Reordering needs the token bucket limiter and excludes
+// correlation. The tooltip text of the toggle is covered in tooltips.test.tsx. The toggle is queried by its radio buttons
+// (react-bootstrap ToggleButtonGroup of type radio, or plain radios), each with the accessible name of its option.
 const body = () => document.body;
 
 const limiterMode = () => screen.getByLabelText('Limiter mode') as HTMLSelectElement;

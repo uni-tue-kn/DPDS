@@ -167,22 +167,6 @@ fn hot_path_methods_are_inline_and_push_is_not() {
     ));
 }
 
-// ---- initialization_rate_pps: required config field, no built-in rate ---------
-
-#[test]
-fn crate_docs_note_the_api_change_for_the_initialization_rate() {
-    let lib = read(crate_dir().join("src/lib.rs"));
-    let docs: String = lib
-        .lines()
-        .filter_map(|l| l.trim_start().strip_prefix("//!"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(
-        docs.contains("initialization_rate_pps"),
-        "the crate docs need the `initialization_rate_pps` API-change note"
-    );
-}
-
 #[test]
 fn no_fallback_initialization_rate_constant_is_left_in_the_buffer() {
     let src = read(crate_dir().join("src/buffer.rs"));
@@ -192,16 +176,6 @@ fn no_fallback_initialization_rate_constant_is_left_in_the_buffer() {
             "src/buffer.rs must not hard-code a rate (`{needle}`)"
         );
     }
-}
-
-// ── spec20: the limiter limit is derived, `limit_bit` is gone ────────
-
-fn crate_docs() -> String {
-    let lib = read(crate_dir().join("src/lib.rs"));
-    lib.lines()
-        .filter_map(|l| l.trim_start().strip_prefix("//!"))
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 #[test]
@@ -218,27 +192,6 @@ fn max_frame_bytes_is_a_public_constant_of_1542() {
     assert!(
         !src.contains("MAX_FRAME_BYTES"),
         "the first-draft name MAX_FRAME_BYTES (1522) must be gone"
-    );
-}
-
-#[test]
-fn crate_docs_note_the_removed_limit_bit_the_derived_limit_and_the_order() {
-    let docs = crate_docs();
-    for needle in [
-        "limit_bit",
-        "MAX_FRAME_WIRE_BYTES",
-        "1542",
-        "API change",
-        "BufferFull",
-    ] {
-        assert!(
-            docs.contains(needle),
-            "crate docs should mention `{needle}`"
-        );
-    }
-    assert!(
-        !docs.contains("limit_bit: 1e6"),
-        "the crate-doc example must not set `limit_bit`"
     );
 }
 

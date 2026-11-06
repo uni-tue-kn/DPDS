@@ -28,9 +28,8 @@ import { api, serveHistory } from '../test/mockApi';
 import { must } from '../test/must';
 import { expectBars } from '../test/probabilities';
 
-// Spec 52 (user 2026-11-05: loss donut left, frame donut right, a central line, both centred; the IAT histogram becomes a chart radio
-// "like P4TG's chart views", "shown like delay histogram"). Spec: .git/claude-specs/spec52-donut-row-iat-radio.md. Contract of the DOM:
-// the header of src/test/dashboardUi.tsx. CHOICEs of the tester where the spec is silent:
+// The donut row (loss donut left, frame donut right, a central line, both centred) and the IAT histogram as a chart radio shown like
+// the delay histogram. Contract of the DOM: the header of src/test/dashboardUi.tsx.
 //   - the separator class is `donut-divider` (on the left column; the rule is pinned in donutDividerCss.test.ts);
 //   - "centred" is pinned as: between each donut's role "img" box and its column (both included) some element has one of the
 //     Bootstrap centring classes (`text-center`, `justify-content-center`, `align-items-center`, `mx-auto`);
@@ -56,7 +55,7 @@ const follows = (a: Node, b: Node) => Boolean(a.compareDocumentPosition(b) & Nod
 const iatOptions = () => JSON.parse(iatBar(card(0)).getAttribute('data-options') ?? 'null');
 const iatData = () => JSON.parse(iatBar(card(0)).getAttribute('data-chart') ?? 'null');
 
-// ---- R1: the donut row ------------------------------------------------------------------------------------------------------------
+// ---- the donut row ------------------------------------------------------------------------------------------------------------
 
 /** The two columns of the donut row of `panel`: the one with the loss donut and the one with the frame size donut. */
 function donutCols(panel: HTMLElement) {
@@ -132,7 +131,7 @@ describe('Spec 52 R1: the donut row', () => {
   });
 });
 
-// ---- R2: the radios ------------------------------------------------------------------------------------------------------------------
+// ---- the radios ------------------------------------------------------------------------------------------------------------------
 
 const radiosOf = (panel: HTMLElement) =>
   within(panel)
@@ -287,7 +286,7 @@ describe('Spec 52 R2: the "IAT histogram" radio', () => {
   });
 });
 
-// ---- R2b: the tables and the chart of the IAT view -----------------------------------------------------------------------------------
+// ---- the tables and the chart of the IAT view -----------------------------------------------------------------------------------
 
 const tablesOf = (d: number) => histTables(card(d));
 const headers = (t: HTMLElement) =>
@@ -533,7 +532,7 @@ describe('Spec 52 R2b: the chart of the IAT view', () => {
     expect(o.scales?.x?.title?.text).toBe('IAT Range');
   });
 
-  // Spec 58 A1: each percentile is a line and a label (was: one line with a built-in label).
+  // Each percentile is a line and a label.
   it('draws the four percentile lines as vertical annotations on the category axis (p50 of 3 µs at bin 1), each with a label', async () => {
     await ready();
     const all = Object.values(iatOptions().plugins?.annotation?.annotations ?? {}) as {
@@ -570,7 +569,7 @@ describe('Spec 52 R2b: the chart of the IAT view', () => {
   });
 });
 
-// ---- R3: the order ---------------------------------------------------------------------------------------------------------------------
+// ---- the order ---------------------------------------------------------------------------------------------------------------------
 
 describe('Spec 52 R3: the rate and loss tables stay between the chart and the donut row', () => {
   it('link, rate view: chart, radios, rate table, loss table, donut row', async () => {

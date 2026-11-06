@@ -13,7 +13,7 @@ export const emptyConfig = (): LocalConfig => ({ version: 1, links: [] });
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 /**
- * The members of a stored or imported link that are kept; any other member (such as an old per-link core) is dropped
+ * The members of a stored or imported link that are kept; any other member is dropped
  * and never written back.
  */
 const cleanLink = (l: Link): Link => ({

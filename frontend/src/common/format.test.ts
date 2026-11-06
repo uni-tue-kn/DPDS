@@ -1,8 +1,6 @@
-// Spec 46 (user 2026-11-05): the four formatters of the dashboard's top row, ported exactly from P4TG
-// (Configuration GUI/src/common/Helper.ts `formatFrameCount` and components/SendReceiveMonitor.tsx `formatBits`,
-// `formatPacketRate`, `secondsToTime`). The expected strings are literals computed with P4TG's own code; they do not call the
-// functions under test. Not pinned, because P4TG's code gives nonsense there: values between 0 and 1 and the rounding step
-// at 999.999 -> "1000 ...".
+// The four formatters of the dashboard's top row, ported exactly from P4TG (`formatFrameCount`, `formatBits`, `formatPacketRate`,
+// `secondsToTime`). The expected strings are literals computed with P4TG's own code; they do not call the functions under test.
+// Not pinned, because P4TG's code gives nonsense there: values between 0 and 1 and the rounding step at 999.999 -> "1000 ...".
 import { formatBits, formatFrameCount, formatPacketRate, secondsToTime } from './format';
 
 describe('formatBits (P4TG): 1000-based, unit chosen before rounding, trailing zeros dropped', () => {

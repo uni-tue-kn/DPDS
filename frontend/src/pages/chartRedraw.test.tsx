@@ -7,10 +7,9 @@ import * as fx from '../test/fixtures';
 import { renderApp, tick } from '../test/helpers';
 import { api, serveHistory } from '../test/mockApi';
 
-// Spec 40: the rate, loss and delay-histogram charts redraw like P4TG's: Chart.js's default animation (unless the user
-// prefers reduced motion), x ticks that skip themselves without a cap, and Chart.js's default point radius. The loss
-// donuts keep their options. Identity of options/data across a poll without a change is pinned in dashboardMemo.test.tsx;
-// here only the reduced-motion variant of it.
+// The rate, loss and delay-histogram charts redraw like P4TG's: Chart.js's default animation (unless the user prefers reduced
+// motion), x ticks that skip themselves without a cap, and Chart.js's default point radius. The loss donuts keep their options.
+// Identity of options/data across a poll without a change is pinned in dashboardMemo.test.tsx; here only the reduced-motion variant.
 
 type Opts = {
   animation?: unknown;
@@ -19,7 +18,7 @@ type Opts = {
 };
 
 const optionsOf = (el: HTMLElement): Opts => propsOf(el).options as Opts;
-// Spec 51: a panel holds several Bar / Doughnut stubs (delay and IAT, loss and frame sizes), so they are picked by their image box.
+// A panel holds several Bar / Doughnut stubs (delay and IAT, loss and frame sizes), so they are picked by their image box.
 const chart = (scope: HTMLElement, id: 'chart-line' | 'chart-bar' | 'chart-doughnut') =>
   id === 'chart-bar' ? delayBar(scope) : id === 'chart-doughnut' ? lossDonut(scope) : within(scope).getByTestId(id);
 

@@ -1,4 +1,4 @@
-const L1_OVERHEAD: u32 = 7 + 1 + 12; // Preamble + SFD + IPG
+const L1_OVERHEAD: u32 = 7 + 1 + 12; // preamble + SFD + IPG
 
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -10,11 +10,11 @@ pub enum LimiterMode {
 #[derive(Debug, Copy, Clone)]
 pub struct Limiter {
     pub mode: LimiterMode,
-    pub activate: bool,      // true if limiter should be applied
-    pub rate_bpns: f64,      // in bits per nanosecond
-    pub last_update_ns: f64, // in nanoseconds
-    pub limit_bit: f64,      // in bits
-    pub fill_state_bit: f64, // in bits (fill state for Spacer, contingent for TBF)
+    pub activate: bool,
+    pub rate_bpns: f64,      // bits per nanosecond
+    pub last_update_ns: f64, // ns
+    pub limit_bit: f64,      // bits
+    pub fill_state_bit: f64, // bits (fill state for Spacer, tokens for TBF)
 }
 
 impl Limiter {
@@ -49,17 +49,11 @@ impl Limiter {
             return Some(0.);
         }
 
-        // Calculate time between last update and time to send
-        // The duration is dependent on the std delay
-        // > The higher the std delay, the wider the time to sent is spread and the bigger the duration
-        // >> Therefore, the limit has to be increased dependent on the std
         let duration_since_last_update_ns = (time_to_sent_ns - self.last_update_ns).max(0.);
 
-        // Update time to send if time to send is later than the old last update
         self.last_update_ns = f64::max(self.last_update_ns, time_to_sent_ns);
 
-        // Calculate packet size
-        // Packets do not include L1 overhead
+        // The packet length excludes the L1 overhead.
         let packet_size_in_bit = ((packet_length_byte + L1_OVERHEAD) * 8) as f64;
 
         match self.mode {
@@ -81,7 +75,7 @@ impl Limiter {
         duration_since_last_update_ns: f64,
         packet_size_in_bit: f64,
     ) -> Option<f64> {
-        // Reduce fill state by the amount of bits that can be sent since last update of fill state until the time to send
+        // Drain the bits that could be sent since the last update.
         self.fill_state_bit = f64::max(
             0.,
             self.fill_state_bit - duration_since_last_update_ns * self.rate_bpns,
@@ -93,13 +87,12 @@ impl Limiter {
             let offset_between_time_to_sent_and_last_update =
                 (self.last_update_ns - time_to_sent_ns).max(0.);
 
-            // Calculate when the remaining fill state (without this packet) will be sent
-            // Add the duration between time_to_sent and last_update
-            // -> Else the offset would be relative to time_to_sent and not last_update
+            // Time until the queued bits (without this packet) are sent, plus
+            // the gap from time_to_sent to last_update so the offset is
+            // relative to time_to_sent.
             let time_offset_ns = (self.fill_state_bit / self.rate_bpns)
                 + offset_between_time_to_sent_and_last_update;
 
-            // Update fill state after calculating offset
             self.fill_state_bit += packet_size_in_bit;
 
             Some(time_offset_ns)
@@ -112,7 +105,7 @@ impl Limiter {
         duration_since_last_update_ns: f64,
         packet_size_in_bit: f64,
     ) -> Option<f64> {
-        // Refill tokens: add tokens proportional to elapsed time, capped at limit
+        // Refill proportionally to the elapsed time, capped at the limit.
         self.fill_state_bit = f64::min(
             self.limit_bit,
             self.fill_state_bit + (duration_since_last_update_ns * self.rate_bpns),

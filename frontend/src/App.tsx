@@ -181,7 +181,7 @@ function CorruptConfigAlert() {
   );
 }
 
-/** P4TG's SessionWarning: other users have the GUI open. */
+/** Warning that other users have the GUI open. */
 function SessionWarning({ others }: { others: number }) {
   if (others <= 0) return null;
   return (

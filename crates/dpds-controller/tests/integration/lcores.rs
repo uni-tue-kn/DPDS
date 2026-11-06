@@ -1,6 +1,6 @@
-//! Lcore assignment (B7) on fake sysfs trees. Spec 22: the plan of a start body is read from
+//! Lcore assignment on fake sysfs trees. The plan of a start body is read from
 //! `POST /api/emulation/validate` (`plan_for`), the same plan `POST /api/emulation/start`
-//! launches; the controller has no stored links to plan.
+//! launches.
 
 use crate::common::*;
 

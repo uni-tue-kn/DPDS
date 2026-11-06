@@ -1,4 +1,4 @@
-//! Rates, drop shares and histogram edges from raw telemetry replies (B2, B4).
+//! Rates, drop shares and histogram edges from raw telemetry replies.
 
 use std::collections::BTreeMap;
 
@@ -53,7 +53,7 @@ pub struct Counters {
     pub tx_sent: u64,
     pub tx_drops: u64,
     /// Cumulative received frames per size: [0,63], [64], [65,127], [128,255], [256,511],
-    /// [512,1023], [1024,1518], [1519,inf) bytes (P4TG's buckets), before any drop; 0s when
+    /// [512,1023], [1024,1518], [1519,inf) bytes, before any drop; 0s when
     /// `dpds` does not report them.
     pub frame_sizes: [u64; 8],
     /// Cumulative departures out of arrival order (reordering links only; 0 otherwise).

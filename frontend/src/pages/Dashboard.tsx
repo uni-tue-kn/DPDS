@@ -34,7 +34,7 @@ const NO_HISTORY: History = {};
 const NO_LINKS: HistoryLink[] = [];
 const NO_TOTALS: Record<string, HistoryTotals> = {};
 
-// The look of P4TG's SendReceiveMonitor (Stat, StatusIndicator, Time), as inline styles.
+// The pills' look (P4TG's SendReceiveMonitor) as inline styles.
 const BOX: CSSProperties = {
   color: '#fff',
   borderRadius: '10px',
@@ -80,7 +80,7 @@ function storedRequest() {
   return startRequestOf(stored.doc);
 }
 
-/** Total RX and TX rates over all links: L1 for the pills (P4TG's pills show the live L1 rates), L2 for the loss share. */
+/** Total RX and TX rates over all links: L1 for the pills, L2 for the loss share. */
 function totalsOf(directions: StatsView['directions']) {
   let rxBps = 0;
   let rxPps = 0;
@@ -207,9 +207,9 @@ export default function Dashboard() {
     }
   };
 
-  // P4TG clears the charts when Start is clicked: from the click until the controller's history belongs to another run
-  // (a new run_id), the page shows no run, neither the old series nor live statistics; the controller serves the old series
-  // until the new run exists, so they stay hidden while it starts too. The charts themselves stay mounted.
+  // From the click until the controller's history belongs to another run (a new run_id), the page shows no run, neither the old
+  // series nor live statistics. The controller serves the old series until the new run exists, so they stay hidden while it starts
+  // too. The charts themselves stay mounted.
   const cleared = clearedRun !== undefined && clearedRun.id === runId;
   const noSeries = cleared || state === 'starting';
   const history = noSeries ? NO_HISTORY : polledHistory;
@@ -232,7 +232,7 @@ export default function Dashboard() {
   const pills = finished ? ZERO_PILLS : live && totalsOf(live);
   const restartNeeded = pendingRestart(doc, emulation).any;
   // A dir is the link's index in the start request, so without reported directions or series the stored links give the
-  // (empty) tabs, like P4TG's overview.
+  // (empty) tabs.
   const noRun = !finished && !live && !hasHistory;
   const storedLinks = doc.links;
   const shown = useMemo(

@@ -12,11 +12,11 @@ const USAGE: &str = "Usage: dpds <EAL args...> -- [--config <path>] [--config0 <
 pub struct Cli {
     /// Everything before the first `--` (argv[0] included), for `Eal::new`.
     pub eal_args: Vec<String>,
-    /// `--config`: DPDS config of every shorthand link without its own flag.
+    /// `--config`: config of every shorthand link without its own flag.
     pub config: Option<PathBuf>,
-    /// `--config0`: DPDS config of link `dir0` (port 0 -> port 1, or port 0 -> port 0).
+    /// `--config0`: config of link `dir0` (port 0 -> port 1, or 0 -> 0).
     pub config0: Option<PathBuf>,
-    /// `--config1`: DPDS config of link `dir1` (port 1 -> port 0, needs two ports).
+    /// `--config1`: config of link `dir1` (port 1 -> port 0, needs two ports).
     pub config1: Option<PathBuf>,
     /// `--links`: the multi-link file (excludes the config flags).
     pub links: Option<PathBuf>,
@@ -46,8 +46,8 @@ fn set<T>(slot: &mut Option<T>, flag: &str, value: T) -> Result<(), CliError> {
     Ok(())
 }
 
-/// Parses the full argv (including argv[0]). Everything before the first
-/// `--` belongs to the EAL, everything after it to the application.
+/// Parses the full argv (argv[0] included): everything before the first `--`
+/// is for the EAL, everything after it for the application.
 pub fn parse_args(args: &[String]) -> Result<Cli, CliError> {
     let (eal_args, app_args) = match args.iter().position(|a| a == "--") {
         Some(i) => (&args[..i], &args[i + 1..]),

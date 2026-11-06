@@ -6,19 +6,17 @@ import * as fx from '../test/fixtures';
 import { must } from '../test/must';
 import { expectStartBody, renderApp, seedLinks, seedRaw, seedStore } from '../test/helpers';
 
-// Spec 34, frontend: the Host hints page shows a loading animation while it checks the host, and has a Recheck button.
-//
-// CONTRACT (from the spec; the choices of the tester where the spec is silent are marked CHOICE):
+// The Host hints page shows a loading animation while it checks the host, and has a Recheck button:
 // - While the page's requests are in flight (the first load and every recheck) a status element is shown whose text is exactly
 //   "Checking host…" (U+2026). It has the implicit status role (found with getByRole, never by attribute: Biome flags an explicit
 //   role on <output>); its spinner is aria-hidden and carries no text of its own. It is gone once every request has settled.
 // - A button named exactly "Recheck" with an `i.bi-arrow-clockwise` icon (aria-hidden), type="button". It is disabled while a
 //   check is in flight (also during the first load). Clicking it re-sends api.getHostHints({ recheck: true }) and, when the local
-//   document has links (and is not corrupt), api.getHostHintsFor(startBody, { recheck: true }) (spec 55: both carry recheck=true,
-//   the controller answers a plain GET from its stored result). The first load passes no recheck to either.
-// - During a recheck the hints already shown stay visible; the icon gets the class `icon-spin` (CHOICE of the class name; the
-//   stylesheet side is pinned in assets/stylesSpec34.test.ts). When the requests have settled, the new answers replace the old
-//   ones and the icon stops spinning. Errors show as before (an alert with the message).
+//   document has links (and is not corrupt), api.getHostHintsFor(startBody, { recheck: true }) (both carry recheck=true; the
+//   controller answers a plain GET from its stored result). The first load passes no recheck to either.
+// - During a recheck the hints already shown stay visible; the icon gets the class `icon-spin` (the stylesheet side is pinned in
+//   assets/stylesSpec34.test.ts). When the requests have settled, the new answers replace the old ones and the icon stops spinning.
+//   Errors show as an alert with the message.
 // - Two clicks in quick succession send one recheck.
 // NOT PINNED: whether the old hints stay on screen after a recheck that failed (useLoad drops the data of a failed reload), and
 // what an old alert looks like while a recheck is in flight.

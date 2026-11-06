@@ -1,13 +1,12 @@
-//! Spec v12 (controller), moved onto the start body by spec 22: the required correlation
-//! initialization rate `delayer.initialization_rate_pps`, the link-name rules and the dpds
-//! telemetry dict limit.
+//! Controller: the required correlation initialization rate `delayer.initialization_rate_pps`, the
+//! link-name rules and the dpds telemetry dict limit.
 //!
 //! Contract:
 //! - a present `delayer` requires `initialization_rate_pps`: a body without it is a 400 whose
 //!   message names the field (a 422 is mapped to 400 by the controller); a value that is not
 //!   finite or below 1 is a 400 naming the field. It is reported back by `GET /api/emulation`
 //!   (the running configuration) and written into the links file. (A missing delayer needs no
-//!   rate: see `optional_stages.rs`.) Nothing stores it: presets and import/export are gone.
+//!   rate: see `optional_stages.rs`.)
 //! - link names are 1 to 32 characters of `A-Za-z0-9_.-`, unique within the body: a refused
 //!   start is 400 or 409 and the message names the name or says "link name"/"already exists".
 //! - dpds' `/dpds/ports` telemetry dict holds `3 + 5 * distinct ports + 10 * links` entries, at

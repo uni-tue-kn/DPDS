@@ -11,18 +11,17 @@ import { api } from '../test/mockApi';
 import { must } from '../test/must';
 import { expectBars, percent } from '../test/probabilities';
 
-// Spec 58: the delay and IAT histograms look and switch like P4TG's. Spec: .git/claude-specs/spec58-p4tg-chart-style.md.
-// Replaces spec 56's percentileToggles.test.tsx (per-line toggles). Contract of the DOM and of the chart props:
-//   - H1: one `<button aria-pressed>` in the link's tabpanel, text "Hide percentiles" / "Show percentiles", inside a row div
+// The delay and IAT histograms look and switch like P4TG's. Contract of the DOM and of the chart props:
+//   - one `<button aria-pressed>` in the link's tabpanel, text "Hide percentiles" / "Show percentiles", inside a row div
 //     `d-flex justify-content-end align-items-center gap-2 mb-2` that comes before the first histogram table;
-//   - A1..A3: `plugins.annotation.annotations` (record or list, read from `data-options`) holds per shown percentile one
+//   - `plugins.annotation.annotations` (record or list, read from `data-options`) holds per shown percentile one
 //     `type: 'line'` and one `type: 'label'` annotation; a label belongs to the line at `xMin === label.xValue + 0.15`;
-//   - R2: CHOICE: while a view waits for its first data the card holds one element with the class `chart-box` (the 250 px box
-//     of index.css) and no chart stub and no histogram table. Tables row height cannot be measured in jsdom: not covered.
-//   - R2/S1: the placeholder is also not an `img` box (no role img with the chart's label while nothing is drawn), and index.css has
+//   - while a view waits for its first data the card holds one element with the class `chart-box` and no chart stub and no
+//     histogram table. Tables row height cannot be measured in jsdom: not covered;
+//   - the placeholder is also not an `img` box (no role img with the chart's label while nothing is drawn), and index.css has
 //     a rule `aspect-ratio: 4` whose selector (one or several classes, no tag) the placeholder fulfils;
-//   - S4: the unit symbol of µs is accepted as U+00B5 (DPDS's formatDuration) or U+03BC (P4TG's getTimeUnit);
-//   - R3: "no new data/options object" is read from the props the chart stub got in its latest render (test/chartProps.ts).
+//   - the unit symbol of µs is accepted as U+00B5 (DPDS's formatDuration) or U+03BC (P4TG's getTimeUnit);
+//   - "no new data/options object" is read from the props the chart stub got in its latest render (test/chartProps.ts).
 
 type Ann = Record<string, unknown> & { type?: string };
 type Opts = { plugins?: { annotation?: { annotations?: unknown } } } & Record<string, unknown>;
@@ -530,7 +529,7 @@ describe.each(VIEWS)('Spec 58 R3 and R4: polling the $name view', (v) => {
   });
 });
 
-// ---- the other P4TG style: S1 to S7 ---------------------------------------------------------------------------------------
+// ---- the other P4TG style points ---------------------------------------------------------------------------------------
 
 type Axis = { beginAtZero?: boolean; title?: { text?: string; display?: boolean } };
 type FullOpts = {

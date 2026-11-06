@@ -5,7 +5,7 @@ import * as fx from '../test/fixtures';
 import { renderApp, tick } from '../test/helpers';
 import { api, serveHistory } from '../test/mockApi';
 
-// Spec 50 G: at most 100 points per time chart (P4TG's select_time_keys, unit tests in common/selectTimeKeys.test.ts), for the
+// At most 100 points per time chart (P4TG's select_time_keys, unit tests in common/selectTimeKeys.test.ts), for the
 // rate chart and the Packet loss chart of every link and of the Summary. A 250-sample history (t = 0 .. 249 s, rx_gbps = tx_gbps =
 // loss_drops = the sample's position) plots 100 points: the positions floor(j * 249 / 99), the first and the last one kept.
 

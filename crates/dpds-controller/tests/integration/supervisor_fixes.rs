@@ -1,4 +1,4 @@
-//! C5, supervisor part: the real `ProcessSupervisor` with shell scripts standing in for
+//! Supervisor part: the real `ProcessSupervisor` with shell scripts standing in for
 //! `dpds` and a fake telemetry socket (`fake_telemetry.rs`) for the readiness probe.
 //!
 //! - the readiness probe drops and reconnects its client after a transport error (a

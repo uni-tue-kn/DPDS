@@ -4,28 +4,24 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::error::DpdkError;
 
-/// Set once the EAL has been initialised in this process.  Never reset:
-/// DPDK does not support re-initialisation after `rte_eal_cleanup`.
+/// Set once the EAL is initialised; never reset: DPDK does not support
+/// re-initialisation after `rte_eal_cleanup`.
 static EAL_TAKEN: AtomicBool = AtomicBool::new(false);
 
 /// RAII guard for the DPDK Environment Abstraction Layer.
 ///
-/// `rte_eal_init` is called on construction; `rte_eal_cleanup` is called on
-/// drop.  Only one `Eal` may exist per process lifetime (DPDK restriction) —
-/// this is enforced at runtime.
+/// `rte_eal_init` runs on construction, `rte_eal_cleanup` on drop. Only one
+/// `Eal` may exist per process lifetime (DPDK restriction), enforced at runtime.
 pub struct Eal {
-    // rte_eal_init keeps pointers into argv (and may permute the array), so
-    // both the array and the strings must outlive it, i.e. live until
-    // rte_eal_cleanup in Drop.  Field order is irrelevant: neither Vec is
-    // touched on drop before rte_eal_cleanup runs.
+    // rte_eal_init keeps pointers into argv (and may permute it), so the array and
+    // the strings must live until rte_eal_cleanup in Drop.
     _argv: Vec<*mut c_char>,
     _args: Vec<CString>,
 }
 
 impl Eal {
-    /// Initialise the EAL from the process's command-line arguments,
-    /// unmodified -- callers are responsible for including any EAL flags
-    /// they need (the first entry is the program name, as in `argv`).
+    /// Initialises the EAL from `args` as given: the caller includes the EAL
+    /// flags it needs, and the first entry is the program name, as in `argv`.
     pub fn new(args: &[String]) -> Result<Self, DpdkError> {
         if EAL_TAKEN.swap(true, Ordering::SeqCst) {
             return Err(DpdkError(-114)); // -EALREADY
@@ -42,7 +38,7 @@ impl Eal {
 
         let ret = unsafe { dpdk_sys::rte_eal_init(c_ptrs.len() as i32, c_ptrs.as_mut_ptr()) };
         if ret < 0 {
-            // rte_eal_init returns -1 and reports the cause in rte_errno.
+            // rte_eal_init returns -1 and sets rte_errno.
             return Err(DpdkError::from_rte_errno());
         }
 
@@ -61,15 +57,13 @@ impl Drop for Eal {
 
 // ── Multi-core launch ────────────────────────────────────────────────────────
 //
-// Each pipeline stage is launched as an ordinary Rust closure on its own
-// worker lcore. `rte_eal_remote_launch` itself only knows
-// `extern "C" fn(*mut c_void) -> i32`, so a boxed trait-object closure is
-// smuggled through the `arg` pointer and unpacked by a single trampoline.
+// `rte_eal_remote_launch` only takes `extern "C" fn(*mut c_void) -> i32`, so a
+// boxed closure is passed through `arg` and unpacked by one trampoline.
 
 extern "C" fn launch_trampoline(arg: *mut c_void) -> i32 {
     // Safety: `arg` is always a pointer produced by `remote_launch` below,
-    // consumed exactly once (DPDK calls this trampoline exactly once per
-    // successful `rte_eal_remote_launch`).
+    // consumed exactly once (DPDK calls the trampoline once per successful
+    // `rte_eal_remote_launch`).
     let f = unsafe { Box::from_raw(arg as *mut Box<dyn FnOnce() + Send>) };
     f();
     0
@@ -83,16 +77,14 @@ pub fn remote_launch(f: impl FnOnce() + Send + 'static, lcore_id: u32) -> Result
 
     let ret = unsafe { dpdk_sys::rte_eal_remote_launch(Some(launch_trampoline), arg, lcore_id) };
     if ret != 0 {
-        // Launch failed: the trampoline will never run, so reclaim the
-        // box here instead of leaking it.
+        // The trampoline will never run: reclaim the box instead of leaking it.
         drop(unsafe { Box::from_raw(arg as *mut Box<dyn FnOnce() + Send>) });
         return Err(DpdkError(ret));
     }
     Ok(())
 }
 
-/// Blocks until the function launched on `lcore_id` (via [`remote_launch`])
-/// returns.
+/// Blocks until the function launched on `lcore_id` returns.
 pub fn wait_lcore(lcore_id: u32) -> Result<(), DpdkError> {
     let ret = unsafe { dpdk_sys::rte_eal_wait_lcore(lcore_id) };
     if ret < 0 {
@@ -102,20 +94,18 @@ pub fn wait_lcore(lcore_id: u32) -> Result<(), DpdkError> {
     }
 }
 
-/// Number of enabled lcores, the main lcore included (`rte_lcore_count`).
+/// Number of enabled lcores, the main lcore included.
 pub fn lcore_count() -> usize {
     unsafe { dpdk_sys::rte_lcore_count() as usize }
 }
 
-/// The EAL main lcore (`rte_get_main_lcore`).
 pub fn main_lcore() -> u32 {
     unsafe { dpdk_sys::rte_get_main_lcore() }
 }
 
-/// Iterator over every enabled worker lcore (i.e. every lcore except the
-/// main lcore), mirroring `RTE_LCORE_FOREACH_WORKER` — a macro, so not
-/// itself bindgen-reachable; reimplemented on top of the plain function
-/// `rte_get_next_lcore` it expands to.
+/// Iterator over every enabled worker lcore (all but the main one):
+/// `RTE_LCORE_FOREACH_WORKER` is a macro bindgen cannot reach, so this wraps
+/// `rte_get_next_lcore`.
 pub struct WorkerLcoreIter {
     next: u32,
 }
@@ -137,8 +127,6 @@ impl Iterator for WorkerLcoreIter {
     }
 }
 
-/// Iterate over every enabled worker lcore (equivalent to
-/// `RTE_LCORE_FOREACH_WORKER`).
 #[inline(always)]
 pub fn foreach_worker() -> WorkerLcoreIter {
     WorkerLcoreIter { next: u32::MAX }

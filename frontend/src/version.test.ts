@@ -1,4 +1,4 @@
-// Spec 18: the release version lives in VERSION.md at the repository root (first line, X.Y.Z); the frontend's
+// The release version lives in VERSION.md at the repository root (first line, X.Y.Z); the frontend's
 // package.json and package-lock.json must carry the same one. The Rust side checks the crates, Cargo.lock and the
 // README badge (crates/dpds-controller/tests/integration/release.rs). Plain file reads: frontend/ is the directory
 // vitest runs in, its parent is the repository root.

@@ -1,11 +1,11 @@
-//! C2 and C5 on the HTTP surface:
+//! HTTP surface hardening:
 //!
 //! - CORS is OFF by default (the controller serves the frontend itself, same-origin): no
 //!   `access-control-*` header, also not on a preflight. `--cors-origin <origin>`
 //!   (repeatable, env `DPDS_CORS_ORIGIN`) enables it for exactly those origins:
 //!   the header echoes the request's origin if it is listed, never `*`, nothing otherwise.
-//! - Every POST (POST /api/emulation/start|validate|stop and POST /api/host/hints; spec 22 removed
-//!   the other mutating routes) requires `Content-Type: application/json` (axum's `Json`
+//! - Every POST (POST /api/emulation/start|validate|stop and POST /api/host/hints) requires
+//!   `Content-Type: application/json` (axum's `Json`
 //!   semantics: `; charset=...` and `+json` are fine): 415 `{"message"}` otherwise, before
 //!   anything else is looked at, nothing started.
 //! - A body over the size limit is 413 with a `{"message"}` JSON body (the tests use

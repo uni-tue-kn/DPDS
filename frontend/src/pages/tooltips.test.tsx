@@ -5,11 +5,10 @@ import { linkPage } from '../test/configPages';
 import type { ConfigPage } from '../test/configPages';
 import { allRequiredMarkers, rawStore, typeInto } from '../test/helpers';
 
-// Spec 25 (user 2026-11-04): an info-icon tooltip after EVERY field label in the link editor (spec27 removed the preset editor,
-// spec41 the settings form). Mechanics (spec): react-bootstrap OverlayTrigger + Tooltip, hover or keyboard focus;
-// the trigger is a `<button type="button">` with the Bootstrap icon `bi-info-circle` and the accessible name "About <label>",
-// placed after the label (and after a required marker); it must not change the field's accessible name and must not count as a
-// required marker. The prose is not pinned except for the few facts that are certain from the backend: the base units.
+// An info-icon tooltip after EVERY field label in the link editor. Mechanics: react-bootstrap OverlayTrigger + Tooltip, hover or
+// keyboard focus; the trigger is a `<button type="button">` with the Bootstrap icon `bi-info-circle` and the accessible name
+// "About <label>", placed after the label (and after a required marker); it must not change the field's accessible name and must
+// not count as a required marker. The prose is not pinned except for the few facts that are certain from the backend: the base units.
 
 const MIN_TEXT = 10;
 
@@ -18,13 +17,13 @@ const queryAbout = (label: string) => screen.queryByRole('button', { name: `Abou
 
 /**
  * Every field label of the page: all <label> elements except the visually hidden "<label> unit" ones and the label of the
- * hidden file input behind the toolbar's Import button (spec27: a tooltip next to an invisible field makes no sense; the
+ * hidden file input behind the toolbar's Import button (a tooltip next to an invisible field makes no sense; the
  * button names the action).
  */
 function fieldLabels(): HTMLLabelElement[] {
   return Array.from(document.querySelectorAll('label')).filter((l) => {
     const t = l.textContent?.trim() ?? '';
-    // the three options of the "Delay accuracy" toggle (spec 45) are no fields: the toggle has the one button
+    // the three options of the "Delay accuracy" toggle are no fields: the toggle has the one button
     if (l.control?.getAttribute('type') === 'radio') return false;
     return t !== '' && !t.endsWith(' unit') && t !== 'Import links file';
   });
@@ -77,7 +76,7 @@ const LINK_LABELS = [
   'Histogram bins',
   'Histogram lo',
   'Histogram hi',
-  'IAT histogram bins', // spec 53 A
+  'IAT histogram bins',
   'IAT histogram lo',
   'IAT histogram hi',
 ];

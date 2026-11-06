@@ -7,17 +7,14 @@ import { deferred, renderApp, seedStore, tick } from '../test/helpers';
 import { ApiError, api, fakeController, serveHistory } from '../test/mockApi';
 import { must } from '../test/must';
 
-// Spec 54 (user 2026-11-05: "the dashboard should not show 'stopped' next to the links which I can select. Further when starting,
-// it should not get white and then render. It should still show it and also display some loading like P4TG does. Maybe we can
-// display a 'DPDS' logo as text below the loading"). Spec: .git/claude-specs/spec54-no-tab-badge-start-overlay.md.
-//   L1 no Stopping/Stopped/Failed badge in the tab titles.
-//   L3 from the Start/Restart click until `running` the dashboard content stays in the DOM (never removed, not remounted) under
-//      the Loader's overlay (components/Loader.tsx; class names: header of components/loader.test.tsx); a refused or failed start
-//      removes the overlay and shows the error as before.
-//   L4 before the first /api/emulation answer the non-overlay loader shows instead of an empty page.
-// CHOICES (spec silent): the overlay of a Restart starts at the Restart click (through stopping and stopped) and ends at `running`,
-// a failed start or a refused one; a page opened while the emulation is `starting` shows the overlay; a plain Stop shows none;
-// "the chart area stays" is tested as: the tabpanel elements of the views still are connected to the document (same elements).
+// The dashboard under the Start/Restart loading overlay (components/Loader.tsx; class names: header of components/loader.test.tsx):
+//   - no Stopping/Stopped/Failed badge in the tab titles;
+//   - from the Start/Restart click until `running` the dashboard content stays in the DOM (never removed, not remounted) under the
+//     Loader's overlay; a refused or failed start removes the overlay and shows the error;
+//   - before the first /api/emulation answer the non-overlay loader shows instead of an empty page.
+// The overlay of a Restart starts at the Restart click (through stopping and stopped) and ends at `running`, a failed start or a
+// refused one; a page opened while the emulation is `starting` shows the overlay; a plain Stop shows none; "the chart area stays" is
+// tested as: the tabpanel elements of the views still are connected to the document (same elements).
 
 const LINKS = [fx.link(), fx.linkRev()];
 const TITLES = ['a-b: enp101s0f0 → enp101s0f1', 'b-a: enp101s0f1 → enp101s0f0'];
@@ -96,7 +93,7 @@ beforeEach(() => {
   seedStore({ links: LINKS });
 });
 
-// ---- L1 -----------------------------------------------------------------------------------------------------------------------
+// ---- no tab badge -----------------------------------------------------------------------------------------------------------------------
 
 describe('spec 54 L1: no state badge in the tab titles', () => {
   it('through running, stopping, stopped and failed every tab is exactly its label, with no badge', async () => {
@@ -118,7 +115,7 @@ describe('spec 54 L1: no state badge in the tab titles', () => {
   });
 });
 
-// ---- L3: Start -----------------------------------------------------------------------------------------------------------------
+// ---- Start -----------------------------------------------------------------------------------------------------------------
 
 describe('spec 54 L3: Start keeps the dashboard rendered under the overlay', () => {
   it('shows no overlay and no non-overlay loader on a settled stopped dashboard', async () => {
@@ -250,7 +247,7 @@ describe('spec 54 L3: Start keeps the dashboard rendered under the overlay', () 
   });
 });
 
-// ---- L3: Restart -----------------------------------------------------------------------------------------------------------------
+// ---- Restart -----------------------------------------------------------------------------------------------------------------
 
 describe('spec 54 L3: Restart keeps the dashboard rendered under the overlay', () => {
   async function openRunning() {
@@ -321,7 +318,7 @@ describe('spec 54 L3: Restart keeps the dashboard rendered under the overlay', (
   });
 });
 
-// ---- L4 ----------------------------------------------------------------------------------------------------------------------
+// ---- first load ----------------------------------------------------------------------------------------------------------------------
 
 describe('spec 54 L4: the loader before the first /api/emulation answer', () => {
   it('shows the non-overlay loader (spinner, "DPDS") and no overlay while nothing has answered', async () => {

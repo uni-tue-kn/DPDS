@@ -1,4 +1,4 @@
-/* DPDS frontend: P4TG look (left sidebar, primary #e74c3c, secondary #2c3e50), dark mode via [data-theme]. */
+/* DPDS frontend: left sidebar, primary #e74c3c, secondary #2c3e50, dark mode via [data-theme]. */
 :root {
   --color-primary: #e74c3c;
   --color-primary-light: #ff9e93;
@@ -159,8 +159,7 @@ body {
   color: #ffffff;
 }
 
-/* Like P4TG (its index.scss): primary buttons are green, danger buttons have the P4TG red background and keep
-   Bootstrap's border, hover and disabled colours. */
+/* Primary buttons are green, danger buttons have the red background and keep Bootstrap's border, hover and disabled colours. */
 .btn-primary,
 .btn-primary:disabled {
   --bs-btn-bg: var(--color-okay);
@@ -206,7 +205,7 @@ body {
   --bs-table-border-color: var(--color-secondary);
 }
 
-/* The line and bar charts size themselves by the aspect ratio in their options (P4TG: 6 and 4), not by a height. */
+/* The line and bar charts size themselves by the aspect ratio in their options (6 and 4), not by a height. */
 .chart-box {
   position: relative;
 }
@@ -440,7 +439,7 @@ fieldset.config-section > legend {
   }
 }
 
-/* Loader (a port of P4TG's Loader.tsx): the block replaces the content, the overlay covers it. */
+/* Loader: the block replaces the content, the overlay covers it. */
 .loader-content {
   position: relative;
 }

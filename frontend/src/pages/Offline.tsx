@@ -5,7 +5,7 @@ import { startPolling } from '../common/polling';
 
 const OFFLINE_POLL_MS = 2000;
 
-/** P4TG's Offline page: shown instead of the routed page while the controller is unreachable. */
+/** Shown instead of the routed page while the controller is unreachable. */
 export default function Offline({ onOnline }: { onOnline: () => void }) {
   useEffect(() => {
     let alive = true;

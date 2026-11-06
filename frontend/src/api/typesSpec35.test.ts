@@ -1,6 +1,6 @@
-// Spec 35 (C1, C2, C3): the hand-written DTO types follow the controller's new fields. Types do not exist at run time, so the
-// source is read (as typesSpec29b.test.ts does). The tests of the dashboard compile against these names: `fx.totals()` returns
-// `HistoryTotals`, `fx.counters()` fills `Counters.nic_rx_missed` / `nic_rx_nombuf` (spec 47: renamed from nic_rx_imissed), `fx.history()` sets `HistoryView.totals`.
+// The hand-written DTO types follow the controller's fields: `fx.totals()` returns `HistoryTotals`, `fx.counters()` fills
+// `Counters.nic_rx_missed` / `nic_rx_nombuf`, `fx.history()` sets `HistoryView.totals`. Types do not exist at run time, so the
+// source is read (as typesSpec29b.test.ts does).
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -60,9 +60,9 @@ describe('types.ts (spec 35)', () => {
         'nic_tx_phy_discards',
         'nic_tx_drops',
         'rx_pkts',
-        'tx_sent', // spec 51: the forwarded frames
-        'frame_sizes', // spec 51
-        'out_of_order', // spec 51
+        'tx_sent', // the forwarded frames
+        'frame_sizes',
+        'out_of_order',
       ].sort(),
     );
     for (const k of keys) {

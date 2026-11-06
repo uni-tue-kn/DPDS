@@ -1,19 +1,14 @@
-//! Spec 30: `Container::add_uint` must not ignore DPDK's array limit.
+//! `Container::add_uint` must not ignore DPDK's array limit.
 //!
 //! One DPDK telemetry array holds at most `RTE_TEL_MAX_ARRAY_ENTRIES` = 512 entries;
-//! `rte_tel_data_add_array_uint` returns `-ENOSPC` from entry 513 on and drops the value. The
-//! old `add_uint` discarded that return code, so a reply of more than 512 bins was cut silently
-//! (the paged histogram makes sure it never asks for more than 500, and this test makes sure a
-//! mistake there cannot go unnoticed).
+//! `rte_tel_data_add_array_uint` returns `-ENOSPC` from entry 513 on and drops the value, which
+//! would cut a reply of more than 512 bins silently (the paged histogram asks for at most 500).
 //!
-//! The spec allows either way of not ignoring it: propagate the error (return a `Result`) or
-//! assert/log (panic). The test therefore accepts both: an entry is REJECTED when the call
-//! panics or when its return value (formatted with `{:?}`) is an `Err(..)`; entries 1..=512 must
-//! be ACCEPTED (neither), entry 513 and every later one REJECTED. A plain `()`-returning
-//! `add_uint` that only logs cannot be distinguished from the old behaviour and fails the test.
+//! An entry counts as REJECTED when the call panics or its return value (formatted with `{:?}`)
+//! is an `Err(..)`; entries 1..=512 must be accepted, entry 513 on rejected. A `()`-returning
+//! `add_uint` that only logs fails the test.
 //!
-//! No EAL is needed (see the `telemetry::tests` module of the crate: array containers work
-//! without `rte_eal_init`).
+//! No EAL is needed: array containers work without `rte_eal_init`.
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
@@ -32,7 +27,7 @@ fn rejected(c: &mut Container, i: usize) -> bool {
 
 #[test]
 fn the_premise_dpdk_refuses_entry_513_with_enospc() {
-    // control: the raw call, so a failing test below is about `add_uint`, not about DPDK
+    // Control: the raw call, so a failure below is about `add_uint`, not DPDK.
     unsafe {
         let raw = dpdk_sys::rte_tel_data_alloc();
         assert!(!raw.is_null());

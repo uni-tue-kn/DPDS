@@ -1,7 +1,7 @@
-// Spec 54 L2 (user 2026-11-05: loading overlay like P4TG's): the Loader's styles are CSS classes in index.css, ported from the styled
-// components of P4TG's Loader.tsx, and the colour token --color-background-transparent exists for the light and the dark theme.
-// jsdom renders no CSS, so the stylesheet itself is pinned. Class names: see the header of components/loader.test.tsx (CHOICE).
-// The wordmark `.loader-text` is bold and in the primary colour; its size is the loader's 2em, inherited (it must not scale it again).
+// The Loader's styles are CSS classes in index.css, and the colour token --color-background-transparent exists for the light and
+// the dark theme. jsdom renders no CSS, so the stylesheet itself is pinned. Class names: see the header of
+// components/loader.test.tsx. The wordmark `.loader-text` is bold and in the primary colour; its size is the loader's 2em, inherited
+// (it must not scale it again).
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 

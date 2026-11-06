@@ -1,14 +1,11 @@
-// Spec 34 (frontend): the Recheck button of the Host hints page spins its icon while a check runs. The DOM side (the icon
-// `i.bi-arrow-clockwise` carries the class `icon-spin` exactly while the check runs) is pinned in pages/hintsRecheck.test.tsx;
-// jsdom renders no CSS, so the animation is pinned in the stylesheet itself, like stylesSpec33b.test.ts does.
-// CHOICES of the tester:
-// - the class is called `icon-spin`;
-// - the icon is an inline `<i>`, and a transform does not apply to an inline box, so the rule must make it `inline-block`
-//   (or block / flex / inline-flex);
-// - the animation is a rotation by a full turn (`rotate(360deg)` or `rotate(1turn)`) that repeats for ever (`infinite`);
-// - it is off under `prefers-reduced-motion: reduce`, in one of two ways: a `@media (prefers-reduced-motion: reduce)` rule for
-//   `.icon-spin` that sets `animation: none` (or `animation-name: none`), or the animation lives only inside
-//   `@media (prefers-reduced-motion: no-preference)`.
+// The Recheck button of the Host hints page spins its icon while a check runs. The DOM side (the icon `i.bi-arrow-clockwise` carries
+// the class `icon-spin` exactly while the check runs) is pinned in pages/hintsRecheck.test.tsx; jsdom renders no CSS, so the
+// animation is pinned in the stylesheet itself.
+// The icon is an inline `<i>`, and a transform does not apply to an inline box, so the rule must make it `inline-block` (or block /
+// flex / inline-flex). The animation is a rotation by a full turn (`rotate(360deg)` or `rotate(1turn)`) that repeats for ever
+// (`infinite`). It is off under `prefers-reduced-motion: reduce`, either by a `@media (prefers-reduced-motion: reduce)` rule for
+// `.icon-spin` that sets `animation: none` (or `animation-name: none`), or because the animation lives only inside
+// `@media (prefers-reduced-motion: no-preference)`.
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { must } from '../test/must';

@@ -1,5 +1,4 @@
-// v8 additions to the REAL client module (histogram window) against a stubbed fetch; v22 removed the presets and export/import
-// routes together with their client functions (see client.test.ts). Contract: see the "v8" block in src/test/helpers.tsx.
+// The REAL client module's histogram window (`getDelayHistogram(dir, windowS?)`) against a stubbed fetch.
 import { vi } from 'vitest';
 import * as fx from '../test/fixtures';
 

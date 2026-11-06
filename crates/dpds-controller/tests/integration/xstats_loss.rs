@@ -1,11 +1,11 @@
-//! Spec 47: every lost frame counted, from the NIC's xstats instead of `rte_eth_stats`.
+//! Every lost frame counted, from the NIC's xstats instead of `rte_eth_stats`.
 //!
 //! The poller asks `/ethdev/xstats,<p>` (a flat `{name: value}` reply) and `compute_stats` reads
 //! everything NIC-related from it. The fake replies are the `snapshot()` of `common` (two ports,
 //! link 0 = port 0 -> port 1, link 1 = port 1 -> port 0) with [`set_xstats`] on top. Every cause
 //! gets a different value on each port, so a link that reads the wrong port shows.
 //!
-//! Contract the tests pin (spec 47 C1-C5):
+//! Contract the tests pin:
 //!
 //! - A link's `counters` (JSON of `DirectionStats`) carry, from the INGRESS port's xstats:
 //!   `nic_rx_missed` (`rx_missed_errors`), `nic_rx_nombuf` (`rx_mbuf_allocation_errors`),
@@ -13,7 +13,7 @@
 //!   `nic_rx_phy_discards` (`rx_phy_discard_packets`), and the diagnostics `nic_rx_crc_errors`
 //!   (`rx_phy_crc_errors`), `nic_rx_symbol_errors` (`rx_phy_symbol_errors`), `nic_rx_length_errors`
 //!   (`rx_phy_in_range_len_errors`); from the EGRESS port's xstats `nic_tx_phy_discards`
-//!   (`tx_phy_discard_packets`). `tx_drops` keeps its name; `nic_rx_imissed` is gone. All u64,
+//!   (`tx_phy_discard_packets`). All u64,
 //!   cumulative, 0 for a name the NIC does not report (or a port without a reply).
 //! - `HistorySample` / `HistoryTotals` carry the nine causes (not the diagnostics).
 //! - `nic_rx_pct` is the share of the window's rx packets lost to the four RX-side NIC causes,
@@ -125,7 +125,7 @@ fn nic(c: &Value) -> [u64; 8] {
     NIC_KEYS.map(|k| num(c, k))
 }
 
-// ---- C1: the poller asks for xstats ----------------------------------------------------------
+// ---- the poller asks for xstats ----------------------------------------------------------
 
 #[test]
 fn the_poller_asks_for_xstats_and_not_for_stats() {
@@ -151,7 +151,7 @@ fn the_poller_asks_for_xstats_and_not_for_stats() {
     );
 }
 
-// ---- C1: rates come from the good_* xstats ----------------------------------------------------
+// ---- rates come from the good_* xstats ----------------------------------------------------
 
 #[test]
 fn rates_come_from_rx_good_bytes_and_tx_good_bytes() {
@@ -198,7 +198,7 @@ fn rates_come_from_rx_good_bytes_and_tx_good_bytes() {
     assert_close(f(&v["directions"][1], "tx_bps"), 3_000_000.0 * 8.0);
 }
 
-// ---- C2/C3: every loss xstat lands in the right link's counter ----------------------------------
+// ---- every loss xstat lands in the right link's counter ----------------------------------
 
 #[test]
 fn each_loss_xstat_lands_in_its_counter_of_the_right_link() {
@@ -268,7 +268,7 @@ fn a_hairpin_link_reads_both_sides_from_its_single_port() {
     );
 }
 
-// ---- C1/C2: missing names are 0 ------------------------------------------------------------------
+// ---- missing names are 0 ------------------------------------------------------------------
 
 #[test]
 fn names_a_nic_does_not_report_count_as_zero() {
@@ -308,7 +308,7 @@ fn one_present_name_does_not_need_the_others() {
     assert_eq!(nic(&counters(&s, 1)), [0, 0, 0, 0, 0, 0, 0, 0]);
 }
 
-// ---- C2/C4: names ---------------------------------------------------------------------------------
+// ---- names ---------------------------------------------------------------------------------
 
 #[test]
 fn the_counters_have_the_new_names_and_not_the_old_one() {
@@ -324,7 +324,7 @@ fn the_counters_have_the_new_names_and_not_the_old_one() {
     assert_eq!(num(&c, "tx_drops"), 0);
 }
 
-// ---- C2/C4: diagnostics pass through but are not counted -----------------------------------------
+// ---- diagnostics pass through but are not counted -----------------------------------------
 
 #[test]
 fn diagnostics_are_passed_through_in_the_counters_only() {
@@ -399,7 +399,7 @@ fn diagnostics_move_no_loss_total_and_no_share() {
     }
 }
 
-// ---- C4: history samples and totals ---------------------------------------------------------------
+// ---- history samples and totals ---------------------------------------------------------------
 
 #[test]
 fn history_samples_and_totals_carry_the_nine_causes() {
@@ -440,7 +440,7 @@ fn history_nic_tx_drops_is_still_the_dpds_tx_drops() {
     assert_eq!(sample["nic_tx_phy_discards"], 0, "a different counter");
 }
 
-// ---- C5: the shares --------------------------------------------------------------------------------
+// ---- the shares --------------------------------------------------------------------------------
 
 #[test]
 fn the_nic_shares_include_the_new_causes() {

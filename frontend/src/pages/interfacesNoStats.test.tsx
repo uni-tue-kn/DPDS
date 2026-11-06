@@ -6,9 +6,8 @@ import * as fx from '../test/fixtures';
 import { renderApp, tick } from '../test/helpers';
 import { api } from '../test/mockApi';
 
-// Spec 43 F6: the Interfaces page no longer shows the NIC statistics table (PortsTable, data-testid="ports-table", heading
-// "NIC ports"); the component is deleted (its tests were interfacesPorts.test.tsx). `GET /api/stats` carries no `ports` any more
-// (B3), so the page has no reason to poll the stats either. CHOICE: it does not call getStats at all.
+// The Interfaces page does not show the NIC statistics table (data-testid="ports-table", heading "NIC ports"), and `GET /api/stats`
+// carries no `ports`, so the page does not poll the stats either: it does not call getStats at all.
 
 describe('Interfaces page (spec 43 F6): no NIC statistics table', () => {
   beforeEach(() => {

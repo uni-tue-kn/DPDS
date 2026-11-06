@@ -1,15 +1,12 @@
-//! End-to-end characterisation of the safe wrappers on a real EAL with one
-//! `net_null` vdev (no hugepages, no PCI, no root, no NIC).
+//! End-to-end test of the safe wrappers on a real EAL with one `net_null` vdev
+//! (no hugepages, PCI, root or NIC).
 //!
-//! DPDK allows one EAL per process, so everything runs inside a single test
-//! function (an integration-test file is its own process). The oracle for each
-//! check is either DPDK itself (raw `dpdk_sys` calls) or a documented property
-//! of `net_null`: its RX hands out freshly allocated 64-byte mbufs
-//! (`packet_size` default 64, port id stamped in the mbuf) and its TX frees
-//! what it is given and reports all of it as sent.
+//! DPDK allows one EAL per process, so everything runs in a single test
+//! function. The oracle is DPDK itself (raw `dpdk_sys` calls) or a property of
+//! `net_null`: its RX hands out fresh 64-byte mbufs (port id stamped in the
+//! mbuf) and its TX frees what it is given and reports all of it as sent.
 //!
-//! The mempool is created with `cache_size = 0`, so `rte_mempool_in_use_count`
-//! is exact (no per-lcore cache can hide mbufs).
+//! The mempool has `cache_size = 0`, so `rte_mempool_in_use_count` is exact.
 
 use std::ptr::null_mut;
 
@@ -107,7 +104,6 @@ fn net_null_end_to_end() {
     assert_eq!(port.tx_ring_size_requested(), 256);
     assert!(port.rx_ring_size() > 0 && port.tx_ring_size() > 0);
 
-    // mbuf_fast_free() must be exactly "device reports the capability".
     let mut info: dpdk_sys::rte_eth_dev_info = unsafe { std::mem::zeroed() };
     assert_eq!(unsafe { dpdk_sys::rte_eth_dev_info_get(0, &mut info) }, 0);
     assert_eq!(

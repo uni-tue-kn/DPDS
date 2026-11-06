@@ -12,7 +12,7 @@
 //! cargo test --release -p dpds-controller --test integration -- --ignored --test-threads=1
 //! ```
 //!
-//! The frontend serving added in spec v13 is described in the header of [`frontend`].
+//! The frontend serving is described in the header of [`frontend`].
 //!
 //! The test-facing Rust API, JSON shapes and HTTP contract that the tests assume
 //! are written down in the header of [`common`].

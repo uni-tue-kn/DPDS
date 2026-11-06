@@ -1,5 +1,5 @@
 // The chart stubs of setup.ts keep the props of what they render here, so a test can reach what JSON cannot carry: the
-// Chart.js tooltip callbacks (functions are dropped from `data-options`). Spec 35: the Doughnut's hover text.
+// Chart.js tooltip callbacks (functions are dropped from `data-options`).
 export interface StubProps {
   data?: unknown;
   options?: unknown;

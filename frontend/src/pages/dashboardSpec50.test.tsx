@@ -9,22 +9,20 @@ import { ApiError, api, serveHistory } from '../test/mockApi';
 import { must } from '../test/must';
 import { expectBars } from '../test/probabilities';
 
-// Spec 50 A3 (user 2026-11-05: "The histogram diagram is lost when we stop the traffic. It should still be displayed even when
-// traffic is stopped."). The controller now answers the run's last histogram after the stop (crates/dpds-controller/tests/
-// integration/spec50.rs), with `mean_ns` / `std_ns` of the link's last stats poll. Contract of the frontend side:
-//   - in an ended run (stopped or failed) a link whose run had delay statistics keeps an ENABLED "Delay histogram" radio; chosen,
-//     it shows the bar chart and the three tables of spec 36, polled as today (the answer simply does not change);
+// The histogram stays after the run ends: the controller answers the run's last histogram after the stop (crates/dpds-controller/
+// tests/integration/spec50.rs), with `mean_ns` / `std_ns` of the link's last stats poll.
+//   - in an ended run (stopped or failed) a link whose run had delay statistics keeps an ENABLED "Delay histogram" radio; chosen, it
+//     shows the bar chart and the three histogram tables, polled as while running (the answer simply does not change);
 //   - the Values table takes Delay / σ(Delay) from the live stats while there are some and, with no live stats (an ended run), from
 //     the response's `mean_ns` / `std_ns` ("-" when they are null);
-//   - a histogram view that is open when the run ends stays open (it used to fall back to Rate);
-//   - before any run the radio stays disabled, as before (dashboardBeforeRun.test.tsx).
+//   - a histogram view that is open when the run ends stays open;
+//   - before any run the radio stays disabled (dashboardBeforeRun.test.tsx).
 //
-// "HAD DELAY STATISTICS", as implemented: the link's STORED config (localStorage) has `delay_stats !== false`, so a link with no
-// stored config (or with the field missing) counts as having them; the controller is not asked beforehand. (The spec left the source
-// to the implementer: the config, or the controller answering a histogram.) The tests here keep both sources in agreement, so
-// either implementation passes: a link with statistics has `delay_stats:
-// true` in its stored config AND the controller answers its histogram; a link without has `delay_stats: false` stored AND the
-// controller answers 404 for it. Nothing here tells the two sources apart, nor asserts that a link without statistics is (not) probed.
+// "HAD DELAY STATISTICS" means the link's STORED config (localStorage) has `delay_stats !== false`, so a link with no stored config
+// (or with the field missing) counts as having them; the controller is not asked beforehand. The tests keep both sources in
+// agreement: a link with statistics has `delay_stats: true` in its stored config AND the controller answers its histogram; a link
+// without has `delay_stats: false` stored AND the controller answers 404 for it. Nothing here tells the two sources apart, nor
+// asserts that a link without statistics is (not) probed.
 
 const S1 = 1762000000;
 

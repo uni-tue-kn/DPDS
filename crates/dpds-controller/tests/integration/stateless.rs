@@ -1,11 +1,8 @@
-//! Spec 22: the controller is stateless. It stores nothing on disk (no `state.json`, no state
+//! The controller is stateless. It stores nothing on disk (no `state.json`, no state
 //! directory, no `--state-dir` / `DPDS_CONTROLLER_STATE_DIR`, no store module); the whole
-//! configuration travels in the body of `POST /api/emulation/start`; the stored-config routes
-//! (`/api/links*`, `/api/presets*`, `/api/settings`, `/api/export`, `/api/import`) are gone.
-//! A controller starts empty, always (a leftover file of the old layout cannot stop it).
-//!
-//! These tests replace the former state-file tests (`store.rs`: atomic write, corrupt file,
-//! old link shape, `limit_bit`, the advice line): none of that can happen any more.
+//! configuration travels in the body of `POST /api/emulation/start`; there are no stored-config
+//! routes (`/api/links*`, `/api/presets*`, `/api/settings`, `/api/export`, `/api/import`).
+//! A controller starts empty, always (a leftover state file cannot stop it).
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -14,7 +11,7 @@ use crate::common::*;
 use serde_json::{json, Value};
 
 /// A directory that cannot be created below: `/proc` takes no new entries. A controller that
-/// still tried to create its former state directory there would fail.
+/// tried to create a state directory there would fail.
 const UNWRITABLE: &str = "/proc/dpds-controller-test-nonexistent/state";
 
 fn manifest() -> PathBuf {
@@ -25,7 +22,7 @@ fn manifest() -> PathBuf {
 
 #[test]
 fn the_controller_starts_empty_whatever_the_former_state_dir_is() {
-    // the env var of the old layout points at a place nothing can be written to: it is not read
+    // a retired env var points at a place nothing can be written to: it is not read
     let c = ControllerProcess::start(
         &["serve", "--bind", "{addr}"],
         &[("DPDS_CONTROLLER_STATE_DIR", UNWRITABLE)],
@@ -40,7 +37,7 @@ fn the_controller_starts_empty_whatever_the_former_state_dir_is() {
 
 #[test]
 fn a_leftover_state_file_of_the_old_layout_is_never_read() {
-    // a state.json that the old controller refused (an unknown key, a broken shape) must not matter
+    // a state.json that an older controller refused (an unknown key, a broken shape) must not matter
     let dir = tempfile::tempdir().unwrap();
     for garbage in [
         "{garbage".to_string(),
@@ -221,7 +218,7 @@ fn the_crate_has_no_store_module_and_no_state_dir_code() {
     assert!(hits.is_empty(), "leftovers of the stored state: {hits:#?}");
 }
 
-// ---- the stored-config routes are gone -------------------------------------------------------
+// ---- no stored-config routes -------------------------------------------------------
 
 #[tokio::test]
 async fn the_stored_config_routes_are_404() {

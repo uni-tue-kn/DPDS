@@ -1,4 +1,4 @@
-//! Pure functions of the supervisor (B3): EAL argv, links file, drain timeout.
+//! Pure functions of the supervisor: EAL argv, links file, drain timeout.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -108,7 +108,7 @@ fn mlx5_devargs_only_for_pci_ports_bound_to_mlx5_core() {
 
 #[test]
 fn the_mlx5_devargs_are_exactly_txq_mpw_en_1_with_no_trailing_comma() {
-    // spec v17: PREOF's `txq_mpw_en=1`, fixed, not configurable
+    // `txq_mpw_en=1` is fixed, not configurable
     let argv = eal_argv(&input(vec![port(NIC0, Some("mlx5_core"))]));
     let i = argv.iter().position(|a| a == "-a").unwrap();
     assert_eq!(argv[i + 1], format!("{NIC0},txq_mpw_en=1"));
@@ -355,7 +355,7 @@ fn links_file_json_fails_for_an_invalid_config() {
 
 // ---- optional stages: what the links file carries for a missing stage -------------------------
 
-/// The `dpds_core::Config` a config with no stage at all maps to (spec 22): Deterministic 0 ns
+/// The `dpds_core::Config` a config with no stage at all maps to: Deterministic 0 ns
 /// without correlation, half-life 0 and the internal rate 1; an inactive Spacer with rate 0;
 /// `Random(0)` loss.
 fn noop_core() -> Config {

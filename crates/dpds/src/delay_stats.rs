@@ -2,38 +2,33 @@
 //!
 //! The *delay* of a packet is the realized one: from its arrival (the clock
 //! read of the iteration that pushed it) until it is enqueued into the TX
-//! descriptors (the clock read right before the `tx_burst` that the NIC
-//! accepted it in). It includes the delay model's offset (Spacer queueing
-//! too), poll granularity, head-of-line blocking and the TX staging wait. The
-//! *lateness* is `tx_ns - send_time`: how far past its send time the packet
-//! was enqueued, the staging wait included. Both are recorded at send time
-//! only for the packets the NIC accepted, and clamped at 0.
+//! descriptors (the clock read right before the `tx_burst` that accepted it).
+//! It includes the delay model's offset (Spacer queueing too), poll
+//! granularity, head-of-line blocking and the TX staging wait. The *lateness*
+//! is `tx_ns - send_time`, the staging wait included. Both are recorded only
+//! for packets the NIC accepted, and clamped at 0.
 //!
-//! The range types ([`HistRange`], [`HistogramSpec`], [`Bin`]) are pure and
-//! exist in every build. The accumulators ([`DelayStats`], [`DelayBatch`]) only
-//! record with the `telemetry` feature; without it every per-packet method is
-//! an empty `#[inline(always)]` function.
+//! The range types ([`HistRange`], [`HistogramSpec`], [`Bin`]) exist in every
+//! build. The accumulators ([`DelayStats`], [`DelayBatch`]) only record with the
+//! `telemetry` feature; without it every per-packet method is empty.
 //!
 //! # Numerics
 //!
-//! The mean and the variance are kept as `(count, mean, M2)` (Welford /
-//! Chan's parallel update), fed once per loop iteration from a burst-local
-//! accumulator that sums `x - first_sample_of_the_burst` and
-//! `(x - first_sample_of_the_burst)^2`. Shifting by a sample of the burst
-//! keeps the sums small relative to the spread however large the delay itself
-//! is (naive `sum` / `sum of squares` in `f64` loses the whole variance for
-//! `1e10 ns +- 1 us`), and the per-packet work is two adds and two
-//! multiplies; the only divisions are the two of the once-per-burst merge.
-//! Plain Welford would need a division per packet. The cumulative state is
-//! written by the worker only (relaxed load + store, like `Counter`); a
-//! reader can see `count`, `mean` and `M2` of two different iterations, which
-//! the documentation of the replies mentions.
+//! Mean and variance are kept as `(count, mean, M2)` (Chan's parallel update),
+//! fed once per loop iteration from a burst-local accumulator of
+//! `x - first_sample_of_the_burst` and its square. Shifting keeps the sums small
+//! relative to the spread however large the delay is (naive `sum` / `sum of
+//! squares` in `f64` loses the whole variance for `1e10 ns +- 1 us`); the
+//! per-packet work is two adds and two multiplies, and the only divisions are
+//! the two of the once-per-burst merge. The worker is the only writer (relaxed
+//! load + store); a reader can see `count`, `mean` and `M2` of two different
+//! iterations.
 //!
 //! # Histogram
 //!
-//! Linear bins over the half-open range `[lo, lo + bins * bin_ns)` plus an
-//! underflow and an overflow count. The bin index is one subtract and one
-//! multiply by the reciprocal of the bin width, precomputed at startup.
+//! Linear bins over `[lo, lo + bins * bin_ns)` plus an underflow and an
+//! overflow count. The bin index is one subtract and one multiply by the
+//! precomputed reciprocal of the bin width.
 
 use std::fmt;
 #[cfg(feature = "telemetry")]
@@ -47,11 +42,10 @@ use crate::reply::{Reply, Value};
 
 /// Default number of histogram bins.
 pub const HIST_BINS: usize = 256;
-/// Largest number of bins. The histogram is read in pages of at most
-/// [`PAGE_BINS`] bins (`/dpds/delay_hist,<dir>,<page>`).
+/// Largest number of bins; read in pages of [`PAGE_BINS`]
+/// (`/dpds/delay_hist,<dir>,<page>`).
 pub const MAX_BINS: usize = 4096;
-/// Most bins in one page of the histogram reply (one DPDK telemetry array holds at most 512
-/// entries).
+/// Most bins in one reply page (a DPDK telemetry array holds at most 512 entries).
 pub const PAGE_BINS: usize = 500;
 /// Minimum width (ns) of the automatic histogram range.
 pub const MIN_WIDTH_NS: f64 = 1000.0;
@@ -64,8 +58,8 @@ pub enum Bin {
     Overflow,
 }
 
-/// The per-link `"histogram"` (or `"iat_histogram"`) entry of the links file: every
-/// field optional, a missing one takes the automatic value.
+/// The `"histogram"` / `"iat_histogram"` entry of the links file; a missing
+/// field takes the automatic value.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct HistogramSpec {
     pub bins: Option<usize>,
@@ -74,8 +68,8 @@ pub struct HistogramSpec {
 }
 
 impl HistogramSpec {
-    /// The checks that need no config: `bins` in `1..=4096`, `lo_ns` / `hi_ns`
-    /// finite and not negative, and `lo_ns < hi_ns` if both are given.
+    /// Checks that need no config: `bins` in `1..=4096`, `lo_ns` / `hi_ns` finite
+    /// and not negative, `lo_ns < hi_ns` if both are given.
     pub fn validate(&self) -> Result<(), HistogramError> {
         if let Some(bins) = self.bins {
             if !(1..=MAX_BINS).contains(&bins) {
@@ -116,7 +110,7 @@ impl fmt::Display for HistogramError {
 
 impl std::error::Error for HistogramError {}
 
-/// The range and resolution of a direction's delay histogram.
+/// The range and resolution of a histogram.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HistRange {
     /// Lower edge (inclusive) of bin 0.
@@ -166,14 +160,12 @@ fn place(lo: f64, hi: f64, inv: f64, bins: usize, d: f64) -> Bin {
     } else if d >= hi {
         Bin::Overflow
     } else {
-        // `as usize` truncates (floor for d >= lo); the min guards the
-        // rounding of `inv` right below `hi`.
+        // The min guards the rounding of `inv` right below `hi`.
         Bin::Index((((d - lo) * inv) as usize).min(bins - 1))
     }
 }
 
 impl HistRange {
-    /// `HIST_BINS` bins of `bin_ns` from `lo_ns`.
     pub fn new(lo_ns: f64, bin_ns: f64) -> HistRange {
         HistRange {
             lo_ns,
@@ -182,8 +174,7 @@ impl HistRange {
         }
     }
 
-    /// `bins` bins of `bin_ns` from `lo_ns`. Zero bins is an error (a
-    /// histogram needs a bin to place a delay in).
+    /// `bins` bins of `bin_ns` from `lo_ns`; zero bins is an error.
     pub fn with_bins(lo_ns: f64, bin_ns: f64, bins: usize) -> Result<HistRange, HistogramError> {
         if bins == 0 {
             return Err(HistogramError("bins = 0, it must be at least 1".into()));
@@ -213,24 +204,23 @@ impl HistRange {
         HistRange::new(lo, (hi - lo) / HIST_BINS as f64)
     }
 
-    /// The range of a link's IAT (departure gap) histogram: `[0, hi)` in 256
-    /// bins, `hi = 4 * 1e9 / initialization_rate_pps` ns (4 mean gaps at the
-    /// expected rate), whatever the delay distribution or limiter.
+    /// The range of the IAT (departure gap) histogram: `[0, hi)` in 256 bins,
+    /// `hi = 4 * 1e9 / initialization_rate_pps` ns (4 mean gaps at the expected
+    /// rate), whatever the delay distribution or limiter.
     pub fn iat_from_config(config: &Config) -> HistRange {
         let hi = 4.0 * 1e9 / config.delayer.initialization_rate_pps;
         HistRange::new(0.0, hi / HIST_BINS as f64)
     }
 
     /// The range of a [`HistogramSpec`]: a missing `bins` is 256, a missing
-    /// `lo_ns` / `hi_ns` the automatic one of `config`. Explicit values are
-    /// used as given (the minimum width applies to the automatic range only).
+    /// `lo_ns` / `hi_ns` the automatic one of `config`. Explicit values are used
+    /// as given (the minimum width applies to the automatic range only).
     pub fn from_spec(config: &Config, spec: &HistogramSpec) -> Result<HistRange, HistogramError> {
         HistRange::from_spec_in(spec, automatic_window(config))
     }
 
-    /// Like [`HistRange::from_spec`] for the IAT histogram: a missing `lo_ns` is 0, a missing
-    /// `hi_ns` is `4 * 1e9 / initialization_rate_pps` (the range of
-    /// [`HistRange::iat_from_config`]), a missing `bins` is 256.
+    /// Like [`HistRange::from_spec`] for the IAT histogram: a missing `lo_ns` is
+    /// 0, a missing `hi_ns` the one of [`HistRange::iat_from_config`].
     pub fn iat_from_spec(
         config: &Config,
         spec: &HistogramSpec,
@@ -257,13 +247,12 @@ impl HistRange {
         HistRange::with_bins(lo, (hi - lo) / bins as f64, bins)
     }
 
-    /// The (exclusive) upper edge.
+    /// Exclusive upper edge.
     pub fn hi_ns(&self) -> f64 {
         self.lo_ns + self.bins as f64 * self.bin_ns
     }
 
-    /// Where `delay_ns` falls: `[lo, hi)` is split into `bins` bins, everything
-    /// below is `Underflow`, everything from `hi` on `Overflow`.
+    /// Where `delay_ns` falls; below `lo` is `Underflow`, from `hi` on `Overflow`.
     pub fn bin(&self, delay_ns: f64) -> Bin {
         place(
             self.lo_ns,
@@ -276,14 +265,12 @@ impl HistRange {
 }
 
 /// The state the loop carries between iterations for the IAT histogram: the
-/// send time of the last packet popped (the gap reference). The per-iteration
-/// send times and arrivals live in the loop's own staging arrays and are
-/// handed to [`DelayStats::record_pops`] / [`DelayStats::record_sent`] as
-/// slices, which keeps the floating-point accumulators out of the push loop
-/// (it calls `Buffer::push_outcome`, a callee that uses `d8..d15`: the
-/// normal-delay sampler does; every accumulator would be saved and restored
-/// through the stack on each call). Created once per worker. A zero-sized
-/// no-op without the `telemetry` feature.
+/// send time of the last packet popped (the gap reference). Send times and
+/// arrivals are handed to [`DelayStats::record_pops`] / [`DelayStats::record_sent`]
+/// as slices, which keeps the floating-point accumulators out of the push loop
+/// (`Buffer::push_outcome` uses `d8..d15` through the normal-delay sampler, so
+/// every accumulator would be saved and restored through the stack on each
+/// call). One per worker; zero-sized without the `telemetry` feature.
 #[cfg(feature = "telemetry")]
 pub struct DelayBatch {
     /// Send time of the last packet popped before this iteration, if any.
@@ -327,7 +314,6 @@ fn store_f64(a: &AtomicU64, v: f64) {
     a.store(v.to_bits(), Ordering::Relaxed);
 }
 
-/// The counts of bins `first..end` plus underflow and overflow.
 #[cfg(feature = "telemetry")]
 fn read_page(
     bins: &[AtomicU64],
@@ -347,11 +333,10 @@ fn read_page(
 }
 
 /// The delay statistics and histogram of one direction: written by its worker
-/// only, read by the telemetry thread. Without the `telemetry` feature it
-/// only remembers the range and records nothing. A direction with the
-/// statistics switched off (`"delay_stats": false`) allocates no bins, is
-/// never recorded into (`forward::run` skips the calls) and reports no delay
-/// keys and an empty histogram.
+/// only, read by the telemetry thread. Without the `telemetry` feature it only
+/// remembers the range. With the statistics off (`"delay_stats": false`) it
+/// allocates no bins, is never recorded into and reports no delay keys and an
+/// empty histogram.
 pub struct DelayStats {
     range: HistRange,
     iat_range: HistRange,
@@ -388,19 +373,16 @@ impl Default for DelayStats {
 }
 
 impl DelayStats {
-    /// Statistics switched on.
     pub fn new(range: HistRange) -> DelayStats {
         DelayStats::with_enabled(range, true)
     }
 
-    /// With the statistics `enabled` or not (see the type docs).
     pub fn with_enabled(range: HistRange, enabled: bool) -> DelayStats {
         DelayStats::with_hists(range, HistRange::default(), enabled)
     }
 
-    /// With the delay histogram `range`, the IAT histogram `iat_range` (the
-    /// departure gaps, see [`record_pops`](Self::record_pops)) and the
-    /// statistics `enabled` or not.
+    /// With the delay histogram `range`, the IAT histogram `iat_range` (see
+    /// [`record_pops`](Self::record_pops)) and the statistics `enabled` or not.
     pub fn with_hists(range: HistRange, iat_range: HistRange, enabled: bool) -> DelayStats {
         #[cfg(feature = "telemetry")]
         let zeroed = |n: usize| (0..if enabled { n } else { 0 }).map(|_| AtomicU64::new(0));
@@ -435,17 +417,15 @@ impl DelayStats {
         self.range
     }
 
-    /// Whether the direction records delay statistics.
     #[inline(always)]
     pub fn enabled(&self) -> bool {
         self.enabled
     }
 
-    /// Folds the packets popped in this iteration, whose send times are
-    /// `sends` in pop order, into the IAT histogram: the gap between
-    /// consecutive send times. The first packet of the run has no gap; the
-    /// previous send time is carried across iterations in `batch`, and a
-    /// negative gap (reordering) counts as 0.
+    /// Folds the packets popped in this iteration (send times `sends`, in pop
+    /// order) into the IAT histogram: the gap between consecutive send times.
+    /// The first packet of the run has no gap; the previous send time is carried
+    /// in `batch`; a negative gap (reordering) counts as 0.
     #[cfg(feature = "telemetry")]
     #[inline(always)]
     pub fn record_pops(&self, batch: &mut DelayBatch, sends: &[u64]) {
@@ -477,12 +457,11 @@ impl DelayStats {
     #[inline(always)]
     pub fn record_pops(&self, _batch: &mut DelayBatch, _sends: &[u64]) {}
 
-    /// Folds the packets the NIC accepted in one `tx_burst` (enqueued at
-    /// `tx_ns`) into the statistics: `sends[i]` is the send time and
-    /// `arrivals[i]` the arrival (push) time of packet `i`. The delay
-    /// `tx_ns - arrival` goes into the delay statistics and the histogram, the
-    /// lateness `tx_ns - send_time` into the lateness statistics; both are
-    /// clamped at 0.
+    /// Folds the packets the NIC accepted in one `tx_burst` (enqueued at `tx_ns`)
+    /// into the statistics: `sends[i]` and `arrivals[i]` are the send and arrival
+    /// (push) times of packet `i`. The delay `tx_ns - arrival` goes into the
+    /// delay statistics and histogram, the lateness `tx_ns - send_time` into the
+    /// lateness statistics; both are clamped at 0.
     #[cfg(feature = "telemetry")]
     #[inline(always)]
     pub fn record_sent(&self, sends: &[u64], arrivals: &[f64], tx_ns: f64) {
@@ -532,8 +511,8 @@ impl DelayStats {
     #[inline(always)]
     pub fn record_sent(&self, _sends: &[u64], _arrivals: &[f64], _tx_ns: f64) {}
 
-    /// Chan's parallel update of `(count, mean, M2)` with a burst of `n`
-    /// delays whose sums, shifted by `shift`, are `s1` and `s2`.
+    /// Chan's parallel update of `(count, mean, M2)` with `n` delays whose sums,
+    /// shifted by `shift`, are `s1` and `s2`.
     #[cfg(feature = "telemetry")]
     #[inline(never)]
     fn merge_delays(&self, n: u32, shift: f64, s1: f64, s2: f64, min: f64, max: f64) {
@@ -561,12 +540,10 @@ impl DelayStats {
     }
 
     /// `delay_mean_ns`, `delay_std_ns`, `delay_min_ns`, `delay_max_ns`,
-    /// `lateness_mean_ns`, `lateness_max_ns` for `/dpds/stats`. The lateness
-    /// mean is over the same packets as the delay (those the NIC accepted).
-    /// Means and the
+    /// `lateness_mean_ns`, `lateness_max_ns` for `/dpds/stats`. Means and the
     /// (population) standard deviation are 2-decimal strings, min and max
-    /// truncated uints; all 0 before the first packet. Empty when the
-    /// statistics are switched off.
+    /// truncated uints; all 0 before the first packet. Empty when the statistics
+    /// are off.
     pub fn stats_fields(&self) -> Reply {
         if !self.enabled {
             return Vec::new();
@@ -601,13 +578,12 @@ impl DelayStats {
         ]
     }
 
-    /// Page `page` (0-based) of the `/dpds/delay_hist` reply: `lo_ns` and `bin_ns`
-    /// (decimal strings, DPDK telemetry has no float setter), `num_bins` (of the
-    /// whole histogram), `bins` (the page's slice, at most [`PAGE_BINS`] counts),
-    /// `underflow`, `overflow`, `page` and `first_bin` (`PAGE_BINS * page`, the index
-    /// of the page's first bin). Cumulative since start. `None` for a page past the
-    /// last one. With the statistics switched off, page 0 is empty and there is no
-    /// other page.
+    /// Page `page` (0-based) of the `/dpds/delay_hist` reply: `lo_ns` and
+    /// `bin_ns` (decimal strings, DPDK telemetry has no float setter), `num_bins`
+    /// (of the whole histogram), `bins` (at most [`PAGE_BINS`] counts),
+    /// `underflow`, `overflow`, `page` and `first_bin` (`PAGE_BINS * page`).
+    /// Cumulative since start. `None` past the last page. With the statistics
+    /// off, page 0 is empty and there is no other page.
     pub fn hist_page(&self, page: usize) -> Option<Reply> {
         self.page_reply(self.range, page, |first, end| {
             #[cfg(feature = "telemetry")]
@@ -620,9 +596,8 @@ impl DelayStats {
         })
     }
 
-    /// Page `page` of the `/dpds/iat_hist` reply: the histogram of the gaps
-    /// between consecutive send times, same keys and paging as
-    /// [`hist_page`](Self::hist_page).
+    /// Page `page` of the `/dpds/iat_hist` reply (gaps between consecutive send
+    /// times), same keys and paging as [`hist_page`](Self::hist_page).
     pub fn iat_hist_page(&self, page: usize) -> Option<Reply> {
         self.page_reply(self.iat_range, page, |first, end| {
             #[cfg(feature = "telemetry")]

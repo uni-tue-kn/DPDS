@@ -1,10 +1,9 @@
-//! Pure (no EAL, no hugepages) checks of the public helpers that were only
-//! covered by in-source unit tests or not at all: the mbuf field accessors on a
+//! Pure (no EAL) checks of the public helpers: the mbuf field accessors on a
 //! hand-built `rte_mbuf`, the prefetch helpers, `tx_offloads_for`, `DpdkError`,
-//! the ring element-size rule, the `Container` telemetry arrays.
+//! the ring element-size rule and the `Container` telemetry arrays.
 //!
-//! mbufs are built as zeroed `rte_mbuf` values on the stack with the fields set
-//! through the same bindgen union paths the accessors read.
+//! mbufs are zeroed `rte_mbuf` values with the fields set through the bindgen
+//! union paths the accessors read.
 
 use dpdk::error::DpdkError;
 use dpdk::mbuf::{self, Packet};
@@ -57,8 +56,7 @@ fn packet_exposes_pkt_len_and_the_first_segment_bytes() {
     for (i, b) in buf.iter_mut().enumerate() {
         *b = i as u8;
     }
-    // Data starts after 128 bytes of headroom; first segment is 5 bytes of a
-    // 9-byte packet (the rest would be in a second segment).
+    // Data starts after 128 bytes of headroom; the first segment holds 5 of 9 bytes.
     let mut m = mbuf_with(&buf, 128, 5, 9, 0);
     let p = unsafe { Packet::from_raw(&mut m) };
     assert_eq!(p.pkt_len(), 9);
@@ -76,8 +74,7 @@ fn packet_with_an_empty_first_segment_has_empty_data() {
 
 #[test]
 fn prefetch_helpers_never_fault_on_any_address() {
-    // A prefetch is only a hint: null, dangling and unmapped addresses must be
-    // fine (on aarch64 this exercises `prfm`, on x86_64 `_mm_prefetch`).
+    // A prefetch is only a hint: null, dangling and unmapped addresses are fine.
     for addr in [0usize, 1, 8, 0xdead_beef, usize::MAX - 63] {
         mbuf::prefetch_header(addr as *const dpdk_sys::rte_mbuf);
     }
@@ -100,7 +97,6 @@ fn tx_offloads_request_only_mbuf_fast_free() {
 
 #[test]
 fn dpdk_error_display_names_the_errno_and_the_code() {
-    // rte_strerror works before the EAL is up.
     let msg = DpdkError(-19).to_string();
     assert!(msg.contains("(code -19)"), "{msg}");
     assert!(
@@ -112,7 +108,6 @@ fn dpdk_error_display_names_the_errno_and_the_code() {
         msg.contains("(code -22)") && msg.to_lowercase().contains("invalid"),
         "{msg}"
     );
-    // Positive or negative input prints the same text.
     assert_eq!(
         DpdkError(19).to_string().split(" (").next(),
         DpdkError(-19).to_string().split(" (").next()

@@ -25,9 +25,8 @@ import type { Stage } from '../test/helpers';
 import * as fx from '../test/fixtures';
 import { must } from '../test/must';
 
-// Contract: "Subsections" and "Enable / disable" in the v16 block and "Optional stages" in the v22 block of
-// src/test/helpers.tsx. Each test runs against the link editor, the only page with the config form since spec27.
-// Tests of the five-section layout use `openFull()` (all three stages added); `openNew()` is the bare form.
+// Each test runs against the link editor, the only page with the config form. Tests of the five-section layout use `openFull()`
+// (all three stages added); `openNew()` is the bare form.
 const body = () => document.body;
 const outer = (page: ConfigPage) => screen.getByRole('group', { name: page.outerName });
 const ctl = (label: string) => screen.getByLabelText(label) as HTMLInputElement;
@@ -55,7 +54,7 @@ const CONTENT: Record<string, string[]> = {
     'Histogram lo unit',
     'Histogram hi',
     'Histogram hi unit',
-    'IAT histogram bins', // spec 53 A
+    'IAT histogram bins',
     'IAT histogram lo',
     'IAT histogram lo unit',
     'IAT histogram hi',
@@ -352,7 +351,7 @@ describe.each(PAGES)('$name: v22 optional stages', (page: ConfigPage) => {
 
   it('saving a stored config unchanged keeps its stages and values (absent stages stay absent)', async () => {
     for (const config of [fx.configBare(), fx.config2(), { ...fx.config3(), delayer: null, reordering: false }]) {
-      // without a Delayer the delay accuracy is Basic, so reordering is saved as false (spec 45 F1)
+      // without a Delayer the delay accuracy is Basic, so reordering is saved as false
       const user = await page.openStored(config);
       await page.save(user);
       sameConfig(page.updated(), config);

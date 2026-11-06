@@ -2,7 +2,7 @@
 //! send time, fractional limiter offsets, FIFO send times, capacity limits.
 //!
 //! Wire size used by the limiters: `(len + 4 + 20) * 8` bit (4 = the FEC bytes
-//! `Buffer` adds because "L2 FEC is removed", 20 = L1 overhead the limiter adds).
+//! `Buffer` adds, 20 = L1 overhead the limiter adds).
 //! At 1 Gb/s (1 bit/ns) a Spacer therefore delays a second packet of the same
 //! instant by exactly that many ns.
 

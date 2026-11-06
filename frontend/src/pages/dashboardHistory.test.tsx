@@ -18,20 +18,14 @@ import type { HistoryServer } from '../test/mockApi';
 import { api, serveHistory } from '../test/mockApi';
 import { must } from '../test/must';
 
-// Spec 29 (user 2026-11-04, "Server-side series"): the dashboard charts are built from the controller's series,
-// `GET /api/stats/history[?since_ms=<t>]`, not from a client-side buffer of stats polls. Contract (frontend side):
-//   - `api.getStatsHistory(sinceMs?)`, `HistoryView {started_at, samples: {"<link index>": HistorySample[]}}`, see
-//     src/test/mockApi.ts (`serveHistory`) and the header of crates/dpds-controller/tests/integration/chart_history.rs.
+// The dashboard charts are built from the controller's series, `GET /api/stats/history[?since_ms=<t>]`, not from a client-side
+// buffer of stats polls:
 //   - one full fetch (no argument) on mount, then once per poll an incremental one with since_ms = the newest t_ms received so
-//     far (over all links); while nothing has been received yet, the fetches stay full (CHOICE).
-//   - a changed `run_id` is a new run (spec 29b item 4; the first round used `started_at`): the data held is dropped and the
-//     history is fetched in full again, because the new run's t_ms start at 0 again and an incremental answer would be empty.
-//     `started_at` is display data and no longer decides anything (see dashboardSpec29b.test.tsx).
-//   - the card of link d (its `dir`) charts samples[String(d)]: rate = rx_gbps / tx_gbps as they are, drops = the six cumulative counts (spec 43);
-//     x labels = secondsToTime(floor(t_ms / 1000)) (spec 46; was formatElapsed(t_ms)), e.g. t_ms 192000 -> "0h 3m 12s".
-//   - no cap: the 120-sample client buffer is gone, a run of any length is shown whole.
-// (Spec 29, round 2 and spec 29b: after a stop, and while stopping or after a failure, the cards of the run stay, see the
-// last sections of this file and dashboardSpec29b.test.tsx.)
+//     far (over all links); while nothing has been received yet, the fetches stay full;
+//   - a changed `run_id` is a new run: the data held is dropped and the history is fetched in full again, because the new run's
+//     t_ms start at 0 again and an incremental answer would be empty. `started_at` is display data and decides nothing;
+//   - the card of link d (its `dir`) charts samples[String(d)]: rate = rx_gbps / tx_gbps as they are, drops = the nine cumulative
+//     counts; x labels = secondsToTime(floor(t_ms / 1000)), e.g. t_ms 192000 -> "0h 3m 12s".
 
 interface Dataset {
   label?: string;
@@ -217,7 +211,6 @@ describe('Dashboard (spec 29): the charts show the whole run with elapsed-time l
     expect(rxOf(1)).toEqual([7.5]);
   });
 
-  // Spec 43 F1. Was: loss_pct and the sum of the four overload shares (percent).
   it('the loss chart plots the nine cumulative counts (spec 47), one line per cause in the donut order', async () => {
     server({
       '0': [
@@ -258,8 +251,8 @@ describe('Dashboard (spec 29): the charts show the whole run with elapsed-time l
     expect(c.labels).toEqual(['0h 0m 1s', '0h 0m 2s']);
   });
 
-  // Spec 50 G: a time chart shows at most 100 points, selected over the whole run (first and last kept); the cap of the page's
-  // history (86400) is in dashboardSpec29b.test.tsx. Was: all 300 samples are in the chart.
+  // A time chart shows at most 100 points, selected over the whole run (first and last kept); the cap of the page's history (86400)
+  // is in dashboardSpec29b.test.tsx.
   it('there is no 120-sample cap: 300 samples are charted as 100 points spanning the whole run, oldest first', async () => {
     server({ '0': fx.historySamples(0, 300), '1': fx.historySamples(0, 300) });
     await open();
@@ -275,7 +268,7 @@ describe('Dashboard (spec 29): the charts show the whole run with elapsed-time l
     s.samples['0'].push(...fx.historySamples(119, 3));
     s.samples['1'].push(...fx.historySamples(119, 3));
     await tick(2000);
-    expect(rxOf(0)).toHaveLength(100); // spec 50 G (was 122): the 122 samples are charted as 100 points, the newest one the last
+    expect(rxOf(0)).toHaveLength(100); // the 122 samples are charted as 100 points, the newest one the last
     expect(labelsOf(0).at(-1)).toBe('0h 2m 1s');
   });
 
@@ -509,29 +502,21 @@ describe('Dashboard (spec 29): a failing history request', () => {
   });
 });
 
-// ---- spec 29, second round: the final charts stay after a stop -----------------------------------------------------------
+// ---- the final charts stay after a stop -----------------------------------------------------------
 //
-// Spec 35: the cards are tabs, "Drops" is "Loss". Spec 54 L1: the "Stopped" marker (the badge in the tab title) is gone, an ended
-// run's tab is just there; spec 54 L3: a start no longer clears the tabs, they stay under the loading overlay.
-//
-// User decision (2026-11-04): after a stop the dashboard keeps showing the stopped run's link cards with their final rate and
-// drops charts (from the history, which the controller keeps until the next start), marked as stopped, until the next start.
-// Contract the tests pin (the tester's choices, not user-confirmed):
-//   - (spec 54 L1: no marker any more, neither "Stopped" nor the state of spec 29b item 5; `marker()` below is the tab itself);
-//   - cards are there while the polled state is `stopped` (spec 29b: also `stopping` and `failed`) and the history of the run
-//     is not empty: one card per link index in the history (spec 35: one tab per link index), in the same session after a stop
-//     and after a reload/remount alike. The live stat list is NOT pinned; the titles are (spec 29b item 5, they come from the
-//     history's `links`);
-//   - the charts are the history's, Rate and Drops, both selectable; spec 50 A3 (was: no "Delay histogram" choice on a stopped card,
-//     a card that showed the histogram fell back to Rate): the card keeps the enabled "Delay histogram" choice, the controller serves
-//     the run's last histogram after the stop (dashboardSpec50.test.tsx);
-//   - (spec 54 L3: a start no longer clears them, they stay under the loading overlay while `starting`;) the next run's cards
-//     show only its own samples once it runs.
-// A controller that never ran (no samples, started_at null) has no cards.
+// After a stop the dashboard keeps showing the stopped run's tabs with their final rate and loss charts (from the history, which
+// the controller keeps until the next start), until the next start:
+//   - the tabs are there while the polled state is `stopped`, `stopping` or `failed` and the history of the run is not empty: one tab
+//     per link index in the history, in the same session after a stop and after a reload/remount alike. The live stat list is NOT
+//     pinned; the titles are (they come from the history's `links`);
+//   - the charts are the history's, Rate and Loss, both selectable; the tab keeps the enabled "Delay histogram" choice, the
+//     controller serves the run's last histogram after the stop (dashboardSpec50.test.tsx);
+//   - a start keeps the tabs under the loading overlay while `starting`; the next run's tabs show only its own samples once it runs.
+// A controller that never ran (no samples, started_at null) has no tabs.
 
 describe('Dashboard (spec 29, round 2): the final charts of a stopped run stay until the next start', () => {
   const stoppedStats = (elapsed_ms = 305_400) => fx.stats([], { stale: true, age_ms: undefined, elapsed_ms });
-  // Spec 54 L1. Was (spec 35 F3): the marker is the badge "Stopped" in the tab title. Now: the tab, without any badge.
+  // The marker of an ended run's tab is the tab itself, without any badge.
   const marker = (d: number) => (hasTab(d) && tabBadge(d) === '' ? tab(d) : null);
   const radioOf = (d: number, name: string) => queryRadio(d, name);
 
@@ -587,14 +572,12 @@ describe('Dashboard (spec 29, round 2): the final charts of a stopped run stay u
     expect(rxOf(0)).toHaveLength(7);
   });
 
-  // Spec 50 A3. Was: 'there is no "Delay histogram" choice on a stopped card, and none is fetched'.
   it('the "Delay histogram" choice stays on a stopped card (spec 50 A3), enabled', async () => {
     const { stop } = await runThenStop();
     await stop();
     for (const d of [0, 1]) expect(radioOf(d, 'Delay histogram'), `card ${d}`).toBeEnabled();
   });
 
-  // Spec 50 A3. Was: 'a card that showed the histogram falls back to the Rate chart at the stop, and stops fetching'.
   it('a card that showed the histogram keeps showing it at the stop, and keeps fetching it', async () => {
     const { stop } = await runThenStop();
     fireEvent.click(must(radioOf(0, 'Delay histogram'), 'histogram radio'));
@@ -609,9 +592,7 @@ describe('Dashboard (spec 29, round 2): the final charts of a stopped run stay u
     expect(api.getDelayHistogram.mock.calls.length).toBeGreaterThan(n);
   });
 
-  // Spec 29b item 5. Was: 'while the run is stopping the cards are still the live ones, not marked', with the stats of the
-  // running emulation still mocked. The real controller answers /api/stats of a stopping emulation with no directions at
-  // once (the poller only reads a running dpds), and the old page then showed no card at all until `stopped`.
+  // The real controller answers /api/stats of a stopping emulation with no directions at once (the poller only reads a running dpds).
   it('while the run is stopping (the stats already empty) the cards stay, unmarked (spec 54 L1)', async () => {
     await runThenStop();
     api.getEmulation.mockResolvedValue(fx.emulation('stopping'));
@@ -624,8 +605,7 @@ describe('Dashboard (spec 29, round 2): the final charts of a stopped run stay u
     expect(rxOf(0)).toEqual(Array(5).fill(1.5));
   });
 
-  // Spec 60 R1/R2. Was (spec 54 L3): 'a new start keeps them: once the state is "starting" the tabs are still there' (the old run's tabs and
-  // data stayed). Now the tablist and the Summary tab stay mounted, the tabs are the stored links and the charts carry no samples.
+  // A new start keeps the tablist and the Summary tab mounted; the tabs are the stored links and the charts carry no samples.
   it('once the state is "starting" the tablist and the Summary tab stay, the charts carry no samples (spec 60)', async () => {
     seedStore({ links: [fx.link(), fx.linkRev()] });
     const { s, stop } = await runThenStop();
@@ -648,7 +628,7 @@ describe('Dashboard (spec 29, round 2): the final charts of a stopped run stay u
     expect(rxOf(1)).toEqual([]);
   });
 
-  // Spec 60 R1. Was: 'also when the history still holds the old run at that moment' (the old run's tabs stayed). Now the old run is not shown.
+  // The old run is not shown, also while the history still holds it.
   it('also when the history still holds the old run at that moment, the charts carry no samples (spec 60)', async () => {
     seedStore({ links: [fx.link(), fx.linkRev()] });
     const { stop } = await runThenStop();
@@ -707,7 +687,7 @@ describe('Dashboard (spec 29, round 2): the final charts of a stopped run stay u
     for (const d of [0, 1]) expect(marker(d), `card ${d}`).toBeInTheDocument();
     expect(rxOf(0)).toEqual(Array(5).fill(1.5));
     expect(rxOf(1)).toEqual(Array(5).fill(2.5));
-    expect(radioOf(0, 'Delay histogram')).toBeEnabled(); // spec 50 A3 (was: not in the document)
+    expect(radioOf(0, 'Delay histogram')).toBeEnabled();
   });
 
   it('a one-link run leaves one card', async () => {

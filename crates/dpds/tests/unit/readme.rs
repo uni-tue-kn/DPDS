@@ -1,6 +1,5 @@
-//! README checks that are about behaviour, not prose: the hand-run commands use `--in-memory` like
-//! PREOF (the e2e tests run the README's commands), and the Markdown links of the READMEs point at
-//! files that exist.
+//! README checks about behaviour, not prose: the hand-run commands use `--in-memory` (the e2e tests
+//! run the README's commands), and the Markdown links of the READMEs point at files that exist.
 
 use std::fs;
 use std::path::{Path, PathBuf};

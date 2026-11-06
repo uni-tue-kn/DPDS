@@ -1,20 +1,13 @@
-//! Generic telemetry machinery, ported from preof's own tests
-//! (`peof/src/counters.rs`' `tests`, `telemetry_tests` and
-//! `nic_epoch_tracker_tests` modules) so the semantics match preof's:
-//! `mean_2dp`, `Counter`/`MaxGauge` (incl. `observe_with`, `take`,
-//! single-writer/concurrent-reader), `should_close_epoch`/`EpochDriver`
-//! (boundary strictly > 500 ms idle, only after an arrival, contiguous
-//! epochs), `EpochFirstLoss` (first call per epoch wins, `record` always
-//! reaches the whole-process tracker, `take` resets), `EpochLog` (deltas,
-//! capacity 32 oldest kept + `epochs_dropped`, gauge high-water survival
-//! past capacity, first-loss slots, lock-free reader), `NicEpochTracker`.
+//! Generic telemetry machinery: `mean_2dp`, `Counter`/`MaxGauge` (incl. `observe_with`, `take`,
+//! single-writer/concurrent-reader), `should_close_epoch`/`EpochDriver` (boundary strictly >
+//! 500 ms idle, only after an arrival, contiguous epochs), `EpochFirstLoss` (first call per
+//! epoch wins, `record` always reaches the whole-process tracker, `take` resets), `EpochLog`
+//! (deltas, capacity 32 oldest kept + `epochs_dropped`, gauge high-water survival past capacity,
+//! first-loss slots, lock-free reader) and `NicEpochTracker`.
 //!
-//! Without the `telemetry` feature only shape tests run (zero-sized no-op
-//! types, constants, names); everything that needs real accumulation is
-//! gated like preof's.
-//!
-//! Adaptations from preof: the DPDS counters struct is `DpdsCounters`
-//! (names/order pinned below); loss events use DPDS reasons/stages.
+//! Without the `telemetry` feature only shape tests run (zero-sized no-op types, constants,
+//! names); everything that needs real accumulation is gated on the feature. The `DpdsCounters`
+//! names and order are pinned below; loss events use DPDS reasons/stages.
 
 mod shape {
     use dpds::counters::*;
@@ -138,8 +131,7 @@ mod shape {
 
 #[cfg(not(feature = "telemetry"))]
 mod zero_cost {
-    //! Without the feature everything is a zero-sized no-op (preof's
-    //! "Everything is free when you don't ask for it").
+    //! Without the feature everything is a zero-sized no-op.
     use dpds::counters::*;
     use dpds::first_loss::*;
 
@@ -320,17 +312,9 @@ mod telemetry_tests {
         assert_eq!(std::mem::align_of::<DpdsEpochLog>(), 64);
     }
 
-    // ---- ported from preof -------------------------------------------
-
     // ── should_close_epoch: pure boundary-detection decision ────────────
-    //
-    // Real behaviour only exists with the telemetry feature on -- without
-    // it, `should_close_epoch` is a no-op that always returns `false` (see
-    // its own `#[cfg]` split), so a test asserting a real `true` result
-    // would fail outright, and the `false`-asserting ones below would only
-    // pass by coincidence (the no-op returns `false` unconditionally,
-    // proving nothing about the real boundary logic). Moved here,
-    // unchanged, from `mod tests` for exactly that reason.
+    // Real behaviour only exists with the telemetry feature: without it `should_close_epoch` is a
+    // no-op that always returns `false`, so these tests would prove nothing.
 
     #[test]
     fn should_close_epoch_true_when_gap_exceeds_threshold_and_epoch_saw_arrivals() {
@@ -348,10 +332,7 @@ mod telemetry_tests {
 
     #[test]
     fn should_close_epoch_false_at_exactly_the_threshold() {
-        // Pins the boundary condition itself: a gap of EXACTLY
-        // EPOCH_IDLE_GAP_NS must not close (the design says "strictly
-        // greater than"), rather than leaving the >= vs > choice to
-        // whatever the implementer happens to write.
+        // A gap of EXACTLY EPOCH_IDLE_GAP_NS must not close (strictly greater than).
         let now_ns = 10_000_000_000.0;
         let last_arrival_ns = now_ns - EPOCH_IDLE_GAP_NS;
         assert!(!should_close_epoch(now_ns, last_arrival_ns, true));
@@ -359,10 +340,8 @@ mod telemetry_tests {
 
     #[test]
     fn should_close_epoch_false_when_epoch_has_seen_no_arrivals_yet_even_with_huge_gap() {
-        // A long pre-traffic startup idle (or two back-to-back silent
-        // epochs) must never emit a run of empty epoch closes, no matter
-        // how large the gap -- gated on saw_arrival_this_epoch, not on the
-        // gap size alone.
+        // A long pre-traffic idle (or two back-to-back silent epochs) must never emit empty epoch
+        // closes: gated on saw_arrival_this_epoch, not on the gap size alone.
         let now_ns = 10_000_000_000.0;
         let last_arrival_ns = 0.0;
         assert!(!should_close_epoch(now_ns, last_arrival_ns, false));
@@ -370,26 +349,18 @@ mod telemetry_tests {
 
     #[test]
     fn should_close_epoch_false_on_a_tick_that_itself_saw_arrivals() {
-        // A tick that itself saw arrivals updates last_arrival_ns to
-        // now_ns before (or instead of) calling this function, so the gap
-        // collapses to 0 -- must never close regardless of
-        // saw_arrival_this_epoch.
+        // A tick that itself saw arrivals sets last_arrival_ns to now_ns, so the gap is 0: never closes
+        // regardless of saw_arrival_this_epoch.
         let now_ns = 10_000_000_000.0;
         assert!(!should_close_epoch(now_ns, now_ns, true));
         assert!(!should_close_epoch(now_ns, now_ns, false));
     }
 
     // ── EpochDriver: the whole per-tick state machine ────────────────────
-    //
-    // Real behaviour only exists with the telemetry feature on -- without
-    // it, `EpochDriver` is a genuinely fieldless no-op twin (see its own
-    // `#[cfg]` split), so these tests -- which read `last_arrival_ns`/
-    // `saw_arrival_this_epoch` directly -- don't just fail, they fail to
-    // *compile* in that build. Moved here, unchanged, from `mod tests` for
-    // exactly that reason. This is the seam that lets the stage-loop
-    // wiring's own bugs (flag not reset after a close, last_arrival_ns not
-    // updated, wrong next-epoch start) be caught here instead of only
-    // being visible on hardware.
+    // Without the feature `EpochDriver` is a fieldless no-op twin, so these tests (which read
+    // `last_arrival_ns`/`saw_arrival_this_epoch`) would not even compile. They catch stage-loop
+    // wiring bugs (flag not reset after a close, last_arrival_ns not updated, wrong next-epoch
+    // start).
 
     #[test]
     fn epoch_driver_arrival_tick_updates_last_arrival_and_sets_flag() {
@@ -445,9 +416,8 @@ mod telemetry_tests {
              would immediately close another (empty) epoch"
         );
 
-        // The specific bug this type exists to prevent: several consecutive
-        // idle ticks after the close, even ones with an even larger gap,
-        // must all return None -- not a run of empty epoch closes.
+        // several consecutive idle ticks after the close, even with a larger gap, must all return
+        // None, not a run of empty epoch closes.
         for i in 1..=5u32 {
             let t = close_now + (i as f64) * (EPOCH_IDLE_GAP_NS + 1.0);
             assert_eq!(
@@ -588,13 +558,9 @@ mod telemetry_tests {
     }
 
     // ── MaxGauge::observe_with ───────────────────────────────────────────
-    //
-    // With the telemetry feature on, `observe_with` must evaluate its
-    // closure and behave identically to `observe` -- these pins exist
-    // alongside (not instead of) the no-feature
-    // `max_gauge_observe_with_never_invokes_closure_without_telemetry_feature`
-    // pin in `mod tests`, which is the one that actually distinguishes the
-    // lazy variant from a plain `observe(f())` call.
+    // With the feature on, `observe_with` must evaluate its closure and behave like `observe`; the
+    // no-feature pin `max_gauge_observe_with_never_invokes_closure_without_telemetry_feature` shows
+    // that it is lazy otherwise.
 
     #[test]
     fn max_gauge_observe_with_evaluates_closure_exactly_once_per_call() {
@@ -656,17 +622,10 @@ mod telemetry_tests {
     }
 
     // ── MaxGauge::take ───────────────────────────────────────────────────
-    //
-    // `take` is what lets the stage loop produce a genuinely per-epoch
-    // gauge value (see this module's "MaxGauge semantics change" design
-    // pin) -- these three tests are load-bearing together with
-    // `epoch_log_gauge_aggregate_is_the_max_of_every_epoch_own_maximum_and_the_live_value`
-    // below: that test proves the *aggregate* math is right given correct
-    // per-epoch inputs, these prove `take` actually produces a correct,
-    // freshly-reset per-epoch input in the first place -- without `take`
-    // resetting for real, every "epoch's own maximum" would silently be
-    // the whole-process maximum instead, and the two tests together are
-    // what would catch that.
+    // `take` yields the per-epoch gauge value and resets it. Together with
+    // `epoch_log_gauge_aggregate_is_the_max_of_every_epoch_own_maximum_and_the_live_value` (aggregate
+    // math given correct per-epoch inputs) these catch a `take` that does not reset: every "epoch's
+    // own maximum" would silently be the whole-process maximum.
 
     #[test]
     fn max_gauge_take_on_a_fresh_gauge_returns_zero() {
@@ -691,10 +650,8 @@ mod telemetry_tests {
 
     #[test]
     fn max_gauge_observe_after_take_can_produce_a_new_maximum_lower_than_the_pre_take_one() {
-        // Proves the reset is real, not cosmetic: if `take` merely read
-        // the value without resetting, a subsequent smaller `observe`
-        // could never become the new maximum (since `observe` never
-        // decreases the mark).
+        // Proves the reset is real: if `take` only read the value, a later smaller `observe` could
+        // never become the new maximum.
         let g = MaxGauge::default();
         g.observe(90);
         assert_eq!(g.take(), 90);
@@ -709,13 +666,9 @@ mod telemetry_tests {
     }
 
     // ── Single-writer / concurrent-reader race safety ───────────────────
-    //
-    // Bounded by construction (no risk of hanging the suite on a broken
-    // implementation): the writer thread runs a fixed loop of N ops then
-    // sets a plain `AtomicBool` completion flag (not part of the design
-    // under test -- just test-local synchronization); the reader thread
-    // polls in a tight loop, recording every value it sees, and takes one
-    // final sample after observing the flag before stopping.
+    // Bounded by construction: the writer runs a fixed loop of N ops, then sets a plain `AtomicBool`
+    // flag; the reader polls in a tight loop, recording every value, and takes one final sample
+    // after seeing the flag.
 
     #[test]
     fn counter_single_writer_concurrent_reader_is_race_free_and_monotonic() {
@@ -820,14 +773,8 @@ mod telemetry_tests {
     }
 
     // ── EpochLog ─────────────────────────────────────────────────────────
-    //
-    // Real-behaviour tests for the per-trial epoch bookkeeping introduced
-    // alongside `Counter`/`MaxGauge` -- see the module doc comment above
-    // `EPOCH_CAPACITY` for the full design. Without the `telemetry`
-    // feature `EpochLog` is a zero-sized no-op (pinned structurally by
-    // `mod tests`'s own `epoch_log_is_zero_sized_without_telemetry_feature`
-    // -- there is no real accumulation to exercise in that build, same
-    // reasoning as `Counter`/`MaxGauge` above).
+    // Without the feature `EpochLog` is a zero-sized no-op (pinned by
+    // `epoch_log_is_zero_sized_without_telemetry_feature`), so only real-behaviour tests live here.
 
     #[test]
     fn epoch_log_fresh_reports_no_closed_or_dropped_epochs_and_no_records() {
@@ -982,18 +929,10 @@ mod telemetry_tests {
 
     // ── Overflow + gauges together ───────────────────────────────────────
     //
-    // Defect 2: `MaxGauge::take()` unconditionally zeroes the gauge on
-    // every epoch boundary, but `EpochLog::close`'s overflow branch (once
-    // EPOCH_CAPACITY is reached) used to discard `epoch_gauges` outright
-    // along with the counter deltas -- so a gauge peak that happened to
-    // land in one of the epochs past EPOCH_CAPACITY vanished forever, and
-    // `aggregate_gauge_max` could silently under-report the true
-    // whole-process maximum once a sweep point ran more than
-    // EPOCH_CAPACITY trials. The existing
-    // `epoch_log_gauge_aggregate_is_the_max_of_every_epoch_own_maximum_and_the_live_value`
-    // test above uses `EpochLog<0, 1>` but never overflows (only 3
-    // epochs), so it could not have caught this. The four tests below
-    // exercise `NG >= 1` together with an actual overflow.
+    // `MaxGauge::take()` zeroes the gauge on every epoch boundary, so `EpochLog::close`'s overflow
+    // branch must not discard `epoch_gauges` with the counter deltas: a gauge peak in an epoch past
+    // EPOCH_CAPACITY would vanish and `aggregate_gauge_max` under-report. These tests exercise
+    // `NG >= 1` together with an actual overflow.
 
     #[test]
     fn epoch_log_overflow_gauge_peak_in_a_dropped_epoch_still_reflected_in_aggregate() {
@@ -1084,10 +1023,8 @@ mod telemetry_tests {
     #[test]
     fn epoch_log_overflow_gauge_peak_in_a_dropped_epoch_smaller_than_a_kept_epochs_peak_does_not_override_it(
     ) {
-        // Proves the fix is a genuine max over kept + dropped + live, not
-        // a shortcut that always prefers the overflow mark -- if it did,
-        // this would incorrectly return the dropped epoch's smaller peak
-        // (or otherwise fail to prefer the kept epoch's larger one).
+        // a genuine max over kept + dropped + live, not a shortcut that always prefers the overflow
+        // mark
         let log: EpochLog<0, 1> = EpochLog::default();
 
         for i in 0..EPOCH_CAPACITY {
@@ -1114,9 +1051,8 @@ mod telemetry_tests {
         use std::thread;
 
         // Bounded by construction, same style as
-        // counter_single_writer_concurrent_reader_is_race_free_and_monotonic
-        // above: a fixed writer loop, a reader that polls in a tight loop
-        // and takes one final sample after observing completion.
+        // counter_single_writer_concurrent_reader_is_race_free_and_monotonic: a fixed writer loop and a
+        // reader that polls in a tight loop with one final sample after completion.
         const N: usize = 20;
         // Compile-time, not `assert!(N <= EPOCH_CAPACITY, ...)`: this pins
         // that the test exercises the non-overflow path regardless of
@@ -1200,23 +1136,19 @@ mod telemetry_tests {
         }
     }
 
-    // ── EpochFirstLoss ───────────────────────────────────────────────────
     //
-    // Per-epoch first-loss segmentation -- see this module's own
-    // "Per-epoch first-loss segmentation" design section (right above
-    // `EpochFirstLoss`'s definition) for the full contract these tests
-    // pin.
+    // Per-epoch first-loss segmentation (see the design section above `EpochFirstLoss`).
 
     #[test]
     fn epoch_first_loss_fresh_take_is_none() {
-        // Pin 1: a brand new EpochFirstLoss has recorded nothing yet.
+        // a brand new EpochFirstLoss has recorded nothing yet.
         let mut efl = EpochFirstLoss::default();
         assert_eq!(efl.take(), None);
     }
 
     #[test]
     fn epoch_first_loss_record_within_one_epoch_second_call_does_not_overwrite_the_scratch() {
-        // Pin 2: first record() within an epoch wins the scratch; a second
+        // first record() within an epoch wins the scratch; a second
         // record() in the SAME epoch (before any take()) must not replace
         // it -- take() must still return the FIRST event, not the second.
         // Two distinct FirstLossReason variants make this unambiguous.
@@ -1254,20 +1186,9 @@ mod telemetry_tests {
     #[test]
     fn epoch_first_loss_record_always_reaches_the_underlying_tracker_independent_of_the_scratchs_own_state(
     ) {
-        // Pin 3: record() must always call tracker.try_record too,
-        // independent of whether the EpochFirstLoss scratch has already
-        // claimed this epoch's slot -- the two latches (this epoch's
-        // scratch, and the tracker's whole-process latch) are independent
-        // of one another, not one gating the other. Demonstrated via the
-        // tracker's OWN first-writer-wins rule: whichever of the two
-        // record() calls' reasons is passed to try_record FIRST is what
-        // tracker.current() must report, proving both calls actually
-        // reached try_record (if the second record() call were somehow
-        // gated by the scratch already being claimed, the tracker would
-        // never see the second reason at all, but that's a different
-        // question from which one *wins* -- so this test uses two
-        // independent trackers, one per call, to prove each individual
-        // record() call reaches its own tracker).
+        // record() always calls tracker.try_record too, independent of whether the scratch already
+        // claimed this epoch's slot: the two latches are independent. Two trackers, one per call, prove
+        // that each record() call reaches its own tracker.
         let mut efl = EpochFirstLoss::default();
         let tracker_a = StageLossTracker::default();
         let tracker_b = StageLossTracker::default();
@@ -1281,9 +1202,7 @@ mod telemetry_tests {
             },
             100.0,
         );
-        // The scratch has already claimed this epoch's slot at this point
-        // (pin 2 above) -- but the SECOND record() call below must still
-        // reach ITS OWN tracker (tracker_b), independent of that.
+        // the scratch has claimed this epoch's slot, but the second record() must still reach tracker_b
         efl.record(
             &tracker_b,
             FirstLossReason::RxMissed,
@@ -1321,7 +1240,7 @@ mod telemetry_tests {
 
     #[test]
     fn epoch_first_loss_take_after_take_with_no_intervening_record_returns_none_the_second_time() {
-        // Pin 4: take() resets the scratch -- a take() immediately
+        // take() resets the scratch -- a take() immediately
         // followed by another take() (no record() in between) must return
         // None the second time.
         let mut efl = EpochFirstLoss::default();
@@ -1350,7 +1269,7 @@ mod telemetry_tests {
 
     #[test]
     fn epoch_first_loss_fresh_epoch_after_take_starts_clean_and_can_record_a_new_event() {
-        // Pin 5: after a take(), a NEW record() call must be able to latch
+        // after a take(), a NEW record() call must be able to latch
         // its own event -- the old (already-taken) event must not still be
         // returned, and the scratch must not be stuck permanently claimed
         // from the first epoch.
@@ -1386,15 +1305,13 @@ mod telemetry_tests {
         );
     }
 
-    // ── EpochLog::close's new first-loss parameter / EpochLog::first_loss ──
     //
-    // These pin the read-side CONTRACT of `EpochLog::first_loss` (see its
-    // own doc comment for the exact outer/inner Option shape) together with
-    // `close`'s new parameter.
+    // The read-side contract of `EpochLog::first_loss` (outer/inner Option shape, see its doc) and
+    // `close`'s first-loss parameter.
 
     #[test]
     fn epoch_log_close_with_some_event_makes_it_retrievable_via_first_loss() {
-        // Pin 7 (part 1): closing an epoch with Some(event) must make that
+        // closing an epoch with Some(event) must make that
         // exact event retrievable as Some(Some(event)) via first_loss().
         let log: EpochLog<1, 0> = EpochLog::default();
         let event = StageLossEvent {
@@ -1419,7 +1336,7 @@ mod telemetry_tests {
 
     #[test]
     fn epoch_log_close_with_none_records_clean_distinguishable_from_not_yet_published() {
-        // Pin 7 (part 2): closing with None must record "Clean"
+        // closing with None must record "Clean"
         // (Some(None)), which must be distinguishable from an index that
         // hasn't been published at all (plain None) -- the exact ambiguity
         // the outer/inner Option design resolves.
@@ -1442,7 +1359,7 @@ mod telemetry_tests {
 
     #[test]
     fn epoch_log_multiple_epochs_each_get_their_own_independent_first_loss_record() {
-        // Pin 8: close 3 epochs with different (or absent) first-loss
+        // close 3 epochs with different (or absent) first-loss
         // events; each must be retrieved correctly and independently, with
         // no bleed-through from one epoch's record into another's.
         let log: EpochLog<1, 0> = EpochLog::default();
@@ -1487,11 +1404,8 @@ mod telemetry_tests {
 
     #[test]
     fn epoch_log_overflow_drops_the_first_loss_event_of_a_dropped_epoch_too() {
-        // Pin 9: a dropped (overflowed) epoch's first-loss data is simply
-        // dropped along with the rest of that epoch's data -- see the
-        // "Per-epoch first-loss segmentation" design section's own doc
-        // comment for the reasoning (no meaningful aggregate exists for a
-        // qualitative reason/detail the way a numeric gauge max exists).
+        // a dropped (overflowed) epoch's first-loss data is dropped with the rest of that epoch's data
+        // (no meaningful aggregate exists for a qualitative reason/detail)
         let log: EpochLog<1, 0> = EpochLog::default();
 
         for i in 0..EPOCH_CAPACITY {
@@ -1527,13 +1441,9 @@ mod telemetry_tests {
 
     #[test]
     fn epoch_log_single_writer_concurrent_reader_never_observes_a_partial_first_loss_slot() {
-        // Pin 10: same style as
-        // epoch_log_single_writer_concurrent_reader_never_observes_a_partial_slot
-        // above, but for the new first-loss data specifically -- a writer
-        // closes epochs with REAL, distinguishable first-loss events (not
-        // just None, so a torn read would actually be detectable), while a
-        // reader repeatedly reads; no partial/inconsistent state may ever
-        // be observed, and the final state must be exact.
+        // Like epoch_log_single_writer_concurrent_reader_never_observes_a_partial_slot, for first-loss
+        // data: the writer closes epochs with REAL, distinguishable events (so a torn read is
+        // detectable) while a reader reads; no partial state may be seen and the final state is exact.
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
         use std::thread;

@@ -1,9 +1,7 @@
-//! DPDS data plane (library part): the per-direction RX -> DPDS -> TX
-//! loop, its CLI, the `--links` file ([`links`]), the telemetry machinery
-//! (counters, epochs, first-loss, delay statistics, replies) and the setup
-//! validation of the `dpds` binary. The loop is
-//! generic over small traits ([`io`]) so it can be tested without an EAL;
-//! `main.rs` wires it to the real NICs and mempools.
+//! DPDS data plane (library part): the per-direction RX -> DPDS -> TX loop, the
+//! CLI, the `--links` file ([`links`]), telemetry (counters, first-loss, delay
+//! statistics, replies) and setup validation. The loop is generic over small
+//! traits ([`io`]) so it runs without an EAL; `main.rs` wires it to the NICs.
 
 pub mod cli;
 pub mod consts;

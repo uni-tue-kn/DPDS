@@ -46,7 +46,6 @@ fn log_ev(log: &Option<Log>, ev: Ev) {
     }
 }
 
-/// Number of `Clock` events in the log.
 pub fn clock_reads(log: &Log) -> usize {
     log.borrow().iter().filter(|e| **e == Ev::Clock).count()
 }
@@ -85,7 +84,6 @@ impl FakeMbufs {
         (0..self.mbufs.len()).map(|i| self.ptr(i)).collect()
     }
 
-    /// Sets the packet length of mbuf `i` (what `rte_pktmbuf_pkt_len` reads).
     #[cfg(feature = "telemetry")]
     pub fn set_pkt_len(&mut self, i: usize, len: u32) {
         self.mbufs[i].__bindgen_anon_2.__bindgen_anon_1.pkt_len = len;
@@ -200,7 +198,6 @@ impl TxBurst for MockTx {
 }
 
 impl MockTx {
-    /// Every mbuf offered to the NIC, in call order.
     pub fn offered(&self) -> Vec<RawMbuf> {
         self.calls.iter().flat_map(|c| c.1.clone()).collect()
     }
@@ -221,7 +218,6 @@ impl MbufFree for MockFree {
 }
 
 impl MockFree {
-    /// Every freed mbuf, in call order.
     pub fn freed(&self) -> Vec<RawMbuf> {
         self.bulk_calls.iter().flatten().copied().collect()
     }

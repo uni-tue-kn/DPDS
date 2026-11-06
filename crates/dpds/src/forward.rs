@@ -12,7 +12,7 @@ use crate::quit::Quit;
 use crate::stats::Telemetry;
 use crate::worker::Worker;
 
-/// First rejected push of the run: kept out of line so the loop stays tight.
+/// First rejected push of the run; out of line so the loop stays tight.
 #[cold]
 #[inline(never)]
 fn record_reject(t: &mut Telemetry<'_>, now: f64, cause: DropCause) {
@@ -26,7 +26,7 @@ fn record_reject(t: &mut Telemetry<'_>, now: f64, cause: DropCause) {
     );
 }
 
-/// First short `tx_burst` of the run, see [`record_reject`].
+/// First short `tx_burst` of the run.
 #[cold]
 #[inline(never)]
 fn record_descriptor_full(t: &mut Telemetry<'_>, now: f64) {
@@ -44,46 +44,38 @@ fn record_descriptor_full(t: &mut Telemetry<'_>, now: f64) {
 /// `worker.tx_port()` until told to quit, then drains the buffer (packets
 /// leave at their send time, plus at most the staging wait) before returning.
 ///
-/// One iteration, in this order:
-/// 1. read `quit` (relaxed);
-/// 2. read the clock once: `now` serves push, pop, tick, first-loss times and
-///    the send decision;
-/// 3. unless quit: one `rx_burst` of `BURST_SIZE`;
-/// 4. push every received mbuf with its packet length
-///    (`Buffer::push_outcome`); refused ones are collected, counted
-///    (`dpds_rejects` and the cause: `loss_drops`, else `limiter_drops`, else
-///    `buffer_full_drops`; `DpdsReject` first loss naming the cause) and
-///    freed with one bulk free after the loop; with the delay statistics the
-///    accepted ones get `now` (their arrival) written into their mbuf;
-/// 5. pop the packets due at `now` into the free slots of the staging array
+/// One iteration:
+/// 1. read `quit` and the clock once; `now` serves push, pop, tick, first-loss
+///    times and the send decision;
+/// 2. unless quit: one `rx_burst` of `BURST_SIZE`;
+/// 3. push every received mbuf (`Buffer::push_outcome`); refused ones are
+///    counted (`dpds_rejects` and the cause), recorded as `DpdsReject` first
+///    loss and freed in one bulk free; with the delay statistics the accepted
+///    ones get `now` (their arrival) written into the mbuf;
+/// 4. pop the packets due at `now` into the free slots of the staging array
 ///    (`TX_BURST_SIZE` slots, kept across iterations): at most
-///    `TX_BURST_SIZE - staged`, and at most `BURST_SIZE`;
-/// 6. prefetch the header line of every popped mbuf and of the next
-///    queued ones (see [`Buffer::peek_nth`](dpds_core::buffer::Buffer::peek_nth));
-/// 7. if the array is full or its oldest packet (`staged[0]`, pops come out in
-///    send-time order) is due for `TX_MAX_WAIT_NS` already, one `tx_burst` of
+///    `TX_BURST_SIZE - staged` and `BURST_SIZE`;
+/// 5. prefetch the header line of every popped mbuf and of the next queued ones
+///    (see [`Buffer::peek_nth`](dpds_core::buffer::Buffer::peek_nth));
+/// 6. if the array is full or its oldest packet (`staged[0]`, pops come out in
+///    send-time order) has waited `TX_MAX_WAIT_NS`, one `tx_burst` of
 ///    everything staged, also in an iteration that popped nothing; the unsent
-///    tail is freed with one bulk free (`tx_short_calls`, `DescriptorFull`
-///    first loss); the array is empty afterwards. With the delay statistics
-///    the clock is read once more right before the `tx_burst` (the TX enqueue
-///    time), the arrivals of the staged mbufs are read from the mbufs before
-///    it (afterwards the driver owns them), and the delay and lateness of the
-///    packets the NIC accepted are recorded (telemetry builds);
-/// 8. sample `buffer_len_max` (after the pop), `t.tick(now, received)`;
-/// 9. stop if quit was read as requested, the buffer is empty and nothing is
+///    tail is freed in one bulk free (`tx_short_calls`, `DescriptorFull` first
+///    loss). With the delay statistics the clock is read again right before the
+///    `tx_burst` (the TX enqueue time), the arrivals are read from the mbufs
+///    before it (afterwards the driver owns them), and the delay and lateness
+///    of the accepted packets are recorded;
+/// 7. sample `buffer_len_max` (after the pop) and `t.tick(now, received)`;
+/// 8. stop if quit was read as requested, the buffer is empty and nothing is
 ///    staged.
 ///
-/// So once quit is observed nothing is received any more; everything received
-/// before is emitted (at its send time, plus the staging wait) or freed. The
-/// last partial batch is not flushed at quit: it goes out when its wait is
-/// over.
+/// Once quit is observed nothing is received any more; everything received
+/// before is emitted (at its send time, plus the staging wait) or freed.
 ///
-/// With the direction's delay statistics switched off (`Stats::delay`,
-/// `"delay_stats": false`) the loop is the instance without the statistics:
-/// the choice is made once, before the loop, and the arrival stamp, the
-/// extra clock read and the recording are not compiled into it (no
-/// per-packet and no per-burst work). Without the `telemetry` feature the
-/// statistics are never recorded, so the loop is that instance either way.
+/// With the delay statistics off (`Stats::delay`, `"delay_stats": false`) the
+/// instance without them runs, chosen once before the loop: no arrival stamp,
+/// extra clock read or recording is compiled in. Without the `telemetry`
+/// feature the statistics are never recorded, so that instance runs either way.
 ///
 /// # Safety
 ///
@@ -110,7 +102,7 @@ pub unsafe fn run(
 }
 
 /// The loop of [`run`]; `DELAY` is whether the delay statistics are recorded
-/// (which costs the extra clock read before each `tx_burst`).
+/// (costs an extra clock read before each `tx_burst`).
 ///
 /// # Safety
 ///
@@ -130,9 +122,8 @@ unsafe fn run_loop<const DELAY: bool>(
     let c = &stats.counters;
     let mut batch = [std::ptr::null_mut(); BURST_SIZE];
     let mut rejected = [std::ptr::null_mut(); BURST_SIZE];
-    // The TX staging array, its send times (`send[0]` decides when a partial
-    // batch has to go) and, for the delay statistics, the arrivals read just
-    // before `tx_burst`.
+    // TX staging array, its send times (`send[0]` decides when a partial batch
+    // goes) and, for the delay statistics, the arrivals read before `tx_burst`.
     let mut staged = [std::ptr::null_mut(); TX_BURST_SIZE];
     let mut send = [0u64; TX_BURST_SIZE];
     let mut arrivals = [0.0f64; TX_BURST_SIZE];
@@ -143,8 +134,7 @@ unsafe fn run_loop<const DELAY: bool>(
         let now = now_ns();
         c.polls.inc();
 
-        // Once told to quit, stop receiving and only drain the delay buffer:
-        // on a live NIC, receiving on would refill it forever.
+        // After quit only drain: receiving on a live NIC would refill the buffer forever.
         let received = if quit_requested {
             0
         } else {
@@ -155,8 +145,8 @@ unsafe fn run_loop<const DELAY: bool>(
             c.rx_full_bursts.inc();
         }
 
-        // Frame sizes of this burst: at most BURST_SIZE (32) per bucket, so one
-        // u64 of u8 counters on the stack, flushed once per burst.
+        // Frame sizes of this burst: at most BURST_SIZE (32) per bucket, so u8
+        // counters (one u64 on the stack), flushed once per burst.
         let mut sizes = [0u8; 8];
         let mut rejects = 0;
         let (mut lost, mut limited, mut full) = (0u64, 0u64, 0u64);
@@ -267,7 +257,6 @@ unsafe fn run_loop<const DELAY: bool>(
             staged_len = 0;
         }
 
-        // Sampled once per iteration after the pop, like preof's link stages.
         c.buffer_len_max.observe_with(|| buffer.len() as u64);
         // Also on idle iterations: an epoch only ends in an idle gap.
         t.tick(now, received as u64);

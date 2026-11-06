@@ -13,12 +13,11 @@ import HistogramTables from './HistogramTables';
 export type HistKind = 'delay' | 'iat';
 
 const POLL_MS = 1000;
-/** P4TG's width to height of the histograms. */
+/** Width to height of the histograms. */
 const HIST_ASPECT = 4;
-/** Translucent bars like P4TG's. */
 const BAR_COLOR = 'rgba(231, 76, 60, 0.6)';
 const IAT_BAR_COLOR = 'rgba(53, 162, 235, 0.6)';
-/** The line colours by percentile index: P4TG's RX palette for the delay, its TX palette for the IAT (the departure side). */
+/** The line colours by percentile index: the RX palette for the delay, the TX palette for the IAT (the departure side). */
 const DELAY_PALETTE = ['#e74c3c', '#d35400', '#e67e22', '#af601a'];
 const IAT_PALETTE = ['#3c82e7', '#2ecc71', '#16a085', '#1f618d'];
 const PERCENTILES: [string, 'p50' | 'p90' | 'p99' | 'p999'][] = [
@@ -56,7 +55,7 @@ export function percentileAnnotations(hist: HistogramView, palette: string[], ma
   return out;
 }
 
-/** P4TG's `getTimeUnit`: the value scaled down by 1000 per step while it reaches 1000, with the unit it ends in. */
+/** The value scaled down by 1000 per step while it reaches 1000, with the unit it ends in. */
 function timeUnit(ns: number): [number, string] {
   const units = ['ns', '\u00b5s', 'ms', 's'];
   let i = 0;

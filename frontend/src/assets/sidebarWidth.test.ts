@@ -1,8 +1,5 @@
-// User (2026-11-05): "make the left sidebar as wide as P4TG's". P4TG (Configuration GUI/src/App.tsx:146, commit fcf24bd)
-// puts its navbar in `col-2 col-sm-2 col-xl-1`: 1/6 of the width below 1200 px, 1/12 from 1200 px (Bootstrap's xl), and its
-// logo is 80 px wide (components/Navbar.tsx StyledImg). jsdom renders no CSS, so the stylesheet itself is pinned.
-// Spec 50 D (user 2026-11-05: "Make the DPDS logo in the top left bigger. It is really small right now."): the logo (256x97) is
-// no longer 80 px wide but fills the sidebar's width, the brand keeping at most 0.25rem of horizontal padding.
+// The sidebar is as wide as P4TG's (1/6 of the width below 1200 px, 1/12 from 1200 px, Bootstrap's xl), and the logo fills the
+// sidebar's width, the brand keeping at most 0.25rem of horizontal padding. jsdom renders no CSS, so the stylesheet itself is pinned.
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -44,7 +41,7 @@ describe('sidebar width like P4TG', () => {
     expect(side('right')).toBeLessThanOrEqual(4);
   });
 
-  // P4TG index.scss:270-280 and :834-837: navigation icons are 25px, 20px up to 450 px width (user: DPDS's were "a bit tiny").
+  // Navigation icons are 25px, 20px up to 450 px width.
   it('navigation icons are 25px like P4TG, 20px on screens up to 450 px', () => {
     expect(css).toMatch(/\.sidebar \.nav-link \{[^}]*\bfont-size: 25px;/);
     expect(css).toMatch(/@media \(max-width: 450px\) \{ \.sidebar \.nav-link \{ font-size: 20px; \} \}/);

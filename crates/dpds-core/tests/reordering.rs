@@ -6,7 +6,6 @@
 //! of accepted pushes since the last push with a different `current_time_ns`
 //! (0 for the first packet of an instant). `front_time()` is `(key >> 6) as
 //! f64`, `pop`/`pop_due` order by `key`. Saturating arithmetic, no overflow.
-//! FIFO mode is unchanged (`as u64` truncation, no keys).
 //!
 //! Constants used in the expectations: `105.75 * 64 = 6768 = 105 * 64 + 48`,
 //! `105.0 * 64 = 6720`, `100.0 * 64 = 6400`; all instants/delays are exact

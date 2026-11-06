@@ -1,8 +1,8 @@
 //! `DelayerConfig::initialization_rate_pps`: the packet rate (packets per
 //! second) the correlated delay is initialised with. It is a required config
-//! field, there is no built-in rate any more, and it is validated whether or
-//! not the correlation is active: finite and at least 1, else a `BuildError`
-//! whose message names the field.
+//! field with no built-in rate, and it is validated whether or not the
+//! correlation is active: finite and at least 1, else a `BuildError` whose
+//! message names the field.
 //!
 //! Derivations (from `delayer.rs`):
 //! - `w = 1 / 2^(1/k)`, `k = half_life_ns * rate_pps / 1e9`; `try_new` fails

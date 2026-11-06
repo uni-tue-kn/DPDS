@@ -1,7 +1,7 @@
-//! Host hints (B6) on fake trees (spec 33: some suggest root commands, see `host_commands.rs`; none
-//! changes the host). Spec 22: `GET /api/host/hints` gives the host-only
-//! hints, `POST /api/host/hints` with a start body adds the link-dependent ones for that
-//! configuration; the tests use `hints_json(host, setup)` (GET without links, POST with).
+//! Host hints on fake trees (some suggest root commands, see `host_commands.rs`; none changes the
+//! host). `GET /api/host/hints` gives the host-only hints, `POST /api/host/hints` with a start
+//! body adds the link-dependent ones for that configuration; the tests use
+//! `hints_json(host, setup)` (GET without links, POST with).
 
 use crate::common::*;
 use serde_json::Value;
@@ -238,7 +238,7 @@ fn governor_missing_in_a_vm_is_ok_or_info() {
     assert_level(&h, "governor", "ok", "info");
 }
 
-// ---- irq affinity (spec 32: replaces the irqbalance hint; see `host_commands.rs`) ----------
+// ---- irq affinity (see `host_commands.rs`) ----------
 
 #[test]
 fn the_irqbalance_hint_is_gone_a_running_irqbalance_is_no_hint_of_its_own() {
@@ -424,7 +424,7 @@ fn host_without_isolation_and_hugepages_reports_errors() {
     assert_level(&h, "governor", "info", "warn");
 }
 
-// ---- spec 22: GET is host-only, POST takes the configuration -----------------------------
+// ---- GET is host-only, POST takes the configuration -----------------------------
 
 const HOST_ONLY_IDS: [&str; 8] = [
     "isolation",

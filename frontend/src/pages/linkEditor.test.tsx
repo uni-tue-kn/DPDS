@@ -33,10 +33,9 @@ const DISTRIBUTIONS = [
   'UniformDistribution',
 ];
 
-// v22: links live in the local document (key dpds.config.v1); "created" / "updated" mean what the store holds after Save. New
-// links are appended with id max+1. `openNew` opens the form with delayer, limiter and dropper added (most tests need their
-// fields); `openNew(others, false)` is the bare form.
-// v10: one directed link = one config form (contract: "v10" block of src/test/helpers.tsx).
+// Links live in the local document (key dpds.config.v1); "created" / "updated" mean what the store holds after Save. New links are
+// appended with id max+1. `openNew` opens the form with delayer, limiter and dropper added (most tests need their fields);
+// `openNew(others, false)` is the bare form. One directed link = one config form.
 const group = () => screen.getByRole('group', { name: /^Link configuration/ });
 const select = (name: string) => screen.getByLabelText(name) as HTMLSelectElement;
 const input = (scope: HTMLElement, label: string) => within(scope).getByLabelText(label) as HTMLInputElement;
@@ -100,23 +99,23 @@ function expectValidConfig(c: ConfigDto) {
   expect(Number.isInteger(c.buffer_capacity)).toBe(true);
   expect(c.buffer_capacity).toBeGreaterThan(0);
   expect(typeof c.reordering).toBe('boolean');
-  // v22: the stages are optional; these checks run on forms opened with all three added
+  // the stages are optional; these checks run on forms opened with all three added
   expect(DISTRIBUTIONS).toContain(must(c.delayer).distribution);
   expect(Number.isFinite(must(c.delayer).mean_ns)).toBe(true);
   expect(Number.isFinite(must(c.delayer).std_ns)).toBe(true);
   expect(typeof must(c.delayer).activate_correlation).toBe('boolean');
   expect(Number.isFinite(must(c.delayer).half_life_period_ns)).toBe(true);
-  expect(typeof must(c.delayer).initialization_rate_pps).toBe('number'); // v12: always sent with a delayer, finite >= 1
+  expect(typeof must(c.delayer).initialization_rate_pps).toBe('number'); // always sent with a delayer, finite >= 1
   expect(Number.isFinite(must(c.delayer).initialization_rate_pps)).toBe(true);
   expect(must(c.delayer).initialization_rate_pps).toBeGreaterThanOrEqual(1);
   expect(['Spacer', 'TokenBucketFilter']).toContain(must(c.limiter).mode);
   expect(must(c.limiter).rate_bps).toBeGreaterThan(0);
-  expect(Object.keys(must(c.limiter)).sort()).toEqual(['mode', 'rate_bps']); // spec20: no limit_bit; v22: no activate
+  expect(Object.keys(must(c.limiter)).sort()).toEqual(['mode', 'rate_bps']); // no limit_bit, no activate
   expect(['Random', 'GilbertElliot']).toContain(must(c.loss_model).type);
   expect(typeof c.delay_stats).toBe('boolean');
 }
 
-/** The old two-port shape must be gone from what the editor sends. */
+/** What the editor sends has no `ports`, `configs` or `workers` members. */
 function expectNewShape(sent: LinkInput) {
   const keys = Object.keys(sent);
   for (const gone of ['ports', 'configs', 'workers']) expect(keys).not.toContain(gone);
@@ -441,7 +440,7 @@ describe('Link editor: create', () => {
     await user.type(input(g, 'Gilbert-Elliot h'), '0.3');
     await user.click(save());
     const c = lastCreate().config;
-    expect(c.loss_model).toEqual({ type: 'GilbertElliot', p: 0.01, r: 0.2, k: 0.9, h: 0.3 }); // spec26: exactly {type, p, r, k, h}
+    expect(c.loss_model).toEqual({ type: 'GilbertElliot', p: 0.01, r: 0.2, k: 0.9, h: 0.3 }); // exactly {type, p, r, k, h}
     expect(Object.keys(must(c.loss_model)).sort()).toEqual(['h', 'k', 'p', 'r', 'type']);
     expect(c.delay_stats).toBe(true);
   });
@@ -552,7 +551,7 @@ describe('Link editor: create', () => {
     await fillValid(user, 'first');
     await user.click(save());
     expect(storedDoc()).toMatchObject({ version: 1 });
-    expect(Object.keys(storedDoc()).sort()).toEqual(['links', 'version']); // spec27: no presets member; spec41: no settings member
+    expect(Object.keys(storedDoc()).sort()).toEqual(['links', 'version']); // no presets member, no settings member
     expect(storedDoc().links.map((l) => [l.id, l.name])).toEqual([[1, 'first']]);
   });
 
@@ -637,7 +636,7 @@ describe('Link editor: edit', () => {
     expect(unitOf(g, 'Half-life period')).toBe('ms'); // 0 -> the default unit
     expect(input(g, 'Initialization rate')).toHaveValue(12.5); // 12500000 pps
     expect(unitOf(g, 'Initialization rate')).toBe('Mpps');
-    // v22: fx.config() has no limiter: the stage is not added, only its button is shown
+    // fx.config() has no limiter: the stage is not added, only its button is shown
     expect(queryStage('limiter')).not.toBeInTheDocument();
     expect(queryAddButton('limiter')).toBeInTheDocument();
     expect(screen.queryByLabelText('Rate')).not.toBeInTheDocument();
@@ -789,8 +788,8 @@ describe('Link editor: edit', () => {
   });
 });
 
-// v16: the typed "Ingress (typed)" / "Egress (typed)" inputs are gone. What they covered (vdev and undiscovered ports,
-// the port rule, hairpins of vdevs) is now reached through a STORED link whose port is not a discovered interface.
+// Vdev and undiscovered ports and the port rule (hairpins of vdevs) are reached through a STORED link whose port is not a
+// discovered interface.
 describe('Link editor: ports come only from the pickers (v16)', () => {
   async function openStored(link: Link) {
     seedLinks([link]);
@@ -881,7 +880,7 @@ describe('Link editor: ports come only from the pickers (v16)', () => {
     expect(sent.egress).toBe('net_null0');
   });
 
-  // The port rule still applies to what is sent: a stored value the controller would reject is refused here.
+  // The port rule applies to what is sent: a stored value the controller would reject is refused here.
   it.each(['net_pcap0,tx_pcap=/x', 'eth0', '0000:65:00.8'])(
     'a stored ingress %s is refused on save: alert naming the ingress, no request',
     async (port) => {
@@ -977,7 +976,7 @@ describe('Link editor: labels (v10)', () => {
     await user.click(save());
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(/Mean delay/);
-    expect(alert).not.toHaveTextContent(/\(ns\)/); // v16: messages name the field, not a unit
+    expect(alert).not.toHaveTextContent(/\(ns\)/); // messages name the field, not a unit
   });
 
   it('all element ids on the page are unique (no label-derived control ids colliding)', async () => {
@@ -990,7 +989,7 @@ describe('Link editor: labels (v10)', () => {
   });
 });
 
-// v12 (spec12 part B): the correlation initialization rate is a required config field, never a hidden constant.
+// the correlation initialization rate is a required config field, never a hidden constant.
 describe('Link editor: initialization rate (v12)', () => {
   const RATE = 'Initialization rate';
   const rate = () => input(group(), RATE);

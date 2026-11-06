@@ -1,4 +1,4 @@
-//! Spec v7 S5 (the Lows that are visible from outside):
+//! The Lows that are visible from outside:
 //!
 //! - the hugepage figures from `/proc/meminfo` saturate instead of overflowing;
 //! - unknown routes (404) and wrong methods (405) answer `{"message"}` JSON;
@@ -8,9 +8,7 @@
 //!   naming it, not a silently dropped setting;
 //! - an empty or invalid body WITH `Content-Type: application/json` is a 400 `{"message"}`.
 //!
-//! Spec 22: the configs arrive in the body of `POST /api/emulation/start` (and validate, hints);
-//! there is no store and no stored link any more. `--runtime-dir` too long is in
-//! `startup_errors.rs`.
+//! `--runtime-dir` too long is in `startup_errors.rs`.
 
 use crate::common::*;
 use dpds_controller::dto::ConfigDto;
@@ -297,7 +295,7 @@ async fn an_empty_or_invalid_json_body_is_a_400_with_a_message() {
     assert_eq!(a.get("/api/emulation").await.json()["state"], "stopped");
 }
 
-// ---- spec20: `limit_bit` is gone, the limit is derived from the buffer capacity ------------
+// ---- the limit is derived from the buffer capacity ------------
 
 #[tokio::test]
 async fn a_link_with_limit_bit_is_a_400_naming_the_field() {

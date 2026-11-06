@@ -45,9 +45,9 @@ const rxData = (chart: HTMLElement): number[] =>
     'RX dataset',
   ).data;
 
-// Spec 35 (user 2026-11-05): minimal, P4TG-like dashboard. Spec: scratchpad/spec35-dashboard.md, items F1 to F7. The loss donut
-// (F5) is in lossDonut.test.tsx, the NIC ports table is gone from /interfaces too (spec 43 F6, interfacesNoStats.test.tsx). Layout contract and
-// test ids: the header of src/test/dashboardUi.tsx. Tester's choices where the spec is silent are marked CHOICE.
+// The minimal, P4TG-like dashboard: the top row, the pills after a stop, the tabs, what is gone, what stays. The loss donut is in
+// lossDonut.test.tsx, the NIC ports table is not on /interfaces either (interfacesNoStats.test.tsx). Layout contract and test ids:
+// the header of src/test/dashboardUi.tsx.
 
 const STATES: EmulationState[] = ['stopped', 'starting', 'running', 'stopping', 'failed'];
 const STOPPED_STATS = (elapsed_ms = 305_400) => fx.stats([], { stale: true, age_ms: undefined, elapsed_ms });
@@ -75,7 +75,7 @@ function ended(state: 'stopping' | 'stopped' | 'failed', elapsed_ms = 305_400) {
   api.getStats.mockResolvedValue(STOPPED_STATS(elapsed_ms));
 }
 
-// ---- F1: the top row --------------------------------------------------------------------------------------------------
+// ---- the top row --------------------------------------------------------------------------------------------------
 
 describe('Dashboard (spec 35 F1): the top row, pills left and buttons right like P4TG', () => {
   beforeEach(() => {
@@ -90,7 +90,7 @@ describe('Dashboard (spec 35 F1): the top row, pills left and buttons right like
     const pills = within(row).getByTestId('top-pills');
     expect(pills).toHaveClass('col-8', 'text-start');
     const group = within(row).getByTestId('run-buttons');
-    expect(group).not.toHaveAttribute('role', 'group'); // spec 43 F8: no ButtonGroup
+    expect(group).not.toHaveAttribute('role', 'group'); // no ButtonGroup
     const column = must(group.closest('.col-4'), 'the col-4 column of the button group');
     expect(column).toHaveClass('text-end');
     expect(pills.contains(group)).toBe(false);
@@ -99,7 +99,7 @@ describe('Dashboard (spec 35 F1): the top row, pills left and buttons right like
     expect(pills.compareDocumentPosition(group) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  // Spec 46. Was: RX, TX, elapsed, lost. P4TG's order now (dashboardTopRow.test.tsx has the one with the exact children).
+  // P4TG's order (dashboardTopRow.test.tsx has the test with the exact children).
   it('the pills come in this order: TX, RX, Status, elapsed, loss % (spec 43 F3: no state badge before them; default counters drop packets)', async () => {
     api.getEmulation.mockResolvedValue(fx.emulation('running'));
     api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0), fx.dirStats(1)], { elapsed_ms: 192_000 }));
@@ -131,13 +131,12 @@ describe('Dashboard (spec 35 F1): the top row, pills left and buttons right like
     await waitFor(() => expect(pillText('pill-rx')).toBe('10.42 Gbit/s (7.31 Mpps)'));
     expect(pillText('pill-tx')).toBe('8.26 Gbit/s (6.31 Mpps)');
     expect(pillText('pill-elapsed')).toBe('0h 3m 12s');
-    // spec 43 F2, spec 46: the default counters of each link drop 4 + 3 + 3 packets, so 20 over the two links
+    // the default counters of each link drop 4 + 3 + 3 packets, so 20 over the two links
     expect(pillText('pill-status')).toBe('Status: Error. Lost 20.00 frames.');
     expect(pillText('loss-pct')).toBe('21.62 %');
   });
 
-  // Spec 43 F8. Was: the group held exactly [Restart] and one contextual button in every state, Restart disabled unless running,
-  // "Stopping…" with a spinner. Now see RUN_BUTTONS in test/dashboardUi.tsx; the P4TG look is pinned in dashboardP4tg.test.tsx.
+  // The run buttons per state: see RUN_BUTTONS in test/dashboardUi.tsx; the P4TG look is pinned in dashboardP4tg.test.tsx.
   it.each(STATES)('"%s": the run buttons are those of RUN_BUTTONS', async (state) => {
     await openIn(state);
     expect(runButtonNames(), state).toEqual(RUN_BUTTONS[state]);
@@ -329,16 +328,16 @@ describe('Dashboard (spec 35 F1): notices go in a row below the top row, never i
   });
 });
 
-// ---- F2: the pills after a stop -----------------------------------------------------------------------------------------
+// ---- the pills after a stop -----------------------------------------------------------------------------------------
 
 describe('Dashboard (spec 37, was spec 35 F2): the pills show 0 once the run has ended, the history stays in charts and donuts', () => {
-  // Spec 46: no label, P4TG's formatBits(0) and formatPacketRate(0). Was: `RX ${formatRatePill(0, 0)}`.
+  // No label: P4TG's formatBits(0) and formatPacketRate(0).
   const ZERO_RX = '0 Bit/s (0 Pps)';
   const ZERO_TX = '0 Bit/s (0 Pps)';
 
   /**
    * Two links, each with an early sample and a final one, and `totals` of the run: link 0 received 1000 packets and dropped 50,
-   * link 1 received 3000 and dropped 300. Before spec 37 the pills showed 9.25 / 7.25 Gbit/s and 8.75 % from this; now they must not.
+   * link 1 received 3000 and dropped 300. The pills must not read these totals.
    */
   function twoLinkRun() {
     const early = { rx_gbps: 1, tx_gbps: 1, rx_mpps: 0.5, tx_mpps: 0.5 };
@@ -388,7 +387,7 @@ describe('Dashboard (spec 37, was spec 35 F2): the pills show 0 once the run has
       expect(pillText('pill-tx')).toBe(ZERO_TX);
       expect(screen.queryByTestId('pill-status')).not.toBeInTheDocument(); // the run's totals (350) are in the donut only
       expect(screen.queryByTestId('pill-lost')).not.toBeInTheDocument();
-      // spec 46 item 4: the duration is gone once stopped or failed; while stopping (the drain) it still shows
+      // the duration is gone once stopped or failed; while stopping (the drain) it still shows
       if (state === 'stopping') expect(screen.getByTestId('pill-elapsed')).toHaveTextContent('0h 5m 5s');
       else expect(screen.queryByTestId('pill-elapsed')).not.toBeInTheDocument();
     },
@@ -498,14 +497,9 @@ describe('Dashboard (spec 37, was spec 35 F2): the pills show 0 once the run has
     expect(pillText('pill-tx')).toBe('–');
     expect(screen.queryByTestId('pill-status')).not.toBeInTheDocument();
   });
-
-  // Spec 46. Removed: the spec 43 F2 block about the "lost" pill ("Lost <N> frames", formatCount, the red icon, shown after the stop,
-  // no pill-dropped). Its cases (N = sum of the six causes over the links, each cause alone, dpds_rejects not counted, appears and
-  // disappears with the counters) are now about the Status "Status: Error. Lost <formatFrameCount> frames." and its tooltip
-  // in dashboardTopRow.test.tsx; the Status exists only while running.
 });
 
-// ---- F3: tabs ---------------------------------------------------------------------------------------------------------
+// ---- tabs ---------------------------------------------------------------------------------------------------------
 
 describe('Dashboard (spec 35 F3): one tab per link', () => {
   beforeEach(() => {
@@ -520,7 +514,7 @@ describe('Dashboard (spec 35 F3): one tab per link', () => {
     expect(tabTitle(1)).toBe('b-a: enp101s0f1 → enp101s0f0');
     expect(screen.getAllByRole('tablist')).toHaveLength(1);
     expect(tabs()).toHaveLength(2);
-    expect(within(screen.getByRole('tablist')).getAllByRole('tab')).toHaveLength(3); // spec 36: Summary comes first
+    expect(within(screen.getByRole('tablist')).getAllByRole('tab')).toHaveLength(3); // Summary comes first
   });
 
   it('a live tab has no badge: no lcore badge, no state badge', async () => {
@@ -532,7 +526,7 @@ describe('Dashboard (spec 35 F3): one tab per link', () => {
     expect(screen.getByRole('tab', { name: /^a-b: .* → .*$/ })).toBeInTheDocument();
   });
 
-  // Spec 36: the Summary tab is the first and the default (the Summary tab itself is pinned in dashboardSummary.test.tsx).
+  // The Summary tab is the first and the default (the Summary tab itself is pinned in dashboardSummary.test.tsx).
   it('no link tab is selected at first, and selecting one makes its panel the one that shows', async () => {
     renderApp('/');
     await findTabs(2);
@@ -615,7 +609,7 @@ describe('Dashboard (spec 35 F3): one tab per link', () => {
     fireEvent.click(tab(1));
     ended('stopped');
     await tick(2500);
-    expect(tabBadge(1)).toBe(''); // spec 54 L1: no badge
+    expect(tabBadge(1)).toBe(''); // no badge
     expect(tab(1)).toHaveAttribute('aria-selected', 'true');
   });
 
@@ -636,8 +630,8 @@ describe('Dashboard (spec 35 F3): one tab per link', () => {
     expect(within(activePanel()).getByTestId('chart-line')).toBeInTheDocument();
   });
 
-  // Spec 60 R2. Was: 'no tabs while running but the stats have no directions yet (the run gives the tabs, spec 39)' (no tablist).
-  // The Summary tab stays mounted, the link tabs are the stored links, until the run reports directions.
+  // While running but the stats have no directions yet, the Summary tab stays mounted and the link tabs are the stored links, until the
+  // run reports directions.
   it('while running but the stats have no directions yet the Summary tab stays, with the stored links as tabs (spec 60 R2)', async () => {
     seedStore({ links: [fx.link(), fx.linkRev()] });
     api.getStats.mockResolvedValue(fx.stats([]));
@@ -665,7 +659,7 @@ describe('Dashboard (spec 35 F3): one tab per link', () => {
   });
 });
 
-// Spec 54 L1 (user 2026-11-05): the tab titles are only the link labels; the ended-run badge of spec 35 F3 is gone.
+// The tab titles are only the link labels, with no ended-run badge.
 describe('Dashboard (spec 35 F3, spec 54 L1): the tab of an ended run has no badge', () => {
   const BADGE = { stopping: 'Stopping', stopped: 'Stopped', failed: 'Failed' } as const;
 
@@ -724,8 +718,7 @@ describe('Dashboard (spec 35 F3, spec 54 L1): the tab of an ended run has no bad
     expect(screen.queryByText('Stopped', { selector: '.badge' })).not.toBeInTheDocument();
   });
 
-  // Spec 60 R1/R2. Was (spec 54 L3): 'a start does not clear the tabs of the old run: they stay while "starting"' (the old run's tabs and
-  // data stayed). Now the tablist and the Summary tab stay mounted, the charts carry no samples and the tabs are the stored links.
+  // A start keeps the tablist and the Summary tab mounted, the charts carry no samples and the tabs are the stored links.
   it('while "starting" the tablist and the Summary tab stay, the charts carry no samples of the old run (spec 60)', async () => {
     seedStore({ links: [fx.link(), fx.linkRev()] });
     serveHistory({ startedAt: 1762000000, samples: { '0': fx.historySamples(0, 3), '1': fx.historySamples(0, 3) } });
@@ -782,8 +775,7 @@ describe('Dashboard (spec 35 F3): the radios under the chart', () => {
     expect(api.getDelayHistogram).not.toHaveBeenCalledWith(1);
   });
 
-  // Spec 50 A3. Was: '"%s": an ended link has only Rate and Loss'. An ended link keeps the histogram radio unless its stored config
-  // has delay_stats off.
+  // An ended link keeps the histogram radio unless its stored config has delay_stats off.
   it.each(['stopping', 'stopped', 'failed'] as const)(
     '"%s": an ended link keeps Rate, Delay histogram and Loss',
     async (state) => {
@@ -888,7 +880,6 @@ describe('Dashboard (spec 35 F3): the radios under the chart', () => {
     expect(must(within(card(0)).getAllByRole('img')[0]).getAttribute('aria-label')).toMatch(/loss/i);
   });
 
-  // Spec 50 A3. Was: 'a histogram choice falls back to Rate when the run ends, and nothing is fetched any more'.
   it('a histogram choice stays when the run ends, and it is still fetched', async () => {
     vi.useFakeTimers();
     serveHistory({ startedAt: 1762000000, samples: { '0': fx.historySamples(0, 5), '1': fx.historySamples(0, 5) } });
@@ -908,7 +899,7 @@ describe('Dashboard (spec 35 F3): the radios under the chart', () => {
   });
 });
 
-// ---- F6: what is gone from the dashboard --------------------------------------------------------------------------------
+// ---- what is gone from the dashboard --------------------------------------------------------------------------------
 
 describe('Dashboard (spec 35 F6): no stat list, no pid or lcore, no ports table, no log up front', () => {
   const live = () => {
@@ -1036,7 +1027,7 @@ describe('Dashboard (spec 35 F6): no stat list, no pid or lcore, no ports table,
 /** One macrotask so that pending polls have answered (real timers). */
 const tick0 = () => new Promise((r) => setTimeout(r, 30));
 
-// ---- F7: what stays ------------------------------------------------------------------------------------------------------
+// ---- what stays ------------------------------------------------------------------------------------------------------
 
 describe('Dashboard (spec 35 F7): the guarantees that stay', () => {
   it('a refused start still shows its error although the state changed in the same poll cycle', async () => {

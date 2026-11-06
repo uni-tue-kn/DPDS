@@ -8,20 +8,18 @@ import { renderApp, seedStore, tick } from '../test/helpers';
 import { api, serveHistory } from '../test/mockApi';
 import { must } from '../test/must';
 
-// Spec 46 (user 2026-11-05): the left column of the dashboard's top row looks and reads exactly like P4TG's
-// SendReceiveMonitor + Status (Configuration GUI/src/components/{SendReceiveMonitor,Status}.tsx). Spec:
-// .git/claude-specs/spec46-p4tg-top-row.md. The four formatters are in common/format.test.ts.
+// The left column of the dashboard's top row looks and reads exactly like P4TG's SendReceiveMonitor + Status (Configuration GUI/src/
+// components/{SendReceiveMonitor,Status}.tsx). The four formatters are in common/format.test.ts.
 //
 // Order of the children of `top-pills` (data-testid):  pill-tx, pill-rx, pill-status (only while running), pill-elapsed
 // (elapsed seconds > 0), loss-pct (rx_bps > 0 and 1 - tx_bps / rx_bps > 0.001).
 //
-// CHOICE (how the P4TG look is pinned): INLINE STYLES. P4TG styles with styled-components, jsdom renders no stylesheet, and the
-// spec gives the values per element but no class names. So the tests read `element.style` (React's `style` prop) of the
-// pills and of the arrow icons: background `var(--color-...)`, padding and so on, longhands for the padding (jsdom folds the
-// shorthand), `background` or `background-color`, and white as "#fff" in any spelling. A stylesheet class would fail these
-// tests on purpose. The stylesheet itself has no `.status-pill` rule any more (assets/stylesSpec46.test.ts).
-// CHOICE: `loss-pct` is a span wrapping the icon and the text, as the spec allows; it is a direct child of `top-pills`.
-// CHOICE: before any run both rate pills read "–" (as before spec 46), after a run ended "0 Bit/s (0 Pps)".
+// The P4TG look is pinned with INLINE STYLES: P4TG styles with styled-components and jsdom renders no stylesheet. So the tests read
+// `element.style` (React's `style` prop) of the pills and of the arrow icons: background `var(--color-...)`, padding and so on,
+// longhands for the padding (jsdom folds the shorthand), `background` or `background-color`, and white as "#fff" in any spelling. A
+// stylesheet class would fail these tests on purpose. The stylesheet has no `.status-pill` rule (assets/stylesSpec46.test.ts).
+// `loss-pct` is a span wrapping the icon and the text; it is a direct child of `top-pills`.
+// Before any run both rate pills read "–", after a run ended "0 Bit/s (0 Pps)".
 
 const STATES: EmulationState[] = ['stopped', 'starting', 'running', 'stopping', 'failed'];
 const ZERO_COUNTERS = {
@@ -136,8 +134,8 @@ describe('Dashboard (spec 46): the TX and RX pills', () => {
     dir(1, { rx_bps: 3.15e9, tx_bps: 2.2e9, rx_pps: 2.71e6, tx_pps: 2.41e6 }),
   ];
 
-  // User 2026-11-05: P4TG's pills show the live L1 rates (SendReceiveMonitor: tx_rate_l1 / rx_rate_l1), so DPDS shows
-  // L1 = L2 + 20 B x 8 x pps too: RX 9.25e9 + 7.31e6 x 160 = 10.4196e9, TX 7.25e9 + 6.31e6 x 160 = 8.2596e9.
+  // P4TG's pills show the live L1 rates (SendReceiveMonitor: tx_rate_l1 / rx_rate_l1), so DPDS shows L1 = L2 + 20 B x 8 x pps too:
+  // RX 9.25e9 + 7.31e6 x 160 = 10.4196e9, TX 7.25e9 + 6.31e6 x 160 = 8.2596e9.
   it('read "<formatBits> (<formatPacketRate>)" of the summed L1 rates, with no "RX"/"TX" label', async () => {
     await runWith(LIVE);
     await waitFor(() => expect(pillText('pill-rx')).toBe('10.42 Gbit/s (7.31 Mpps)'));
@@ -379,7 +377,7 @@ describe('Dashboard (spec 46): the duration', () => {
     expect(screen.queryByTestId('pill-elapsed')).not.toBeInTheDocument();
   });
 
-  // Spec 46 item 4 (amended): like P4TG, a stopped or failed DPDS shows no duration. Was: 'keeps the frozen time after the run ended'.
+  // Like P4TG, a stopped or failed DPDS shows no duration.
   it.each(['stopped', 'failed'] as const)(
     'is hidden once the emulation is "%s", although the stats carry the frozen time',
     async (state) => {

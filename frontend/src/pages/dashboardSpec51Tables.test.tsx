@@ -20,9 +20,8 @@ import { renderApp, seedLinks, tick } from '../test/helpers';
 import { api, serveHistory } from '../test/mockApi';
 import { must } from '../test/must';
 
-// Spec 51 T2 (user 2026-11-05: "a table below the rate diagram and above the donuts ... TX L1, RX L1, TX L2, RX L2 / Lost Frames,
-// Frame Loss Ratio, Out of Order. Same setting/UI/table as P4TG"). Source of truth: P4TG StatView.tsx ~550-680. Contract:
-//   rate col   (spec 53 B: both tables sit in ONE `.row.mb-3`, rates left, loss right, each in a `.col-12.col-md-6`; they stack below md)
+// The rate and loss tables below the rate diagram and above the donuts, like P4TG's StatView.tsx. Contract:
+//   rate col   (both tables sit in ONE `.row.mb-3`, rates left, loss right, each in a `.col-12.col-md-6`; they stack below md)
 //              `.col-12.col-md-6` > `table.table.table-striped.table-bordered.table-hover.table-sm.mt-3.mb-3`,
 //              `thead.table-dark`, `th.col-3` x4: TX L1, RX L1, TX L2, RX L2; one body row of formatBits(...).
 //              L2 = the link's tx_bps / rx_bps; L1 = L2 + 20 B x 8 x pps of the same side (tx_pps for TX, rx_pps for RX).

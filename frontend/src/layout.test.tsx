@@ -135,7 +135,7 @@ describe('dark mode', () => {
   });
 });
 
-// v16: P4TG-style API documentation link (a book icon at the bottom of the sidebar, opens the controller's Swagger UI).
+// API documentation link (a book icon at the bottom of the sidebar, opens the controller's Swagger UI).
 describe('sidebar API documentation link (v16)', () => {
   const docs = () => screen.getByRole('link', { name: 'API documentation' });
 

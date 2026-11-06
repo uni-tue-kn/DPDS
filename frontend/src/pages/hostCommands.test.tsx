@@ -9,40 +9,35 @@ import * as fx from '../test/fixtures';
 import { renderApp, seedStore } from '../test/helpers';
 import { must } from '../test/must';
 
-// Spec 33 (frontend, items 9-10). User decision 2026-11-04: DPDS never applies host tuning; hints only SUGGEST the commands
-// an administrator runs as root. Contract pinned here:
+// DPDS never applies host tuning; hints only SUGGEST the commands an administrator runs as root. Contract pinned here:
 // - A hint with a non-empty `commands: string[]` shows, inside its own listitem, a button named exactly
 //   `Commands for <hint title>` (terminal icon) and a button named exactly `Copy commands`, both visible without any
 //   interaction. A hint without `commands` (absent or empty array) has neither, nor any other button.
 // - Hovering or keyboard-focusing the Commands button shows ONE role=tooltip with every command of THAT hint, each inside
 //   a monospace block (`code` or `pre`), and the note "Run as root on the DPDS host."; moving away or blurring hides it.
-//   CHOICE: the note is part of the tooltip (the brief says so), not pinned to be visible without the tooltip.
+//   The note is part of the tooltip, not pinned to be visible without it.
 // - "Copy commands" calls `navigator.clipboard.writeText` ONCE with the commands joined by "\n" (no trailing newline) and
-//   sends no request and writes no local document. CHOICE: the button is in the listitem, not in the tooltip (a tooltip
-//   closes when the pointer leaves it, a button inside could not be reached by keyboard).
+//   sends no request and writes no local document. The button is in the listitem, not in the tooltip (a tooltip closes when
+//   the pointer leaves it, a button inside could not be reached by keyboard).
 // - No Apply button, no dialog, no `applyHostAction`, no `/host/actions` anywhere in the frontend source, and no
-//   apply/undo/revert/reset control. The page does not read the emulation state any more (`api.getEmulation` is not called).
-// Spec 33b (frontend item 1), review of 378b16a: commands must be readable and copyable on the plain-http deployment.
+//   apply/undo/revert/reset control. The page does not read the emulation state (`api.getEmulation` is not called).
 // - The tooltip's root element (role=tooltip) carries the class `commands-tip`; the stylesheet gives it a wide max-width and
 //   a wrapping `pre` (pinned in `assets/stylesSpec33b.test.ts`, since jsdom renders no CSS).
 // - When `navigator.clipboard` is missing, `writeText` rejects or `writeText` throws, "Copy commands" reveals, inside the
 //   hint's own list item, ONE `pre` (outside any tooltip, not hidden, not user-select:none) whose text is exactly the
-//   commands joined by "\n", plus the text FALLBACK_TEXT in an element of its own. No "Copied" then.
+//   commands joined by "\n", plus the text FALLBACK_TEXT in an element of its own. No "Copied" then. A second click on Copy
+//   keeps the fallback revealed (no toggle); the fallback adds no button.
+// - The fallback `pre` has the class FALLBACK_CLASS (`commands-fallback`), which the stylesheet gives `white-space: pre-wrap` and
+//   a word-breaking rule like the tooltip's `pre` (pinned in `assets/stylesSpec33b.test.ts`); Bootstrap's `pre` alone would
+//   scroll sideways.
 // - On success the list item gets a role=status element with the text "Copied" (not before the write resolved), which is
 //   gone after about 2 s (present at 1 s, gone at 3 s, timer restarts on a second copy). No fallback then.
-// CHOICES of the tester (spec silent): the feedback sits in the hint's list item; per-hint state (another hint shows
-// nothing); a second click on Copy keeps the fallback revealed (no toggle); a synchronous throw of `writeText` counts as a
-// failure; the fallback adds no button that the "applies nothing" rules would forbid.
-// Spec 33c (frontend item 5), review of 5b5d931:
-// - The fallback `pre` has the class FALLBACK_CLASS, which the stylesheet gives `white-space: pre-wrap` and a word-breaking
-//   rule like the tooltip's `pre` (pinned in `assets/stylesSpec33b.test.ts`); Bootstrap's `pre` alone would scroll sideways.
 // - Every hint with commands has exactly ONE always-mounted `role=status` element in its list item (found with
 //   `within(li).getByRole('status')`), empty until a copy succeeded: screen readers announce changes of a live region, not
 //   a region inserted together with its text. Its text is exactly "Copied" for 2 s and then empty again; it is the same DOM
-//   node before, during and after. A hint without commands has none.
-// CHOICES of the tester: the class name `commands-fallback` (the stylesheet test needs a name); a hint in the fallback state
-// still has exactly one status element (the explanation is not a second live region); the status is not inside the tooltip.
-// Not pinned: the icon class, the tooltip placement.
+//   node before, during and after. A hint without commands has none. A hint in the fallback state still has exactly one status
+//   element (the explanation is not a second live region); the status is not inside the tooltip.
+// The feedback is per hint (another hint shows nothing). Not pinned: the icon class, the tooltip placement.
 
 const NOTE = 'Run as root on the DPDS host.';
 const FALLBACK_CLASS = 'commands-fallback';
@@ -160,7 +155,7 @@ describe('Host hints: the commands buttons', () => {
     renderApp('/hints');
     await screen.findByRole('region', { name: /^Errors/ });
     expect(screen.queryAllByRole('button', { name: /commands/i })).toEqual([]);
-    // Spec 34: the Recheck button next to the page title is the only button of the page (pages/hintsRecheck.test.tsx).
+    // The Recheck button next to the page title is the only button of the page (pages/hintsRecheck.test.tsx).
     expect(
       within(pageOf())
         .queryAllByRole('button')

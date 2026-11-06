@@ -15,13 +15,13 @@ import type { LinkStats } from './linkStats';
 
 type View = 'rate' | 'histogram' | 'iat' | 'loss';
 
-/** The most points a time chart plots, like P4TG's `time_statistics?limit=100`. */
+/** The most points a time chart plots. */
 const MAX_POINTS = 100;
 
-/** P4TG's width to height of the line charts. */
+/** Width to height of the line charts. */
 const LINE_ASPECT = 6;
 
-/** The units of the rate chart's y axis, largest first; with no traffic it is Gbit/s, like P4TG. */
+/** The units of the rate chart's y axis, largest first; with no traffic it is Gbit/s. */
 const RATE_AXIS_UNITS = [
   { label: 'Gbit/s', perGbit: 1 },
   { label: 'Mbit/s', perGbit: 1e3 },
@@ -43,12 +43,11 @@ const COUNTS = [
 ];
 
 /**
- * The chart area of one link: the chart, the radios below it, P4TG's rate and loss tables and a row of the loss donut and the frame
- * size donut. `live` carries the live delay numbers; a
- * link of an ended run has none, but keeps its histogram (the controller answers the run's last one) when `endedStats` says
- * the run had delay statistics. A link with delay statistics off has no histogram (delay or IAT).
- * Without `dir` it is the Summary of all links: `history` and `stats` are their aggregates, and the histogram radio is
- * there but disabled (a histogram is per link), like the IAT one.
+ * The chart area of one link: the chart, the radios below it, the rate and loss tables and a row of the loss donut and the frame
+ * size donut. `live` carries the live delay numbers; a link of an ended run has none, but keeps its histogram (the controller
+ * answers the run's last one) when `endedStats` says the run had delay statistics. A link with delay statistics off has no
+ * histogram (delay or IAT). Without `dir` it is the Summary of all links: `history` and `stats` are their aggregates, and the
+ * histogram radio is there but disabled (a histogram is per link), like the IAT one.
  */
 export default function LinkCharts({
   dir,
@@ -99,7 +98,7 @@ export default function LinkCharts({
   // The history stays complete; the time charts plot at most MAX_POINTS of it.
   const points = useMemo(() => selectTimeKeys(history, MAX_POINTS), [history]);
   const labels = useMemo(() => points.map((s) => secondsToTime(Math.floor(s.t_ms / 1000))), [points]);
-  // The y axis shows one unit, like P4TG's "Gbit/s"; a link slower than that gets the largest unit its peak reaches.
+  // The y axis shows one unit; a link slower than that gets the largest unit its peak reaches.
   const rateUnit = useMemo(() => {
     const peak = Math.max(
       0,

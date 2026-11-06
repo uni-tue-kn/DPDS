@@ -1,8 +1,8 @@
-//! The single shutdown flag: the signal handler sets it, every worker loop
-//! reads it at the top of every iteration, the main lcore polls it.
+//! The shutdown flag: the signal handler sets it, every worker loop and the
+//! main lcore read it.
 //!
-//! All accesses are `Relaxed`: the flag publishes no data, each worker only
-//! needs to see it eventually.
+//! Accesses are `Relaxed`: the flag publishes no data, workers only need to see
+//! it eventually.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -13,7 +13,7 @@ impl Quit {
         Quit(AtomicBool::new(false))
     }
 
-    /// Asks everything to stop (async-signal-safe: one atomic store).
+    /// Async-signal-safe: one atomic store.
     pub fn request(&self) {
         self.0.store(true, Ordering::Relaxed);
     }
@@ -30,5 +30,5 @@ impl Default for Quit {
     }
 }
 
-/// The process-wide flag used by the binary.
+/// The process-wide flag.
 pub static QUIT: Quit = Quit::new();

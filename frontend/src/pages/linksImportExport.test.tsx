@@ -8,11 +8,10 @@ import * as fx from '../test/fixtures';
 import { rawStore, renderApp, seedRaw, seedStore, storedDoc } from '../test/helpers';
 import type { StoredDoc } from '../test/helpers';
 
-// Contract: the "v27" and "spec41" blocks of src/test/helpers.tsx. Import and Export of the LINKS happen in the browser on the
-// local document (key dpds.config.v1) without any REST call to import or export; since spec 41 they live in a toolbar at the top,
-// right-aligned, of the Links page (the Settings page is gone). The file is { version: 1, links }: a `settings` member is ignored. jsdom has no URL.createObjectURL and no Blob.text(); the
-// tests stub the former and the implementation must read the chosen file with FileReader. Downloads are observed through
-// HTMLAnchorElement.prototype.click.
+// Import and Export of the LINKS happen in the browser on the local document (key dpds.config.v1) without any REST call; they live
+// in a toolbar at the top, right-aligned, of the Links page. The file is { version: 1, links }: a `settings` member is ignored.
+// jsdom has no URL.createObjectURL and no Blob.text(); the tests stub the former and the implementation must read the chosen file
+// with FileReader. Downloads are observed through HTMLAnchorElement.prototype.click.
 const BLOB_URL = 'blob:http://localhost/dpds-links-test';
 
 let created: Blob[];
@@ -77,7 +76,7 @@ const alertTexts = () =>
     .join(' | ');
 
 const LINKS = (): Link[] => [{ ...fx.link(), avg_frame_size_byte: 512 }, fx.linkRev({ id: 3 })];
-/** A stored document with links (spec 41: nothing but `version` and `links`). */
+/** A stored document with links (nothing but `version` and `links`). */
 const stored = (over: Partial<StoredDoc> = {}) => ({
   version: 1 as const,
   links: LINKS(),
@@ -213,7 +212,7 @@ describe('Links: export links', () => {
     const user = await open();
     await user.click(exportBtn());
     await waitFor(() => expect(clicks).toHaveLength(1));
-    // the sidebar's release check (spec18) may fetch GitHub; only the controller API is excluded here
+    // the sidebar's release check may fetch GitHub; only the controller API is excluded here
     expect(vi.mocked(fetch).mock.calls.filter((c) => String(c[0]).includes('/api/'))).toEqual([]);
   });
 
@@ -248,7 +247,7 @@ describe('Links: export links', () => {
   });
 });
 
-// ---- spec 53 A: the IAT histogram travels with the link ---------------------------------------------------------------------
+// ---- the IAT histogram travels with the link ---------------------------------------------------------------------
 
 const IAT_LINK = (): Link =>
   fx.link({
@@ -334,7 +333,7 @@ describe('Links: import links', () => {
     await user.click(await confirmButton());
     await waitFor(() => expect(storedDoc().links).toEqual(newLinks()));
     expect(onlyKeys(storedDoc())).toEqual(['links', 'version']);
-    // the sidebar's release check (spec18) may fetch GitHub; only the controller API is excluded here
+    // the sidebar's release check may fetch GitHub; only the controller API is excluded here
     expect(vi.mocked(fetch).mock.calls.filter((c) => String(c[0]).includes('/api/'))).toEqual([]);
   });
 
@@ -379,7 +378,7 @@ describe('Links: import links', () => {
     expect(onlyKeys(storedDoc())).toEqual(['links', 'version']);
   });
 
-  // spec 41 F3: a `worker` member of an imported link is ignored whatever its value, and never written back
+  // a `worker` member of an imported link is ignored whatever its value, and never written back
   it.each([
     ['worker 5', 5],
     ['worker 0', 0],
@@ -576,10 +575,8 @@ describe('Links: import is possible whatever the emulation does (nothing is stor
   });
 });
 
-// ---- spec27b ------------------------------------------------------------------------------------------------------------------
-
-// Item 1 (import side): a link is valid only if the link editor would accept it unchanged. Item 2: duplicate ids and names are
-// refused, and an import error names the first offending link (its position, its name when it has one) and what is wrong.
+// A link is valid only if the link editor would accept it unchanged; duplicate ids and names are refused; an import error names the
+// first offending link (its position, its name when it has one) and what is wrong.
 /** The error text without the words "version 1" (they would match a position by accident). */
 const positionText = (text: string) => text.replace(/version\s*1/gi, '');
 
@@ -704,7 +701,7 @@ describe('spec27b: import refuses links the editor would not accept', () => {
   });
 });
 
-// Item 5: Export on an unreadable store is the rescue path: the stored text, unchanged, under the same file name.
+// Export on an unreadable store is the rescue path: the stored text, unchanged, under the same file name.
 describe('spec27b: Export on a corrupt store downloads the stored text', () => {
   const brokenLink = { ...fx.link(), config: {} };
   const TEXTS: [string, string][] = [
@@ -757,7 +754,7 @@ describe('spec27b: Export on a corrupt store downloads the stored text', () => {
   });
 });
 
-// Item 7: the date in the file name is the local one.
+// The date in the file name is the local one.
 describe('spec27b: the export file name carries the local date', () => {
   const original = process.env.TZ;
   afterEach(() => {

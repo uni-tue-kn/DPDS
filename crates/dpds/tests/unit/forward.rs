@@ -4,7 +4,7 @@
 //! `worker.tx_port()`; the egress port is fixed, the mbuf `port` field is
 //! never written.
 //!
-//! One iteration, in observable order (spec 57: TX staging):
+//! One iteration, in observable order:
 //!  1. `quit` is read first;
 //!  2. ONE clock read `now` (also in the iteration that sees quit). The only other read
 //!     is `tx_ns` of the delay-statistics instance (telemetry build, delay stats on),
@@ -335,7 +335,7 @@ fn the_staging_constants_are_the_documented_ones() {
     assert_eq!(TX_MAX_WAIT_NS, 10_000.0);
 }
 
-// ── staging (spec 57 T2, T3, T5) ─────────────────────────────────────
+// ── staging ─────────────────────────────────────
 
 #[test]
 fn a_full_staging_array_of_64_is_sent_at_once_whatever_the_age() {
@@ -501,7 +501,7 @@ fn quit_does_not_flush_the_staging_and_the_loop_ends_only_when_nothing_is_staged
     assert_eq!(o.rx_calls.len(), 1);
 }
 
-// ── the mbuf's hash field (spec 57 T7) ───────────────────────────────
+// ── the mbuf's hash field ───────────────────────────────
 
 #[test]
 fn the_instance_without_delay_statistics_never_touches_the_mbuf_hash() {

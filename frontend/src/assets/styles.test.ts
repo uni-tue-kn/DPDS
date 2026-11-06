@@ -45,7 +45,7 @@ describe('index.css theme variables', () => {
   });
 });
 
-// v16: required fields carry a visible red marker (class `required-marker`, see the v16 block of test/helpers.tsx).
+// required fields carry a visible red marker (class `required-marker`).
 describe('index.css required marker', () => {
   it('.required-marker is drawn in the theme red (var(--color-primary)) and is not hidden', () => {
     const rule = block(/\.required-marker\s*\{/);

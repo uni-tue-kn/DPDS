@@ -1,10 +1,10 @@
-// Spec 59 F1-F4: App swaps the routed page for P4TG's Offline page while the controller is unreachable.
-// - F1: the Sidebar's `/api/online` poll rejects with a non-ApiError (network failure) -> offline. An ApiError (any HTTP status) does not.
-// - F2: `<main>` shows, instead of the routed page, a Row.text-center holding `<i class="bi bi-wifi-off" aria-hidden>` (fontSize 100px,
+// App swaps the routed page for the Offline page while the controller is unreachable.
+// - The Sidebar's `/api/online` poll rejects with a non-ApiError (network failure) -> offline. An ApiError (any HTTP status) does not.
+// - `<main>` shows, instead of the routed page, a Row.text-center holding `<i class="bi bi-wifi-off" aria-hidden>` (fontSize 100px,
 //   marginTop calc(30vh)) and `<p>DPDS device not reachable</p>`. Footer, sidebar ("Offline") and the alerts above stay.
-// - F3: while offline `api.getOnline()` is polled every 2000 ms, first call at once; a resolved answer returns to the routed page at the same URL.
-//   (The Sidebar polls every 5000 ms too: call counts below are taken in windows that end before its next poll at t = 5000.)
-// - F4: online until the first poll settles (no flash of the offline page).
+// - While offline `api.getOnline()` is polled every 2000 ms, first call at once; a resolved answer returns to the routed page at the
+//   same URL. (The Sidebar polls every 5000 ms too: call counts below are taken in windows that end before its next poll at t = 5000.)
+// - Online until the first poll settles (no flash of the offline page).
 import { screen, within } from '@testing-library/react';
 import * as fx from './test/fixtures';
 import { deferred, renderApp, seedRaw, tick } from './test/helpers';

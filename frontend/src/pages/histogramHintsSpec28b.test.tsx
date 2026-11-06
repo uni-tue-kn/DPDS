@@ -4,15 +4,14 @@ import { linkPage } from '../test/configPages';
 import { numberField, section, typeInto, unitOf } from '../test/helpers';
 import { must } from '../test/must';
 
-// Spec 28b item 6 (spec: scratchpad/spec28b.md): two fixes to the histogram hints of histogramHints.test.tsx.
-//   a. The suggestion is not shown when lo is 0 and hi already equals the suggested value (applying it would change
-//      nothing). CHOICES: "lo is 0" means a typed 0, in any unit; an EMPTY lo is not 0 (the suggestion would still fill it in,
-//      so it stays); the comparison is in ns, so 4.096 µs equals 4096 ns; when the suggestion is not shown and the bins are
-//      not aligned either, no hint and no button appear at all.
-//   b. A power-of-two bin width below 1 ns (2^-k ns) counts as binary-aligned and is shown as "(2^-2 ns)", with the width in
-//      the hi field's unit like the others ("0.25 ns each", "0.00025 µs each"). lo and hi are whole ns, so such a width
-//      needs more bins than ns in the range.
-// The changed expectation in histogramHints.test.tsx is its test "with bins or lo missing the check cannot apply".
+// Two refinements of the histogram hints of histogramHints.test.tsx:
+//   a. The suggestion is not shown when lo is 0 and hi already equals the suggested value (applying it would change nothing).
+//      "lo is 0" means a typed 0, in any unit; an EMPTY lo is not 0 (the suggestion would still fill it in, so it stays); the
+//      comparison is in ns, so 4.096 µs equals 4096 ns; when the suggestion is not shown and the bins are not aligned either, no hint
+//      and no button appear at all.
+//   b. A power-of-two bin width below 1 ns (2^-k ns) counts as binary-aligned and is shown as "(2^-2 ns)", with the width in the hi
+//      field's unit like the others ("0.25 ns each", "0.00025 µs each"). lo and hi are whole ns, so such a width needs more bins than
+//      ns in the range.
 
 const stats = () => section('Statistics');
 const text = () => (stats().textContent ?? '').replace(/\s+/g, ' ');
@@ -98,7 +97,7 @@ describe('histogram hints (spec 28b item 6a): no suggestion that changes nothing
     await user.click(must(useSuggestion(), 'Use suggestion'));
     expect(numberField(stats(), 'Histogram lo')).toHaveValue(0);
     expect(numberField(stats(), 'Histogram hi')).toHaveValue(4096);
-    noRangeHint(); // now lo is 0 and hi the suggested value
+    noRangeHint(); // lo is 0 and hi the suggested value
   });
 
   it('after "Use suggestion" with bins that do not align, the suggestion is gone (it would change nothing now)', async () => {

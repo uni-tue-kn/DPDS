@@ -6,11 +6,9 @@ use std::{error, fmt};
 pub struct DpdkError(pub i32);
 
 impl DpdkError {
-    /// Build an error from the calling lcore's `rte_errno`.
-    ///
-    /// Some DPDK APIs (`rte_eal_init`, `rte_pktmbuf_pool_create`, …) signal
-    /// failure via a sentinel return value and report the cause in
-    /// `rte_errno` instead of the return code.
+    /// Builds an error from the calling lcore's `rte_errno`, for DPDK APIs
+    /// (`rte_eal_init`, `rte_pktmbuf_pool_create`, ...) that report the cause
+    /// there instead of in the return code.
     pub(crate) fn from_rte_errno() -> Self {
         DpdkError(-unsafe { dpdk_sys::rte_errno_value() })
     }
@@ -18,9 +16,8 @@ impl DpdkError {
 
 impl fmt::Display for DpdkError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // rte_strerror expects a positive errno value and also understands
-        // DPDK-specific codes (E_RTE_*). It is safe before rte_eal_init and
-        // returns a pointer to a per-thread static buffer.
+        // rte_strerror takes a positive errno value, understands DPDK codes
+        // (E_RTE_*), is safe before rte_eal_init and returns a per-thread static buffer.
         let msg = unsafe { CStr::from_ptr(dpdk_sys::rte_strerror(self.0.abs())) };
         write!(f, "{} (code {})", msg.to_string_lossy(), self.0)
     }

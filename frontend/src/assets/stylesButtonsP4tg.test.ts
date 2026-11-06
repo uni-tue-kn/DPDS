@@ -1,8 +1,7 @@
-// User 2026-11-05: the Start, Stop and Restart buttons in "the exact colours P4TG uses". P4TG (Configuration GUI
-// src/assets/index.scss, Bootstrap 5.3.8 like DPDS) overrides `.btn-primary` and `.btn-primary:disabled` to
-// --color-okay #27ae60 (hover --color-okay-hover #20864b) and `.btn-danger` to background --color-primary #e74c3c (its border,
-// hover and disabled colours stay Bootstrap's). jsdom renders no CSS, so the stylesheet itself is pinned.
-// CHOICE: DPDS sets the colours through Bootstrap's --bs-btn-* variables; the pressed (active) primary uses the hover colour.
+// The Start, Stop and Restart buttons use P4TG's colours: `.btn-primary` and `.btn-primary:disabled` take --color-okay #27ae60
+// (hover --color-okay-hover #20864b), `.btn-danger` takes the background --color-primary #e74c3c (its border, hover and disabled
+// colours stay Bootstrap's). DPDS sets them through Bootstrap's --bs-btn-* variables; the pressed (active) primary uses the hover
+// colour. jsdom renders no CSS, so the stylesheet itself is pinned.
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 

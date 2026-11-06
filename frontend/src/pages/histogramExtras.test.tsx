@@ -7,16 +7,11 @@ import { renderApp, tick } from '../test/helpers';
 import { api } from '../test/mockApi';
 import { expectBars } from '../test/probabilities';
 
-// Spec 35 F4 (user 2026-11-05) removes the histogram extras of spec 8 from the dashboard: the window select, the log-scale
-// toggle, the expected-distribution overlay, the percentile list and the under/overflow text. Removed from this file, with the
-// reason: 'window selector' (the histogram is always requested for the whole run, `getDelayHistogram(dir)` with no window),
-// 'percentiles' (the list p50..p99.9 with clamp markers; the dashed annotation lines stay and are pinned in
-// dashboardP4tg.test.tsx), 'log scale' (the y axis is linear), 'expected-distribution overlay' (one dataset, the bars) and
-// 'chart registration' (LineController was needed for the bar + line overlay; the line charts register their own).
-// Spec 36: the mean delay and jitter sit in the histogram tables (histogramTables.test.tsx); 'p99.9' is no longer checked absent, as
-// the Percentiles table has that header (the old list is still pinned absent by its test id).
-// What stays here: the one-argument requests, that the chart follows the reply, and that an older controller's reply (without
-// the optional extras) still renders.
+// The histogram is always requested for the whole run, `getDelayHistogram(dir)` with no window; it has no window select, log-scale
+// toggle, expected-distribution overlay, percentile list or under/overflow text (the dashed annotation lines are pinned in
+// dashboardP4tg.test.tsx; the mean delay and jitter sit in the histogram tables, histogramTables.test.tsx).
+// What is pinned here: the one-argument requests, that the chart follows the reply, and that a reply without the optional extras
+// still renders.
 
 interface ChartData {
   labels: string[];

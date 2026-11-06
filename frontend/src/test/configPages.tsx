@@ -1,7 +1,6 @@
-// The page that hosts the config form (`ConfigFieldset`): the link editor. Spec27 removed the preset editor, so `PAGES` has one
-// entry; the v16 tests (linkUnits / linkRequired ...) still run through this harness.
-// v22: nothing is requested from the controller any more; "stored" means seeded into the local document, and what the page
-// created or updated is read back from it. Stages (delayer, limiter, dropper) start as "Add ..." buttons.
+// The page that hosts the config form (`ConfigFieldset`): the link editor, the only entry of `PAGES`. "Stored" means seeded into
+// the local document, and what the page created or updated is read back from it. Stages (delayer, limiter, dropper) start as
+// "Add ..." buttons.
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { UserEvent } from '@testing-library/user-event';
@@ -16,7 +15,7 @@ export interface ConfigPage {
   outerName: string;
   /** A new, untouched form: Buffer and Statistics, the three stages not added. */
   openNew(): Promise<UserEvent>;
-  /** A new form with delayer, limiter and dropper added (their v16 default values). */
+  /** A new form with delayer, limiter and dropper added (their default values). */
   openFull(): Promise<UserEvent>;
   /** The edit form (id 1) of a stored link whose config is `config`; it opens with exactly its present stages. */
   openStored(config: ConfigDto): Promise<UserEvent>;

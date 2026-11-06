@@ -1,10 +1,5 @@
-//! Tests for `Config::from_file` (the Rust replacement of the C-string
-//! `read_config`).
-//!
-//! API assumed:
-//! - `dpds_core::Config::from_file(path: impl AsRef<Path>) -> Result<Config, dpds_core::ConfigError>`
-//! - `dpds_core::ConfigError: std::error::Error` (Display must be non-empty)
-//! - `Config`/`DelayerConfig`/`LimiterConfig` keep their `pub` fields and serde format.
+//! Tests for `Config::from_file`: `ConfigError` is a `std::error::Error` with a
+//! non-empty Display, and the config types keep their `pub` fields and serde format.
 
 #![cfg(feature = "json")]
 
@@ -104,9 +99,8 @@ fn from_file_parses_the_example_config_shipped_with_the_crate() {
     assert!(rate.is_finite() && rate >= 1.0, "example rate {rate}");
 }
 
-/// Spec 22: DPDS ships no default configuration. The two files of the repository root were
-/// deleted (a controller sends the whole configuration with every start; `dpds` examples write
-/// their config inline). `config.example.json` above is dpds-core's own library example, kept.
+/// DPDS ships no default configuration at the repository root (a controller sends the whole
+/// configuration with every start). `config.example.json` is dpds-core's own library example.
 #[test]
 fn the_workspace_root_ships_no_default_config() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -175,9 +169,9 @@ fn from_file_accepts_an_integer_json_number_for_the_rate() {
     assert_eq!(cfg.delayer.initialization_rate_pps, 3_000_000.0);
 }
 
-// `limit_bit` is gone: the limiter's limit is derived from the buffer capacity.
-// A leftover field must not be silently ignored (the user would think it still
-// takes effect), so the limiter section rejects it and the error names it.
+// The limiter's limit is derived from the buffer capacity. A `limit_bit` field
+// must not be silently ignored, so the limiter section rejects it and the error
+// names it.
 
 #[test]
 fn from_file_rejects_a_leftover_limit_bit_naming_the_field() {

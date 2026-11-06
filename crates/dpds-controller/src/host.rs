@@ -97,8 +97,7 @@ pub struct CommandOutput {
     pub stderr: String,
 }
 
-/// How the controller runs a host tool. Reads of sysfs and procfs stay plain `fs`; the controller
-/// only ever asks tools for their state and never changes the host. Tests replace it.
+/// How the controller runs a host tool. Reads of sysfs and procfs stay plain `fs`. Tests replace it.
 pub trait Exec: Send + Sync + std::fmt::Debug {
     /// Runs `argv[0]` with the other elements as arguments (no shell), waits at most `timeout`,
     /// kills the process (its whole process group) and reaps it when that runs out and returns

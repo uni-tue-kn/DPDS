@@ -1,16 +1,16 @@
-//! The per-NIC hints (spec 33), one set for every PCI NIC of the posted links: Ethernet flow
-//! control, PCIe MaxReadReq, the mlx5 port buffer and the mlx5 firmware settings. Each one reads
-//! its state with a read-only tool query or a file and, when it is not tuned, lists the root
-//! commands that would tune it. The commands are display strings; DPDS never runs them.
+//! The per-NIC hints for every PCI NIC of the posted links: Ethernet flow control, PCIe
+//! MaxReadReq, the mlx5 port buffer and the mlx5 firmware settings. Each reads its state with a
+//! read-only tool query or a file and, when not tuned, lists the root commands that would tune
+//! it. The commands are display strings; DPDS never runs them.
 //!
 //! The only tools that run are `ethtool --json -a <netdev>` (or the text form of an old ethtool),
 //! `dcb -j buffer show dev <netdev>` and `mstconfig|mlxconfig -d <bdf> -e -j <file> q`, each with
 //! a timeout, and none while an emulation is starting, running or stopping. A missing tool is a
 //! hint naming its package, never a failure.
 //!
-//! The firmware query is slow, so a successful result is kept in memory (`FirmwareCache`, one per
-//! router, never on disk) until the controller restarts or a recheck drops it. A cached result
-//! runs no tool, costs no budget time and is used while an emulation runs.
+//! The firmware query is slow, so a successful result is kept in memory (`FirmwareCache`, never
+//! on disk) until the controller restarts or a recheck drops it. A cached result runs no tool,
+//! costs no budget time and is used while an emulation runs.
 
 use std::collections::HashMap;
 use std::fs;
@@ -26,7 +26,7 @@ use crate::hints::{escape_control, hint, nic_label, Ctx, Hint, Level};
 
 /// The PCIe maximum, the target of MaxReadReq.
 const MAX_READ_REQ_TARGET: u32 = 4096;
-/// preof's firmware values (no tool reports a device maximum: the firmware clamps silently).
+/// Firmware targets taken from preof (no tool reports a device maximum: the firmware clamps silently).
 const FW_MAX_ACC_OUT_READ: u64 = 256;
 const FW_CQE_COMPRESSION: u64 = 1;
 /// How long one tool call may take before it is killed.

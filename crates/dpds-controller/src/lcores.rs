@@ -1,4 +1,4 @@
-//! Lcore assignment (B7): one main lcore, one worker lcore per link.
+//! Lcore assignment: one main lcore, one worker lcore per link.
 
 use std::fmt;
 

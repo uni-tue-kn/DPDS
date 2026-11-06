@@ -1,79 +1,25 @@
-//! The `--links <file>` file (v2, directed links): parsing, validation and
-//! the numbering of the directions.
+//! The `--links <file>` file (directed links): parsing, validation and the numbering of the
+//! directions.
 //!
-//! # Test-facing API (module `dpds::links`)
+//! A link is ONE direction: packets arriving on `ingress` leave on `egress` with the link's
+//! config. `ingress == egress` (a hairpin) is allowed. Across all links a port appears at most
+//! once as ingress and at most once as egress. Direction index = link index (file order).
 //!
-//! A link is ONE direction: packets arriving on `ingress` leave on `egress`
-//! with the link's one config. `ingress == egress` (a hairpin on one port) is
-//! allowed. Across all links a port appears at most once as ingress and at
-//! most once as egress. Direction index = link index (file order).
+//! `parse_links` rejects: invalid JSON, a missing key (`config.delayer.initialization_rate_pps`
+//! included), no link, an unknown key at any level, a bad name (empty, over `MAX_NAME_LEN` = 32,
+//! or a char outside [A-Za-z0-9_.-]), a duplicate name, an empty ingress or egress, a port that
+//! is the ingress (egress) of two links, `lcore` on some links only or twice, a bad `histogram`
+//! (`bins` not in 1..=4096, negative `lo_ns`/`hi_ns`, `lo_ns >= hi_ns`), and a `/dpds/ports`
+//! reply over 256 keys (`3 + 5 * ports + 10 * links`). `lcore`, `histogram` and `delay_stats`
+//! are optional.
 //!
-//! ```text
-//! pub const MAX_NAME_LEN: usize = 32;
-//! pub struct LinkSpec { pub name: String, pub ingress: String, pub egress: String,
-//!                       pub config: dpds_core::Config, pub lcore: Option<u32>,
-//!                       pub histogram: dpds::delay_stats::HistogramSpec,
-//!                       pub delay_stats: bool }
-//! pub fn parse_links(json: &str) -> Result<Vec<LinkSpec>, LinksError>
-//!     JSON `{ "links": [ { "name", "ingress", "egress", "config": {..},
-//!                          "lcore": 3, "histogram": {"bins", "lo_ns", "hi_ns"},
-//!                          "delay_stats": true }, .. ] }`; `lcore`, `histogram`
-//!     (and each of its fields) and `delay_stats` are optional (defaults: None,
-//!     `HistogramSpec::default()`, true). File-level validation:
-//!       - invalid JSON / missing "links" / a bad Config / a missing required key
-//!         (the error names the key; `config.delayer.initialization_rate_pps` is
-//!         required too)                           -> Err
-//!       - no link at all (`"links": []`)                      -> Err
-//!       - an unknown key at any level (`#[serde(deny_unknown_fields)]`), in
-//!         particular the v1 keys `ports`, `configs`, `lcores`, `histograms`
-//!                                                              -> Err naming the key
-//!       - name empty, longer than 32, or a char outside [A-Za-z0-9_.-] -> Err naming the link
-//!       - duplicate name                                       -> Err naming the name
-//!       - an empty ingress or egress string                    -> Err naming the link
-//!       - a port that is the ingress of two links              -> Err naming the port and "ingress"
-//!       - a port that is the egress of two links               -> Err naming the port and "egress"
-//!         (the same port once as ingress and once as egress, in one link
-//!         (hairpin) or in two (ring), is fine)
-//!       - some links with `lcore` and some without              -> Err naming "lcore"
-//!       - the same lcore on two links                           -> Err naming the lcore
-//!       - `histogram`: `bins` not an integer in 1..=4096; `lo_ns`/`hi_ns`
-//!         negative or not a number; both given and `lo_ns >= hi_ns` -> Err naming the link
-//!       - the /dpds/ports dict limit: `3 + 5 * ports + 10 * links` keys must be
-//!         <= 256 (`ports` = distinct ports named by the links); the error names "256"
-//! pub fn load_links(path: &Path) -> Result<Vec<LinkSpec>, LinksError>   (read + parse_links;
-//!     an unreadable file is an Err whose Display contains the path)
-//! #[derive(Debug, Clone)]
-//! pub struct LinkDirection { pub rx_port: u16, pub tx_port: u16,
-//!                            pub config: dpds_core::Config,
-//!                            pub histogram: dpds::delay_stats::HistogramSpec,
-//!                            pub delay_stats: bool,
-//!                            pub lcore: u32 }   (the worker lcore that runs the link; more
-//!                            fields, e.g. `link`, may exist, these tests do not read them)
-//! pub fn resolve_directions(links: &[LinkSpec], probed: &[(String, u16)],
-//!                           main_lcore: u32, workers: &[u32])
-//!     -> Result<Vec<LinkDirection>, LinksError>
-//!     (`workers` = the EAL worker lcores in ascending order, main lcore excluded)
-//!     `probed` = (DPDK device name, port id) of every probed ethdev (no reliance on
-//!     port-id order). Returns exactly one direction per link, in file order:
-//!     rx_port = id of `ingress`, tx_port = id of `egress`.
-//!       - an ingress/egress that is not probed   -> Err naming the port
-//!       - a probed port that no link uses (neither as ingress nor as egress)
-//!                                                 -> Err naming the port (device name)
-//!       - a probed port used only as egress (or only as ingress) is fine
-//!       - (duplicate ingress/egress is an error of `parse_links` or of this
-//!         function; the tests accept either place)
-//! LinksError: Debug + Display + std::error::Error
-//!
-//! # Lcores
-//! `lcore` is all-or-none across the links (`parse_links`). With explicit lcores
-//! `LinkDirection.lcore` is exactly the listed one (no sorting; link 0 on 3,
-//! link 1 on 1 is fine); `resolve_directions` errors: an lcore equal to
-//! `main_lcore` (message contains "main"), an lcore not in `workers` (contains
-//! the number and "worker"), a worker lcore that no link uses (contains its
-//! number). Without `lcore` anywhere: link i runs on `workers[i]`; a different
-//! number of workers than links is an error. The lcore rule at startup is
-//! `1 + number of links` (`dpds::setup::validate_lcore_count(1 + links, links)`).
-//! ```
+//! `resolve_directions(links, probed, main_lcore, workers)` returns one `LinkDirection` per link
+//! in file order (rx_port = id of `ingress`, tx_port = id of `egress`; `probed` is
+//! (device name, port id), no reliance on id order). It rejects an ingress/egress that is not
+//! probed and a probed port no link uses. With explicit `lcore`s, `LinkDirection.lcore` is
+//! exactly the listed one (no sorting); an lcore equal to `main_lcore` (message contains "main"),
+//! not in `workers` ("worker"), or a worker no link uses is an error. Without `lcore`, link i
+//! runs on `workers[i]`; a different number of workers than links is an error.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -105,7 +51,7 @@ fn cfg(capacity: u64) -> Value {
     })
 }
 
-/// A v2 link: `ingress` -> `egress` with a config of buffer capacity `cap`.
+/// A link: `ingress` -> `egress` with a config of buffer capacity `cap`.
 fn link(name: &str, ingress: &str, egress: &str, cap: u64) -> Value {
     json!({ "name": name, "ingress": ingress, "egress": egress, "config": cfg(cap) })
 }
@@ -434,7 +380,7 @@ fn the_same_ingress_and_egress_pair_listed_twice_is_a_conflict() {
 
 #[test]
 fn the_v1_keys_are_unknown_fields_naming_the_key() {
-    // the old shape: ports / configs / lcores / histograms (no compatibility)
+    // keys of the old per-direction shape (ports / configs / lcores / histograms)
     let old = r#"{ "links": [ { "name": "ab", "ports": ["p0", "p1"], "configs": [] } ] }"#;
     let e = err_text(old);
     assert!(e.contains("ports"), "{e}");
@@ -464,7 +410,7 @@ fn load_links_reads_a_file_and_reports_a_missing_one_with_its_path() {
     assert!(load_links(&bad).is_err());
     assert!(load_links(Path::new(dir.path())).is_err(), "a directory");
 
-    // a v1 file is an error, naming the file as well as the key
+    // an unknown key is an error naming the file as well as the key
     let old = dir.path().join("old.json");
     std::fs::write(
         &old,
@@ -705,7 +651,7 @@ fn bad_histograms_are_errors_naming_the_link() {
         let e = err_of(vec![link_h("hist-link", "p", "q", 1, bad.clone())]);
         assert!(e.contains("hist-link"), "{bad}: {e}");
     }
-    // spec 30: a bins value above the maximum names the maximum
+    // a bins value above the maximum names the maximum
     for bins in [4097, 100_000] {
         let e = err_of(vec![link_h(
             "hist-link",
@@ -728,7 +674,7 @@ fn bad_histograms_are_errors_naming_the_link() {
             "{bad}"
         );
     }
-    // not an object (the v1 array form is gone)
+    // not an object (an array is an error)
     for bad in [json!([]), json!([{}]), json!(3), json!("x")] {
         assert!(
             parse_links(&file(vec![link_h("x", "p", "q", 1, bad.clone())])).is_err(),

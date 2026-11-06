@@ -1,6 +1,4 @@
-// Wire types of the dpds-controller REST API (JSON names exactly as on the wire).
-//
-// Types only, no runtime code: shared by the tests and the implementation.
+// Wire types of the dpds-controller REST API (JSON names exactly as on the wire). Types only, no runtime code.
 
 export type EmulationState = 'stopped' | 'starting' | 'running' | 'stopping' | 'failed';
 
@@ -113,7 +111,7 @@ export interface OnlineView {
   dpds_bin: string;
   telemetry: boolean;
   root: boolean;
-  /** Other GUI sessions seen in the last 15 s (spec 48). */
+  /** Other GUI sessions seen in the last 15 s. */
   connected_clients?: number;
 }
 
@@ -158,7 +156,7 @@ export interface Counters {
   nic_rx_crc_errors: number;
   nic_rx_symbol_errors: number;
   nic_rx_length_errors: number;
-  /** Frames received per size bucket (P4TG's eight: 0-63, 64, 65-127, 128-255, 256-511, 512-1023, 1024-1518, 1519 and up). */
+  /** Frames received per size bucket (0-63, 64, 65-127, 128-255, 256-511, 512-1023, 1024-1518, 1519 and up). */
   frame_sizes: number[];
   /** Departures that overtook an earlier arrival. */
   out_of_order: number;
@@ -275,7 +273,6 @@ export interface Percentiles {
   p999_clamped?: Clamped;
 }
 
-/** The fields after `edges_ns` are optional so an older controller still works. */
 export interface HistogramView {
   dir: number;
   lo_ns: number;

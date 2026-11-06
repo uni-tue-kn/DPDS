@@ -1,4 +1,4 @@
-//! Spec v7 S3 and the startup part of S5: bad `serve` options are a clean startup error
+//! Bad `serve` options are a clean startup error
 //! (a message on stderr naming the option, a non-zero exit code that is neither a panic
 //! (101) nor an abort (signal / 134)), never a running server.
 //!

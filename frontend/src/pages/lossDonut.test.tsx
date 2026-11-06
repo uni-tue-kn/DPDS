@@ -9,11 +9,9 @@ import { renderApp, tick } from '../test/helpers';
 import { api, serveHistory } from '../test/mockApi';
 import { must } from '../test/must';
 
-// Spec 47 F1: nine causes (the three new ones are rx_port_buffer_discards, rx_phy_discards, tx_phy_discards). Below, "the six" /
-// "six" are the spec 35 wording of the first six; every list is now the nine of CAUSES.
-// Spec 35 F5 (user 2026-11-05): below the chart of the selected link a donut with the distribution of the losses, a React
-// legend with an explanation tooltip per cause, and on hover "<label>: <count> packets (<share> % of drops)". Contract (the
-// header of src/test/dashboardUi.tsx has the test ids):
+// Nine causes (the last three are rx_port_buffer_discards, rx_phy_discards and tx_phy_discards). Below the chart of the selected
+// link a donut with the distribution of the losses, a React legend with an explanation tooltip per cause, and on hover
+// "<label>: <count> packets (<share> % of drops)". Contract (the header of src/test/dashboardUi.tsx has the test ids):
 //   - the Doughnut (stub: `chart-doughnut`) has one dataset with nine values in the order of CAUSES, labels = CAUSES; live from
 //     the link's `counters` (loss_drops, limiter_drops, buffer_full_drops, tx_drops, nic_rx_missed, nic_rx_nombuf,
 //     nic_rx_port_buffer_discards, nic_rx_phy_discards, nic_tx_phy_discards), ended from
@@ -25,7 +23,7 @@ import { must } from '../test/must';
 //   - the hover text is `options.plugins.tooltip.callbacks.label(context)` (Chart.js tooltip item: `label`, `parsed`, `raw`,
 //     `dataIndex`, `dataset.data`); CHOICE: the count has thousands separators ("1,234,567 packets"), the share two decimals
 //     ("33.33 % of drops"), always "packets";
-//   - all nine counts 0 (user 2026-11-05: the donut is always visible): the chart is still there, as ONE neutral grey full ring
+//   - all nine counts 0 (the donut is always visible): the chart is still there, as ONE neutral grey full ring
 //     (a single placeholder segment: one dataset, one positive value, a grey colour), the legend of nine causes is unchanged,
 //     "No drops" stays as text, and hovering the ring says "No drops" (never "NaN", never a division by zero);
 //   - CHOICE: the donut is shown under every radio choice (Rate, Delay histogram, Loss).
@@ -566,8 +564,7 @@ describe('Loss donut (spec 35 F5): the hover text', () => {
 
 // ---- colours -----------------------------------------------------------------------------------------------------------------------
 
-// User 2026-11-05 replaced spec 35 F5's "warm for the overload causes" (the reds were too alike): the colours are a soft
-// palette of clearly different colours with one red only, pinned in lossColors.test.ts; the loss model stays blue.
+// The colours are a soft palette of clearly different colours with one red only, pinned in lossColors.test.ts; the loss model stays blue.
 describe('Loss donut colours: the loss model is blue, the nine are different', () => {
   it('the loss model is grey or blue', async () => {
     await openLive(live(0, HUNDRED));
@@ -582,11 +579,10 @@ describe('Loss donut colours: the loss model is blue, the nine are different', (
   });
 });
 
-// ---- spec 50 B: the labels carry no counter names, the hover help does ----------------------------------------------------------------
+// ---- the labels carry no counter names, the hover help does ----------------------------------------------------------------
 //
-// User 2026-11-05: "the labels should not contain in brackets the counter names. They are only shown when hovering above the donut.
-// Also the donut label should not include them." All nine lines stay in the Packet loss chart, zero lines too. The expectations
-// below are literal (not built from CAUSES) so that a stale helper cannot hide a stale label.
+// The labels carry no counter names; they are only shown when hovering above the donut. All nine lines stay in the Packet loss
+// chart, zero lines too. The expectations below are literal (not built from CAUSES) so that a stale helper cannot hide a stale label.
 
 const TRIMMED = [
   'Loss model',

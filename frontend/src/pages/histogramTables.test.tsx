@@ -10,19 +10,19 @@ import { api } from '../test/mockApi';
 import { must } from '../test/must';
 import { expectBars } from '../test/probabilities';
 
-// Spec 36 S2 (user 2026-11-05: the histogram's numbers in rows above the diagram, "displayed like the table in P4TG"). Contract:
-// the header of src/test/dashboardUi.tsx. In a link's "Delay histogram" view, above the bar chart, one `.row` with three
-// `.col-12.col-md-4` columns, each a `table.table-striped.table-bordered.table-hover.table-sm` with a `thead.table-dark`, one header
-// row (whose hover tooltip is pinned below) and exactly one body row:
+// The histogram's numbers in rows above the diagram, displayed like the table in P4TG. Contract: the header of
+// src/test/dashboardUi.tsx. In a link's "Delay histogram" view, above the bar chart, one `.row` with three `.col-12.col-md-4`
+// columns, each a `table.table-striped.table-bordered.table-hover.table-sm` with a `thead.table-dark`, one header row (whose hover
+// tooltip is pinned below) and exactly one body row:
 //   1. "Histogram config":   Bin Range | #Bins | Bin Width  ->  [lo, lo + bins x bin_ns] | bins.length | bin_ns
 //   2. "Values calculated from histogram data":  Delay (overlined) | σ(Delay) | Outlier | Total #Packets
 //        ->  delay_mean_ns | delay_std_ns | underflow + overflow | count (else Σbins + underflow + overflow)
 //   3. "Percentiles":       p50 | p90 | p99 | p99.9  ->  each percentile or "-"
-// No Dir column (user 2026-11-05: "Remove the direction in the histogram table").
+// No Dir column.
 // Durations by formatDuration, counts by formatCount (expectations are built with the same functions, one literal spot check below).
-// The chart title line "Mean ... · Jitter (σ) ..." is gone; the percentile annotation lines stay (dashboardP4tg.test.tsx).
+// The chart has no title line; the percentile annotation lines are pinned in dashboardP4tg.test.tsx.
 // CHOICE: "Delay" is overlined by an inline `text-decoration: overline` on the header cell or an element inside it.
-// CHOICE: "-" (spec: "means not available") also stands for a missing mean or σ, not formatDuration's "n/a".
+// CHOICE: "-" ("means not available") also stands for a missing mean or σ, not formatDuration's "n/a".
 // CHOICE: no tables while the histogram is unavailable (the error text shows instead).
 
 const tablesOf = (d: number) => histTables(card(d));
@@ -300,7 +300,7 @@ describe('Histogram tables (spec 36 S2): the chart keeps its bars and loses its 
     const data = JSON.parse(chart.getAttribute('data-chart') ?? 'null');
     expectBars(data.datasets[0].data, fx.histogram(0));
     const options = JSON.parse(chart.getAttribute('data-options') ?? 'null');
-    expect(Object.keys(options.plugins?.annotation?.annotations ?? {})).toHaveLength(8); // spec 58 A1: a line and a label each
+    expect(Object.keys(options.plugins?.annotation?.annotations ?? {})).toHaveLength(8); // a line and a label each
   });
 
   it('has no "Mean ... · Jitter (σ) ..." title: not in the options, not in the page', async () => {

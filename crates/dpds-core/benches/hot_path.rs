@@ -7,33 +7,28 @@
 //! `pop_due(now)` is called until nothing is due or the pop budget of 32 is
 //! used up. This is the loop of the `dpds` worker.
 //!
-//! Cases: deterministic FIFO, normal-delay FIFO, Spacer limiter, Random(0.01)
-//! loss, Gilbert-Elliot loss, reordering deterministic, reordering normal.
-//! Every case runs a verification pass first (every accepted pointer is popped
-//! exactly once, FIFO pops in push order, reordering pops in non-decreasing
-//! send time, and in non-decreasing `front_time` for the deterministic
-//! cases), then times `REPEATS` repetitions (each asserting the popped count
-//! and a pointer checksum against the accepted ones) and prints the median
-//! ns per offered packet.
+//! Every case (FIFO and reordering, deterministic and normal delay, Spacer,
+//! random and Gilbert-Elliot loss) runs a verification pass first (every
+//! accepted pointer is popped exactly once, FIFO pops in push order,
+//! reordering pops in non-decreasing send time), then times `REPEATS`
+//! repetitions and prints the median ns per offered packet.
 //!
 //! ```sh
 //! cargo bench -p dpds-core --bench hot_path
 //! ```
 //!
-//! Run without `--bench` (that is what `cargo test --all-targets` does) the
-//! binary only does one tiny smoke pass of every case.
+//! Without `--bench` (as in `cargo test --all-targets`) the binary does one
+//! tiny smoke pass of every case.
 //!
-//! `harness = false`: a plain `fn main()` with `std::time::Instant` and
-//! `std::hint::black_box`, no criterion; the only outlier handling is the
-//! median over the repetitions. Numbers are only meaningful relative to each
-//! other on the same machine.
+//! `harness = false`: plain `std::time::Instant` and `std::hint::black_box`, no
+//! criterion. Numbers are only meaningful relative to each other on the same
+//! machine.
 //!
 //! ## Per-function instruction counts (callgrind)
 //!
-//! Build the bench with debug info (the `bench` profile inherits `release`),
-//! then run the binary under callgrind with a single case selected through the
-//! `HOT_PATH_CASE` environment variable (a substring of the case name) and a
-//! small `HOT_PATH_BURSTS` so that callgrind finishes in seconds:
+//! Build the bench with debug info, then run the binary under callgrind with a
+//! single case selected through `HOT_PATH_CASE` (a substring of the case name)
+//! and a small `HOT_PATH_BURSTS`:
 //!
 //! ```sh
 //! CARGO_PROFILE_BENCH_DEBUG=true cargo bench -p dpds-core --bench hot_path --no-run
@@ -44,8 +39,7 @@
 //! ```
 //!
 //! (`valgrind` is not installed by default: `apt-get update && apt-get install
-//! valgrind`.) Do not `perf record` a busy-polling DPDK core in a VM; this
-//! benchmark is single-threaded and short, so profiling it is fine.
+//! valgrind`.)
 
 use std::ffi::c_void;
 use std::hint::black_box;

@@ -1,6 +1,5 @@
-//! Spec 53, A (dpds side): the IAT histogram is configurable like the delay histogram.
+//! The IAT histogram is configurable like the delay histogram.
 //!
-//! # Assumptions (the spec gives behaviour, not names)
 //!
 //! ```text
 //! HistRange::iat_from_spec(&Config, &HistogramSpec) -> Result<HistRange, HistogramError>

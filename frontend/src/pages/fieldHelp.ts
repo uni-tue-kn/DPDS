@@ -16,7 +16,7 @@ export const HELP = {
     'Most packets the buffer of this link holds at once (a number of packets, 0 to 2147483648 = 2^31; stored in packets, the unit select converts). A packet arriving at a full buffer is dropped. The limiter\u2019s limit is derived from it.',
   // dpds-core/src/lib.rs:94-100 (seeding), dpds-controller/src/dto.rs:162-163 (u64); the 2^53 - 1 cap is this form's own (linkForm.ts seed())
   Seed: 'Seed of the random generators for delay and loss. A whole number from 0 to 9007199254740991 (2^53 \u2212 1, the most this form can hold). The same seed and input give the same results. Empty: a random seed from the operating system.',
-  // spec 25 (UI only); the 20 B L1 overhead is dpds-core/src/limiter.rs:1 (L1_OVERHEAD = 7 + 1 + 12)
+  // UI only; the 20 B L1 overhead is dpds-core/src/limiter.rs:1 (L1_OVERHEAD = 7 + 1 + 12)
   'Average frame size':
     'Average Ethernet frame size in bytes, including the 4 B FCS (e.g. 1518); at least 64, decimals allowed. Only converts between packets/s and bit/s using 20 B of preamble and inter-frame gap per frame: pps = bit/s / ((frame + 20) \u00d7 8). Kept in this browser, never sent to the controller. Empty: the rate fields offer only their own unit family.',
   // dpds-core/src/delayer.rs:89-129 (distributions), 275-319 (sampling, clamp at 0), dpds-controller/src/dto.rs:235-242
@@ -27,7 +27,7 @@ export const HELP = {
   // dpds-controller/src/dto.rs:235-242; dpds-core/src/delayer.rs:85-87 (std compensation), 101 (Deterministic ignores it), 319 (clamp at 0)
   'Delay std':
     'Standard deviation of the delay. Stored in ns; finite and at least 0. Ignored by the Deterministic distribution. With correlation the random draws are scaled so that the smoothed delay has this std in the long run, before negative delays are cut to 0.',
-  // spec 45 (UI over the two booleans reordering and activate_correlation); dpds-core/src/lib.rs:106-113 (reordering), delayer.rs:80-83 (weight), 309-312 (smoothing)
+  // UI over the two booleans reordering and activate_correlation); dpds-core/src/lib.rs:106-113 (reordering), delayer.rs:80-83 (weight), 309-312 (smoothing)
   'Delay accuracy':
     'How accurately the configured mean delay and jitter are reproduced. Basic: packets leave in arrival order (FIFO), so a short delay drawn after a long one is lengthened and the jitter is lower than configured. Reordering: every packet gets exactly its drawn delay and packets leave in send-time order, so they may overtake each other; this is a side effect, it does not emulate a reordering characteristic of a network. Correlation: successive delays are correlated (half-life), so FIFO order distorts them less.',
   // dpds-core/src/delayer.rs:80-83 (weight formula), 221-225 (checked always), 233-246 (weight >= 1 refused with correlation)
@@ -55,10 +55,10 @@ export const HELP = {
   // dpds-core/src/dropper.rs:11-17, 68-72 (drop when the draw > h)
   'Gilbert-Elliot h':
     'Probability that a packet is delivered (not dropped) while in the bad state, so loss there is 1 \u2212 h. Between 0 and 1.',
-  // dpds-controller/src/dto.rs, spec 57 (delay = arrival until enqueued into the TX descriptors)
+  // dpds-controller/src/dto.rs (delay = arrival until enqueued into the TX descriptors)
   'Delay statistics':
     'Record the delay (from arrival until the packet is enqueued into the NIC\u2019s TX descriptors), the lateness (that enqueue time minus the scheduled send time) and the delay histogram of this link. Off: dpds skips that work; the counters and drop causes stay.',
-  // spec 30: the cap is 4096 bins (dpds-controller MAX_HISTOGRAM_BINS, dpds MAX_BINS); 256 is the default
+  // the cap is 4096 bins (dpds-controller MAX_HISTOGRAM_BINS, dpds MAX_BINS); 256 is the default
   'Histogram bins':
     'Number of equal-width bins of the delay histogram: a whole number from 1 to 4096. Empty: 256 bins. A power of two is only a suggestion.',
   // dpds/src/delay_stats.rs:30-31 (range [lo, lo + bins x width)), 131-152 (automatic window), 206-221 (from_spec), 229-231 (underflow); dpds-controller/src/dto.rs:130-143
@@ -67,7 +67,7 @@ export const HELP = {
   // dpds/src/delay_stats.rs:131-160 (automatic window incl. the Spacer allowance and 2 * TX_MAX_WAIT_NS), 206-221, 229-231; dpds-controller/src/dto.rs:130-143
   'Histogram hi':
     'Upper edge of the histogram range (excluded); delays from it on are counted as overflow. Stored in ns; finite and above Histogram lo. Empty: the mean + 6 std (plus the queueing allowance of an active Spacer) + 20 \u00b5s, twice the 10 \u00b5s TX staging wait, so the range is always at least 20 \u00b5s wide. A value you enter is used as given.',
-  // spec 53 A: the IAT histogram is the delay histogram's HistogramDto; defaults lo 0, hi 4e9 / initialization rate, 256 bins
+  // the IAT histogram is the delay histogram's HistogramDto; defaults lo 0, hi 4e9 / initialization rate, 256 bins
   'IAT histogram bins':
     'Number of equal-width bins of the inter-arrival time (departure gap) histogram: a whole number from 1 to 4096. Empty: 256 bins.',
   'IAT histogram lo':

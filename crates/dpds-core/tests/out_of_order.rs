@@ -1,11 +1,9 @@
-//! Spec 51 T1: the buffer counts out-of-order departures.
+//! The buffer counts out-of-order departures, relative to arrival order: every accepted push
+//! gets the next arrival sequence number (0, 1, 2, ...); a popped packet is out of order when its
+//! sequence number is lower than the highest sequence number popped before it. FIFO never
+//! reorders: always 0.
 //!
-//! P4TG's notion, relative to arrival order: every accepted push gets the next arrival sequence
-//! number (0, 1, 2, ...); a popped packet is out of order when its sequence number is lower than
-//! the highest sequence number popped before it. FIFO never reorders: always 0.
-//!
-//! ASSUMPTION (the spec names only the counter, "cumulative `out_of_order` counter per link"): the
-//! accessor is `Buffer::out_of_order(&self) -> u64`, cumulative, counted by `pop`, `pop_due` and
+//! `Buffer::out_of_order(&self) -> u64` is cumulative and counted by `pop`, `pop_due` and
 //! `pop_due_with_time` alike.
 //!
 //! The sequences are built with a constant delay of 100 ns and pushes at different instants (the

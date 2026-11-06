@@ -54,7 +54,7 @@ const isBinaryWidth = (n: number) => Number.isFinite(n) && n > 0 && Number.isInt
 /** `ns` as the text of the time unit `unit`, exact ("0.064"), or null when it cannot be shown. */
 const inUnit = (ns: number, unit: number) => shiftDecimal(String(ns), -TIME_UNITS[unit].exp);
 
-/** P4TG-style advice on the histogram range: advisory only, nothing here refuses a value. */
+/** Advice on the histogram range: advisory only, nothing here refuses a value. */
 function rangeAdvice(
   value: ConfigForm,
 ): { aligned: boolean; width: string; suggested: string; exponent: number } | null {
@@ -92,7 +92,7 @@ export default function ConfigFieldset({ title, value, onChange }: Props) {
         value={value[key]}
         onChange={(e) =>
           key === 'avg_frame_size'
-            ? // Any frame-size edit makes the shown rate text count: the old frame no longer applies to the remembered values.
+            ? // Any frame-size edit makes the shown rate text count: the old frame does not apply to the remembered values.
               onChange({
                 ...value,
                 avg_frame_size: e.target.value,
@@ -141,7 +141,7 @@ export default function ConfigFieldset({ title, value, onChange }: Props) {
   ) => {
     const v = value[key];
     // The first unit is the field's own family. The other family is offered only with a valid frame size, which
-    // converts it; without one, only the unit that is already selected stays (it is no longer convertible).
+    // converts it; without one, only the unit that is already selected stays (it is not convertible).
     const offered = units.flatMap((u, i) =>
       frame !== null || sameFamily(u, units[0]) || i === v.unit ? [{ u, i }] : [],
     );

@@ -1,6 +1,5 @@
-// User 2026-11-05: "DPDS icon should also be favicon". The favicon is the DPDS logo (src/assets/logo.png, 256x97)
-// centred on a transparent square, so a browser tab does not squash it; Vite copies public/ into dist, which the
-// controller serves as is.
+// The favicon is the DPDS logo (src/assets/logo.png, 256x97) centred on a transparent square, so a browser tab does not squash it;
+// Vite copies public/ into dist, which the controller serves as is.
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 

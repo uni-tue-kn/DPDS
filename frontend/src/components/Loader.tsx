@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import { Spinner } from 'react-bootstrap';
 
-/** The spinner with the "DPDS" wordmark below it (P4TG shows its logo image there). */
+/** The spinner with the "DPDS" wordmark below it. */
 function Spinning() {
   return (
     <div className="loader-spinner-box">
@@ -14,7 +14,7 @@ function Spinning() {
 }
 
 /**
- * A port of P4TG's Loader: the children when `loaded`, else the centred loader block; `overlay` adds a layer over the
+ * The children when `loaded`, else the centred loader block; `overlay` adds a layer over the
  * content (the children stay mounted) until it is cleared.
  */
 export default function Loader({

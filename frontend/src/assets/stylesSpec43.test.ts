@@ -1,10 +1,8 @@
-// Spec 43 F7 (sidebar like P4TG's CoreUI 5.9 one): the active link's red block has rounded corners (0.375rem) and the links are
-// inset 0.5rem from the sidebar edges, for the active and the hover state alike. jsdom renders no CSS, so the stylesheet itself is
-// pinned (like stylesSpec28.test.ts). CHOICES of the tester:
-// - the radius is on the base rule `.sidebar .nav-link`, so hover and active share it; their own rules may not take it away
-//   (no `border-radius: 0`, no other radius);
-// - the inset is a horizontal margin of 0.5rem on `.sidebar .nav-link` (`margin`, `margin-inline`, or `margin-left` and
-//   `margin-right`), or a horizontal padding of 0.5rem on `.sidebar` itself (the nav links are its direct children).
+// The active sidebar link's red block has rounded corners (0.375rem) and the links are inset 0.5rem from the sidebar edges, for the
+// active and the hover state alike. jsdom renders no CSS, so the stylesheet itself is pinned. The radius is on the base rule
+// `.sidebar .nav-link`, so hover and active share it (their own rules may not take it away: no `border-radius: 0`, no other radius);
+// the inset is a horizontal margin of 0.5rem on `.sidebar .nav-link` (`margin`, `margin-inline`, or `margin-left` and `margin-right`),
+// or a horizontal padding of 0.5rem on `.sidebar` itself (the nav links are its direct children).
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 

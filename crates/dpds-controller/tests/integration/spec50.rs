@@ -1,4 +1,4 @@
-//! Spec 50, A1/A2: the delay histogram of a link stays available after the run ended.
+//! The delay histogram of a link stays available after the run ended.
 //!
 //! The controller keeps, per link of the run, a copy of the last since-start histogram it got
 //! from dpds: refreshed whenever a since-start histogram is served while running, and once more
@@ -14,9 +14,8 @@
 //! the tests set the fake to `None` after the stop. `None` at the stop models the failing
 //! refresh.
 //!
-//! Not covered here: the stop half of a restart (the controller has no restart route, the
-//! frontend sends stop and start), a windowed reply that was really subtracted becoming the copy
-//! (the fake has no ring), and the real poller.
+//! Not covered here: the stop half of a restart (the controller has no restart route), a windowed
+//! reply that was really subtracted becoming the copy (the fake has no ring), and the real poller.
 
 use crate::common::*;
 use crate::histogram_extras::{app_with, cfg, get_hist, hist, snap};

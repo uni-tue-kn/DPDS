@@ -11,16 +11,14 @@ User=root
 EnvironmentFile=-/etc/dpds/controller.env
 ExecStart=/usr/local/bin/dpds-controller serve
 
-# SIGTERM goes to the controller only. It stops its dpds child (SIGINT, then waits until the
-# delay buffers have drained) and exits. Only after TimeoutStopSec does systemd SIGKILL
-# the whole control group. The timeout must exceed the longest configured delay plus the
-# controller's own margin (the controller warns when a link of the configuration needs more than 590 s).
+# SIGTERM goes to the controller only; it stops dpds (SIGINT, then waits for the delay buffers
+# to drain) and exits. After TimeoutStopSec systemd SIGKILLs the whole control group, so the
+# timeout must exceed the longest configured delay (the controller warns above 590 s).
 KillMode=mixed
 KillSignal=SIGTERM
 TimeoutStopSec=600
 
-# dpds locks all its memory (mlockall) before it starts; the limit is set explicitly,
-# not left to the default, so the child can always lock its pools and buffers.
+# dpds calls mlockall; the child must always be able to lock its pools and buffers.
 LimitMEMLOCK=infinity
 
 Restart=on-failure

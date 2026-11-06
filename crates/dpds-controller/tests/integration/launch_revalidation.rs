@@ -1,7 +1,6 @@
-//! `POST /api/emulation/start` validates the body it carries (ports, port reuse, link names) with the rules that used to guard the stored links: the start is refused
-//! (400, or 409) with a `{"message"}` that names the offending value; nothing is spawned and
-//! the emulation stays stopped. Spec 22: there is no stored state to re-validate any more, so
-//! the body is the only input, and `POST /api/emulation/validate` answers the same errors.
+//! `POST /api/emulation/start` validates the body it carries (ports, port reuse, link names): the
+//! start is refused (400, or 409) with a `{"message"}` that names the offending value; nothing is
+//! spawned and the emulation stays stopped. `POST /api/emulation/validate` answers the same errors.
 
 use crate::common::*;
 

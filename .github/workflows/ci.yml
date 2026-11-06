@@ -21,25 +21,22 @@ jobs:
     timeout-minutes: 60
     env:
       CARGO_TERM_COLOR: always
-      # Plain build instead of the repository's default (.cargo/config.toml: target-cpu=native,
-      # linker-plugin-lto, lld). That setup needs a clang/lld with the same LLVM major as rustc;
-      # CI wants none of it, the tests do not depend on cross-language LTO. RUSTFLAGS and
-      # RUSTDOCFLAGS from the environment replace `build.rustflags` / `build.rustdocflags` from
-      # the config file even when empty (the doctests of dpds-core are linked by rustdoc, hence
-      # RUSTDOCFLAGS too).
+      # Plain build instead of .cargo/config.toml (target-cpu=native, linker-plugin-lto, lld), which
+      # needs a clang/lld of rustc's LLVM major; the tests do not need cross-language LTO. Empty
+      # RUSTFLAGS/RUSTDOCFLAGS still replace the config's `build.rustflags`/`build.rustdocflags`
+      # (rustdoc links the dpds-core doctests).
       RUSTFLAGS: ""
       RUSTDOCFLAGS: ""
-      # dpdk-sys/build.rs compiles the bindgen wrappers with clang LTO objects when `clang` is on
-      # PATH and CC is unset. CC=gcc selects its plain-compiler fallback. It also adds
-      # -march=native, which would bake the CPU of whichever runner built a cached target
-      # directory into the wrappers; CFLAGS comes last on the command line and wins.
+      # dpdk-sys/build.rs builds the bindgen wrappers as clang LTO objects when `clang` is on PATH
+      # and CC is unset; CC=gcc selects its plain fallback. The fallback adds -march=native, which
+      # would bake the runner's CPU into a cached target directory; CFLAGS comes last and wins.
       CC: gcc
       CFLAGS: -march=x86-64-v2
     steps:
       - uses: actions/checkout@v7
 
-      # Pinned so a new stable release (new clippy lints, rustfmt changes) can't turn CI red on an
-      # unchanged tree; bump deliberately together with dpds-core's rust-version note.
+      # Pinned so a new stable release (clippy lints, rustfmt changes) cannot turn CI red on an
+      # unchanged tree; bump together with dpds-core's rust-version note.
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.99.1
@@ -58,9 +55,9 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libclang-dev libnuma-dev libpcap-dev pkg-config meson ninja-build python3-pyelftools
 
-      # The Ubuntu 24.04 package is DPDK 23.11 (25.11 on 26.04); dpdk-sys needs at least 26.07 and the
-      # project is developed against 26.07, so DPDK is built from the release tarball. The install
-      # is cached on the hash of the script, which holds the version and all build options.
+      # The Ubuntu 24.04 package is DPDK 23.11 (25.11 on 26.04); dpdk-sys needs at least 26.07, so
+      # DPDK is built from the release tarball. The install is cached on the hash of the script,
+      # which holds the version and all build options.
       - name: Restore DPDK
         id: dpdk-cache
         uses: actions/cache/restore@v6
@@ -107,8 +104,8 @@ jobs:
       # telemetry, so that binary is built first. They run one at a time.
       - name: Build dpds with telemetry
         run: cargo build --release -p dpds --features telemetry
-      # Unlike the dpds e2e tests, the controller passes no `--no-huge` (spec 41: no extra EAL
-      # flags), so its `dpds` needs real hugepages. The test links use 4096-mbuf buffers (a few
+      # Unlike the dpds e2e tests, the controller passes no `--no-huge`, so its `dpds` needs real
+      # hugepages. The test links use 4096-mbuf buffers (a few
       # tens of MiB per link); 1 GiB of 2 MiB pages covers the three-link ring with headroom.
       # `--in-memory` maps them anonymously, so no hugetlbfs write access (root) is needed.
       - name: Reserve hugepages

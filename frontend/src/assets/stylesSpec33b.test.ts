@@ -1,12 +1,11 @@
-// Spec 33b (frontend item 1): the commands tooltip of the host hints must show long commands in full. jsdom renders no CSS,
-// so the looks are pinned in the stylesheet itself, like stylesSpec28.test.ts does; the DOM side (the tooltip's root element
-// carries the class `commands-tip`) is pinned in pages/hostCommands.test.tsx.
-// Background: Bootstrap caps `.tooltip-inner` with `max-width: var(--bs-tooltip-max-width)` (200px by default), so a wide
-// tooltip needs that variable on `.commands-tip` (as `.info-tip-text` does) or a `max-width` on its `.tooltip-inner`. A
-// `max-width` on the outer `.commands-tip` alone changes nothing, so it does not count.
-// CHOICES of the tester: "wide" means at least 30rem (480px); rem and px are the only accepted units ("none" would let the
-// tooltip outgrow the page); the word-breaking rule may be word-break: break-all | break-word or overflow-wrap: anywhere |
-// break-word; the `pre` must not scroll sideways (overflow-x: auto | scroll is refused).
+// The commands tooltip of the host hints must show long commands in full. jsdom renders no CSS, so the looks are pinned in the
+// stylesheet itself; the DOM side (the tooltip's root element carries the class `commands-tip`) is pinned in
+// pages/hostCommands.test.tsx.
+// Bootstrap caps `.tooltip-inner` with `max-width: var(--bs-tooltip-max-width)` (200px by default), so a wide tooltip needs that
+// variable on `.commands-tip` (as `.info-tip-text` does) or a `max-width` on its `.tooltip-inner`; a `max-width` on the outer
+// `.commands-tip` alone changes nothing.
+// "Wide" means at least 30rem (480px); rem and px are the only accepted units; the word-breaking rule may be word-break: break-all |
+// break-word or overflow-wrap: anywhere | break-word; the `pre` must not scroll sideways (overflow-x: auto | scroll is refused).
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -86,9 +85,9 @@ describe('commands tooltip looks (spec 33b)', () => {
   });
 });
 
-// Spec 33c (frontend item 5): the manual-copy fallback shows the commands under the hint in a `pre` that has the class
-// `commands-fallback` (pinned in pages/hostCommands.test.tsx). Bootstrap's `pre` is `overflow: auto` without wrapping, so a
-// long command would scroll sideways inside the hint: the class wraps like the tooltip's `pre`.
+// The manual-copy fallback shows the commands under the hint in a `pre` of the class `commands-fallback` (pinned in
+// pages/hostCommands.test.tsx). Bootstrap's `pre` is `overflow: auto` without wrapping, so a long command would scroll sideways
+// inside the hint: the class wraps like the tooltip's `pre`.
 describe('commands fallback looks (spec 33c)', () => {
   const FALLBACK = ['.commands-fallback', 'pre.commands-fallback'] as const;
 

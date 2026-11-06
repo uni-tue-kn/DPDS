@@ -1,7 +1,6 @@
 //! REST API in-process (fake supervisor, fake telemetry, fake sysfs).
-//! See the header of `common.rs` for the HTTP contract assumed. Spec 22: the configuration is
-//! the body of `POST /api/emulation/start`; the validation rules of the former links and
-//! settings routes apply to that body (more of them in `input_validation.rs`, `v12.rs`,
+//! See the header of `common.rs` for the HTTP contract assumed. The configuration is the body of
+//! `POST /api/emulation/start` (more validation tests in `input_validation.rs`, `v12.rs`,
 //! `launch_revalidation.rs`, `management_guard.rs`); the running configuration and
 //! `POST /api/emulation/validate` are in `start_body.rs`.
 
@@ -746,7 +745,7 @@ async fn stats_without_telemetry_data_are_empty() {
     let v = r.json();
     assert_eq!(v["directions"], json!([]));
     assert!(v.get("ports").is_none(), "{v}");
-    // no data is stale data (C4); there is no age without a poll
+    // no data is stale data; there is no age without a poll
     assert_eq!(v["stale"], true);
     assert!(absent(&v, "age_ms"), "{v}");
     let r = a.get("/api/stats/0/delay_histogram").await;
@@ -926,7 +925,7 @@ async fn openapi_json_documents_every_path() {
         "{:?}",
         schemas.keys().collect::<Vec<_>>()
     );
-    // spec 22: the stored-config API is gone from the document, schemas included
+    // the OpenAPI document has no stored-config API, schemas included
     for gone in [
         "/api/links",
         "/api/links/{id}",

@@ -15,14 +15,13 @@ import {
 } from '../test/helpers';
 import { must } from '../test/must';
 
-// spec19 item 6. The form refuses negative values for times, rates, capacity and the initialization rate, and loss
-// probabilities outside [0, 1], in the unit the user typed. The message names the field (like the other validation
-// messages) and says why; it never quotes the base-unit value (a user who typed "-5 ms" must not read "-5000000").
-// The controller stays the final check; these tests only pin the frontend's own refusal (no request is made).
-// Every case runs against the link editor (the only page with the config form since spec27).
+// The form refuses negative values for times, rates, capacity and the initialization rate, and loss probabilities outside [0, 1],
+// in the unit the user typed. The message names the field (like the other validation messages) and says why; it never quotes the
+// base-unit value (a user who typed "-5 ms" must not read "-5000000"). The controller stays the final check; these tests only pin
+// the frontend's own refusal (no request is made). Every case runs against the link editor.
 //
-// Deliberately NOT pinned: whether 0 is refused for Rate (the controller wants > 0 while the limiter is active) and
-// what a negative value in a field that is switched off (half-life with correlation off) does. v22: the limiter has no switch.
+// Deliberately NOT pinned: whether 0 is refused for Rate (the controller wants > 0) and what a negative value in a field that is
+// switched off (half-life with correlation off) does.
 const MU = 'µs';
 const body = () => document.body;
 
@@ -232,9 +231,8 @@ describe.each(PAGES)('$name: loss probabilities must lie within [0, 1]', (page: 
   });
 });
 
-// Spec 27b item 1: a link is valid only if the link editor would accept it unchanged, so a stored link with a negative value or a
-// probability outside [0, 1] can no longer be opened and refused on Save: the whole document is corrupt (the alert with Reset, the
-// stored text untouched, no editor). The editor's own refusals are pinned above with the bad value TYPED into a valid link.
+// A stored link with a negative value or a probability outside [0, 1] is invalid: the whole document is corrupt (the alert with
+// Reset, the stored text untouched, no editor). The editor's own refusals are pinned above with the bad value TYPED into a valid link.
 describe('a stored link with an out-of-range value makes the document corrupt (spec27b)', () => {
   it.each([
     ['a negative mean_ns', cfg({ mean_ns: -5000000 })],

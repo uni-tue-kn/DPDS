@@ -1,13 +1,6 @@
-//! `Port::rx_burst_mode()` / `tx_burst_mode()` -> `Option<String>` (queue 0)
-//! and a clock value that reads `now_ns` without the per-call `OnceLock`
-//! check) on a real EAL with one `net_null` vdev. Single test function: one EAL
-//! per process.
-//!
-//! The clock value's names are not prescribed; this test pins
-//! this example (a `Clock` value holding `ns_per_cycle`, `fn now_ns(&self)`):
-//! `dpdk::clock::Clock::new()` (needs the EAL's TSC frequency, so it is called
-//! after `Eal::new`) and `Clock::now_ns(&self) -> f64`. Adjust the names here if
-//! the implementation picks others.
+//! `Port::rx_burst_mode()` / `tx_burst_mode()` (queue 0) and `Clock` (reads
+//! `now_ns` without the per-call `OnceLock` check) on a real EAL with one
+//! `net_null` vdev. Single test function: one EAL per process.
 
 use dpdk::clock::Clock;
 use dpdk::{now_ns, Eal, Mempool, Port};
@@ -34,9 +27,8 @@ fn burst_mode_strings_and_clock_value() {
     .collect();
     let _eal = Eal::new(&args).expect("EAL");
 
-    // ---- the clock value type converts exactly like the free function ---------
-    // Both read the same TSC and scale with the same ns_per_cycle, so a read
-    // through the value type must fall between two free-function reads.
+    // ---- Clock converts like the free function ---------------------------------
+    // Same TSC and scale, so a `Clock` read falls between two free-function reads.
     let clock = Clock::new();
     let mut last = 0.0f64;
     for _ in 0..1000 {
@@ -58,8 +50,7 @@ fn burst_mode_strings_and_clock_value() {
     let pool = Mempool::create("eal_new_api_pool", 255, 0, Mempool::DEFAULT_BUF_SIZE, 0).unwrap();
     let port = Port::init(0, &pool, 256, 256, 1, 1500).expect("port");
 
-    // Oracle: the raw DPDK calls on queue 0. `Some(info)` iff the driver
-    // reports a mode (return 0); the string is the NUL-terminated `info`.
+    // Oracle: the raw DPDK calls on queue 0 (`Some(info)` iff the driver reports a mode).
     let raw = |rx: bool| -> Option<String> {
         let mut mode: dpdk_sys::rte_eth_burst_mode = unsafe { std::mem::zeroed() };
         let ret = unsafe {
@@ -77,13 +68,11 @@ fn burst_mode_strings_and_clock_value() {
     };
     assert_eq!(port.rx_burst_mode(), raw(true));
     assert_eq!(port.tx_burst_mode(), raw(false));
-    // Whatever the driver says, a returned string is not empty.
     for mode in [port.rx_burst_mode(), port.tx_burst_mode()]
         .into_iter()
         .flatten()
     {
         assert!(!mode.is_empty());
     }
-    // Callable repeatedly (control path, no state).
     assert_eq!(port.rx_burst_mode(), port.rx_burst_mode());
 }

@@ -1,4 +1,4 @@
-//! DPDK telemetry client (B4): a blocking SOCK_SEQPACKET connection, and a
+//! DPDK telemetry client: a blocking SOCK_SEQPACKET connection, and a
 //! poll thread that caches the latest snapshots for the REST endpoints.
 
 use std::collections::VecDeque;
@@ -113,8 +113,7 @@ pub trait TelemetrySource: Send + Sync + 'static {
     /// The links of the run being started; the next run the source sees carries them.
     fn set_run_links(&self, _links: Vec<HistoryLink>) {}
 
-    /// Test hook that speeds up a source that polls; the controller keeps the fixed
-    /// `POLL_INTERVAL_MS` and never calls it.
+    /// Test hook that speeds up a polling source; the controller never calls it.
     fn set_poll_interval(&self, _ms: u64) {}
 }
 
@@ -225,7 +224,7 @@ pub fn poll_once(client: &mut Client) -> io::Result<Snapshot> {
 /// Consecutive failed polls after which the cached data is dropped.
 const MAX_FAILURES: u32 = 5;
 
-/// The longest histogram window (K3) the ring has to cover.
+/// The longest histogram window the ring has to cover.
 const RING_SECONDS: u64 = 300;
 
 /// Most snapshots the ring keeps, whatever the poll interval (bounds the memory at

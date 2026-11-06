@@ -1,5 +1,5 @@
-// Spec 43 (B1, B3, F6): the hand-written DTO types follow the controller. Types do not exist at run time, so the source is read
-// (as typesSpec35.test.ts does).
+// The hand-written DTO types follow the controller. Types do not exist at run time, so the source is read (as typesSpec35.test.ts
+// does).
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 

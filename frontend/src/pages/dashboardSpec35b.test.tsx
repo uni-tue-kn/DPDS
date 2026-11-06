@@ -5,7 +5,7 @@ import * as fx from '../test/fixtures';
 import { renderApp, tick } from '../test/helpers';
 import { api } from '../test/mockApi';
 
-// Spec 35 review findings, round 2.
+// Two behaviours of the dashboard:
 //  1. A link tab that is not shown does not poll its delay histogram (react-bootstrap keeps every pane mounted); the chosen radio
 //     survives a tab switch and polling resumes when the tab shows again.
 //  2. The error of a refused start survives polls that change the state; only the user's next action (Start, Stop, Restart) clears it.

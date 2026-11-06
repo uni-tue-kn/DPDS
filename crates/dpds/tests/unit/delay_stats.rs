@@ -1,135 +1,79 @@
-//! Delay statistics and the delay histogram of one direction (A3).
-//!
-//! # Test-facing API (new)
-//!
-//! Module `dpds::delay_stats`, available in every build (pure, no feature gate):
-//!
-//! ```text
-//! pub const HIST_BINS: usize = 256;        (the default number of bins)
-//! pub const MAX_BINS: usize = 4096;        (spec 30: read in pages of 500, see hist_pages.rs)
-//! pub const MIN_WIDTH_NS: f64 = 1000.0;
-//! #[derive(Debug, Clone, Copy, PartialEq)]
-//! pub struct HistRange { pub lo_ns: f64, pub bin_ns: f64, pub bins: usize }
-//!   HistRange::new(lo_ns, bin_ns) -> HistRange                 (256 bins)
-//!   HistRange::with_bins(lo_ns, bin_ns, bins) -> Result<HistRange, HistogramError>
-//!                                                    (Err for 0 bins; D4 of the fix round)
-//!   HistRange::default() = new(0.0, MIN_WIDTH_NS / 256.0)      (the "mean 0, std 0" window)
-//!   HistRange::from_config(&dpds_core::Config) -> HistRange    (the automatic rule, below; 256 bins)
-//!   HistRange::from_spec(&Config, &HistogramSpec) -> Result<HistRange, HistogramError>
-//!   HistRange::hi_ns(&self) -> f64 = lo_ns + bins * bin_ns      (exclusive)
-//!   HistRange::bin(&self, delay_ns: f64) -> Bin
-//! #[derive(Debug, Clone, Copy, PartialEq, Default)]
-//! pub struct HistogramSpec { pub bins: Option<usize>, pub lo_ns: Option<f64>, pub hi_ns: Option<f64> }
-//!   (the optional per-direction `"histograms"` entry of the links file, see below)
-//! HistogramError: Debug + Display + std::error::Error
-//! #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-//! pub enum Bin { Underflow, Index(usize), Overflow }
-//! ```
+//! Delay statistics and the delay histogram of one direction (`dpds::delay_stats`, available in
+//! every build). The telemetry-dependent tests only run with `--features telemetry`.
 //!
 //! ## Bin placement (`HistRange::bin`)
-//! Half-open `[lo_ns, lo_ns + bins * bin_ns)`: `d < lo_ns` -> Underflow;
-//! `d >= hi_ns` -> Overflow; else `Index(floor((d - lo_ns) * (1 / bin_ns)))`
-//! (one subtract, one multiply by the precomputed reciprocal, no division in
-//! the loop). The tests use `bin_ns` of 4.0 / 1.0 / 0.5, whose reciprocal is
-//! exact, so edges are exact.
 //!
-//! ## Range rule (`HistRange::from_config`), the "documented rule"
-//! From `delayer.mean_ns`, `delayer.std_ns` (whatever the distribution) and,
-//! when the limiter is active, the Spacer queueing allowance
-//! `extra = limit / rate_bps * 1e9` ns with the DERIVED limit
-//! `limit = buffer_capacity * 1542 * 8` bit (spec20; `limit_bit` no longer exists;
-//! a Spacer packet can wait up to a full limit's worth of bits; the realized delay
-//! includes that offset). `2 * TX_MAX_WAIT_NS` (20 us, `TX_MAX_WAIT_NS` in `dpds::consts`) is always added to
-//! `hi`, so the window is at least that wide and the minimum-width rule (1000 ns) never
-//! applies any more:
+//! Half-open `[lo_ns, lo_ns + bins * bin_ns)`: `d < lo_ns` -> Underflow; `d >= hi_ns` -> Overflow;
+//! else `Index(floor((d - lo_ns) * (1 / bin_ns)))` (one subtract, one multiply by the
+//! precomputed reciprocal, no division in the loop). The tests use `bin_ns` of 4.0 / 1.0 / 0.5,
+//! whose reciprocal is exact, so edges are exact.
+//!
+//! ## Range rule (`HistRange::from_config`)
+//!
+//! From `delayer.mean_ns`, `delayer.std_ns` (whatever the distribution) and, when the limiter is
+//! active, the Spacer queueing allowance `extra = limit / rate_bps * 1e9` ns with the derived
+//! limit `buffer_capacity * 1542 * 8` bit (a Spacer packet can wait up to a full limit's worth of
+//! bits; the realized delay includes that offset). `2 * TX_MAX_WAIT_NS` (20 us) is always added
+//! to `hi` (configured delay plus the staging wait):
 //!
 //! ```text
 //! lo = max(0, mean - 6 * std)
-//! hi = mean + 6 * std + extra + 2 * TX_MAX_WAIT_NS     (spec 57 T9: twice the staging wait)
-//! if hi - lo < 1000 ns:           (deterministic delay etc.: a window around the middle)
+//! hi = mean + 6 * std + extra + 2 * TX_MAX_WAIT_NS
+//! if hi - lo < 1000 ns:           (cannot happen while 2 * TX_MAX_WAIT_NS >= 1000)
 //!     mid = (lo + hi) / 2;  lo = max(0, mid - 500);  hi = lo + 1000
 //! bin_ns = (hi - lo) / 256
 //! ```
 //!
 //! ## Configurable histogram (`HistRange::from_spec`)
-//! `HistogramSpec { bins, lo_ns, hi_ns }`, every field optional; a missing field
-//! takes the automatic default (256 bins, `lo`/`hi` of the rule above for the
-//! direction's config). `bin_ns = (hi - lo) / bins`. Explicit values are taken
-//! as given (the 1 us minimum width applies to the automatic range only).
-//! Errors (`HistogramError`, Display names the offending field): `bins` not in
-//! `1..=4096`; `lo_ns` or `hi_ns` negative or not finite; the EFFECTIVE `lo >= hi`
-//! (also when only one of them is given and it lies beyond the automatic other):
-//! that message names both `lo_ns` and `hi_ns`.
+//!
+//! `HistogramSpec { bins, lo_ns, hi_ns }`, every field optional; a missing field takes the
+//! automatic default (256 bins, `lo`/`hi` of the rule above). `bin_ns = (hi - lo) / bins`.
+//! Explicit values are taken as given (the 1 us minimum width applies to the automatic range
+//! only). Errors (`HistogramError`, Display names the offending field): `bins` not in
+//! `1..=4096` (`with_bins` rejects 0); `lo_ns` or `hi_ns` negative or not finite; the EFFECTIVE
+//! `lo >= hi` (also when only one of them is given and it lies beyond the automatic other): that
+//! message names both `lo_ns` and `hi_ns`.
 //!
 //! ## Stats (`/dpds/stats,<dir>` via `Stats::stats_reply`)
-//! Spec 57: both are recorded at the TX enqueue, for the packets the NIC ACCEPTED
-//! (`staged[..sent]` of the `tx_burst`; the freed tail and rejected packets are not
-//! counted). `tx_ns` is the clock read immediately before `tx_burst` (delay-stats instance
-//! only). The delay is the realized delay `max(0, tx_ns - arrival_ns)` (arrival = the `now`
-//! of the push, `pop_due_with_time`'s third element); the lateness is
-//! `max(0, tx_ns - send_time_ns as f64)` and includes the staging wait (up to
-//! `TX_MAX_WAIT_NS`); `lateness_mean_ns` is the lateness sum over the number of recorded
-//! packets (the same count as the delay). Consequently, with a monotone clock the realized
-//! delay of a packet is at least its intended delay plus the wait of the batch. The
-//! histogram range rules above include `2 * TX_MAX_WAIT_NS` in `hi` (they are about the configured
-//! delay plus the staging wait, T9), so the histogram tests below compute the expected bin
-//! with `HistRange::bin` where the place depends on the clock.
-//! Keys (always present, zero before any packet):
-//!   `delay_mean_ns`, `delay_std_ns`, `lateness_mean_ns`: Str, `format!("{:.2}")`
-//!       (like `tx_pkts_per_call`; DPDK telemetry has no float setter);
-//!       std is the POPULATION standard deviation (divide by n);
-//!   `delay_min_ns`, `delay_max_ns`, `lateness_max_ns`: Uint (truncated).
-//! Numerics: std must stay exact for a large offset with a tiny spread (the
-//! test below uses 1e10 ns +- 3 us): shift by a reference value or Welford,
-//! not naive sum / sum-of-squares in f64.
+//!
+//! Delay and lateness are recorded at the TX enqueue, for the packets the NIC ACCEPTED
+//! (`staged[..sent]` of the `tx_burst`; the freed tail and rejected packets are not counted).
+//! `tx_ns` is the clock read immediately before `tx_burst` (delay-stats instance only). The delay
+//! is the realized delay `max(0, tx_ns - arrival_ns)` (arrival = the `now` of the push,
+//! `pop_due_with_time`'s third element); the lateness is `max(0, tx_ns - send_time_ns as f64)`
+//! and includes the staging wait (up to `TX_MAX_WAIT_NS`). With a monotone clock the realized
+//! delay of a packet is at least its intended delay plus the wait of the batch, so the histogram
+//! tests compute the expected bin with `HistRange::bin` where the place depends on the clock.
+//! Keys (always present, zero before any packet): `delay_mean_ns`, `delay_std_ns`,
+//! `lateness_mean_ns`: Str, `format!("{:.2}")` (DPDK telemetry has no float setter); std is the
+//! POPULATION standard deviation (divide by n); `delay_min_ns`, `delay_max_ns`,
+//! `lateness_max_ns`: Uint (truncated). `lateness_mean_ns` is the lateness sum over the number of
+//! recorded packets. std must stay exact for a large offset with a tiny spread (1e10 ns +- 3 us):
+//! shift by a reference value or Welford, not naive sum / sum-of-squares in f64.
 //!
 //! ## Histogram (`/dpds/delay_hist,<dir>`)
-//!   `Stats::with_range(HistRange) -> Stats` (`Stats::default()` uses
-//!   `HistRange::default()`), `DirectionStats::with_ranges(Vec<HistRange>)`
-//!   (one per direction; `DirectionStats::new(n)` = n default ranges),
-//!   `Stats::delay_hist_reply(&self) -> Reply` and
-//!   `DirectionStats::delay_hist_reply(&self, param: &str) -> Option<Reply>`
-//!   (`None` for a bad direction param, as `stats_reply`).
-//!   Spec 30: the reply is a PAGE (see hist_pages.rs). Keys, exactly these eight:
-//!   `lo_ns`, `bin_ns` (numbers: Uint or a decimal Str, the tests accept both),
-//!   `num_bins` (Uint, the actual number of bins of the whole histogram),
-//!   `bins` (UintArray, at most 500 entries of the page), `underflow`, `overflow`
-//!   (Uint), `page`, `first_bin` (Uint, the position of the page). Cumulative since start; every accepted packet is in
-//!   exactly one of bins/underflow/overflow.
 //!
-//! The telemetry-dependent tests only run with `--features telemetry`.
+//! `Stats::delay_hist_reply` / `DirectionStats::delay_hist_reply(param)` (`None` for a bad
+//! direction param). The reply is a PAGE (see hist_pages.rs) with exactly eight keys: `lo_ns`,
+//! `bin_ns` (Uint or a decimal Str, the tests accept both), `num_bins` (Uint, bins of the whole
+//! histogram), `bins` (UintArray, at most 500 entries of the page), `underflow`, `overflow`
+//! (Uint), `page`, `first_bin` (Uint, the position of the page). Cumulative since start; every
+//! accepted packet is in exactly one of bins/underflow/overflow.
 //!
-//! # Fix round (spec v6): D4 and D5
+//! ## Delay statistics switch off (`Stats::with_delay_stats(range, false)`)
 //!
-//! D4: `HistRange::with_bins(lo_ns, bin_ns, bins) -> Result<HistRange, HistogramError>`;
-//! zero bins is an `Err` whose Display names `bins` (the constructor returned a plain
-//! `HistRange` before). `HistRange::new` stays infallible (256 bins).
-//!
-//! D5, the per-direction delay-statistics switch (`"delay_stats": [..]` of the links file):
-//! new API, all builds (the switch is plain data, only the recording needs the feature):
-//!
-//! ```text
-//! Stats::with_delay_stats(range: HistRange, enabled: bool) -> Stats
-//!     `Stats::with_range(r)` == `Stats::with_delay_stats(r, true)`.
-//! DirectionStats::with_delay_settings(Vec<(HistRange, bool)>) -> DirectionStats
-//!     one (range, enabled) per direction.
-//! ```
-//!
-//! Off means, for that direction:
-//!   - `Stats::stats_reply` / `DirectionStats::stats_reply`: the six keys `delay_mean_ns`,
-//!     `delay_std_ns`, `delay_min_ns`, `delay_max_ns`, `lateness_mean_ns`, `lateness_max_ns`
-//!     are ABSENT (not zero, not null: a telemetry dict has no null); every other key is
-//!     present and unchanged, in the same order (so the reply has 22 keys instead of 28);
-//!   - `delay_hist_reply` is EMPTY: no bins (`bins` absent or an empty array, `num_bins`
-//!     absent or 0, `underflow`/`overflow` absent or 0), but it is still `Some(..)` for
-//!     `DirectionStats::delay_hist_reply` of an existing direction (a bad direction param
-//!     stays `None`);
-//!   - with `--features telemetry`: `forward::run` records no realized delay, lateness
-//!     or histogram entry, while every counter and drop cause is counted as before.
+//! - `stats_reply`: the six keys `delay_mean_ns`, `delay_std_ns`, `delay_min_ns`, `delay_max_ns`,
+//!   `lateness_mean_ns`, `lateness_max_ns` are ABSENT (not zero, not null: a telemetry dict has
+//!   no null); every other key is present and unchanged, in the same order (22 keys, not 28);
+//! - `delay_hist_reply` is EMPTY: no bins (`bins` absent or an empty array, `num_bins` absent or
+//!   0, `underflow`/`overflow` absent or 0), but still `Some(..)` for an existing direction (a
+//!   bad direction param stays `None`);
+//! - with `--features telemetry`: `forward::run` records no realized delay, lateness or
+//!   histogram entry, while every counter and drop cause is counted.
 
 use dpds::consts::TX_MAX_WAIT_NS;
 
-/// Spec 57 T9: the automatic window ends this far above `mean + 6 std + extra`.
+/// The automatic window ends this far above `mean + 6 std + extra`.
 const WINDOW_MARGIN_NS: f64 = 2.0 * TX_MAX_WAIT_NS;
 use dpds::delay_stats::{Bin, HistRange, HistogramSpec, HIST_BINS, MAX_BINS, MIN_WIDTH_NS};
 use dpds::reply::{Reply, Value};
@@ -252,7 +196,7 @@ fn a_deterministic_delay_gets_the_staging_wait_as_its_window() {
 fn the_window_starts_at_zero_or_at_the_lower_edge_and_ends_one_wait_above_the_mean() {
     let w = WINDOW_MARGIN_NS;
     assert_eq!(range(cfg(0.0, 0.0, None)), window(0.0, w));
-    // no recentring any more: lo is the mean itself
+    // no recentring: lo is the mean itself
     assert_eq!(range(cfg(200.0, 0.0, None)), window(200.0, 200.0 + w));
 }
 
@@ -478,7 +422,7 @@ fn explicit_values_are_used_as_given() {
             .bin_ns,
         2.0
     );
-    // spec 30: 4096 is the new maximum
+    // 4096 is the maximum
     assert_eq!(
         from_spec(c, spec(Some(4096), Some(0.0), Some(8192.0)))
             .unwrap()
@@ -1000,7 +944,7 @@ mod with_feature {
 
     #[test]
     fn the_config_derived_range_contains_the_earliest_realized_delay() {
-        // delay 2 ms: the range (spec 57 T9) is [2e6, 2e6 + 2 * TX_MAX_WAIT_NS), 20 us wide. The
+        // delay 2 ms: the range is [2e6, 2e6 + 2 * TX_MAX_WAIT_NS), 20 us wide. The
         // earliest realized delay is one wait above the intended one (arrival 100, send time
         // 2_000_100, now = tx = 2_010_100): delay 2_010_000, in the middle of the window.
         let cfg = config(100, 2_000_000.0, 0.0);
@@ -1071,7 +1015,7 @@ mod with_feature {
         assert!(ds.delay_hist_reply("1").is_none());
     }
 
-    // ── D5: forward::run with the switch off ─────────────────────────
+    // ── forward::run with the switch off ─────────────────────────
 
     fn keys_present(r: &Reply, keys: &[&str]) -> Vec<bool> {
         keys.iter()
@@ -1153,7 +1097,7 @@ fn the_range_types_exist_in_every_build_and_stats_can_be_built_with_one() {
     assert_eq!(ds.stats.len(), 2);
 }
 
-// ── D4: zero bins ───────────────────────────────────────────────────
+// ── zero bins ───────────────────────────────────────────────────
 
 #[test]
 fn zero_bins_are_rejected_by_with_bins() {
@@ -1173,12 +1117,12 @@ fn zero_bins_are_rejected_by_with_bins() {
 
 #[test]
 fn a_range_from_a_zero_bins_spec_is_still_an_error() {
-    // the spec route (links file) already refused it; it must stay that way
+    // the links file already refuses it
     let e = HistRange::from_spec(&cfg(1e6, 0.0, None), &spec(Some(0), None, None)).unwrap_err();
     assert!(e.to_string().contains("bins"), "{e}");
 }
 
-// ── D5: delay statistics off ────────────────────────────────────────
+// ── delay statistics off ────────────────────────────────────────
 
 const DELAY_KEYS: [&str; 6] = [
     "delay_mean_ns",

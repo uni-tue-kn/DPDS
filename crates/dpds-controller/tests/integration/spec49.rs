@@ -1,6 +1,6 @@
-//! Spec 49: start failures are reported through the UI.
+//! Start failures are reported through the UI.
 //!
-//! C1: `POST /api/emulation/start` compares the links' estimated mbuf-pool need with the free
+//! `POST /api/emulation/start` compares the links' estimated mbuf-pool need with the free
 //! hugepage memory of the (fake) host. Need above free: 400 `{"message"}` naming the need, the
 //! free memory, the link with the largest need and its buffer capacity; dpds is not launched.
 //! Need equal to free fits. A host without any hugepage information is not refused (dpds reports
@@ -9,12 +9,12 @@
 //! The need of one link is `(buffer_capacity + 9024) * 1920` bytes (the estimator of the
 //! hugepage hint); the numbers below are worked out from it.
 //!
-//! C2: when dpds exits with a non-zero status the error is `dpds exited with <exit status N |
+//! When dpds exits with a non-zero status the error is `dpds exited with <exit status N |
 //! signal S>: <reason>`, the reason being the last captured line that starts with `dpds: ` and
-//! is not a `dpds: warning:` line, without the prefix. No such line: the old text.
+//! is not a `dpds: warning:` line, without the prefix.
 //!
-//! Not covered here: the start half of a restart (the controller has no restart route), and a
-//! host that reports hugepages with total 0 (the spec only says "no info at all").
+//! Not covered here: a restart (no restart route), and a host that reports
+//! hugepages with total 0.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -31,7 +31,7 @@ use dpds_controller::supervisor::{
 };
 use dpds_controller::telemetry::socket_path;
 
-// ---- C1 ----------------------------------------------------------------------------------------
+// ---- hugepage check of start ----------------------------------------------------------------------------------------
 
 /// One link with the given buffer capacity.
 fn sized(name: &str, port: &str, capacity: u64) -> Value {
@@ -189,7 +189,7 @@ async fn a_start_that_fails_validation_keeps_its_own_error() {
     assert!(!r.message().contains("hugepage"), "{}", r.message());
 }
 
-// ---- C2 ----------------------------------------------------------------------------------------
+// ---- dpds exit error ----------------------------------------------------------------------------------------
 
 fn script(dir: &Path, body: &str) -> PathBuf {
     let p = dir.join("fake-dpds.sh");

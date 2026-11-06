@@ -1,4 +1,4 @@
-// Spec 48 F2/F3: App warns above the routed page when `/api/online` reports other connected users (P4TG's SessionWarning).
+// App warns above the routed page when `/api/online` reports other connected users (P4TG's SessionWarning).
 // - `connected_clients > 0`: a div[data-testid="session-warning"] above the page content with the text
 //   `⚠ Currently, ${n} other user${n > 1 ? 's are' : ' is'} connected to this DPDS instance` and P4TG's inline styles.
 // - Absent at 0, when the field is missing, and as soon as a poll fails (it comes back with the next good poll).

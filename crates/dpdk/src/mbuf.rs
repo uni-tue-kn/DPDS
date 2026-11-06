@@ -1,20 +1,15 @@
-//! Read-only access to packet bytes and mbuf header fields, plus the
-//! prefetch helpers for those reads. Everything else in this workspace
-//! only ever moves `RawMbuf` pointers around without looking inside them;
-//! this module is the one place that does, and it never writes to an mbuf
-//! (no dynamic fields are registered).
+//! Access to packet bytes and mbuf header fields, plus the prefetch helpers for
+//! those reads. The rest of the workspace only moves `RawMbuf` pointers around;
+//! this module is the one place that looks inside them.
 
 use std::marker::PhantomData;
 use std::ptr::NonNull;
 
 use crate::port::RawMbuf;
 
-/// Issues an L1 prefetch for the cache line containing `addr`: `prfm
-/// pldl1keep` on aarch64, `_mm_prefetch(_MM_HINT_T0)` on x86_64, nothing
-/// elsewhere. The one place the architecture-specific instructions live --
-/// every other prefetch helper in this module goes through here, so the
-/// `target_arch` cfg split exists exactly once. A prefetch hint never faults,
-/// even for a null or otherwise invalid `addr`, so this never dereferences it.
+/// L1 prefetch of the cache line containing `addr`: `prfm pldl1keep` on
+/// aarch64, `_mm_prefetch(_MM_HINT_T0)` on x86_64, nothing elsewhere. A
+/// prefetch hint never faults, even for a null or invalid `addr`.
 #[inline(always)]
 fn prefetch_t0(addr: *const i8) {
     #[cfg(target_arch = "x86_64")]
@@ -33,13 +28,10 @@ fn prefetch_t0(addr: *const i8) {
     let _ = addr;
 }
 
-/// Computes the address of mbuf `m`'s first segment's packet data --
-/// `buf_addr + data_off`, the same computation [`Packet::data`] makes
-/// (mirroring the `rte_pktmbuf_mtod` macro, which isn't itself
-/// bindgen-reachable, being function-like).
+/// Address of mbuf `m`'s first segment's packet data: `buf_addr + data_off`
+/// (the `rte_pktmbuf_mtod` macro, which bindgen cannot reach).
 ///
-/// `m` must point to a live mbuf: this reads `buf_addr`/`data_off`
-/// through it to compute the address it returns.
+/// `m` must point to a live mbuf: this reads `buf_addr`/`data_off` through it.
 #[inline(always)]
 fn data_addr(m: *const dpdk_sys::rte_mbuf) -> *const u8 {
     unsafe {
@@ -48,29 +40,22 @@ fn data_addr(m: *const dpdk_sys::rte_mbuf) -> *const u8 {
     }
 }
 
-/// Prefetches `rte_mbuf`'s first cache line (bytes 0..64: `buf_addr`,
-/// `data_off`/`refcnt`/`nb_segs`, `ol_flags`, `pkt_len`/`data_len`,
-/// `pool`) -- the line `m` itself points at -- into L1.
+/// Prefetches the mbuf's first cache line (`buf_addr`, `data_off`/`refcnt`/
+/// `nb_segs`, `ol_flags`, `pkt_len`/`data_len`, `pool`) into L1.
 ///
-/// Unlike every other prefetch helper in this module, `m` need not point
-/// to a live mbuf: the address being prefetched IS `m`, so nothing here
-/// ever dereferences it. This is what makes it safe to use on a whole
-/// batch in a pass ahead of the loop that reads it, e.g. for
-/// `pkt_len` reads of mbufs whose line 0 may have been cold since RX.
+/// Unlike the other prefetch helper, `m` need not point to a live mbuf: the
+/// address prefetched is `m` itself and is never dereferenced. That makes it
+/// safe on a whole batch ahead of the loop that reads `pkt_len`.
 #[inline(always)]
 pub fn prefetch_header(m: *const dpdk_sys::rte_mbuf) {
     prefetch_t0(m as *const i8);
 }
 
-/// Prefetches the cache line holding mbuf `m`'s first segment's packet
-/// data (via [`data_addr`]) into L1 -- the bytes the header parser
-/// ([`Packet::data`]) is about to read.
+/// Prefetches the cache line holding the first segment's packet data into L1.
 ///
-/// `m` must point to a live mbuf: unlike [`prefetch_header`], this
-/// dereferences `m` (through [`data_addr`]) to compute which address to
-/// prefetch. That read is a synchronous load of line 0, so this only pays
-/// off where line 0 is already hot, as right after `rx_burst`, which has
-/// just written it.
+/// `m` must point to a live mbuf: unlike [`prefetch_header`], this dereferences
+/// `m` to compute the address. That is a synchronous load of line 0, so it only
+/// pays off where line 0 is already hot, right after `rx_burst`.
 #[inline(always)]
 pub fn prefetch_data(m: *const dpdk_sys::rte_mbuf) {
     prefetch_t0(data_addr(m) as *const i8);
@@ -85,7 +70,7 @@ pub unsafe fn port(m: RawMbuf) -> u16 {
     (*m).__bindgen_anon_1.__bindgen_anon_1.port
 }
 
-/// Overwrites the port id stored in `m` (`rte_mbuf::port`).
+/// Overwrites the port id in `m` (`rte_mbuf::port`).
 ///
 /// # Safety
 /// `m` must point to a live mbuf that nothing else is accessing.
@@ -103,11 +88,10 @@ pub unsafe fn pkt_len(m: RawMbuf) -> u32 {
     (*m).__bindgen_anon_2.__bindgen_anon_1.pkt_len
 }
 
-/// Stores `ns` in the 8-byte `hash` union of `m` (`rte_mbuf::hash`, first
-/// cache line, next to `pkt_len`). DPDS carries the arrival time of a packet
-/// there while the delay buffer holds it: with one RX queue and no RSS the
-/// field is unused, and mlx5 TX never reads it. Unaligned write: the union is
-/// only 4-byte aligned.
+/// Stores `ns` in the 8-byte `hash` union of `m` (`rte_mbuf::hash`, first cache
+/// line, next to `pkt_len`). DPDS keeps a packet's arrival time there while the
+/// delay buffer holds it: with one RX queue and no RSS the field is unused, and
+/// mlx5 TX never reads it. Unaligned write: the union is only 4-byte aligned.
 ///
 /// # Safety
 /// `m` must point to a live mbuf that nothing else is accessing.
@@ -128,21 +112,9 @@ pub unsafe fn arrival_ns(m: RawMbuf) -> f64 {
     hash.cast::<f64>().read_unaligned()
 }
 
-/// A borrowed, read-only view of one mbuf's packet data.
-///
-/// Read-only by design: packet bytes are never written through this view.
-/// Per-packet metadata (a parsed header, an arrival timestamp) should travel
-/// next to the pointer in the caller's own structs rather than in the mbuf.
-///
-/// Stores a raw pointer plus `PhantomData<&'a rte_mbuf>`, which enforces
-/// the borrow-checker lifetime contract that the `Packet` must not outlive
-/// the mbuf (per [`Packet::from_raw`]'s safety doc).
-///
-/// The only unsafe step is [`Packet::from_raw`] itself — converting the
-/// raw pointer handed back by `rx_burst` into a lifetime-bound `Packet`.
-/// Every accessor after that is a safe `&self` method, the same
-/// single-unsafe-boundary shape `Port`/`RxQueue` already use elsewhere in
-/// this crate.
+/// A borrowed, read-only view of one mbuf's packet data. The `PhantomData`
+/// lifetime keeps the `Packet` from outliving the mbuf (see
+/// [`Packet::from_raw`]); that is the only unsafe step, every accessor is safe.
 pub struct Packet<'a> {
     mbuf: NonNull<dpdk_sys::rte_mbuf>,
     _marker: PhantomData<&'a dpdk_sys::rte_mbuf>,
@@ -182,10 +154,7 @@ impl<'a> Packet<'a> {
                 .__bindgen_anon_1
                 .data_len
         } as usize;
-        // Same computation as the `rte_pktmbuf_mtod` macro (not itself
-        // bindgen-reachable, since it's a function-like macro, not a
-        // static-inline function): base address of the segment's buffer,
-        // offset by how much headroom precedes the packet data.
+        // Same as the `rte_pktmbuf_mtod` macro: buffer base plus headroom.
         let data_off = unsafe {
             (*self.mbuf.as_ptr())
                 .__bindgen_anon_1
@@ -203,11 +172,8 @@ impl<'a> Packet<'a> {
 mod prefetch_helper_tests {
     use super::{data_addr, prefetch_data, prefetch_header};
 
-    /// Builds a zeroed `rte_mbuf` on the stack with `buf_addr` pointing at
-    /// `buf`'s first byte and `data_off` set as given -- the same two
-    /// fields [`Packet::data`] reads, via the same bindgen union path
-    /// (`__bindgen_anon_1.__bindgen_anon_1.data_off`). Valid for anything
-    /// `data_addr`/`prefetch_header`/`prefetch_data` do; no EAL needed.
+    /// A zeroed `rte_mbuf` with `buf_addr` pointing at `buf` and `data_off` as
+    /// given: the two fields [`Packet::data`] reads. No EAL needed.
     fn mbuf_with(buf: &[u8], data_off: u16) -> dpdk_sys::rte_mbuf {
         let mut m: dpdk_sys::rte_mbuf = unsafe { std::mem::zeroed() };
         m.buf_addr = buf.as_ptr() as *mut std::ffi::c_void;
@@ -215,8 +181,7 @@ mod prefetch_helper_tests {
         m
     }
 
-    /// `data_addr` and `Packet::data` compute the same address
-    /// independently; pin that they agree.
+    /// `data_addr` and `Packet::data` compute the same address independently.
     #[test]
     fn data_addr_matches_packet_data() {
         let buf = [0u8; 256];
@@ -247,15 +212,13 @@ mod prefetch_helper_tests {
         let expected = unsafe { buf.as_ptr().add(4) };
         let got = data_addr(&m);
         assert_eq!(got, expected);
-        // Must be derived from buf_addr, not from the mbuf struct's own
-        // address (they're deliberately different local buffers here).
+        // Derived from buf_addr, not from the mbuf struct's own address.
         assert_ne!(got, &m as *const _ as *const u8);
     }
 
     #[test]
     fn prefetch_header_does_not_dereference_a_null_pointer() {
-        // Must not panic or fault: prefetch_header only ever prefetches the
-        // address `m` itself (cache line 0), never reads through it.
+        // `prefetch_header` only prefetches the address `m` itself, never reads through it.
         prefetch_header(std::ptr::null());
     }
 
@@ -270,8 +233,7 @@ mod prefetch_helper_tests {
     fn prefetch_data_accepts_a_live_mbuf() {
         let buf = [0u8; 16];
         let m = mbuf_with(&buf, 0);
-        // No EAL in this test binary: `prefetch_data` must need nothing
-        // beyond the mbuf's own `buf_addr`/`data_off`.
+        // Needs nothing beyond the mbuf's own `buf_addr`/`data_off` (no EAL here).
         prefetch_data(&m);
     }
 }

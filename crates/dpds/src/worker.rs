@@ -1,5 +1,5 @@
-//! One direction's handle for [`forward::run`](crate::forward::run): its
-//! delay buffer and the two ports it uses.
+//! One direction's handle for [`forward::run`](crate::forward::run): its delay
+//! buffer and its two ports.
 
 use dpds_core::buffer::Buffer;
 
@@ -22,17 +22,17 @@ impl Worker {
         }
     }
 
-    /// The port this direction receives on (RX queue 0).
+    /// RX port (queue 0).
     pub fn rx_port(&self) -> u16 {
         self.rx_port
     }
 
-    /// The port this direction transmits on (TX queue 0).
+    /// TX port (queue 0).
     pub fn tx_port(&self) -> u16 {
         self.tx_port
     }
 
-    /// Whether packets are still waiting in the delay buffer.
+    /// Whether packets still wait in the delay buffer.
     pub fn has_backlog(&self) -> bool {
         !self.buffer.is_empty()
     }

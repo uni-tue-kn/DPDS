@@ -28,11 +28,9 @@ import { ApiError, api, serveHistory } from '../test/mockApi';
 import { must } from '../test/must';
 import { expectBars, percent } from '../test/probabilities';
 
-// Spec 51 F1/F2 (user 2026-11-05: "generate and show an IAT histogram and frame size donut right next to the loss donut").
-// Spec: .git/claude-specs/spec51-iat-frame-sizes.md. The header of src/test/dashboardUi.tsx has the contract of the DOM (the three
-// boxes with role "img" and their aria-labels). SPEC 52 CHANGED THIS FILE: the donut row has two columns (the IAT histogram left it,
-// pinned in dashboardSpec52.test.tsx) and the IAT histogram is the chart radio "IAT histogram", polled only while it is chosen and
-// the tab is shown; no Summary placeholder. CHOICEs of the tester where the spec is silent:
+// The IAT histogram and the frame size donut next to the loss donut. The header of src/test/dashboardUi.tsx has the contract of the
+// DOM (the role "img" boxes and their aria-labels). The donut row has two columns (loss, frame sizes) and the IAT histogram is the
+// chart radio "IAT histogram" (dashboardSpec52.test.tsx), polled only while it is chosen and the tab is shown; no Summary placeholder.
 //   - the frame size donut's box is labelled "Distribution of the received frames by size";
 //   - its hover text carries the label, `formatCount(count)` and the share with two decimals and a percent sign (like the loss
 //     donut's "<label>: <count> packets (<share> % of drops)", the wording after the count is free);
@@ -40,13 +38,13 @@ import { expectBars, percent } from '../test/probabilities';
 //     eight), the text "No frames" below it, and the hover text says "No frames" (no NaN, no %);
 //   - the IAT box is labelled "IAT histogram of link <dir>"; the chart is a Bar with one dataset whose data are the response's
 //     `bins`, one label per bin, the chart title "IAT" (`plugins.title`), the y axis "#Packets", an x axis whose title names a
-//     time unit (ns, µs, ms or s); the title line is not pinned any more (spec 52 R2b: the tables carry the numbers);
+//     time unit (ns, µs, ms or s);
 //   - the IAT is polled by the function `getIatHistogram(dir)` of the API client (the one-argument form, no window), every second
 //     like the delay histogram, only while the "IAT histogram" radio is chosen and the link's tab is shown.
 
-/** P4TG's frame size labels (Configuration GUI/src/components/Visuals.tsx, frame_size_data). */
+/** P4TG's frame size labels. */
 const FRAME_LABELS = ['0-63', '64', '65-127', '128-255', '256-511', '512-1023', '1024-1518', '1519-21519'];
-// User 2026-11-05: the frame sizes take the loss donut's soft palette, without its red, instead of P4TG's colours.
+// The frame sizes take the loss donut's soft palette, without its red, instead of P4TG's colours.
 const FRAME_COLOURS: [number, number, number][] = [
   [0x6c, 0x8e, 0xbf],
   [0x00, 0xce, 0xc9],
@@ -142,7 +140,7 @@ describe('Dashboard (spec 51 F1, spec 52 R1/R2): the donut row of a link', () =>
     expect(lossDonut(panel)).toBeInTheDocument();
     expect(frameDonut(panel)).toBeInTheDocument();
     expect(lossDonut(panel)).not.toBe(frameDonut(panel));
-    expect(donutOf(lossDonut(panel)).labels).toHaveLength(9); // the loss donut is the one of spec 35 / 47, unchanged
+    expect(donutOf(lossDonut(panel)).labels).toHaveLength(9); // the loss donut is unchanged
   });
 
   it('sits below the radios, the rate table row and the loss table row', async () => {

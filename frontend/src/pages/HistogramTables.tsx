@@ -8,7 +8,7 @@ const NA = '-';
 /** A duration, or "-" when there is none. */
 const duration = (ns?: number | null) => (ns == null ? NA : formatDuration(ns));
 
-/** A P4TG-style table: the header row shows `tip` on hover, one body row follows. */
+/** A table: the header row shows `tip` on hover, one body row follows. */
 function StatTable({
   tip,
   heads,
@@ -46,7 +46,7 @@ function StatTable({
   );
 }
 
-/** The numbers of a link's delay (or, with `name`, IAT) histogram in rows, like P4TG's histogram tables. `meanNs` and `stdNs` are its mean and σ. */
+/** The numbers of a link's delay (or, with `name`, IAT) histogram in rows. `meanNs` and `stdNs` are its mean and σ. */
 export default function HistogramTables({
   hist,
   name = 'Delay',

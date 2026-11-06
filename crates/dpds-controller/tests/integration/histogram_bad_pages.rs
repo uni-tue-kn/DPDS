@@ -1,29 +1,22 @@
-//! Spec 30b (fixes from the review of 35d7876): a histogram page problem never costs the rest of
-//! the poll.
-//!
-//! # What the tests assume
+//! A histogram page problem never costs the rest of the poll.
 //!
 //! - Only an I/O error (timeout, closed or broken socket: anything that can desynchronise the
 //!   matching of replies to requests by send order) fails a poll (`poll_once` is `Err`, the
-//!   `Poller` reconnects), as before.
+//!   `Poller` reconnects).
 //! - A page that is null, empty (`{}`), lacks `bins`, has a `bins` that is not an array of u64, has
 //!   the wrong `page`, `first_bin` or `num_bins`, or the wrong number of bins makes that
 //!   direction's histogram absent for this poll: `delay_histogram(&snapshot, dir)` is `None` and
 //!   the histogram endpoint answers 404 "no delay histogram for direction <dir>". Counters
 //!   (`dirs`), NIC stats (`eth`), `ports` and the other direction's histogram of the same poll are
-//!   published unchanged. The poller stays connected (no reconnect) and the cache is fresh (not
-//!   `stale`).
-//! - An older `dpds` whose page 0 has `bins` but no `page`/`first_bin` is just such a bad page.
-//! - Page 0 with `num_bins` or `lo_ns`/`bin_ns` but no valid `bins` is "broken": no histogram for
-//!   that poll, never a 200 with zero bins. (A log warning naming the direction is part of the spec
-//!   too, but the controller logs with `eprintln!` to the process's stderr, which an in-process
-//!   test cannot capture, so it is not pinned here.)
-//! - Spec 30b item 4: the bins of a snapshot live only in `hist_bins`; a snapshot with `bins` only
-//!   inside `hists[d]` has no histogram (no fallback). Test snapshots are built with the shared
-//!   helpers `set_hist`/`set_hists` of `common`.
+//!   published unchanged; the poller stays connected and the cache is not `stale`.
+//! - A page 0 with `bins` but no `page`/`first_bin` is such a bad page. A page 0 with `num_bins` or
+//!   `lo_ns`/`bin_ns` but no valid `bins` is "broken": no histogram, never a 200 with zero bins.
+//!   (The warning the controller logs with `eprintln!` cannot be captured in process.)
+//! - The bins of a snapshot live only in `hist_bins`; a snapshot with `bins` only inside
+//!   `hists[d]` has no histogram. Test snapshots are built with `set_hist`/`set_hists` of `common`.
 //!
-//! What the tests do not pin: whether the controller still asks for the pages after a bad one, and
-//! what `Snapshot::hists` holds for a bad direction (only that `delay_histogram` is `None`).
+//! Not pinned: whether the controller still asks for the pages after a bad one, and what
+//! `Snapshot::hists` holds for a bad direction.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -352,7 +345,7 @@ fn a_page_0_that_is_empty_or_null_is_no_histogram_and_not_a_failure() {
 
 #[test]
 fn a_page_0_with_metadata_but_no_valid_bins_never_gives_a_histogram() {
-    // item 2: "broken", not "absent": never a histogram with zero bins
+    // "broken", not "absent": never a histogram with zero bins
     let metadata_only: [(&str, Page0Edit); 7] = [
         ("num_bins, no bins", |v| without(v, "bins")),
         ("num_bins, bins null", |v| {
@@ -461,7 +454,7 @@ fn the_snapshot_helpers_split_and_join_a_json_histogram() {
 
 #[test]
 fn bins_only_in_hists_are_no_histogram() {
-    // the fallback to `hists[d].bins` is gone: bins live in `hist_bins` and nowhere else
+    // there is no fallback to `hists[d].bins`: bins live in `hist_bins` and nowhere else
     let s = Snapshot {
         hists: vec![hist_json(0.0, 10.0, 16)],
         ..Snapshot::default()
@@ -638,7 +631,7 @@ async fn a_null_middle_page_keeps_the_poller_connected_and_the_rest_published() 
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_poller_whose_connection_breaks_in_a_histogram_reconnects_and_publishes_nothing() {
-    // the contrast: an I/O error is a failed poll, as before
+    // the contrast: an I/O error is a failed poll
     let r = rig(
         Mode::CloseOnLaterPage,
         handler(base_snapshot(), |_, _, honest| Some(honest)),

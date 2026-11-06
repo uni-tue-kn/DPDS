@@ -11,15 +11,13 @@ pub type MacAddr = [u8; 6];
 
 // ── Port enumeration ─────────────────────────────────────────────────────────
 
-/// Returns the number of available Ethernet ports.
+/// Number of available Ethernet ports.
 #[inline(always)]
 pub fn rte_eth_dev_count_avail() -> u16 {
     unsafe { dpdk_sys::rte_eth_dev_count_avail() }
 }
 
-/// Iterator over all valid (ownerless) Ethernet port IDs.
-///
-/// Mirrors `RTE_ETH_FOREACH_DEV` from `<rte_ethdev.h>`.
+/// Iterator over all valid (ownerless) Ethernet port IDs (`RTE_ETH_FOREACH_DEV`).
 pub struct PortIter {
     next: u16,
 }
@@ -39,26 +37,17 @@ impl Iterator for PortIter {
     }
 }
 
-/// Iterate over all valid Ethernet port IDs (equivalent to
-/// `RTE_ETH_FOREACH_DEV`).
 #[inline(always)]
 pub fn foreach_dev() -> PortIter {
     PortIter { next: 0 }
 }
 
-/// Returns a port's DPDK device name (e.g. `"0000:65:00.1"` for a PCI
-/// function, see `rte_eth_dev_get_name_by_port`'s own doc comment for the
-/// other possible forms). Control-path call, usable before `Port::init`
-/// (e.g. to resolve a `--tx-pci`-style device name against DPDK's own port
-/// list) as well as after — it only needs a valid port id, not a live
-/// [`Port`] handle, so unlike every [`Port`] accessor below it's a free
-/// function rather than a method.
+/// A port's DPDK device name (e.g. `"0000:65:00.1"` for a PCI function).
+/// Control-path call; needs a valid port id, not a [`Port`], so it works before
+/// `Port::init`.
 pub fn device_name(port: u16) -> Result<String, DpdkError> {
-    // RTE_ETH_NAME_MAX_LEN (`<rte_ethdev.h>`) is itself a `#define` alias
-    // of RTE_DEV_NAME_MAX_LEN (`<rte_dev.h>`, 64) -- bindgen doesn't
-    // reliably resolve a macro-to-macro alias into a usable Rust const, so
-    // the buffer size is pinned here by hand instead of via a
-    // `dpdk_sys::RTE_ETH_NAME_MAX_LEN` constant.
+    // RTE_ETH_NAME_MAX_LEN is a `#define` alias of RTE_DEV_NAME_MAX_LEN (64), which
+    // bindgen does not reliably resolve, so the size is pinned by hand.
     const RTE_ETH_NAME_MAX_LEN: usize = 64;
     let mut buf = [0 as std::ffi::c_char; RTE_ETH_NAME_MAX_LEN];
     check(unsafe { dpdk_sys::rte_eth_dev_get_name_by_port(port, buf.as_mut_ptr()) })?;
@@ -67,21 +56,18 @@ pub fn device_name(port: u16) -> Result<String, DpdkError> {
         .into_owned())
 }
 
-/// TX offloads [`Port::init`] requests for a device reporting
-/// `tx_offload_capa`: `RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE` if the device
-/// offers it, nothing else. Fast-free is valid here because every mbuf
-/// comes from one pool, is direct and single-segment, and is never
-/// reference-counted -- the same promise
-/// [`crate::mempool::MbufFreer::free_bulk`] relies on.
+/// TX offloads [`Port::init`] requests for a device reporting `tx_offload_capa`:
+/// `RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE` if offered, nothing else. Valid because
+/// every mbuf comes from one pool, is direct and single-segment, and is never
+/// reference-counted (the promise [`crate::mempool::MbufFreer::free_bulk`] relies on).
 pub fn tx_offloads_for(tx_offload_capa: u64) -> u64 {
     tx_offload_capa & dpdk_sys::RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE
 }
 
 /// The RX and TX descriptor ring sizes the driver of `port` would apply for the
 /// requested ones (`rte_eth_dev_adjust_nb_rx_tx_desc`: clamped to the device's
-/// limits and alignment). [`Port::init`] uses exactly this, so calling it
-/// before the pool exists tells what the ring sizes will be. Needs only a
-/// valid port, not a configured one.
+/// limits and alignment), as [`Port::init`] does. Needs only a valid port, so it
+/// works before the pool exists.
 pub fn adjust_nb_rx_tx_desc(port: u16, nb_rxd: u16, nb_txd: u16) -> Result<(u16, u16), DpdkError> {
     let (mut rxd, mut txd) = (nb_rxd, nb_txd);
     check(unsafe { dpdk_sys::rte_eth_dev_adjust_nb_rx_tx_desc(port, &mut rxd, &mut txd) })?;
@@ -90,67 +76,46 @@ pub fn adjust_nb_rx_tx_desc(port: u16, nb_rxd: u16, nb_txd: u16) -> Result<(u16,
 
 // ── Port handle ──────────────────────────────────────────────────────────────
 
-/// A configured and started Ethernet port — the **control-plane** handle.
+/// A configured and started Ethernet port: the control-plane handle, stopped and
+/// closed on drop.
 ///
-/// The lifetime parameter ties the port to the [`Mempool`] backing its RX
-/// queues: the borrow checker guarantees the pool cannot be freed while the
-/// device could still deliver packets into it.
+/// The lifetime ties the port to the [`Mempool`] backing its RX queues, so the
+/// pool cannot be freed while the device could still deliver packets into it.
 ///
-/// The device is stopped and closed on drop.
-///
-/// The data plane lives on per-queue handles instead: [`Port::queues`]
-/// splits the port into [`RxQueue`]/[`TxQueue`] handles, one per configured
-/// queue, each of which can be moved to (and polled from) exactly one
-/// thread.  `Port` itself stays `!Sync` because DPDK's ethdev control-path
-/// functions are not thread-safe against each other either.
+/// The data plane uses per-queue handles ([`Port::queues`]), each moved to and
+/// polled from exactly one thread. `Port` is `!Sync` because DPDK's ethdev
+/// control-path functions are not thread-safe against each other.
 pub struct Port<'pool> {
     id: u16,
     nb_rx_queues: u16,
     nb_tx_queues: u16,
     device_name: String,
-    /// RX/TX descriptor ring sizes as actually applied by the driver
-    /// (post-`rte_eth_dev_adjust_nb_rx_tx_desc`) — may silently differ
-    /// from what was requested (see `requested_rxd`/`requested_txd`
-    /// below), e.g. a driver clamping 65,535 down to its own max.
+    /// RX/TX descriptor ring sizes applied by the driver
+    /// (post-`rte_eth_dev_adjust_nb_rx_tx_desc`); may silently differ from the
+    /// requested ones, e.g. a driver clamping 65,535 down to its own max.
     nb_rxd: u16,
     nb_txd: u16,
-    /// RX/TX descriptor ring sizes as requested by the caller, before any
-    /// driver clamping — kept alongside the applied values above so a
-    /// caller (or telemetry reader) can tell the two apart instead of only
-    /// ever seeing what was actually applied.
+    /// RX/TX descriptor ring sizes requested by the caller, before any driver
+    /// clamping.
     requested_rxd: u16,
     requested_txd: u16,
-    /// Whether `RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE` was requested (see
-    /// [`tx_offloads_for`]).
     mbuf_fast_free: bool,
     _pool: PhantomData<&'pool Mempool>,
     _not_sync: PhantomData<Cell<()>>,
 }
 
 impl<'pool> Port<'pool> {
-    /// Initialise one Ethernet port with `nb_queues` RX and TX queues each,
-    /// and start it.
+    /// Initialises and starts one Ethernet port with `nb_queues` RX and TX
+    /// queues each, in promiscuous mode. `MBUF_FAST_FREE` is enabled when the
+    /// device offers it ([`tx_offloads_for`]); with more than one queue RSS
+    /// spreads IP/TCP/UDP flows across the RX queues (restricted to what the
+    /// device supports; per-flow order is preserved). Descriptor ring sizes are
+    /// adjusted to hardware limits.
     ///
-    /// Mirrors the `port_init()` function in DPDK's own `examples/skeleton/
-    /// basicfwd.c`, generalised to multiple queues:
-    /// 1. Validates the port ID and queue count.
-    /// 2. Queries device capabilities and enables `MBUF_FAST_FREE` when
-    ///    available ([`tx_offloads_for`]; valid here because all mbufs come
-    ///    from one pool and are never reference-counted).
-    /// 3. With more than one queue, enables RSS so the NIC spreads flows
-    ///    across the RX queues (hashing IP/TCP/UDP fields, restricted to
-    ///    what the device supports; per-flow packet order is preserved).
-    /// 4. Configures the device and adjusts descriptor ring sizes to
-    ///    hardware limits.
-    /// 5. Sets up every RX and TX queue on the port's own NUMA socket.
-    /// 6. Starts the device and enables promiscuous mode.
-    ///
-    /// `mtu` is the requested MTU (`rte_eth_rxmode::mtu`: the max L3 payload
-    /// size, excluding the 14-byte Ethernet header and 4-byte FCS) --
-    /// callers whose frames carry extra header overhead beyond plain
-    /// Ethernet+IP (e.g. tunnel or VLAN encapsulation) must pad it in
-    /// accordingly, or oversized frames get dropped at the NIC before ever
-    /// reaching DPDK.
+    /// `mtu` is the requested MTU (`rte_eth_rxmode::mtu`: the max L3 payload,
+    /// excluding the 14-byte Ethernet header and 4-byte FCS); frames with extra
+    /// header overhead (tunnel, VLAN) need it padded, or the NIC drops oversized
+    /// frames before DPDK sees them.
     pub fn init(
         port: u16,
         pool: &'pool Mempool,
@@ -168,7 +133,7 @@ impl<'pool> Port<'pool> {
 
         let device_name = device_name(port)?;
 
-        // ── 1. Gather device capabilities ────────────────────────────────────
+        // Device capabilities
         let mut dev_info: dpdk_sys::rte_eth_dev_info = unsafe { mem::zeroed() };
         check(unsafe { dpdk_sys::rte_eth_dev_info_get(port, &mut dev_info) })?;
         if nb_queues > dev_info.max_rx_queues || nb_queues > dev_info.max_tx_queues {
@@ -192,14 +157,14 @@ impl<'pool> Port<'pool> {
                 unsafe { dpdk_sys::rte_eth_rss_ip_tcp_udp() } & dev_info.flow_type_rss_offloads;
         }
 
-        // ── 2. Configure the device ───────────────────────────────────────────
+        // Configure the device
         check(unsafe { dpdk_sys::rte_eth_dev_configure(port, nb_queues, nb_queues, &port_conf) })?;
 
         let requested_rxd = nb_rxd;
         let requested_txd = nb_txd;
         let (nb_rxd, nb_txd) = adjust_nb_rx_tx_desc(port, nb_rxd, nb_txd)?;
 
-        // ── 3. RX queues ──────────────────────────────────────────────────────
+        // RX queues
         for q in 0..nb_queues {
             check(unsafe {
                 dpdk_sys::rte_eth_rx_queue_setup(
@@ -213,7 +178,7 @@ impl<'pool> Port<'pool> {
             })?;
         }
 
-        // ── 4. TX queues ──────────────────────────────────────────────────────
+        // TX queues
         let mut txconf = dev_info.default_txconf;
         txconf.offloads = port_conf.txmode.offloads;
         for q in 0..nb_queues {
@@ -228,10 +193,10 @@ impl<'pool> Port<'pool> {
             })?;
         }
 
-        // ── 5. Start ──────────────────────────────────────────────────────────
+        // Start
         check(unsafe { dpdk_sys::rte_eth_dev_start(port) })?;
 
-        // ── 6. Promiscuous mode ───────────────────────────────────────────────
+        // Promiscuous mode
         check(unsafe { dpdk_sys::rte_eth_promiscuous_enable(port) })?;
 
         Ok(Port {
@@ -249,82 +214,70 @@ impl<'pool> Port<'pool> {
         })
     }
 
-    /// The DPDK port ID.
     #[inline(always)]
     pub fn id(&self) -> u16 {
         self.id
     }
 
-    /// The port's DPDK device name (e.g. `"0000:65:00.1"`), captured once
-    /// at [`Port::init`] time via [`device_name`] (the free function of
-    /// the same name).
+    /// The port's DPDK device name (e.g. `"0000:65:00.1"`), captured at
+    /// [`Port::init`].
     #[inline(always)]
     pub fn device_name(&self) -> &str {
         &self.device_name
     }
 
-    /// RX descriptor ring size actually applied by the driver (post-
-    /// `rte_eth_dev_adjust_nb_rx_tx_desc`) — see [`Port::rx_ring_size_requested`]
-    /// for what was asked for before any driver clamping.
+    /// RX descriptor ring size applied by the driver; see
+    /// [`Port::rx_ring_size_requested`] for the requested one.
     #[inline(always)]
     pub fn rx_ring_size(&self) -> u16 {
         self.nb_rxd
     }
 
-    /// TX descriptor ring size actually applied by the driver — see
-    /// [`Port::rx_ring_size`]'s doc comment.
+    /// TX descriptor ring size applied by the driver.
     #[inline(always)]
     pub fn tx_ring_size(&self) -> u16 {
         self.nb_txd
     }
 
-    /// RX descriptor ring size as requested at [`Port::init`], before any
-    /// driver clamping.
+    /// RX descriptor ring size requested at [`Port::init`], before driver clamping.
     #[inline(always)]
     pub fn rx_ring_size_requested(&self) -> u16 {
         self.requested_rxd
     }
 
-    /// TX descriptor ring size as requested at [`Port::init`], before any
-    /// driver clamping.
+    /// TX descriptor ring size requested at [`Port::init`], before driver clamping.
     #[inline(always)]
     pub fn tx_ring_size_requested(&self) -> u16 {
         self.requested_txd
     }
 
-    /// Whether `RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE` is enabled on this
-    /// port, i.e. whether the device reported the capability at
-    /// [`Port::init`] (see [`tx_offloads_for`]). A device that doesn't
-    /// (e.g. mlx5 with MPRQ on, whose RX mbufs may be attached to shared
-    /// external buffers) can hand out mbufs that must not be freed with
-    /// [`crate::mempool::MbufFreer::free_bulk`].
+    /// Whether `RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE` is enabled, i.e. the device
+    /// reported the capability at [`Port::init`]. A device without it (e.g. mlx5
+    /// with MPRQ on, whose RX mbufs may use shared external buffers) can hand out
+    /// mbufs that must not be freed with [`crate::mempool::MbufFreer::free_bulk`].
     #[inline(always)]
     pub fn mbuf_fast_free(&self) -> bool {
         self.mbuf_fast_free
     }
 
-    /// The RX burst function the driver uses on queue 0, as reported by
-    /// `rte_eth_rx_burst_mode_get` (e.g. `"Vector AVX2"`), or `None` if the
-    /// driver does not report one. For a startup log line.
+    /// The RX burst function the driver uses on queue 0 (e.g. `"Vector AVX2"`),
+    /// or `None` if the driver does not report one. For a startup log line.
     pub fn rx_burst_mode(&self) -> Option<String> {
         let mut mode: dpdk_sys::rte_eth_burst_mode = unsafe { mem::zeroed() };
         (unsafe { dpdk_sys::rte_eth_rx_burst_mode_get(self.id, 0, &mut mode) } == 0)
             .then(|| burst_mode_info(&mode))
     }
 
-    /// The TX burst function the driver uses on queue 0, as reported by
-    /// `rte_eth_tx_burst_mode_get`, or `None` if the driver does not report
-    /// one. For a startup log line.
+    /// The TX burst function the driver uses on queue 0, or `None` if the driver
+    /// does not report one. For a startup log line.
     pub fn tx_burst_mode(&self) -> Option<String> {
         let mut mode: dpdk_sys::rte_eth_burst_mode = unsafe { mem::zeroed() };
         (unsafe { dpdk_sys::rte_eth_tx_burst_mode_get(self.id, 0, &mut mode) } == 0)
             .then(|| burst_mode_info(&mode))
     }
 
-    /// The port's current negotiated link speed (e.g. `"100 Gbps"`), via
-    /// `rte_eth_link_get`/`rte_eth_link_speed_to_str`. Only meaningful once
-    /// the device is started (see [`Port::init`]'s step 5), since the link
-    /// has to come up before a speed is negotiated.
+    /// The negotiated link speed (e.g. `"100 Gbps"`). Only meaningful once the
+    /// device is started, since the link has to come up first.
     pub fn link_speed(&self) -> Result<String, DpdkError> {
         let mut link: dpdk_sys::rte_eth_link = unsafe { mem::zeroed() };
         check(unsafe { dpdk_sys::rte_eth_link_get(self.id, &mut link) })?;
@@ -333,24 +286,19 @@ impl<'pool> Port<'pool> {
         Ok(speed.to_string_lossy().into_owned())
     }
 
-    /// Whether the port's link is currently up, via `rte_eth_link_get_nowait`
-    /// (reports the current state without waiting for autonegotiation to
-    /// finish). Only meaningful once the device is started (see
-    /// [`Port::init`]'s step 5).
+    /// Whether the link is currently up (`rte_eth_link_get_nowait`: does not
+    /// wait for autonegotiation). Only meaningful once the device is started.
     pub fn link_up(&self) -> Result<bool, DpdkError> {
         let mut link: dpdk_sys::rte_eth_link = unsafe { mem::zeroed() };
         check(unsafe { dpdk_sys::rte_eth_link_get_nowait(self.id, &mut link) })?;
         Ok(unsafe { link.__bindgen_anon_1.__bindgen_anon_1.link_status() } != 0)
     }
 
-    /// Split the port into its per-queue **data-plane** handles.
-    ///
-    /// Returns one [`RxQueue`] and one [`TxQueue`] per configured queue.
-    /// The handles borrow the port mutably, so while any of them is alive
-    /// the port cannot be dropped (stopping the device under a live queue)
-    /// or split a second time (duplicating a handle).  Each handle is
-    /// therefore the unique capability to poll its (port, queue, direction)
-    /// — exactly DPDK's threading rule, encoded in the borrow checker.
+    /// Splits the port into one [`RxQueue`] and one [`TxQueue`] per configured
+    /// queue. The handles borrow the port mutably, so while any is alive the port
+    /// cannot be dropped (stopping the device under a live queue) or split again
+    /// (duplicating a handle): each handle is the unique capability to poll its
+    /// (port, queue, direction), DPDK's threading rule in the borrow checker.
     pub fn queues(&mut self) -> (Vec<RxQueue<'_>>, Vec<TxQueue<'_>>) {
         let rx = (0..self.nb_rx_queues)
             .map(|q| RxQueue {
@@ -374,12 +322,9 @@ impl<'pool> Port<'pool> {
 
 // ── Data-plane queue handles ─────────────────────────────────────────────────
 
-/// RX handle for one (port, queue) pair.
-///
-/// `Send` but not `Sync`, and never duplicated (see [`Port::queues`]): a
-/// queue is polled by exactly one thread, per DPDK's threading rules.  Burst
-/// calls perform no validation — holding the handle is proof the queue
-/// exists, so the fast path carries no extra branch.
+/// RX handle for one (port, queue) pair: `Send` but not `Sync`, never duplicated
+/// (see [`Port::queues`]). Burst calls do no validation, since holding the
+/// handle proves the queue exists.
 pub struct RxQueue<'port> {
     port_id: u16,
     queue_id: u16,
@@ -388,12 +333,9 @@ pub struct RxQueue<'port> {
 }
 
 impl RxQueue<'_> {
-    /// Receive a burst of packets into `bufs`.
-    ///
-    /// Returns the number of packets actually received (≤ `bufs.len()`).
-    /// The received mbufs are owned by the caller and must eventually be
-    /// transmitted via [`TxQueue::tx_burst`] or freed with
-    /// [`rte_pktmbuf_free`].
+    /// Receives a burst into `bufs`; returns the number received. The caller owns
+    /// the mbufs and must transmit them ([`TxQueue::tx_burst`]) or free them
+    /// ([`rte_pktmbuf_free`]).
     #[inline(always)]
     pub fn rx_burst(&mut self, bufs: &mut [RawMbuf]) -> u16 {
         let n = bufs.len().min(u16::MAX as usize) as u16;
@@ -401,9 +343,7 @@ impl RxQueue<'_> {
     }
 }
 
-/// TX handle for one (port, queue) pair.
-///
-/// Same ownership rules as [`RxQueue`].
+/// TX handle for one (port, queue) pair; same ownership rules as [`RxQueue`].
 pub struct TxQueue<'port> {
     port_id: u16,
     queue_id: u16,
@@ -412,11 +352,9 @@ pub struct TxQueue<'port> {
 }
 
 impl TxQueue<'_> {
-    /// Transmit a burst of packets from `bufs`.
-    ///
-    /// Returns the number of packets actually sent; ownership of those mbufs
-    /// passes to the driver.  The caller must free any packets at indices
-    /// `nb_tx..` with [`rte_pktmbuf_free`].
+    /// Transmits a burst from `bufs`; returns the number sent, whose ownership
+    /// passes to the driver. The caller must free the packets at indices `nb_tx..`
+    /// with [`rte_pktmbuf_free`].
     #[inline(always)]
     pub fn tx_burst(&mut self, bufs: &mut [RawMbuf]) -> u16 {
         let n = bufs.len().min(u16::MAX as usize) as u16;
@@ -424,24 +362,17 @@ impl TxQueue<'_> {
     }
 }
 
-/// Stops and closes the device identified by `port_id`.
+/// Stops and closes the device `port_id`.
 ///
-/// Free function rather than a `Port` method: callers that `Box::leak`
-/// their `Port` for `'static` queue handles (needed by
-/// [`crate::eal::remote_launch`]'s `'static` bound) have that borrow
-/// widened by the compiler to live for `'static` too -- so the `Port`
-/// itself can never be borrowed again afterwards, not even at shutdown,
-/// even once every lcore holding a queue handle has actually been joined.
-/// Going through the raw port ID instead sidesteps that borrow entirely.
-///
-/// A leaked value's `Drop` never runs, so shutdown code must call this
-/// explicitly -- relying on `Drop` alone silently skips it, leaving the
-/// device started when `rte_eal_cleanup` later tries to close it (ethdev
-/// then logs "Cannot close started device").
+/// A free function because callers `Box::leak` their `Port` for `'static` queue
+/// handles (needed by [`crate::eal::remote_launch`]), which borrows it for
+/// `'static`, so it cannot be borrowed again at shutdown. A leaked value's
+/// `Drop` never runs, so shutdown code must call this explicitly, or the device
+/// stays started when `rte_eal_cleanup` tries to close it (ethdev then logs
+/// "Cannot close started device").
 pub fn shutdown_port(port_id: u16) {
-    // Stop before close, per the ethdev API contract.  Log the return
-    // codes since a failed stop leaves the device's internal dev_started
-    // flag set, which makes close() fail too.
+    // Stop before close. A failed stop leaves the device's dev_started flag
+    // set, which makes close() fail too, so log both return codes.
     unsafe {
         let stop_ret = dpdk_sys::rte_eth_dev_stop(port_id);
         if stop_ret != 0 {
@@ -462,10 +393,8 @@ pub fn shutdown_port(port_id: u16) {
 
 impl Drop for Port<'_> {
     fn drop(&mut self) {
-        // Errors cannot be propagated from Drop; the device is going away
-        // either way. Only reached for a non-leaked Port -- see
-        // `shutdown_port` for the leaked case (every `Port` in this
-        // codebase today).
+        // Errors cannot be propagated from Drop. Only reached for a non-leaked
+        // Port; see `shutdown_port` for the leaked case.
         shutdown_port(self.id);
     }
 }
@@ -475,38 +404,28 @@ impl Drop for Port<'_> {
 /// Basic per-port counters (subset of `rte_eth_stats`).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct PortStats {
-    /// Successfully received packets.
     pub ipackets: u64,
-    /// Successfully transmitted packets.
     pub opackets: u64,
-    /// Successfully received bytes.
     pub ibytes: u64,
-    /// Successfully transmitted bytes.
     pub obytes: u64,
     /// RX packets dropped by the hardware (e.g. full RX descriptor ring).
     pub imissed: u64,
-    /// Erroneous received packets.
     pub ierrors: u64,
-    /// Failed transmitted packets.
     pub oerrors: u64,
-    /// RX mbuf allocation failures — a sign the mempool is undersized.
+    /// RX mbuf allocation failures: the mempool is undersized.
     pub rx_nombuf: u64,
 }
 
-/// Reset a port's basic statistics and its xstats to 0 (`rte_eth_stats_reset` and
-/// `rte_eth_xstats_reset`), so the NIC counters count from now on.
+/// Resets a port's basic statistics and xstats to 0.
 pub fn eth_stats_reset(port: u16) -> Result<(), DpdkError> {
     check(unsafe { dpdk_sys::rte_eth_stats_reset(port) })?;
     check(unsafe { dpdk_sys::rte_eth_xstats_reset(port) })?;
     Ok(())
 }
 
-/// Read a port's basic statistics.
-///
-/// This is a control-path API: DPDK validates the port ID (unknown ports
-/// return an error) and it may be called from any thread, so it takes a raw
-/// port ID rather than a [`Port`] handle — e.g. from a CLI thread while the
-/// forwarding thread owns the `Port`.
+/// Reads a port's basic statistics. Control-path API: callable from any thread,
+/// so it takes a raw port ID rather than a [`Port`] (unknown ports return an
+/// error).
 pub fn eth_stats_get(port: u16) -> Result<PortStats, DpdkError> {
     let mut s: dpdk_sys::rte_eth_stats = unsafe { mem::zeroed() };
     check(unsafe { dpdk_sys::rte_eth_stats_get(port, &mut s) })?;
@@ -524,12 +443,10 @@ pub fn eth_stats_get(port: u16) -> Result<PortStats, DpdkError> {
 
 // ── Port-buffer discard xstats (by id) ──────────────────────────────────────
 
-/// The 16 xstat names the NIC RX-overflow telemetry cares about: a
-/// per-priority (0-7) port-buffer discard count (the lossy RX buffer
-/// running out of room) and congestion-management discard count
-/// (the mlx5 PMD's own `rx_prio<n>_buf_discard_packets`/
-/// `rx_prio<n>_cong_discard_packets` xstats). Not every port exposes all 16 --
-/// [`PortDiscardXstats::resolve`] skips whichever ones don't exist.
+/// The 16 mlx5 xstat names of the NIC RX-overflow telemetry: per priority (0-7)
+/// the port-buffer discard count (`rx_prio<n>_buf_discard_packets`) and the
+/// congestion-management discard count (`rx_prio<n>_cong_discard_packets`). Not
+/// every port exposes all 16; [`PortDiscardXstats::resolve`] skips missing ones.
 fn candidate_discard_xstat_names() -> impl Iterator<Item = String> {
     (0..8).flat_map(|prio| {
         [
@@ -539,23 +456,19 @@ fn candidate_discard_xstat_names() -> impl Iterator<Item = String> {
     })
 }
 
-/// A port's own resolved set of port-buffer-discard xstat ids, cached so a
-/// repeat read (`read`) only ever needs one `rte_eth_xstats_get_by_id`
-/// call -- no per-read name lookup (`rte_eth_xstats_get_id_by_name` does a
-/// string search, documented as unsuitable for a fast path).
+/// A port's resolved port-buffer-discard xstat ids, cached so a read needs one
+/// `rte_eth_xstats_get_by_id` call and no name lookup
+/// (`rte_eth_xstats_get_id_by_name` is a string search, unsuitable for a fast path).
 pub struct PortDiscardXstats {
     port: u16,
     ids: Vec<u64>,
 }
 
 impl PortDiscardXstats {
-    /// Resolves which of [`candidate_discard_xstat_names`] actually exist
-    /// on `port`, once, by fetching every xstat name the port exposes
-    /// (`rte_eth_xstats_get_names_by_id` with `ids = NULL`, first called
-    /// with a zero-length buffer to learn the count, per that function's
-    /// own doc comment) and matching by name -- the matching xstat's array
-    /// index doubles as its id (`rte_eth_xstats_get_names_by_id`'s own doc
-    /// comment: "the array index is same with id field of `rte_eth_xstat`").
+    /// Resolves which of [`candidate_discard_xstat_names`] exist on `port`: it
+    /// fetches every xstat name (`rte_eth_xstats_get_names_by_id` with `ids =
+    /// NULL`, first with a zero-length buffer to learn the count) and matches by
+    /// name; the array index doubles as the id.
     pub fn resolve(port: u16) -> Result<Self, DpdkError> {
         let count = check(unsafe {
             dpdk_sys::rte_eth_xstats_get_names_by_id(
@@ -593,13 +506,10 @@ impl PortDiscardXstats {
         Ok(PortDiscardXstats { port, ids })
     }
 
-    /// Sums the current value of every resolved id with a single
+    /// Sums the current value of every resolved id with one
     /// `rte_eth_xstats_get_by_id` call. `None` if [`resolve`](Self::resolve)
-    /// found none of the candidate names on this port at all (not a read
-    /// failure -- some PMDs/port configurations simply don't expose this
-    /// counter); a read error on an otherwise-resolved id set is also
-    /// reported as `None` rather than panicking, since this feeds a
-    /// best-effort telemetry poll, not the data path.
+    /// found no candidate on this port (some PMDs do not expose the counter) or
+    /// the read failed: this feeds a best-effort telemetry poll.
     pub fn read(&self) -> Option<u64> {
         if self.ids.is_empty() {
             return None;
@@ -618,7 +528,6 @@ impl PortDiscardXstats {
     }
 }
 
-/// The NUL-terminated `info` text of a burst mode as a `String`.
 fn burst_mode_info(mode: &dpdk_sys::rte_eth_burst_mode) -> String {
     unsafe { CStr::from_ptr(mode.info.as_ptr()) }
         .to_string_lossy()
@@ -640,9 +549,6 @@ pub fn rte_socket_id() -> u32 {
 }
 
 /// Logical core ID of the calling thread.
-///
-/// Wraps the `static inline rte_lcore_id()` which reads a thread-local
-/// variable — guaranteed zero overhead when inlined.
 #[inline(always)]
 pub fn rte_lcore_id() -> u32 {
     unsafe { dpdk_sys::rte_lcore_id() }
@@ -650,10 +556,10 @@ pub fn rte_lcore_id() -> u32 {
 
 // ── Mbuf handling ────────────────────────────────────────────────────────────
 
-/// Raw mbuf pointer type re-exported for use in burst buffers.
+/// Raw mbuf pointer, as used in burst buffers.
 pub type RawMbuf = *mut dpdk_sys::rte_mbuf;
 
-/// Free a single mbuf back to its originating pool.
+/// Frees a single mbuf back to its originating pool.
 ///
 /// # Safety
 /// `pkt` must be a valid, non-null mbuf pointer not aliased elsewhere.
@@ -679,15 +585,8 @@ pub unsafe fn rte_pktmbuf_free_bulk(mbufs: &mut [RawMbuf]) {
     dpdk_sys::rte_pktmbuf_free_bulk(mbufs.as_mut_ptr(), mbufs.len() as u32);
 }
 
-// ── `tx_offloads_for` ───────────────────────────────────────────────────────
-//
-// `Port::init` takes the TX offloads it requests from `tx_offloads_for`, a
-// pure function of the device's reported `tx_offload_capa`, so the decision
-// is testable without EAL: exactly `RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE` when
-// the capability bit is set and `0` otherwise. No other offload is
-// requested, whatever else the device reports.
-//
-// `Port::mbuf_fast_free` reports the result; it needs a live port and is not
+// `tx_offloads_for` is a pure function of `tx_offload_capa`, so the decision is
+// testable without an EAL; `Port::mbuf_fast_free` needs a live port and is not
 // tested here.
 #[cfg(test)]
 mod tx_offload_tests {
@@ -698,7 +597,6 @@ mod tx_offload_tests {
     #[test]
     fn tx_offloads_enable_fast_free_when_capable() {
         assert_eq!(tx_offloads_for(FAST_FREE), FAST_FREE);
-        // Other capability bits must not leak into the requested offloads.
         assert_eq!(
             tx_offloads_for(u64::MAX),
             FAST_FREE,

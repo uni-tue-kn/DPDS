@@ -1,7 +1,6 @@
-// Spec 28 (P4TG-like sidebar) and spec 30 frontend (power-of-two histogram hints): the looks that jsdom cannot render are
-// pinned in the stylesheet itself, like styles.test.ts does. There is no browser here, so these only prove the rules exist.
-// CHOICES of the tester: the sidebar is at most 90px wide (P4TG's icon column), the active link is a solid
-// var(--color-primary) block with white text, the footer is centred, and the P4TG hint classes carry P4TG's colours.
+// The sidebar and histogram hint looks that jsdom cannot render are pinned in the stylesheet itself, like styles.test.ts does: the
+// sidebar is at most 90px wide, the active link is a solid var(--color-primary) block with white text, the footer is centred, and
+// the hint classes carry P4TG's colours.
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 

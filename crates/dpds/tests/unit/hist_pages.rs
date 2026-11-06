@@ -1,25 +1,19 @@
-//! Spec 30: the delay histogram is read in pages (`/dpds/delay_hist,<dir>,<page>`), so a link can
-//! have up to `MAX_BINS` = 4096 bins although one DPDK telemetry array holds at most 512 entries.
-//!
-//! # What is pinned (the spec's text first, the rest are the tester's choices)
+//! The delay histogram is read in pages (`/dpds/delay_hist,<dir>,<page>`), so a link can have up
+//! to `MAX_BINS` = 4096 bins although one DPDK telemetry array holds at most 512 entries.
 //!
 //! - A page carries at most 500 bins. Page `p` (0-based) holds bins `500 * p ..` up to the
 //!   histogram's end, so a histogram of `n` bins has `ceil(n / 500)` pages (at least one: an
 //!   empty page 0 for a direction with the statistics off).
-//! - `DirectionStats::delay_hist_reply(param)` takes `"<dir>"` (= page 0, so the old query keeps
-//!   working) or `"<dir>,<page>"`; both parts are plain decimal numbers. A page that does not
-//!   exist (`>= number of pages`) is `None`, which the telemetry registration turns into an error
-//!   reply, like a bad `<dir>`. Garbage after the comma is `None` too.
+//! - `DirectionStats::delay_hist_reply(param)` takes `"<dir>"` (= page 0) or `"<dir>,<page>"`;
+//!   both parts are plain decimal numbers. A page that does not exist (`>= number of pages`) is
+//!   `None`, which the telemetry registration turns into an error reply, like a bad `<dir>`.
+//!   Garbage after the comma is `None` too.
 //! - Every page carries `lo_ns`, `bin_ns`, `num_bins` (of the whole histogram), `underflow`,
 //!   `overflow` (cumulative, so the same numbers on every page unless packets arrive between two
-//!   reads), `bins` and the page's position so the reader can check it.
-//! - ASSUMPTION (the spec says only "the page's index/first bin"): the two position fields are
-//!   `page` (the 0-based page index, Uint) and `first_bin` (the index of the first bin of the
-//!   page, `500 * page`, Uint). A page reply has exactly these eight keys.
-//! - ASSUMPTION: a direction with the statistics off keeps its empty page 0 (`Some`, no bins, as
-//!   before), and has no page 1.
-//! - `Stats::delay_hist_reply()` (no parameter) is not part of the paging API and is left to the
-//!   implementer; the paged replies are read through `DirectionStats`.
+//!   reads), `bins` and the page's position: `page` (0-based page index, Uint) and `first_bin`
+//!   (`500 * page`, Uint). A page reply has exactly these eight keys.
+//! - A direction with the statistics off keeps an empty page 0 (`Some`, no bins) and has no
+//!   page 1.
 //!
 //! The shape tests run in every build (without the `telemetry` feature the counts are zero); the
 //! test that checks the counts of the pages against what was recorded needs the feature.
@@ -28,7 +22,7 @@ use dpds::delay_stats::{HistRange, MAX_BINS};
 use dpds::reply::{Reply, Value};
 use dpds::stats::DirectionStats;
 
-/// Bins per page (the spec: "at most 500 bins" per page; DPDK's array limit is 512).
+/// Bins per page (DPDK's array limit is 512).
 const PAGE: usize = 500;
 
 fn range(bins: usize) -> HistRange {

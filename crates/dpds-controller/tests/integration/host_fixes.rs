@@ -1,4 +1,4 @@
-//! C5, host and API part: hugepage need maths, `nohz_full` `(null)`, offline isolated
+//! Host and API part: hugepage need maths, `nohz_full` `(null)`, offline isolated
 //! cores, blocking file reads in handlers, concurrent starts and `--bind` without the
 //! `serve` subcommand.
 

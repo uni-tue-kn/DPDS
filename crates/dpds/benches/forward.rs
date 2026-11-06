@@ -1,12 +1,11 @@
-//! Microbenchmark of the per-packet cost of `dpds::forward::run`, the loop of
-//! one worker lcore, driven by mocks (no NIC, no EAL): the RX mock hands out a
-//! full burst of 32 fake mbufs per call, the TX mock accepts everything, the
-//! free mock does nothing and the clock advances by a fixed step per
-//! iteration. The mbufs are never dereferenced beyond their `pkt_len` and the
-//! prefetch of their header line.
+//! Microbenchmark of the per-packet cost of `dpds::forward::run`, driven by
+//! mocks (no NIC, no EAL): the RX mock hands out a full burst of 32 fake mbufs
+//! per call, the TX mock accepts everything, the free mock does nothing and the
+//! clock advances by a fixed step per iteration. The mbufs are only read for
+//! their `pkt_len` and header prefetch.
 //!
-//! Run it once without and once with the delay statistics of the `telemetry`
-//! feature to see what they cost:
+//! Run it without and with the `telemetry` feature to see what the delay
+//! statistics cost:
 //!
 //! ```sh
 //! cargo bench -p dpds --bench forward
@@ -14,12 +13,10 @@
 //! ```
 //!
 //! Prints the median ns per received packet of each case over `REPEATS`
-//! repetitions, once with the direction's delay statistics on and once with
-//! them switched off (`"delay_stats": false`; with the `telemetry` feature off
-//! both columns are the same loop). `harness = false`; numbers are only meaningful relative to
-//! each other on the same machine (the dev container is aarch64, the
-//! production hosts x86). Run without `--bench` (what `cargo test
-//! --all-targets` does) it only does one tiny smoke pass.
+//! repetitions, with the delay statistics on and off (without the `telemetry`
+//! feature both columns are the same loop). `harness = false`; numbers are only
+//! meaningful relative to each other on the same machine. Without `--bench`
+//! (as `cargo test --all-targets` runs it) it does one tiny smoke pass.
 
 use std::hint::black_box;
 use std::time::Instant;
@@ -98,8 +95,7 @@ fn config(distribution: RVDistribution, mean_ns: f64, std_ns: f64, loss: f64) ->
     }
 }
 
-/// Runs the loop for `iterations` RX bursts (plus the drain) and returns the
-/// elapsed seconds.
+/// Runs the loop for `iterations` RX bursts (plus the drain); returns the elapsed seconds.
 fn once(config: Config, delay_stats: bool, iterations: usize) -> f64 {
     let mut mbufs: Vec<dpdk_sys::rte_mbuf> = (0..BURST_SIZE)
         .map(|_| {

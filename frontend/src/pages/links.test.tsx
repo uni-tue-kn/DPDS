@@ -15,10 +15,10 @@ import {
 } from '../test/helpers';
 import { must } from '../test/must';
 
-// v22: the list comes from the local document (key dpds.config.v1); every test starts with one stored link, a-b (id 1), unless it
+// The list comes from the local document (key dpds.config.v1); every test starts with one stored link, a-b (id 1), unless it
 // seeds its own. Deleting writes the document. Nothing is requested for links from the controller.
-// v16 (supersedes the v12 "PCI (netdev)" labels, see the v16 block of src/test/helpers.tsx): the Links list has the
-// columns Name | Interfaces | Delay | Reordering | Limiter | Loss | actions; an interface is shown by its netdev, the device name when it has none.
+// The Links list has the columns Name | Interfaces | Delay | Reordering | Limiter | Loss | actions; an interface is shown by its
+// netdev, the device name when it has none.
 const IFACES = 'enp101s0f0 → enp101s0f1';
 const REV_IFACES = 'enp101s0f1 → enp101s0f0';
 const PLAIN_IFACES = '0000:65:00.0 → 0000:65:00.1';
@@ -40,7 +40,7 @@ describe('Links list', () => {
     expect(screen.queryByRole('columnheader', { name: /worker|configuration|summary/i })).not.toBeInTheDocument();
   });
 
-  // spec19 item 7: the empty header of the action column gets a visually hidden "Actions" (screen readers, Bootstrap's
+  // The empty header of the action column gets a visually hidden "Actions" (screen readers, Bootstrap's
   // `.visually-hidden`: the text exists but is not painted).
   it('the action column header carries a visually hidden "Actions" text', async () => {
     renderApp('/settings');
@@ -280,12 +280,12 @@ describe('Links list: interfaces are shown by netdev, device name as fallback (v
   });
 });
 
-// v16 pick: the inspect view is a SIDE PANEL (react-bootstrap Offcanvas, the user's "slider"), not an expandable row.
+// The inspect view is a SIDE PANEL (react-bootstrap Offcanvas), not an expandable row.
 //   - per row a button named "Inspect <link name>"; clicking it opens ONE `role="dialog"` whose accessible name is the
 //     link name (heading inside), with a button "Close" and a link "Edit <link name>" (-> /links/<id>);
 //   - closed: no dialog in the document;
 //   - the dialog holds <dt>/<dd> pairs (helpers `field`): Ingress, Egress (dd contains the netdev AND the PCI address,
-//     a device name without netdev stands alone), no worker (spec 41);
+//     a device name without netdev stands alone), no worker;
 //   - five `role="group"` subsections named Buffer, Delayer, Limiter, Dropper, Statistics in this order, each with
 //     <dt>/<dd> pairs. Values: numbers plain, "<number> <unit>" for unit fields (editor display rule), on/off as "on"/"off".
 describe('Links: inspect panel (v16)', () => {
@@ -301,7 +301,7 @@ describe('Links: inspect panel (v16)', () => {
   const group = (dialog: HTMLElement, name: string) => within(dialog).getByRole('group', { name });
   const dts = (g: HTMLElement) => Array.from(g.querySelectorAll('dt')).map((d) => d.textContent?.trim());
 
-  // spec19 item 7: the panel names the distribution like the list's Delay cell ("Normal", never "NormalDistribution").
+  // the panel names the distribution like the list's Delay cell ("Normal", never "NormalDistribution").
   it.each([
     ['DeterministicDistribution', 'Deterministic'],
     ['NormalDistribution', 'Normal'],
@@ -434,7 +434,7 @@ describe('Links: inspect panel (v16)', () => {
       'Correlation',
       'Initialization rate',
     ]);
-    expect(field(delayer, 'Delay distribution').textContent?.trim()).toBe('Normal'); // spec19: the short name, like the list
+    expect(field(delayer, 'Delay distribution').textContent?.trim()).toBe('Normal'); // the short name, like the list
     expect(field(delayer, 'Mean delay').textContent?.trim()).toBe('1 \u00b5s'); // 1000 ns
     expect(field(delayer, 'Delay std').textContent?.trim()).toBe('10 ns');
     expect(field(delayer, 'Correlation').textContent?.trim()).toBe('off');
@@ -456,7 +456,7 @@ describe('Links: inspect panel (v16)', () => {
     const { dialog } = await inspect('b-a');
     const buffer = group(dialog, 'Buffer');
     expect(field(buffer, 'Buffer capacity').textContent?.trim()).toBe('5000');
-    expect(field(buffer, 'Reordering').textContent?.trim()).toBe('off'); // spec45: config2 uses correlation, so no reordering
+    expect(field(buffer, 'Reordering').textContent?.trim()).toBe('off'); // config2 uses correlation, so no reordering
     expect(field(buffer, 'Seed').textContent?.trim()).toBe('42');
 
     const delayer = group(dialog, 'Delayer');
@@ -476,7 +476,7 @@ describe('Links: inspect panel (v16)', () => {
     expect(field(delayer, 'Initialization rate').textContent?.trim()).toBe('8 Mpps');
 
     const limiter = group(dialog, 'Limiter');
-    expect(dts(limiter)).toEqual(['Limiter mode', 'Rate']); // spec20: no burst limit; v22: no on/off item, present = active
+    expect(dts(limiter)).toEqual(['Limiter mode', 'Rate']); // no burst limit, no on/off item: present = active
     expect(field(limiter, 'Limiter mode').textContent?.trim()).toBe('TokenBucketFilter');
     expect(field(limiter, 'Rate').textContent?.trim()).toBe('40 Gbit/s');
 
@@ -487,7 +487,7 @@ describe('Links: inspect panel (v16)', () => {
       'Gilbert-Elliot r',
       'Gilbert-Elliot k',
       'Gilbert-Elliot h',
-    ]); // spec26: no good-state row
+    ]); // no good-state row
     expect(field(dropper, 'Loss model').textContent?.trim()).toBe('GilbertElliot');
     expect(field(dropper, 'Gilbert-Elliot p').textContent?.trim()).toBe('0.01');
     expect(field(dropper, 'Gilbert-Elliot r').textContent?.trim()).toBe('0.2');
@@ -552,7 +552,6 @@ describe('Links: inspect panel (v16)', () => {
 
   it('inspecting changes nothing: the stored document is untouched, no extra interface request', async () => {
     await inspect('a-b'); // seeds the three default links, then opens the panel
-    // (seedStore may add a tolerated `presets` member; the app must not change anything else)
     const { presets: _presets, ...stored } = JSON.parse(rawStore() ?? 'null') as Record<string, unknown>;
     expect(stored).toEqual({ ...emptyDoc(), links: [fx.link(), fx.linkRev(), fx.loopLink()] });
     expect(api.getInterfaces).toHaveBeenCalledTimes(1);
@@ -570,7 +569,7 @@ describe('Links: inspect panel (v16)', () => {
   });
 });
 
-// v16 per-section columns (cell index 2..5; each cell is one element whose own text is exactly the part):
+// Per-section columns (cell index 2..5; each cell is one element whose own text is exactly the part):
 //   Delay       "<dist> <mean> / <std>" with dist Normal | LogNormal | Gamma | Uniform (the enum name without
 //               "Distribution"); Deterministic shows the mean only ("Deterministic 10 ms"), also when a std is stored.
 //               mean and std each use the editor's display-unit rule on their own ("10 ms", "2.5 µs", "0 ms").

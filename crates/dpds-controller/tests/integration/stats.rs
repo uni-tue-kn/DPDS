@@ -1,26 +1,18 @@
-//! Rate / percentage maths from two telemetry snapshots (B2, B4).
+//! Rate / percentage maths of `compute_stats(prev, cur)` from two telemetry snapshots (JSON of
+//! `StatsView`).
 //!
-//! Spec v10: a direction is a directed link (ingress -> egress); the stats of link `d` use the
-//! ports `dir<d>_rx_port` (the link's ingress) for rx and `dir<d>_tx_port` (its egress) for tx.
-//! The fixture snapshot is the pair `a-to-b` / `b-to-a` (two links); `ring_snapshot` below is a
-//! three-link ring over three ports and a hairpin.
+//! A direction is a directed link (ingress -> egress); the stats of link `d` use the ports
+//! `dir<d>_rx_port` (the link's ingress) for rx and `dir<d>_tx_port` (its egress) for tx. The
+//! fixture snapshot is the pair `a-to-b` / `b-to-a`; `ring_snapshot` is a three-link ring over
+//! three ports and a hairpin. There is no `ports` key.
 //!
-//! Contract of `compute_stats(prev, cur)` (JSON of `StatsView`):
-//! `{"directions":[{dir, link, rx, tx, rx_pps, tx_pps, rx_bps, tx_bps, loss_pct,
-//!   limiter_pct, buffer_full_pct, nic_tx_pct, nic_rx_pct, delay_mean_ns, delay_std_ns,
-//!   delay_min_ns, delay_max_ns, lateness_mean_ns, lateness_max_ns, buffer_len_max,
-//!   first_loss_reason, first_loss_detail, first_loss_relative_ns,
-//!   counters:{rx_pkts, dpds_rejects, loss_drops, limiter_drops, buffer_full_drops, pops,
-//!             tx_pkts, tx_sent, tx_drops}}]}`
-//! (spec 43: no `ports` key; the controller still polls the NIC stats for `counters.nic_rx_*`.)
-//! Rates and percentages are computed over the window between the two snapshots
-//! (dt = delta of the direction's own `uptime_ns`); they are 0.0 (never null/NaN/inf)
-//! without `prev`, with dt == 0, with zero rx delta, or when a counter went backwards
-//! (restart). `rx_bps` = delta `rx_good_bytes` (xstat, spec 47) of the rx port * 8 / dt, `tx_bps` = delta
-//! `tx_good_bytes` of the tx port * 8 / dt. `nic_rx_pct` = (delta rx_missed_errors + delta rx_mbuf_allocation_errors + ... of the
-//! rx port) / delta rx_pkts * 100. Delay / lateness / buffer_len_max / first_loss are
-//! passed through from `cur` (cumulative), as numbers even when telemetry sent
-//! decimal strings.
+//! Rates and percentages are computed over the window between the two snapshots (dt = delta of
+//! the direction's own `uptime_ns`); they are 0.0 (never null/NaN/inf) without `prev`, with
+//! dt == 0, with zero rx delta, or when a counter went backwards (restart). `rx_bps` = delta
+//! `rx_good_bytes` (xstat) of the rx port * 8 / dt, `tx_bps` = delta `tx_good_bytes` of the tx
+//! port * 8 / dt. `nic_rx_pct` = (delta rx_missed_errors + delta rx_mbuf_allocation_errors + ...
+//! of the rx port) / delta rx_pkts * 100. Delay / lateness / buffer_len_max / first_loss are passed
+//! through from `cur` (cumulative), as numbers even when telemetry sent decimal strings.
 
 use crate::common::*;
 use dpds_controller::stats::{compute_stats, delay_histogram};
@@ -173,7 +165,7 @@ fn numeric_delay_fields_are_accepted_too() {
 
 #[test]
 fn the_stats_view_has_no_ports_key() {
-    // spec 43 (B3): the per-port NIC table is gone from /api/stats
+    // /api/stats has no per-port NIC table
     for v in [view(Some(&prev()), &cur()), view(None, &cur())] {
         assert!(v.get("ports").is_none(), "{v}");
         assert!(v["directions"].is_array(), "{v}");
@@ -282,7 +274,7 @@ fn delay_histogram_for_unknown_direction_is_none() {
     assert!(delay_histogram(&cur(), 2).is_none());
 }
 
-// ---- rings and hairpins (spec v10) -------------------------------------------------------------
+// ---- rings and hairpins -------------------------------------------------------------
 
 /// Ports 0, 1, 2 (a, b, c), links `a-to-b` (0 -> 1), `b-to-c` (1 -> 2), `c-to-a` (2 -> 0) and
 /// the hairpin `loop` on port 3 (3 -> 3). Port counters are chosen so that every mapping error
@@ -373,15 +365,14 @@ fn ring_histograms_are_per_link_index() {
     assert!(delay_histogram(&ring_snapshot(2), 4).is_none());
 }
 
-// ---- spec 35 (C2): the receiving port's imissed and rx_nombuf per direction --------------------
+// ---- the receiving port's imissed and rx_nombuf per direction --------------------
 //
 // `counters` of a direction also carries `nic_rx_missed` and `nic_rx_nombuf`: the CUMULATIVE
 // `imissed` and `rx_nombuf` of the direction's RECEIVING port (`dir<d>_rx_port`, the link's
 // ingress), straight from the newest snapshot's `/ethdev/xstats`, so they are the same whatever the
 // window (not deltas, not clamped after a restart, present without a `prev`). Two links that
 // receive on the same port both report that port's counters (a hairpin of one port; they are not
-// split and not summed). A receiving port without NIC stats reports 0. The existing `nic_rx_pct`
-// stays as it is. The dashboard's donut uses these as exact counts, `nic_tx_drops` is `tx_drops`.
+// split and not summed). A receiving port without NIC stats reports 0. The dashboard's donut uses these as exact counts, `nic_tx_drops` is `tx_drops`.
 
 fn nic_rx(v: &Value, d: usize) -> (u64, u64) {
     let c = &v["directions"][d]["counters"];

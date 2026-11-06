@@ -65,7 +65,7 @@ fn same_seed_gives_identical_results_for_every_loss_model_and_mode() {
     for reordering in [false, true] {
         for correlation in [false, true] {
             if reordering && correlation {
-                continue; // reordering cannot be combined with correlation (spec 45)
+                continue; // reordering cannot be combined with correlation
             }
             for loss in [
                 LossModel::Random(0.3),

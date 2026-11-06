@@ -1,4 +1,4 @@
-//! First-loss telemetry (port of preof's `first_loss.rs`, DPDS reasons only).
+//! First-loss telemetry: the first packet loss of a link, with reason and detail.
 
 use std::fmt;
 #[cfg(feature = "telemetry")]
@@ -8,24 +8,22 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum FirstLossReason {
-    /// `Buffer::push_outcome` rejected a packet (the `cause=` of the detail
-    /// says which of loss model, limiter or buffer capacity).
+    /// `Buffer::push_outcome` rejected a packet (`cause=` in the detail says why).
     DpdsReject,
-    /// A partial `tx_burst` (the NIC's TX descriptor ring was full).
+    /// A partial `tx_burst`: the NIC's TX descriptor ring was full.
     DescriptorFull,
-    /// NIC hardware: `imissed` rose (wire spelling `IMissed`).
+    /// NIC `imissed` rose (wire spelling `IMissed`).
     RxMissed,
-    /// NIC hardware: `rx_nombuf` rose (`RX_NoMbuf`).
+    /// NIC `rx_nombuf` rose (`RX_NoMbuf`).
     RxNoMbuf,
-    /// NIC hardware: `ierrors` rose (`IErrors`).
+    /// NIC `ierrors` rose (`IErrors`).
     RxError,
-    /// NIC hardware: `oerrors` rose (`OErrors`).
+    /// NIC `oerrors` rose (`OErrors`).
     TxError,
 }
 
 impl FirstLossReason {
-    /// Round-trips through the tracker's `AtomicU8`; only ever fed bytes
-    /// this module wrote via `as u8`.
+    /// Inverse of `as u8`; only fed bytes this module wrote.
     #[cfg(feature = "telemetry")]
     fn from_u8(v: u8) -> Self {
         match v {
@@ -40,10 +38,8 @@ impl FirstLossReason {
     }
 }
 
-/// Wire spelling of `first_loss_reason`. Downstream consumers parse these
-/// strings. The software reasons use their identifier; the NIC-hardware
-/// ones are spelled like the DPDK counter they come from (`imissed`,
-/// `rx_nombuf`, `ierrors`, `oerrors`).
+/// Wire spelling of `first_loss_reason`; consumers parse these strings. The
+/// software reasons use their identifier, the NIC ones the DPDK counter name.
 impl fmt::Display for FirstLossReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
@@ -60,15 +56,14 @@ impl fmt::Display for FirstLossReason {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Stage {
-    /// The data-plane worker (wire spelling `dpds`).
+    /// The data-plane worker (`dpds`).
     Dpds,
     /// The NIC hardware as a `to=` destination (`nic`).
     Nic,
 }
 
 impl Stage {
-    /// Round-trips through an `AtomicU8`; only ever fed bytes this module
-    /// wrote via `as u8`.
+    /// Inverse of `as u8`; only fed bytes this module wrote.
     #[cfg(feature = "telemetry")]
     fn from_u8(v: u8) -> Self {
         match v {
@@ -79,7 +74,7 @@ impl Stage {
     }
 }
 
-/// Lowercase wire spelling, part of the `first_loss_detail` format.
+/// Lowercase wire spelling (part of `first_loss_detail`).
 impl fmt::Display for Stage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
@@ -89,8 +84,8 @@ impl fmt::Display for Stage {
     }
 }
 
-/// Why the DPDS buffer rejected a packet; the precedence is loss model, then
-/// limiter, then capacity (see `dpds_core::buffer::PushOutcome`).
+/// Why the buffer rejected a packet; precedence: loss model, limiter, capacity
+/// (see `dpds_core::buffer::PushOutcome`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DropCause {
     Loss,
@@ -110,7 +105,7 @@ impl DropCause {
     }
 }
 
-/// Wire spelling, part of the `first_loss_detail` format.
+/// Wire spelling (part of `first_loss_detail`).
 impl fmt::Display for DropCause {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
@@ -140,23 +135,21 @@ pub struct StageLossEvent {
     pub relative_ns: f64,
 }
 
-/// At most one [`StageLossEvent`] for its whole lifetime, first writer wins.
-/// With the `telemetry` feature: lock-free atomics, `#[repr(align(64))]` so
-/// trackers owned by different lcores never share a cache line. Without it:
-/// a zero-sized unit struct, `try_record` is always `false` and `current`
-/// always `None`.
+/// At most one [`StageLossEvent`] for its lifetime, first writer wins. With the
+/// `telemetry` feature: lock-free atomics, cache-line aligned so trackers of
+/// different lcores never share a line. Without it: a zero-sized struct whose
+/// `try_record` is always `false` and `current` always `None`.
 ///
-/// `claimed` is the first-writer-wins CAS gate; `ready` is set (`Release`)
-/// only after every payload field is written and checked (`Acquire`) before
-/// any is read, so the payload fields themselves are `Relaxed`.
+/// `claimed` is the first-writer-wins CAS gate; `ready` is set (`Release`) after
+/// every payload field is written and checked (`Acquire`) before any is read,
+/// so the payload fields are `Relaxed`.
 #[repr(align(64))]
 #[cfg(feature = "telemetry")]
 pub struct StageLossTracker {
     claimed: AtomicBool,
     ready: AtomicBool,
     reason: AtomicU8,
-    // Which `StageLossDetail` variant was recorded, stored independently of
-    // `reason` so `current()` returns exactly what was passed in.
+    // The recorded `StageLossDetail` variant, independent of `reason`.
     shape: AtomicU8,
     from: AtomicU8,
     to: AtomicU8,
@@ -164,7 +157,6 @@ pub struct StageLossTracker {
     relative_ns_bits: AtomicU64,
 }
 
-/// `shape` values, one per [`StageLossDetail`] variant.
 #[cfg(feature = "telemetry")]
 mod shape_tag {
     pub const SINGLE: u8 = 0;
@@ -192,8 +184,7 @@ impl StageLossTracker {
         }
     }
 
-    /// `true` iff this call won the slot. One `compare_exchange` is the whole
-    /// gate (no retry: a loser just reports nothing).
+    /// `true` iff this call won the slot (a loser does not retry).
     pub fn try_record(
         &self,
         reason: FirstLossReason,
@@ -208,8 +199,7 @@ impl StageLossTracker {
             return false;
         }
 
-        // Unused fields get an unambiguous default; `current()` only reads
-        // the ones the stored shape uses.
+        // Unused fields get a default; `current()` reads only the ones the shape uses.
         let (shape, from, to, count) = match detail {
             StageLossDetail::Single { from } => (shape_tag::SINGLE, from, Stage::Dpds, 0),
             // the cause code travels in `count`
@@ -302,9 +292,8 @@ pub struct FirstLossFields {
     pub relative_ns: u64,
 }
 
-/// `None` -> `("Clean", "", 0)`; `relative_ns` truncates (`as u64`). The one
-/// place the wire format of a first-loss result is built (cumulative,
-/// per-epoch and NIC replies all share it).
+/// `None` -> `("Clean", "", 0)`; `relative_ns` truncates. The one place the wire
+/// format of a first-loss result is built.
 pub fn format_first_loss(event: Option<StageLossEvent>) -> FirstLossFields {
     match event {
         Some(event) => {
@@ -330,10 +319,8 @@ pub fn format_first_loss(event: Option<StageLossEvent>) -> FirstLossFields {
     }
 }
 
-/// First counter that rose between two polls, fixed priority `imissed` >
-/// `rx_nombuf` > `ierrors` > `oerrors`; decreases count as no change
-/// (`saturating_sub`). Pure: the poll loop that captures the snapshots lives
-/// in `stats.rs`.
+/// First counter that rose between two polls, priority `imissed` > `rx_nombuf` >
+/// `ierrors` > `oerrors`; decreases count as no change.
 pub fn detect_hardware_drop(
     prev: &dpdk::port::PortStats,
     curr: &dpdk::port::PortStats,

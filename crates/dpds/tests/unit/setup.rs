@@ -1,24 +1,16 @@
 //! Startup validation and the constants.
 //!
-//! `validate_lcore_count(lcores, num_ports)` (`lcores` counts the main lcore):
-//! Ok only for exactly `1 + num_ports` (main + one worker per direction).
-//! Otherwise `Err(LcoreCount { found, required })`, Display counting LINKS
-//! (not ports), for `--links` and for the `--config*` shorthand alike:
-//! "<n> link(s) need <n+1> lcores (main + one worker per link), e.g. -l 0-<n>"
-//! (grammatical number is free: "1 link needs 2 lcores ..." and "1 link(s) need
-//! 2 lcores ..." are both accepted; the word "port" must not appear) and the
-//! found count.
+//! `validate_lcore_count(lcores, num_ports)` (`lcores` counts the main lcore): Ok only for exactly
+//! `1 + num_ports` (main + one worker per direction). Otherwise `Err(LcoreCount { found,
+//! required })`, whose Display counts LINKS (not ports): "<n> link(s) need <n+1> lcores (main +
+//! one worker per link), e.g. -l 0-<n>" (grammatical number is free; the word "port" must not
+//! appear) and the found count.
 //!
 //! `validate_port_count(n)`: Ok for 1 or 2, else `Err(PortCount(n))`.
 //!
-//! The v1 helper `egress_port` (`direction ^ 1`) is gone (spec v12 C4); a
-//! source check below pins that.
-//!
-//! Pool size (N): the pool of a direction is not chosen by the user any more,
-//! it is `required_mbufs(buffer_capacity, rx_desc, tx_desc)` = `capacity + rx +
-//! tx + MBUF_CACHE_SIZE * 3 / 2 + 2 * BURST_SIZE` = `capacity + rx + tx + 768 +
-//! 64` (plain integer sum, saturating, no rounding). `--num-mbufs`,
-//! `DEFAULT_NUM_MBUFS`, `check_pool` and the "pool too small" error are gone.
+//! Pool size: `required_mbufs(buffer_capacity, rx_desc, tx_desc)` = `capacity + rx + tx +
+//! MBUF_CACHE_SIZE * 3 / 2 + 2 * BURST_SIZE` = `capacity + rx + tx + 768 + 64` (plain integer
+//! sum, saturating, no rounding).
 
 use dpds::consts::*;
 use dpds::setup::{required_mbufs, validate_lcore_count, validate_port_count, SetupError};
@@ -84,9 +76,9 @@ fn two_links_need_exactly_three_lcores() {
 
 #[test]
 fn the_old_two_lcores_only_rule_is_gone_for_two_ports() {
-    // 2 lcores were the only valid count; with two ports they are now too few.
+    // 2 lcores are too few for two ports.
     assert!(validate_lcore_count(2, 2).is_err());
-    // ... and 3 lcores were an error with one port, they still are.
+    // ... and 3 lcores are an error with one port.
     assert!(validate_lcore_count(3, 1).is_err());
 }
 
@@ -217,10 +209,9 @@ fn the_size_function_never_panics_on_huge_capacities() {
 
 // ── links mode: 1 + number of links lcores ──────────────────────────
 //
-// With `--links` every link is one direction with its own worker, so the
-// number of directions is the number of links (a hairpin, a one-way link, a
-// ring member: one worker each) and the rule `validate_lcore_count(lcores,
-// num_links)` is the same function: Ok iff `lcores == 1 + num_links`.
+// With `--links` every link is one direction with its own worker (a hairpin, a one-way link,
+// a ring member: one worker each), so `validate_lcore_count(lcores, num_links)` is Ok iff
+// `lcores == 1 + num_links`.
 
 #[test]
 fn the_lcore_rule_for_any_number_of_directions_is_one_plus_directions() {

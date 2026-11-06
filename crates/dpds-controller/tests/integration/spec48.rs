@@ -1,4 +1,4 @@
-//! Spec 48: `GET /api/online` counts the OTHER GUI sessions (controller part C1-C2).
+//! `GET /api/online` counts the OTHER GUI sessions.
 //!
 //! A session is whoever polled `/api/online` in the last 15 s, identified by the `X-Session-Id` header (any case),
 //! else by the client IP (`ConnectInfo<SocketAddr>`), else by the fixed id "unknown" (in-process tests have no

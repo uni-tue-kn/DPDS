@@ -1,34 +1,26 @@
-//! Spec v27: the host-uplink guard (was the management-NIC guard of C1). A NIC is an
-//! **uplink** (the host uses it) when the netdev, or any device above it (sysfs `upper_*` and
-//! `master` links, also nested), has
+//! The host-uplink guard. A NIC is an **uplink** (the host uses it) when the netdev, or any device
+//! above it (sysfs `upper_*` and `master` links, also nested), has
 //!
 //! 1. a route in `/proc/net/route` or `/proc/net/ipv6_route`, or
-//! 2. an IP address from `getifaddrs` (any IPv4, or a non-link-local IPv6; `lo` never counts;
-//!    the tests inject the addresses with `IfAddrs::Fixed` through `FakeHost::addr`), or
+//! 2. an IP address from `getifaddrs` (any IPv4, or a non-link-local IPv6; `lo` never counts; the
+//!    tests inject the addresses with `IfAddrs::Fixed` through `FakeHost::addr`), or
 //! 3. is enslaved to Open vSwitch (a `master` link named `ovs-system`).
 //!
 //! Effects pinned here:
 //!
-//! - discovery: `uplink: true` (the field `kernel_route` is gone), `dpds_usable: false` and the
-//!   exact `reason` of the first signal that applies (route, then address, then OVS), naming the
-//!   upper device when the signal is on one;
-//! - hints: an `error` hint with id `uplink` (was `management_nic`), title "Host uplink", naming
-//!   the NIC, when a link of the body of `POST /api/host/hints` uses such a port;
-//! - `POST /api/emulation/start` answers 409 `{"message"}` naming the link, the port and the
-//!   reason, and spawns nothing; so does `POST /api/emulation/validate`;
+//! - discovery: `uplink: true`, `dpds_usable: false` and the exact `reason` of the first signal
+//!   that applies (route, then address, then OVS), naming the upper device when the signal is on one;
+//! - hints: an `error` hint with id `uplink`, title "Host uplink", naming the NIC, when a link of
+//!   the body of `POST /api/host/hints` uses such a port (still a 200, not a 409; one hint names
+//!   all uplink NICs);
+//! - `POST /api/emulation/start` and `/validate` answer 409 `{"message"}` naming the link, the
+//!   port and the reason, and spawn nothing;
 //! - the binary takes the addresses from the test-only `--ifaddrs-file` /
-//!   `DPDS_CONTROLLER_IFADDRS_FILE`.
-//!
-//! The controller stores no links, so `check` (host-only) cannot name an uplink.
-//!
-//! ASSUMPTIONS of the tester where the spec is silent: `POST /api/host/hints` with an uplink
-//! port stays a 200 with the error hint (it is not a 409); with several uplink NICs there is
-//! still one hint naming all of them; `ff00::/8` counts as link-local-only for routes.
+//!   `DPDS_CONTROLLER_IFADDRS_FILE`. `check` has no links, so it cannot name an uplink.
 //!
 //! IPv6 routes: link-local-only interfaces are not "routed". The kernel lists `fe80::/64`, the
-//! link-local address itself (`/128`) and the multicast route `ff00::/8` on every IPv6
-//! interface, and `lo` has `::1/128`; none of these counts (the tests below use the
-//! realistic set).
+//! link-local address itself (`/128`) and the multicast route `ff00::/8` on every IPv6 interface,
+//! and `lo` has `::1/128`; none of these counts (the tests use that realistic set).
 
 use crate::common::*;
 use dpds_controller::discovery::discover;

@@ -39,8 +39,7 @@ impl fmt::Display for SetupError {
 
 impl std::error::Error for SetupError {}
 
-/// Ok only for `1 + num_links` lcores: the main lcore plus one worker per
-/// link.
+/// Ok only for `1 + num_links` lcores: main plus one worker per link.
 pub fn validate_lcore_count(lcores: usize, num_links: usize) -> Result<(), SetupError> {
     let required = 1 + num_links;
     if lcores == required {
@@ -62,10 +61,9 @@ pub fn validate_port_count(ports: usize) -> Result<(), SetupError> {
     }
 }
 
-/// Mbufs of one link's pool, derived from its config and NIC rings (no
-/// rounding). It must hold: the delay buffer, the RX ring it
-/// fills and the TX ring it feeds (applied descriptor counts), 1.5 mempool
-/// caches of slack and two bursts in flight.
+/// Mbufs of one link's pool (unrounded): the delay buffer, the RX ring it fills
+/// and the TX ring it feeds (applied descriptor counts), 1.5 mempool caches of
+/// slack and two bursts in flight.
 pub fn required_mbufs(buffer_capacity: usize, rx_desc: u16, tx_desc: u16) -> u64 {
     (buffer_capacity as u64)
         .saturating_add(rx_desc as u64)

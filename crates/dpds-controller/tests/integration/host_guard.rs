@@ -1,4 +1,4 @@
-//! Spec v7 S2: the DNS-rebinding guard. A request whose `Host` header (port stripped) is not
+//! The DNS-rebinding guard. A request whose `Host` header (port stripped) is not
 //!
 //! - an IP literal (IPv4, or IPv6 in brackets, with or without a port),
 //! - `localhost`,
@@ -56,7 +56,7 @@ fn all_routes() -> Vec<(&'static str, &'static str, Option<Value>)> {
         ("GET", "/api/openapi.json", None),
         ("GET", "/api/docs/", None),
         ("POST", "/api/host/hints", Some(body.clone())),
-        // spec 33: no such route any more, and a foreign Host still gets the guard's answer, not a 404
+        // no such route, and a foreign Host still gets the guard's answer, not a 404
         ("POST", "/api/host/actions/swappiness", Some(body.clone())),
         ("POST", "/api/emulation/validate", Some(body.clone())),
         ("POST", "/api/emulation/start", Some(body)),

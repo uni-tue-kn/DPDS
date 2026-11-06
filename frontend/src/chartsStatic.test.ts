@@ -1,7 +1,6 @@
-// Spec 28: the percentile lines need chartjs-plugin-annotation (as P4TG's charts do). The Bar/Line stubs of test/setup.ts
-// never run Chart.js, so what a real browser needs is pinned from the files: the dependency, and the plugin registered
-// next to the other Chart.js components. Whether its Chart.js peer range fits chart.js 4 is checked by `npm ci` (npm
-// refuses an unmet peer) and by the build, not here.
+// The percentile lines need chartjs-plugin-annotation. The Bar/Line stubs of test/setup.ts never run Chart.js, so what a real
+// browser needs is pinned from the files: the dependency, and the plugin registered next to the other Chart.js components. Whether
+// its Chart.js peer range fits chart.js 4 is checked by `npm ci` and by the build, not here.
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -25,8 +24,6 @@ describe('chartjs-plugin-annotation (spec 28)', () => {
     expect(src).toMatch(new RegExp(`ChartJS\\.register\\([^)]*\\b${name}\\b`));
   });
 
-  // Spec 35: LineController is no longer listed (it was for the bar + line overlay of the histogram, which is gone), and
-  // LogarithmicScale neither (the log-scale toggle is gone).
   it('the existing registrations stay (Tooltip for hover, Filler for the filled rate areas, Legend, BarElement)', () => {
     const src = read('src/components/charts.ts');
     for (const part of ['Tooltip', 'Filler', 'Legend', 'BarElement']) {
@@ -34,9 +31,8 @@ describe('chartjs-plugin-annotation (spec 28)', () => {
     }
   });
 
-  // Spec 35: the Chart.js stubs of test/setup.ts never run Chart.js, so what a real browser needs for the new charts is pinned from
-  // the file, as for the annotation plugin: without ArcElement a doughnut throws '"arc" is not a registered element', and
-  // without the Title plugin the histogram's "Mean ... · Jitter (σ) ..." title line is silently not drawn.
+  // The Chart.js stubs never run Chart.js, so what a real browser needs is pinned from the file: without ArcElement a doughnut throws
+  // '"arc" is not a registered element', and without the Title plugin the histogram's title line is silently not drawn.
   it('registers ArcElement (the doughnut) and Title (the histogram title line)', () => {
     const src = read('src/components/charts.ts');
     const call = /ChartJS\.register\(([^)]*)\)/.exec(src);

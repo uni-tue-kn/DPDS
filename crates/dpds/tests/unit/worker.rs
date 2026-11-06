@@ -1,8 +1,6 @@
-//! `Worker`: the per-direction handle `forward::run` consumes. Everything
-//! the old `Worker::step` did (push, pop, rejects, counters) is exercised
-//! through `forward::run` in `forward.rs`; what remains here is the
-//! constructor, the accessors and the `Send` bound (the worker is moved to
-//! its lcore).
+//! `Worker`: the per-direction handle `forward::run` consumes. The packet path (push, pop,
+//! rejects, counters) is exercised through `forward::run` in `forward.rs`; here are the
+//! constructor, the accessors and the `Send` bound (the worker is moved to its lcore).
 
 use dpds::worker::Worker;
 use dpds_core::buffer::Buffer;

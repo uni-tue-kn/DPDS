@@ -1,8 +1,5 @@
-//! `dpds-controller check` (B6): text lines, exit code, `--json`.
-//! Assumed flags: `--sysfs-root`, `--procfs-root`, `--json`. Spec 22: `check` has no state (no
-//! `--state-dir`, no stored links to look at) and prints the host-only hints; the old tests of a
-//! stored link on a routed NIC, of 5 stored links needing 5 cores and of an unloadable state file
-//! (exit 2) have no counterpart any more (see `stateless.rs` for the removed flag).
+//! `dpds-controller check`: text lines, exit code, `--json`. Flags: `--sysfs-root`, `--procfs-root`,
+//! `--json`. `check` has no state and prints the host-only hints (see `stateless.rs`).
 
 use std::process::{Command, Output};
 
@@ -113,11 +110,10 @@ fn the_check_prints_no_mprq_line_in_text_or_json() {
     }
 }
 
-// ---- spec 22: nothing to load, nothing that can fail to load ----------------------------------
+// ---- nothing to load, nothing that can fail to load ----------------------------------
 
 #[test]
 fn the_exit_code_is_never_two_because_of_a_state_file() {
-    // `dpds.sh install` used to treat exit 2 as "the controller would not start (state file)":
     // the controller has no state file, so a leftover one changes nothing about the hints
     let host = FakeHost::bare_metal();
     let dir = tempfile::tempdir().unwrap();
@@ -189,7 +185,7 @@ fn check_takes_the_test_only_ifaddrs_file_and_stays_host_only() {
     }
 }
 
-// ---- spec 33: the commands of a hint, under its line ---------------------------------------
+// ---- the commands of a hint, under its line ---------------------------------------
 //
 // `check` prints each hint's `commands` under the hint's own line: first one line that, without
 // its indentation, is exactly `# run as root:`, then one line per command, in order, each

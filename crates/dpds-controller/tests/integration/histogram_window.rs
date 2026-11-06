@@ -1,31 +1,16 @@
-//! K3 (spec v8), `?window_s=<n>` on `GET /api/stats/{dir}/delay_histogram`.
+//! `?window_s=<n>` on `GET /api/stats/{dir}/delay_histogram`: n is 10, 60 or 300 (absent or 0 =
+//! since start), every other value a 400. The controller keeps, per direction, a ring of
+//! cumulative histogram snapshots (one per poll, reset on start) and returns `current - snapshot`
+//! for the newest snapshot at least `n` s older than the latest poll (or since start if the run is
+//! younger), with `window_s` and the covered `span_ms` in the reply. The same selection feeds
+//! `count`, `percentiles` and `expected`.
 //!
-//! Spec: n is 10, 60 or 300 (absent or 0 = since start). The controller keeps, per direction,
-//! a ring of cumulative histogram snapshots (one per poll, reset on start) and returns
-//! `current - snapshot >= n s old` (or since start if the run is younger) with `window_s` and
-//! the actual covered `span_ms` in the reply. Every other value of `window_s` is a 400.
-//!
-//! # NEW Rust API the tests assume (ASSUMPTION, the spec does not name it)
-//!
-//! The ring has to be reachable from the REST layer through the `TelemetrySource` trait, and
-//! the tests need a simulated clock, so the trait gets one more method
-//! (the real `Poller` fills the ring, the fake below simulates it):
-//!
-//! ```ignore
-//! pub trait TelemetrySource: Send + Sync + 'static {
-//!     fn latest(&self) -> Option<Polled>;
-//!     /// Every retained poll, OLDEST FIRST, as (age in ms of that poll, its snapshot): the
-//!     /// newest entry is the latest poll. Empty without data (not running, reset on start).
-//!     fn history(&self) -> Vec<(u64, Snapshot)>;
-//! }
-//! ```
-//!
-//! The REST handler picks the newest entry that is at least `window_s` seconds older than the
-//! latest poll (`age_i - age_latest >= window_s * 1000`) and reports `span_ms = age_i -
-//! age_latest`; without such an entry it returns the cumulative counts of the latest poll.
-//! The same selection feeds `count`, `percentiles` and `expected`.
-//!
-//! Until `history()` exists this module (and so the whole test binary) does not compile.
+//! The tests assume a `TelemetrySource::history(&self) -> Vec<(u64, Snapshot)>` method: every
+//! retained poll, OLDEST FIRST, as (age in ms of that poll, its snapshot), the newest entry being
+//! the latest poll; empty without data (not running, reset on start). The real `Poller` fills the
+//! ring, the fake below simulates it with a simulated clock. The handler picks the newest entry
+//! with `age_i - age_latest >= window_s * 1000` and reports `span_ms = age_i - age_latest`; without
+//! such an entry it returns the cumulative counts of the latest poll.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -480,7 +465,7 @@ fn poller_rig() -> PollerRig {
         },
     );
     let poller = Poller::spawn(runtime_dir, supervisor.clone());
-    // the interval comes with the start body in a real run; nothing stores it any more
+    // the interval comes with the start body in a real run
     poller.set_poll_interval(50);
     PollerRig {
         poller,

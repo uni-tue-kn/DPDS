@@ -1,150 +1,32 @@
-//! Spec 33: DPDS never changes the host. A host hint that can be fixed suggests the exact root
-//! commands instead (`commands`), and an administrator with a shell runs them. This replaces
-//! spec 32's Apply (`action`, `POST /api/host/actions/{id}`, `Exec::write`).
+//! DPDS never changes the host: a hint that can be fixed suggests the exact root commands
+//! (`commands`) and an administrator runs them.
 //!
-//! What stays from spec 32: the checks (is the tool installed, is the tuning in effect, current
-//! against target or device maximum), the hint ids, the per-NIC hints, the hint-only kernel
-//! command line checks.
-//!
-//! # Contract the tests assume
-//!
-//! ## Hints (`Hint`)
-//!
-//! - `commands`: optional array of strings, omitted (never null, never `[]`) when a hint suggests
-//!   nothing. Each element is one trimmed shell line, exactly what an administrator runs as root
-//!   on this host, computed from what the controller read: netdev names, PCI addresses, IRQ
-//!   numbers, cpulists, page counts. File paths in commands are the real ones (`/proc/...`,
-//!   `/sys/...`), never the root a test points the controller at. There is no `action` member.
-//! - the commands per check (`<...>` is computed from the host, everything else is literal):
-//!   - `swappiness`: `sysctl -w vm.swappiness=0`; `zone_reclaim_mode`:
-//!     `sysctl -w vm.zone_reclaim_mode=0`
-//!   - `irq_affinity`, one per NIC interrupt on an isolated core (`isolated` and `nohz_full`),
-//!     ascending by IRQ: `echo <cpulist> > /proc/irq/<n>/smp_affinity_list`, the list being the
-//!     non-isolated online cores of the NUMA node of the interrupt's NIC when that node has any,
-//!     else all non-isolated online cores (spec 33b; any valid cpulist spelling). NICs that are
-//!     uplinks or not `dpds_usable` are skipped, the detail names them.
-//!   - `governor`, one per core, ascending: `echo performance >
-//!     /sys/devices/system/cpu/cpu<n>/cpufreq/scaling_governor` for the workers and the isolated
-//!     cores that list `performance`
-//!   - `hugepages`: `echo <n> > <path>` with `<path>` = `/sys/devices/system/node/node<k>/
-//!     hugepages/hugepages-<size>kB/nr_hugepages` for the node of the NIC when known, else
-//!     `/sys/kernel/mm/hugepages/hugepages-<size>kB/nr_hugepages`; `<n>` is the new total, never
-//!     below the current one and never adding more than half of `MemAvailable`. When that cap
-//!     keeps the commands from the full target the detail names `MemAvailable`; without a
-//!     `MemAvailable` line there is no command.
-//!   - `flow_control:<pci>`: `ethtool -A <netdev> rx off tx off`, with `autoneg off` as well when
-//!     autonegotiation is on (the three pairs in any order)
-//!   - `pcie_maxreadreq:<pci>`: `setpci -s <pci> CAP_EXP+8.w=5000:7000`
-//!   - `port_buffer:<pci>`: `dcb buffer set dev <netdev> buffer-size all:0 <i>:<total>`
-//!   - `firmware:<pci>`: `<tool> -d <function 0> -y set ADVANCED_PCI_SETTINGS=1` and then
-//!     `<tool> -d <function 0> -y set MAX_ACC_OUT_READ=256 CQE_COMPRESSION=1`, `<tool>` being
-//!     `mstconfig` or, when only that is installed, `mlxconfig`
-//!   - a missing tool: `["apt install <package>"]` (`ethtool`, `iproute2` for `dcb`, `mstflint`),
-//!     level info, and nothing else
-//!   - kernel command line hints (`isolation`, `isolated_cores`, `rcu_nocb_poll`,
-//!     `boot_hugepages`): no commands, the detail names the parameters
-//! - Conditions for commands are those of spec 32 (dcb only with one shared buffer and flow
-//!   control off, no firmware command while a reset is pending, no IRQ command without isolated
-//!   cores, ...); the wording notes of spec 32's confirmations are now part of the detail: NVIDIA's
-//!   advice against the dcb change on ConnectX-6 Dx, firmware settings are NVRAM of the whole card,
-//!   persist and need a reset (from the hypervisor host in a VM), MaxReadReq in a VM.
-//! - No commands for a NIC the host uses (`uplink`) or that is not `dpds_usable`: the detail says
-//!   why (it contains the interface's `reason`). No MaxReadReq command for a virtual function
-//!   (sysfs `physfn`). No command, and no tool call at all, for a netdev whose name starts with
-//!   `-`. The netdev and PCI address in a command come from sysfs, never from the request body
-//!   (the body's PCI address may differ in case).
-//! - Hugepage need and target are those of the hint (spec 32); the cap is half of `MemAvailable`.
-//!
-//! ## Read-only
-//!
-//! Hint computation runs only `ethtool --json -a <netdev>` (or the text form `ethtool -a`),
-//! `dcb -j buffer show dev <netdev>` and `mstconfig|mlxconfig -d <bdf> -e -j <file> q`. The seam
-//! in `host.rs` is
-//!
-//! ```ignore
-//! pub trait Exec: Send + Sync + std::fmt::Debug {
-//!     /// Runs `argv[0]` with the other elements as arguments (no shell), waits at most
-//!     /// `timeout`, kills the process when that runs out and returns `Err(ErrorKind::TimedOut)`.
-//!     /// `Err(ErrorKind::NotFound)` = the tool is not installed (no other probe is made).
-//!     fn run(&self, argv: &[String], timeout: Duration) -> io::Result<CommandOutput>;
-//! }
-//! ```
-//!
-//! There is no `write`. Every call of hint computation passes `Duration::from_secs(30)`. A tool
-//! that times out (or fails any other way) gives an info hint saying so, with no commands. While
-//! an emulation is starting, running or stopping no tool runs; the per-NIC hints that need one
-//! (`flow_control`, `port_buffer`, `firmware`) are info and say "not checked while an emulation
-//! is running". The other hints are computed as always.
-//!
-//! ## Route and body
-//!
-//! `POST /api/host/actions/<anything>` is a 404 like every unknown route, and OpenAPI has no such
-//! path. The body of `POST /api/host/hints` is validated like the start body: 400 naming the
-//! field (the 409 rules of start, for example an uplink port, stay hints).
-//!
-//! ## Spec 33b (fixes from the review of spec 33)
-//!
-//! - Item 2: a netdev name that appears in a command or a tool argv matches
-//!   `^[A-Za-z0-9_.@-]+$` and does not start with `-`. For any other name neither `ethtool` nor
-//!   `dcb` runs for the NIC, `flow_control` and `port_buffer` have no commands and say "the
-//!   interface name <escaped> is not safe to put into a shell command" (control characters as
-//!   `\x1b`); the commands that use the PCI address stay. `dpds-controller check` prints no raw
-//!   control character in a hint line (escaped as `\xNN`). What `mstconfig` does for such a NIC is
-//!   not pinned.
-//! - Item 3: `SystemExec::run` puts the child into its own process group, kills the whole group
-//!   when the timeout runs out, joins the reader threads only up to the deadline (a background
-//!   process that keeps a pipe open ends the call with `TimedOut` and is killed), and fails with
-//!   `ErrorKind::InvalidData` when a stream exceeds 4 MiB (exactly 4 MiB is fine).
-//! - Item 4: OpenAPI documents the 409 of `POST /api/host/hints`; an upper-case PCI address in the
-//!   body gets the same lookups (NUMA node, hugepage path) as the lower-case one.
-//! - Item 6: a blocked NIC (uplink, not usable) keeps `apt install <package>` of a missing tool;
-//!   only tuning commands are removed, and only then does the detail say "no command is
-//!   suggested for this NIC". The dcb install hint says "iproute2 (5.11 or later provides dcb)".
-//! - Item 7: the tool queries of one request share a budget of 60 s. The seam: `Exec` has a
-//!   provided method `fn now(&self) -> Instant` (default `Instant::now()`), and every time the
-//!   controller reads for the budget goes through it (`ctx.roots.exec.now()`); `FakeExec`
-//!   overrides it with a simulated clock that only moves when a call registered with
-//!   `FakeExec::takes` runs. A call gets `min(30 s, remaining)` as its timeout; when nothing
-//!   remains no tool runs and the hint is info, has no commands and says "not checked (time
-//!   budget of 60 s used up)". (Spec 33c replaces the lock rule of this item: see below.)
-//! - Spec 33c item 1: the tool queries do not take the lifecycle lock (the one start and stop
-//!   take). A hints request reads the emulation state once; tools run only when it is Stopped or
-//!   Failed. A start sent while a query is running is not delayed, several queries run at the
-//!   same time, and the 60 s budget per request stays.
-//! - Spec 33c item 3: the readers of `SystemExec` retry a read that fails with
-//!   `ErrorKind::Interrupted`, so a signal never cuts the output of a tool short.
-//! - Spec 33c item 4: the message of a timed-out tool gives the timeout the call really had,
-//!   with millisecond precision below 1 s (`timed out after 0.9 s`, never `0 s`).
-//!
-//! ## Spec 34 (the firmware query is cached)
-//!
-//! - The controller keeps, in memory and per router (never a process-wide static, never on disk),
-//!   the result of each NIC's firmware query (`mstconfig|mlxconfig -d <function 0> -e -j <file> q`),
-//!   keyed by the function-0 address the query uses, so two functions of one card share an entry.
-//!   Only a query that answered and parsed is stored, together with the tool that answered and the
-//!   `Exec::now()` it was read at. A missing tool, a failing or timed-out tool, an answer without
-//!   firmware settings and a hint that was "not checked" (budget used up, emulation running) store
-//!   nothing: the next request queries again.
-//! - A hint computed from a stored result runs no `mstconfig`/`mlxconfig`, costs no budget time
-//!   (also when the budget is used up) and has the level, title, commands and suggestion of a fresh
-//!   one. Its detail ends with "(firmware values read <N> s ago; Recheck to read them again)", `<N>`
-//!   being `Exec::now()` minus the time of the read in seconds. A fresh read has no such note.
-//!   `ethtool` and `dcb` are not cached.
-//! - While an emulation is starting, running or stopping a stored result is used (no tool runs);
-//!   without one the hint stays "not checked while an emulation is running".
-//! - `POST /api/host/hints?recheck=true` drops the stored results of the NICs (function 0) of the
-//!   posted links before computing, and stores the new one. While no tool may run the stored result
-//!   stays and is used. The query is `recheck=true`, `recheck=false` (like absent) or absent:
-//!   anything else (`1`, `yes`, `True`, empty, a repeated key, any other key) is a 400 naming
-//!   `recheck`, before anything is read or dropped. Spec 55: `GET /api/host/hints` takes the same query
-//!   (see `spec55.rs`); OpenAPI documents `recheck` on the GET and the POST.
-//! - `dpds-controller check` is another process without a store; it has no `--recheck`.
-//!
-//! ## Sources
-//!
-//! No source file executes a mutating argv (`ethtool -A`, `... set`), writes below `/proc` or
-//! `/sys` (or writes files at all, apart from the supervisor's links file and the telemetry
-//! socket), or has the Apply code of spec 32. Commands appear only as display strings.
+//! - `commands` is omitted (never null, never `[]`) when a hint suggests nothing. Each element is
+//!   one trimmed shell line computed from what the controller read (netdev names, PCI addresses,
+//!   IRQ numbers, cpulists, page counts); paths are the real `/proc/...` and `/sys/...` ones, never
+//!   the root a test points the controller at. The commands per check are asserted below.
+//! - A missing tool gives `["apt install <package>"]` at level info and nothing else. No tuning
+//!   command for a NIC that is an uplink or not `dpds_usable` (the detail says why), for a virtual
+//!   function (MaxReadReq), or for a netdev whose name is not `^[A-Za-z0-9_.@-]+$` or starts with
+//!   `-` (no `ethtool`/`dcb` call either; the detail escapes control characters as `\x1b`). The
+//!   netdev and PCI address in a command come from sysfs, never from the request body.
+//! - Hint computation only runs read-only tools (`ethtool --json -a`, `dcb -j buffer show`,
+//!   `mstconfig|mlxconfig ... q`) through the `Exec` seam, each with a 30 s timeout and a shared
+//!   budget of 60 s per request. `Exec::now()` is the clock for that budget; `FakeExec` simulates it
+//!   (it moves only for calls registered with `FakeExec::takes`). Tools run only while the
+//!   emulation is Stopped or Failed, and without taking the lifecycle lock; otherwise the per-NIC
+//!   hints that need one say "not checked while an emulation is running".
+//! - `SystemExec::run` runs the child in its own process group, kills the group on timeout, joins
+//!   its reader threads only up to the deadline, retries reads that fail with `Interrupted`, and
+//!   fails with `InvalidData` above 4 MiB of output (exactly 4 MiB is fine).
+//! - The firmware query of a NIC (function 0) is cached per router, in memory, keyed by the
+//!   function-0 address; only an answered and parsed query is stored. A cached hint runs no tool,
+//!   costs no budget and ends its detail with "(firmware values read <N> s ago; Recheck to read
+//!   them again)". `?recheck=true` drops the entries of the posted links first; any other value
+//!   of `recheck` is a 400 naming it. `dpds-controller check` has no cache and no `--recheck`.
+//! - `POST /api/host/actions/<anything>` is a 404 and OpenAPI has no such path.
+//! - No source file executes a mutating argv, writes below `/proc` or `/sys`, or writes any file
+//!   except the supervisor's links file and the telemetry socket.
 
 use std::fs;
 use std::io::ErrorKind;
@@ -910,7 +792,7 @@ fn governor_not_performance_names_the_command_where_performance_is_available() {
     let h = hints_json(&host, &Setup::default());
     assert_level(&h, "governor", "warn", "warn");
     assert_no_commands(&h, "governor");
-    // no cpufreq at all (a VM): info and no command, as before
+    // no cpufreq at all (a VM): info and no command
     let vm = hints_json(&FakeHost::vm(), &Setup::default());
     assert_level(&vm, "governor", "info", "info");
     assert_no_commands(&vm, "governor");
@@ -1899,7 +1781,7 @@ fn the_hints_that_have_commands_are_exactly_the_ones_that_can_be_fixed() {
     host.exec().assert_read_only();
 }
 
-// ---- the route is gone -----------------------------------------------------------------------
+// ---- no such route -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn posting_to_host_actions_is_a_404_whatever_the_id_and_the_body() {
@@ -2121,7 +2003,7 @@ fn system_exec_kills_a_tool_that_outlasts_its_timeout() {
     assert!(gone, "process {pid} still exists after the timeout");
 }
 
-// ---- spec 33b item 2: netdev names that are unsafe in a shell command -------------------------
+// ---- netdev names that are unsafe in a shell command -------------------------
 
 /// Names that do not match `^[A-Za-z0-9_.@-]+$` or start with `-`. The kernel refuses some of
 /// them (whitespace, `:`), but sysfs of a hostile or odd host may still list them.
@@ -2286,7 +2168,7 @@ fn check_prints_control_characters_escaped() {
     );
 }
 
-// ---- spec 33b item 3: the real runner -------------------------------------------------------------
+// ---- the real runner -------------------------------------------------------------
 
 /// Whether a process exists and is not a zombie (a process whose parent is gone is only reaped
 /// by init, which a container may not do).
@@ -2318,7 +2200,7 @@ fn pid_in(file: &std::path::Path) -> u32 {
         .unwrap()
 }
 
-// ---- spec 33c item 3: a signal does not cut a tool's output short ----------------------------
+// ---- a signal does not cut a tool's output short ----------------------------
 
 extern "C" fn ignore_signal(_: libc::c_int) {}
 
@@ -2538,7 +2420,7 @@ fn system_exec_does_not_stall_on_a_flood_and_fails_with_invalid_data() {
     );
 }
 
-// ---- spec 33b item 4: the 409 of the hints post and the address the lookups use -----------------
+// ---- the 409 of the hints post and the address the lookups use -----------------
 
 #[tokio::test]
 async fn openapi_documents_the_400_and_409_of_the_hints_post() {
@@ -2626,7 +2508,7 @@ fn an_upper_case_pci_address_in_the_body_gives_the_same_hints_as_the_lower_case_
     );
 }
 
-// ---- spec 33b item 6: blocked NICs keep the install command ------------------------------------
+// ---- blocked NICs keep the install command ------------------------------------
 
 #[tokio::test]
 async fn a_blocked_nic_keeps_the_install_command_of_a_missing_tool() {
@@ -2710,7 +2592,7 @@ fn the_dcb_install_hint_says_which_iproute2_provides_dcb() {
     );
 }
 
-// ---- spec 33b item 7: the time budget and the lifecycle lock ------------------------------------
+// ---- the time budget and the lifecycle lock ------------------------------------
 
 const USED_UP: &str = "not checked (time budget of 60 s used up)";
 
@@ -3087,7 +2969,7 @@ async fn a_hints_request_while_a_start_is_in_progress_runs_no_tools() {
     }
 }
 
-// ---- spec 34: the firmware query is cached until a restart or a recheck -------------------------
+// ---- the firmware query is cached until a restart or a recheck -------------------------
 
 const HINTS: &str = "/api/host/hints";
 const NOTE_START: &str = "(firmware values read ";
@@ -3254,7 +3136,7 @@ async fn a_cached_hint_comes_from_the_cache_even_when_the_budget_is_used_up() {
     fake_ethtool(&exec, "ens1f0", eth(false, false, false));
     let first = hints_at(&a, "", &link_on(NIC0)).await;
     assert_eq!(commands_of(&first, &id), fw_untuned_commands());
-    // from now on ethtool and dcb use the whole budget of 60 s before the firmware is looked at
+    // ethtool and dcb use the whole budget of 60 s before the firmware is looked at
     exec.takes(&["ethtool"], T30);
     exec.takes(&["dcb"], T30);
     let t0 = exec.now();
@@ -3358,7 +3240,7 @@ async fn a_missing_tool_is_not_cached() {
             exec.calls()
         );
     }
-    // mstflint was installed in the meantime
+    // mstflint is installed
     fake_mst(&exec, "mstconfig", BDF0, MstState::untuned());
     let h = hints_at(&a, "", &s).await;
     assert_eq!(commands_of(&h, &id), fw_untuned_commands());
@@ -3568,8 +3450,6 @@ async fn bad_recheck_values_are_a_400_naming_recheck_before_anything_runs() {
     assert_eq!(fw_queries(&exec, BDF0), 1, "the cache survived the 400s");
 }
 
-// spec 55: `GET /api/host/hints` takes `recheck` too, see `spec55.rs`.
-
 // ---- while an emulation starts, runs or stops ------------------------------------------------
 
 #[tokio::test]
@@ -3683,8 +3563,6 @@ async fn cards_do_not_share_entries() {
 
 // ---- OpenAPI, the CLI, the real binary ---------------------------------------------------------------
 
-// spec 55: OpenAPI documents `recheck` on the GET as well, see `spec55.rs`.
-
 #[test]
 fn check_has_no_recheck_and_prints_no_cache_note() {
     let host = FakeHost::bare_metal();
@@ -3741,7 +3619,7 @@ fn the_real_binary_caches_the_firmware_query_until_a_recheck() {
         assert_eq!(st, 200, "{v}");
         v
     };
-    // spec 55 H1: the startup task queries the firmware of both NICs of the host once; a GET waits for it
+    // the startup task queries the firmware of both NICs of the host once; a GET waits for it
     let (st, v) = http(&c.addr, "GET", HINTS, None).unwrap();
     assert_eq!(st, 200, "{v}");
     let warm = runs();

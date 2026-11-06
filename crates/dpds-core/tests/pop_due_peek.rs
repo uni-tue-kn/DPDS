@@ -1,12 +1,12 @@
 //! `Buffer::pop_due(now_ns) -> Option<*mut c_void>` and
-//! `Buffer::peek_nth(n) -> Option<*mut c_void>` (both additive, new API).
+//! `Buffer::peek_nth(n) -> Option<*mut c_void>`.
 //!
 //! `pop_due` pops the head iff its send time *as `front_time` reports it* is
 //! `<= now_ns` (boundary `==` pops). `peek_nth(n)` is the packet that would be
 //! popped n-th from now: FIFO mode the n-th queued entry; reordering mode
 //! `n == 0` is the heap head and `n > 0` is `None`.
 //!
-//! Delay is deterministic and everything is deterministic: no seeding needed.
+//! Everything is deterministic: no seeding needed.
 
 use std::ffi::c_void;
 
@@ -172,7 +172,7 @@ fn fifo_peek_nth_returns_the_nth_queued_entry_without_popping() {
     assert_eq!(b.peek_nth(usize::MAX), None);
     assert_eq!(b.len(), 5, "peeking must not remove anything");
 
-    // After a pop the window slides: the old second entry is now the head.
+    // After a pop the window slides: the old second entry is the head.
     assert_eq!(b.pop(), Some(pkt(1)));
     assert_eq!(b.peek_nth(0), Some(pkt(2)));
     assert_eq!(b.peek_nth(3), Some(pkt(5)));

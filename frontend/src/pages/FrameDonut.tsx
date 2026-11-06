@@ -4,7 +4,7 @@ import { Doughnut } from 'react-chartjs-2';
 import { formatCount } from '../common/format';
 import { useTheme } from '../common/theme';
 
-/** P4TG's frame size buckets (Visuals.tsx, frame_size_data), in the loss donut's soft palette without its red. */
+/** The frame size buckets, in the loss donut's soft palette without its red. */
 const SIZES = [
   { label: '0-63', color: '#6c8ebf' },
   { label: '64', color: '#00cec9' },

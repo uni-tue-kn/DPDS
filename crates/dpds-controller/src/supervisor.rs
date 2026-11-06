@@ -1,4 +1,4 @@
-//! Supervision of the `dpds` child process (B3).
+//! Supervision of the `dpds` child process.
 //!
 //! One long-lived thread owns the child: `PR_SET_PDEATHSIG` fires when the
 //! thread that spawned the child exits, so the spawning thread must outlive it.

@@ -38,7 +38,7 @@ impl Dropper {
     fn with_rng(mut loss_model: LossModel, rng: SmallRng) -> Self {
         let uniform = Uniform::new(0.0f64, 1.0f64).unwrap();
 
-        // Ensure GilbertElliot always starts in the Good state
+        // GilbertElliot always starts in the Good state.
         if let LossModel::GilbertElliot(_, _, _, _, state_is_good) = &mut loss_model {
             *state_is_good = true;
         }
@@ -63,7 +63,6 @@ impl Dropper {
                 self.uniform.sample(&mut self.rng) < *p
             }
             LossModel::GilbertElliot(p, r, k, h, state_is_good) => {
-                // Determine if packet is lost based on current state
                 let sample_loss = self.uniform.sample(&mut self.rng);
                 let drop = if *state_is_good {
                     sample_loss > *k
@@ -71,7 +70,6 @@ impl Dropper {
                     sample_loss > *h
                 };
 
-                // Transition to next state
                 let sample_transition = self.uniform.sample(&mut self.rng);
                 if *state_is_good {
                     if sample_transition < *p {

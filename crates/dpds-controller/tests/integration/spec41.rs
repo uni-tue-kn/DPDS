@@ -1,4 +1,4 @@
-//! Spec 41: no settings, automatic lcores, no extra EAL arguments (controller part C1-C8).
+//! No settings, automatic lcores, no extra EAL arguments.
 //!
 //! The start, validate and hints body is `{links}`. `settings` and a link's `worker` are unknown
 //! fields (400 naming them). The main lcore is the lowest online core that is not isolated, the
@@ -29,7 +29,7 @@ const ENDPOINTS: [&str; 3] = [
     "/api/host/hints",
 ];
 
-// ---- C1: the body is {links} -----------------------------------------------------------------
+// ---- the body is {links} -----------------------------------------------------------------
 
 #[tokio::test]
 async fn a_body_with_settings_is_a_400_naming_it_at_every_endpoint() {
@@ -113,7 +113,7 @@ async fn openapi_has_no_settings_and_no_worker() {
     }
 }
 
-// ---- C2: no worker on a link -----------------------------------------------------------------
+// ---- no worker on a link -----------------------------------------------------------------
 
 #[tokio::test]
 async fn a_link_with_a_worker_is_a_400_naming_it_at_every_endpoint() {
@@ -134,7 +134,7 @@ async fn a_link_with_a_worker_is_a_400_naming_it_at_every_endpoint() {
     }
 }
 
-// ---- C3: the main lcore -----------------------------------------------------------------------
+// ---- the main lcore -----------------------------------------------------------------------
 
 #[test]
 fn the_main_lcore_is_the_lowest_online_core_that_is_not_isolated() {
@@ -177,7 +177,7 @@ async fn with_every_online_core_isolated_the_start_fails_without_naming_settings
     assert!(a.supervisor.plans().is_empty());
 }
 
-// ---- C4: workers are automatic ------------------------------------------------------------------
+// ---- workers are automatic ------------------------------------------------------------------
 
 #[test]
 fn workers_are_the_lowest_free_isolated_cores_in_link_order() {
@@ -261,7 +261,7 @@ fn the_isolated_cores_hint_does_not_offer_to_pin_workers() {
     assert_level(&h, "isolated_cores", "error", "error");
 }
 
-// ---- C5: no extra EAL arguments ------------------------------------------------------------------
+// ---- no extra EAL arguments ------------------------------------------------------------------
 
 #[tokio::test]
 async fn the_argv_is_what_the_controller_computes_and_nothing_else() {
@@ -291,7 +291,7 @@ async fn the_argv_is_what_the_controller_computes_and_nothing_else() {
 
 #[tokio::test]
 async fn an_eal_argument_has_no_way_in() {
-    // not as settings (C1), not as a top-level or link member
+    // not as settings, not as a top-level or link member
     let a = app();
     let mut body = vdevs(1).body();
     body["eal_extra_args"] = json!(["--no-huge"]);
@@ -305,7 +305,7 @@ async fn an_eal_argument_has_no_way_in() {
     assert!(a.supervisor.plans().is_empty());
 }
 
-// ---- C7: hints and check keep working with the automatic plan ---------------------------------
+// ---- hints and check keep working with the automatic plan ---------------------------------
 
 #[tokio::test]
 async fn hints_with_links_on_a_host_with_every_core_isolated_answer_200() {

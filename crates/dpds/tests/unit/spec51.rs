@@ -1,7 +1,6 @@
-//! Spec 51, D1/D2 and the dpds side of T1: the IAT histogram, the frame size counters and
-//! `out_of_order` of a link.
+//! The IAT histogram, the frame size counters and `out_of_order` of a link.
 //!
-//! # Test-facing API (ASSUMPTIONS: the spec gives behaviour, not names)
+//! # API under test
 //!
 //! ```text
 //! HistRange::iat_from_config(&Config) -> HistRange
@@ -10,7 +9,7 @@
 //! Stats::with_hists(delay: HistRange, iat: HistRange, delay_stats: bool) -> Stats
 //! DirectionStats::with_hists(Vec<(HistRange, HistRange, bool)>) -> DirectionStats
 //!     one (delay range, IAT range, delay statistics on) per direction. The IAT histogram is
-//!     recorded exactly when the delay statistics are on (D1: the `DELAY = true` loop instance).
+//!     recorded exactly when the delay statistics are on (the `DELAY = true` loop instance).
 //! Stats::iat_hist_reply(&self) -> Reply                      page 0, like delay_hist_reply
 //! DirectionStats::iat_hist_reply(&self, param) -> Option<Reply>
 //!     "<dir>" or "<dir>,<page>" like delay_hist_reply: the eight keys of a delay histogram page
@@ -21,7 +20,7 @@
 //! `/dpds/iat_hist,<dir>[,<page>]` (the DPDK registration) needs an EAL and is not covered here.
 //!
 //! Stats reply (`Stats::stats_reply`, every build): `frame_sizes` is a `UintArray` of 8 (the
-//! cumulative counts of P4TG's buckets [0,63], [64], [65,127], [128,255], [256,511],
+//! cumulative counts of the buckets [0,63], [64], [65,127], [128,255], [256,511],
 //! [512,1023], [1024,1518], [1519,inf) of the `pkt_len` of every received frame, before any
 //! drop) and `out_of_order` is a `Uint` (cumulative, `Buffer::out_of_order`).
 //!
@@ -74,7 +73,7 @@ fn with_rate(mut c: dpds_core::Config, rate: f64) -> dpds_core::Config {
     c
 }
 
-// ---- the IAT range (D1), every build --------------------------------------------------------
+// ---- the IAT range, every build --------------------------------------------------------
 
 #[test]
 fn the_iat_range_is_four_mean_gaps_in_256_bins_from_zero() {
@@ -248,7 +247,7 @@ mod with_feature {
         ))
     }
 
-    // ---- D2: frame sizes -----------------------------------------------------------------
+    // ---- frame sizes -----------------------------------------------------------------
 
     fn sizes(len: u32) -> Vec<u64> {
         let stats = leak(Stats::default());
@@ -355,7 +354,7 @@ mod with_feature {
         );
     }
 
-    // ---- D1: the IAT histogram ---------------------------------------------------------------
+    // ---- the IAT histogram ---------------------------------------------------------------
 
     fn spacer(base: f64) -> Config {
         with_rate(
@@ -423,7 +422,7 @@ mod with_feature {
         // delay 100, no limiter. it1 (now 0): A, B pushed, send 100, nothing due.
         // it2 (now 150): A, B popped -> gap 0; C pushed (send 250).
         // it3 (now 300, quit): C popped -> gap 250 - 100 = 150 from B, in another pass.
-        // The staged packets leave in it4 (spec 57: 10 us after the oldest send time).
+        // The staged packets leave in it4 (10 us after the oldest send time).
         let cfg = plain(false);
         let stats = iat_stats(&cfg);
         // it4 (1e6) sends what it2 and it3 staged
@@ -502,7 +501,7 @@ mod with_feature {
             .unwrap_or_default()
     }
 
-    // ---- T1: out_of_order through the loop ---------------------------------------------------
+    // ---- out_of_order through the loop ---------------------------------------------------
 
     #[test]
     fn a_reordering_link_reports_the_out_of_order_departures() {

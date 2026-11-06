@@ -7,15 +7,10 @@ import { renderApp, seedStore } from '../test/helpers';
 import { api } from '../test/mockApi';
 import { must } from '../test/must';
 
-// Spec 43 (user 2026-11-05), the frontend parts that have no home in an older test file:
-//   F4  (amended by the user 2026-11-05: "no matter if the DPDS is started or stopped"; spec 46: P4TG order, no RX/TX label) the
-//       RX pill's arrow is always the yellow/orange one (`--color-yellow`) and the TX pill's arrow always the green one
-//       (`--color-okay`), in every state. Spec 46 sets them inline on the arrow `<i>` (`style.color`); CHOICE: see the header of
-//       dashboardTopRow.test.tsx. Was: the colour worked out from the rules of index.css (specificity walk). The full set of
-//       top row tests is in dashboardTopRow.test.tsx.
-//   F5  the radios of a link's chart area are "Traffic rates", "Packet loss", "Delay histogram"; the old names are gone.
-// (F1 to F3, F6 and F8 are in dashboardP4tg, dashboardSpec35, dashboardSummary, dashboardHistory, interfacesNoStats; F7 in
-// src/assets/stylesSpec43.test.ts.)
+// The pills' arrows and the chart radios:
+//   - The RX pill's arrow is always the yellow/orange one (`--color-yellow`) and the TX pill's arrow always the green one
+//     (`--color-okay`), in every state, set inline on the arrow `<i>` (`style.color`); see the header of dashboardTopRow.test.tsx.
+//   - The radios of a link's chart area are "Traffic rates", "Packet loss", "Delay histogram".
 
 const css = readFileSync(resolve(__dirname, '../assets/index.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
 

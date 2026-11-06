@@ -1,32 +1,26 @@
-//! End-to-end: the real `dpds-controller` binary supervising the real `dpds`
-//! (built with `--features telemetry`) on DPDK virtual devices, driven only
-//! through the REST API.
+//! End-to-end: the real `dpds-controller` binary supervising the real `dpds` (built with
+//! `--features telemetry`) on DPDK virtual devices, driven only through the REST API.
 //!
-//! These tests are `#[ignore]`d because they need `target/release/dpds`
-//! (`cargo build --release -p dpds --features telemetry`) and several CPUs.
-//! Run them explicitly:
+//! The tests are `#[ignore]`d because they need `target/release/dpds` and several CPUs:
 //!
 //! ```text
 //! cargo build --release -p dpds --features telemetry
 //! cargo test --release -p dpds-controller --test integration e2e -- --ignored --test-threads=1
 //! ```
 //!
-//! When run, a missing / telemetry-less `dpds` binary or too few CPUs is a
-//! FAILURE with a clear message, never a silent skip (same rule as
-//! `crates/dpds/tests/e2e.rs`). `DPDS_BIN` overrides the binary path.
+//! When run, a missing or telemetry-less `dpds` binary or too few CPUs is a FAILURE with a clear
+//! message, never a silent skip. `DPDS_BIN` overrides the binary path.
 //!
 //! The controller runs with a fake sysfs/procfs (online CPUs 0..=n, CPUs 1..=n isolated => main
-//! lcore 0, one worker lcore per link) so the assignment does not depend on the test host's
-//! boot parameters. Spec 41: the start body is `{links}` only and the controller passes no extra EAL
-//! flags (the host needs hugepages, as in production). Spec 22: the controller stores nothing, so every start carries the whole
-//! configuration (`Controller::start_run`) and the running configuration is read back from
-//! `GET /api/emulation`.
+//! lcore 0, one worker lcore per link) so the assignment does not depend on the test host's boot
+//! parameters. Every start carries the whole configuration (`Controller::start_run`) and the
+//! running configuration is read back from `GET /api/emulation`.
 //!
-//! Spec v10: a link is one direction ingress -> egress. The tests use `net_null` hairpin links
-//! and a three-link ring over three `net_null` vdevs (`net_null` receives an endless stream of
-//! packets and discards what it sends, so exact per-link counts are not available; the per-link
-//! deterministic delay, the link order, the ports and the lcores are what these tests pin).
-//! The links file the controller hands to `dpds` is the v2 shape and is checked while running.
+//! The tests use `net_null` hairpin links and a three-link ring over three `net_null` vdevs
+//! (`net_null` receives an endless stream of packets and discards what it sends, so exact
+//! per-link counts are not available; the per-link deterministic delay, the link order, the ports
+//! and the lcores are what these tests pin). The links file handed to `dpds` is checked while
+//! running.
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -529,7 +523,7 @@ fn a_three_link_ring_over_three_vdevs_runs_one_worker_per_link() {
         let (s, h) = c.call("GET", &format!("/api/stats/{d}/delay_histogram"), None);
         assert_eq!(s, 200, "{h}");
     }
-    // spec 43: /api/stats lists no ports
+    // /api/stats lists no ports
     assert!(v.get("ports").is_none(), "{v}");
 
     // the links file carries the ring literally
@@ -551,7 +545,7 @@ fn a_three_link_ring_over_three_vdevs_runs_one_worker_per_link() {
 #[test]
 #[ignore = "needs target/release/dpds built with --features telemetry; run with -- --ignored"]
 fn a_link_without_any_stage_runs_with_zero_delay() {
-    // spec 22, optional stages: the missing delayer, limiter and loss model become the no-op core
+    // optional stages: the missing delayer, limiter and loss model become the no-op core
     // stages in the links file, and the real dpds accepts and runs them (the internal
     // `initialization_rate_pps` of 1 is valid for it and never used without correlation)
     let _g = serial();

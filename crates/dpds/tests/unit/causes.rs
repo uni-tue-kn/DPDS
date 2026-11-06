@@ -1,30 +1,13 @@
 //! Per-cause drop counters of one direction, driven through `forward::run`
 //! with mocks (hand-derived, like `limiter.rs`/`loss.rs` of dpds-core).
 //!
-//! # Test-facing API (new)
+//! Invariant: `dpds_rejects == loss_drops + limiter_drops + buffer_full_drops`. The
+//! `first_loss_detail` names the cause of the FIRST reject of the run: "from=dpds,cause=loss",
+//! "from=dpds,cause=limiter" or "from=dpds,cause=buffer_full".
 //!
-//! ```text
-//! DpdsCounters: pub loss_drops, limiter_drops, buffer_full_drops: Counter
-//!   (single writer, same discipline as dpds_rejects; zero-sized no-ops without
-//!   the feature). The invariant, checked below: dpds_rejects ==
-//!   loss_drops + limiter_drops + buffer_full_drops.
-//!   They are the LAST three entries of DpdsCounters::EPOCH_COUNTER_NAMES /
-//!   cumulative_snapshot() (12 counters now), so /dpds/epochs has the arrays
-//!   loss_drops, limiter_drops, buffer_full_drops and /dpds/stats the uints of
-//!   the same names.
-//! First loss: reason stays `DpdsReject`; the `first_loss_detail` string names
-//!   the cause of the FIRST reject of the run: "from=dpds,cause=loss",
-//!   "from=dpds,cause=limiter" or "from=dpds,cause=buffer_full"
-//!   (dpds::first_loss::format_first_loss(..).detail). `StageLossDetail::Single`
-//!   (-> "from=dpds") stays for other callers; how the cause is carried inside
-//!   the detail type is up to the implementation, the tests only look at the
-//!   formatted string.
-//! forward::run uses `Buffer::push_outcome`; precedence (spec20) buffer full >
-//!   loss > limiter: the capacity check comes first and a packet that finds the
-//!   buffer full counts as buffer full whatever loss model and limiter would
-//!   say (they are not consulted); a packet rejected by both loss and limiter
-//!   counts as loss.
-//! ```
+//! Precedence: buffer full > loss > limiter. The capacity check comes first and a packet that
+//! finds the buffer full counts as buffer full whatever loss model and limiter would say (they
+//! are not consulted); a packet rejected by both loss and limiter counts as loss.
 //!
 //! The limiter's limit is derived: `buffer_capacity * 1542 * 8` bit. A
 //! 1519-byte packet is (1519 + 4 + 20) * 8 = 12344 bit on the wire, 8 bit more

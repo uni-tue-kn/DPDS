@@ -1,9 +1,9 @@
 //! `Buffer::try_new(config) -> Result<Buffer, BuildError>` and
 //! `Delayer::try_new(..) -> Result<Delayer, BuildError>`; `BuildError` is a
 //! `std::error::Error` with a non-empty Display naming the bad parameter;
-//! `new` keeps panicking for the same inputs.
+//! `new` panics for the same inputs.
 //!
-//! The error cases are every panic site of `Delayer::new`/`Buffer::new` today,
+//! The error cases are every panic site of `Delayer::new`/`Buffer::new`,
 //! derived from the rand_distr 0.6 / rand 0.10 sources:
 //! - Normal: `std` not finite (inf, NaN);
 //! - LogNormal (`from_mean_cv(mean, std / mean)`): cv != 0 and mean not > 0, cv
@@ -13,9 +13,8 @@
 //! - Uniform (`mean -+ sqrt(3) std`): low >= high (`std <= 0`) or NaN;
 //! - `Buffer`: `with_capacity(usize::MAX)` panics with "capacity overflow".
 //!
-//! Not asserted (deliberately left open): negative `std` for Normal (rand_distr
-//! accepts it), whether the `Random(p)` probability is range-checked (it does not
-//! panic today), and the exact wording/type path of `BuildError`.
+//! Not asserted: negative `std` for Normal (rand_distr accepts it), whether the
+//! `Random(p)` probability is range-checked, and the exact wording of `BuildError`.
 
 use std::ffi::c_void;
 use std::panic::catch_unwind;
@@ -140,8 +139,8 @@ fn invalid_parameters_are_also_errors_with_correlation_active() {
 
 #[test]
 fn buffer_try_new_rejects_a_capacity_that_overflows_the_allocation() {
-    // `VecDeque::with_capacity(usize::MAX)` panics ("capacity overflow") today,
-    // and so does BinaryHeap: both modes must return an error instead.
+    // `with_capacity(usize::MAX)` panics ("capacity overflow") for VecDeque and
+    // BinaryHeap: both modes must return an error instead.
     for reordering in [false, true] {
         let mut cfg = config(DeterministicDistribution, 0.0, 0.0, false, usize::MAX);
         cfg.reordering = reordering;
@@ -255,9 +254,8 @@ fn new_still_panics_where_try_new_errors() {
 
 // ---- half_life_period_ns must be a finite, non-negative number --------
 //
-// A negative, NaN or infinite half-life used to pass `try_new` and panic in
-// `delayer_sample_ns` once traffic flowed. It is now rejected up front, always
-// (also with `activate_correlation: false`), and `0` stays valid.
+// A negative, NaN or infinite half-life is rejected up front, also with
+// `activate_correlation: false`; `0` is valid.
 
 const BAD_HALF_LIVES: [(&str, f64); 5] = [
     ("negative", -1000.0),

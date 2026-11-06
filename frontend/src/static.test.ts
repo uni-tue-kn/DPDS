@@ -1,9 +1,7 @@
-// Static checks of how the frontend is delivered (spec v13, spec v15) and of leftovers in the source tree (F6).
-// The controller embeds `dist/` and serves it, `dpds.sh install` builds it on the host with Node (spec v15:
-// no CI release asset any more), and the Vite dev server proxies /api to a running controller
-// (src/viteConfig.test.ts). These tests read the files as text from the repository
-// (frontend/ = the directory vitest runs in, its parent is the repository root); nothing is built or
-// started.
+// Static checks of how the frontend is delivered and of leftovers in the source tree. The controller embeds `dist/` and serves it,
+// `dpds.sh install` builds it on the host with Node, and the Vite dev server proxies /api to a running controller
+// (src/viteConfig.test.ts). These tests read the files as text from the repository (frontend/ = the directory vitest runs in, its
+// parent is the repository root); nothing is built or started.
 import { execSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -77,7 +75,7 @@ describe('.github/workflows/ci.yml: no frontend release asset any more (spec v15
     expect(job('frontend-asset')).toBe('');
   });
 
-  // Spec 18 allows exactly one exception: the `release` job on main (tag + GitHub release with generated notes,
+  // The one exception is: the `release` job on main (tag + GitHub release with generated notes,
   // no build assets). Everything else stays read-only and publishes nothing. The Rust side pins the job itself
   // (crates/dpds-controller/tests/integration/release.rs).
   const release = job('release');
@@ -151,7 +149,7 @@ describe('.github/workflows/ci.yml: no frontend release asset any more (spec v15
       ['telemetry build', /cargo build --release -p dpds --features telemetry/],
       ['controller e2e', /cargo test --release -p dpds-controller --test integration -- --ignored/],
     ]);
-    // cargo fmt is the only fmt step: once, and not as a separate job any more
+    // cargo fmt is the only fmt step: once, not a separate job
     expect(backend.match(/cargo fmt/g)).toHaveLength(1);
   });
 
@@ -271,7 +269,7 @@ describe('host uplink guard (spec v27)', () => {
   });
 });
 
-// Frontend formatting and linting (spec v23, changed 2026-11-04): Biome for both, because typescript-eslint
+// Frontend formatting and linting: Biome for both, because typescript-eslint
 // doesn't support TypeScript 7. Static checks of the files only; the tool itself runs in CI
 // (`npm run format:check`, `npm run lint`). Flags and config keys checked against @biomejs/biome 2.6.4:
 // `biome lint --error-on-warnings`, `biome format [--write]`, `javascript.formatter.quoteStyle`/`semicolons`,
@@ -400,7 +398,7 @@ describe('frontend lint and format tooling: Biome (spec v23)', () => {
   });
 });
 
-// Spec 27 (user 2026-11-04): presets are gone, replaced by Import/Export on the links page and Duplicate in its list (the page is called Settings since spec 41).
+// Presets are not part of the source: Import/Export live on the links page and Duplicate in its list.
 describe('presets are removed from the source (spec27)', () => {
   const src = (f: string) => read('src', f);
 
@@ -412,7 +410,7 @@ describe('presets are removed from the source (spec27)', () => {
     expect(existsSync(resolve(frontendDir, 'src', file)), file).toBe(false);
   });
 
-  // spec 41: the Links page is the Settings page now (its file may keep either name); the old settings form is gone
+  // the Links page is the Settings page (its file may keep either name); the old settings form is gone
   it.each(
     [
       'App.tsx',

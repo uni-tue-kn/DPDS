@@ -1,5 +1,5 @@
-// The Vite dev server proxies /api to a running dpds-controller (spec v13: the controller serves the built
-// frontend itself, so there is no nginx proxy any more), and the build output is what the controller embeds
+// The Vite dev server proxies /api to a running dpds-controller (the controller serves the built frontend itself, so there is no
+// proxy in production), and the build output is what the controller embeds
 // and caches. The config is loaded in a separate node process with Vite's own loader, like `vite` does at
 // start-up (it bundles vite.config.ts with esbuild, which does not work inside the jsdom test environment).
 import { execFileSync } from 'node:child_process';

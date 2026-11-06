@@ -17,12 +17,12 @@ import {
 } from '../test/helpers';
 import { must } from '../test/must';
 
-// Contract: "Required fields are visibly marked" in the v16 block of src/test/helpers.tsx. Marker = `.required-marker`,
-// aria-hidden, text "*", in the field's own group; control has `required` + aria-required="true"; one "* required" note.
+// Marker = `.required-marker`, aria-hidden, text "*", in the field's own group; control has `required` + aria-required="true";
+// one "* required" note.
 const body = () => document.body;
 const ctl = (label: string) => screen.getByLabelText(label) as HTMLElement;
 
-/** v22: controls required on a new form whose stages are not added yet: no stage field exists, so none is required. */
+/** Controls required on a new form whose stages are not added yet: no stage field exists, so none is required. */
 function bareRequired(_page: ConfigPage): string[] {
   return ['Name', 'Ingress', 'Egress', 'Buffer capacity'];
 }

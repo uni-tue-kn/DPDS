@@ -31,15 +31,14 @@ import {
 } from '../test/helpers';
 import type { StoredDoc } from '../test/helpers';
 
-// Spec 25 (user 2026-11-04): "Average frame size" is a per-link value that lives ONLY in the browser's local
-// document, as the top-level optional member `avg_frame_size_byte` of the link (NOT inside `config`). It is the
-// L2 Ethernet frame including FCS (e.g. 1518 B); conversion between packet rates and bit rates adds 20 B of L1 overhead:
+// "Average frame size" is a per-link value that lives ONLY in the browser's local document, as the top-level optional member
+// `avg_frame_size_byte` of the link (NOT inside `config`). It is the L2 Ethernet frame including FCS (e.g. 1518 B); conversion
+// between packet rates and bit rates adds 20 B of L1 overhead:
 //   pps = bit/s / ((frame + 20) x 8)        bit/s = pps x (frame + 20) x 8
-// It has no default and is optional. While it is empty or invalid, "Initialization rate" offers only pps|kpps|Mpps and
-// "Rate" only bit/s..Gbit/s; once it holds a valid value (finite, >= 64) both offer both families, own family first.
-// Choices of the tester where the spec is silent are marked "tester's choice" below.
+// It has no default and is optional. While it is empty or invalid, "Initialization rate" offers only pps|kpps|Mpps and "Rate" only
+// bit/s..Gbit/s; once it holds a valid value (finite, >= 64) both offer both families, own family first.
 
-/** The optional top-level member the spec adds to links (types.ts does not have it yet). */
+/** The optional top-level member of a link. */
 interface Framed {
   avg_frame_size_byte?: number | null;
 }
@@ -276,11 +275,11 @@ describe.each(PAGES)('$name: unit options depend on the frame size', (page: Conf
 
 // [field, typed value, from unit, to unit, shown value after the change]
 const CROSS: [string, string, string, string, string][] = [
-  ['Initialization rate', '100', 'Gbit/s', 'Mpps', '8.127'], // 1e11 / 12304 = 8127438.23 pps (spec example)
+  ['Initialization rate', '100', 'Gbit/s', 'Mpps', '8.127'], // 1e11 / 12304 = 8127438.23 pps
   ['Initialization rate', '100', 'Gbit/s', 'kpps', '8127.438'],
   ['Initialization rate', '100', 'Gbit/s', 'pps', '8127438.231'],
   ['Initialization rate', '12.304', 'Gbit/s', 'Mpps', '1'], // exactly 1e6 pps: trailing zeros are dropped
-  ['Initialization rate', '8', 'Mpps', 'Gbit/s', '98.432'], // 8e6 x 12304 = 98.432e9 bit/s (spec example)
+  ['Initialization rate', '8', 'Mpps', 'Gbit/s', '98.432'], // 8e6 x 12304 = 98.432e9 bit/s
   ['Initialization rate', '8', 'Mpps', 'Mbit/s', '98432'],
   ['Initialization rate', '8', 'Mpps', 'bit/s', '98432000000'],
   ['Initialization rate', '8.127', 'Mpps', 'Gbit/s', '99.995'], // 99.994608 rounded to 3 decimals

@@ -18,14 +18,12 @@ import {
   unitSelect,
 } from '../test/helpers';
 
-// Spec 25 review follow-up (coordinator, 2026-11-04).
-//
 // 1. A unit of the other family can only be CONVERTED while the average frame size is valid. While it is empty or invalid
 //    the unit select offers the own family plus ONLY the currently selected cross-family unit (not the whole other
 //    family). Switching from that cross unit to an own-family unit cannot convert the number, so it CLEARS the number text.
 //    The same holds for Initialization rate (pps family own, rate units cross) and Rate (rate units own, pps units cross).
-// 3. The limiter Rate must be greater than 0 (the controller refuses it): 0 bit/s, or a pps value that rounds to 0 bit/s,
-//    is refused on save with an error naming "Rate". (No existing test pins 0 as accepted: checked by grep.)
+// 2. The limiter Rate must be greater than 0 (the controller refuses it): 0 bit/s, or a pps value that rounds to 0 bit/s,
+//    is refused on save with an error naming "Rate".
 
 const body = () => document.body;
 const FRAME = 'Average frame size';

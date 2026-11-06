@@ -1,5 +1,4 @@
-//! `Dropper::new` becomes `pub` (it is `pub(crate)` today although the type
-//! is public). Direct tests of the dropper through its public API. Only
+//! Direct tests of the dropper through its public API. Only
 //! deterministic cases here (p/r/k/h in {0, 1}); statistics are in `loss.rs`.
 
 use dpds_core::dropper::{Dropper, LossModel};

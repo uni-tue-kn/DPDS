@@ -10,13 +10,11 @@ import { api } from '../test/mockApi';
 import { rawStore, renderApp, seedRaw, storedDoc } from '../test/helpers';
 import { must } from '../test/must';
 
-// Spec 41 (user 2026-11-05): no settings, no worker, and the sidebar is Dashboard, Interfaces, Host hints, Settings. The
-// Settings page IS the old Links page (list, Import / Export toolbar, editor under /settings/new and /settings/:id); the old
-// settings form (main lcore, EAL arguments, poll interval) is gone. A stored or imported `settings` member and a link's `worker`
-// member are ignored (never an error) and never written back. Start, validate and hints send exactly `{links}`.
-// Tester's choices: a `worker` is ignored whatever its value (even one the old editor would have refused); "not written
-// back" is checked after every kind of write (new link, edit, delete, Duplicate, import) and for Export; the validate request
-// has no frontend caller, so only start and hints are driven here.
+// No settings, no worker, and the sidebar is Dashboard, Interfaces, Host hints, Settings. The Settings page IS the Links page (list,
+// Import / Export toolbar, editor under /settings/new and /settings/:id). A stored or imported `settings` member and a link's
+// `worker` member are ignored (never an error) and never written back. Start, validate and hints send exactly `{links}`.
+// A `worker` is ignored whatever its value; "not written back" is checked after every kind of write (new link, edit, delete,
+// Duplicate, import) and for Export; the validate request has no frontend caller, so only start and hints are driven here.
 // Import / Export of these members is in linksImportExport.test.tsx; the sidebar details are in sidebar.test.tsx.
 
 /** What an earlier version stored: `settings` at the top and a `worker` on the links. */
@@ -62,7 +60,7 @@ describe('sidebar and routes (spec 41)', () => {
     const a = within(nav()).getByRole('link', { name });
     expect(a).toHaveAttribute('href', href);
     expect(a.querySelector(`i.bi.${icon}`)).not.toBeNull();
-    // P4TG's dashboard icon is exactly `bi-speedometer`, not DPDS's old `bi-speedometer2`
+    // P4TG's dashboard icon is exactly `bi-speedometer`
     expect(a.querySelector('i.bi-speedometer2')).toBeNull();
     expect(a.querySelector('i.bi-diagram-2')).toBeNull();
   });

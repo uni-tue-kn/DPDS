@@ -3,7 +3,7 @@ import { api, ApiError } from '../test/mockApi';
 import * as fx from '../test/fixtures';
 import { expectStartBody, renderApp, seedStore, seedLinks } from '../test/helpers';
 
-// v22: the page lists the host-only hints (`getHostHints`, GET /api/host/hints) plus, when the LOCAL document has links, the
+// The page lists the host-only hints (`getHostHints`, GET /api/host/hints) plus, when the LOCAL document has links, the
 // link-dependent ones from `getHostHintsFor({links})` (POST /api/host/hints with the start body); merged by hint id,
 // the POST answer wins. No local links -> no POST.
 // Groups are <section> regions named by an <h2> starting with Errors / Warnings / Info / OK (an optional
@@ -89,7 +89,7 @@ describe('Host hints page', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('procfs unreadable');
   });
 
-  // v12: the page shows no ports of its own; port names in hint texts come from the controller and are printed verbatim.
+  // The page shows no ports of its own; port names in hint texts come from the controller and are printed verbatim.
   it('prints a port in a hint text verbatim and does not ask for the interfaces', async () => {
     api.getHostHints.mockResolvedValue([
       {

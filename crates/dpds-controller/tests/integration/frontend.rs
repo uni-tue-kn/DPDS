@@ -1,65 +1,29 @@
-//! Spec v13: the controller serves the web frontend itself (embedded at compile time) next to
-//! `/api`, and reports what it embeds in `GET /api/version`.
+//! The controller serves the web frontend itself (embedded at compile time) next to `/api`, and
+//! reports what it embeds in `GET /api/version`.
 //!
-//! # Test-facing API the tests assume (library crate `dpds_controller`)
+//! Tests use `Frontend::{embedded, placeholder, from_dir}` and `api::router_with(deps, frontend)`.
+//! The fixture dist is `tests/fixtures/frontend/`; `tests/fixtures/secret.txt` lies outside it.
+//! `main` wraps the router in `with_host_guard`, so the guard has to cover the static responses
+//! too (the tests wrap it the same way).
 //!
-//! ```ignore
-//! pub mod frontend {
-//!     /// What answers every non-`/api` GET/HEAD. Cheap to clone.
-//!     #[derive(Clone)]
-//!     pub struct Frontend;
-//!     impl Frontend {
-//!         /// What `build.rs` embedded: `$DPDS_FRONTEND_DIST`, else `frontend/dist`, else the placeholder.
-//!         pub fn embedded() -> Frontend;
-//!         /// The crate's placeholder page, whatever was embedded ("Frontend not bundled: install it
-//!         /// with `dpds.sh install`, or run `npm run build` in frontend/").
-//!         pub fn placeholder() -> Frontend;
-//!         /// A bundled frontend served from `dir` (an `include_dir!` of a dist directory, which has
-//!         /// an `index.html`). Tests pass a fixture; `embedded()` is this over the build's dir.
-//!         pub fn from_dir(dir: &'static include_dir::Dir<'static>) -> Frontend;
-//!     }
-//! }
-//! pub mod api {
-//!     /// Unchanged: the API plus `Frontend::embedded()`.
-//!     pub fn router(deps: Deps) -> Router;
-//!     /// New: the same router, serving `frontend` for everything outside `/api`.
-//!     pub fn router_with(deps: Deps, frontend: Frontend) -> Router;
-//! }
-//! ```
-//!
-//! `include_dir` (0.7) is a normal dependency of the crate, so the tests use it directly. The
-//! fixture dist is `tests/fixtures/frontend/`; `tests/fixtures/secret.txt` lies outside it.
-//! `main` wraps the router from `router`/`router_with` in `with_host_guard` as before, so the
-//! guard has to cover the static responses too (the tests wrap it the same way).
-//!
-//! # HTTP contract
-//!
-//! - Outside `/api` (`/api` itself and everything below it belong to the API), GET and HEAD
-//!   answer from the embedded files; a path that is no file answers `index.html` (SPA fallback,
-//!   status 200). Query strings are ignored. Other methods: 405.
+//! - Outside `/api`, GET and HEAD answer from the embedded files; a path that is no file answers
+//!   `index.html` (SPA fallback, 200). Query strings are ignored. Other methods: 405.
 //! - `/api/**` is untouched: unknown paths stay a JSON 404 `{"message"}` even when the dist holds
-//!   a file with that path, and the OpenAPI document and Swagger UI keep working.
-//! - Headers on every static response, fallback included: `Content-Type` from the file name
-//!   (`application/octet-stream` for an unknown extension), `X-Content-Type-Options: nosniff`,
-//!   a `Content-Security-Policy` with `default-src 'self'` and `frame-ancestors 'none'` and no
-//!   `unsafe-eval` (and no `unsafe-inline` for scripts). `Cache-Control`: `/assets/*` is
-//!   `public, max-age=31536000, immutable`, `index.html` (also via the fallback) is `no-cache`;
-//!   other files are not `immutable`.
-//! - `GET /api/version` answers `{"version": <crate version>, "frontend": "bundled"|"placeholder",
-//!   "git"?: <non-empty string>}`; it is in the OpenAPI document.
-//! - Not pinned (the spec leaves it open): the answer for a missing file below `/assets/`
-//!   (the fallback page or a 404), `Content-Encoding`, the body of a 405.
+//!   a file with that path; OpenAPI and Swagger UI keep working.
+//! - Every static response, fallback included, has `Content-Type` from the file name
+//!   (`application/octet-stream` for an unknown extension), `X-Content-Type-Options: nosniff` and a
+//!   `Content-Security-Policy` with `default-src 'self'`, `frame-ancestors 'none'`, no
+//!   `unsafe-eval` and no `unsafe-inline` for scripts. `Cache-Control` is
+//!   `public, max-age=31536000, immutable` for `/assets/*`, `no-cache` for `index.html`, and not
+//!   `immutable` for other files.
+//! - `GET /api/version` answers `{"version", "frontend": "bundled"|"placeholder", "git"?}`.
+//! - Not pinned: a missing file below `/assets/` (fallback page or 404), `Content-Encoding`, the
+//!   body of a 405.
 //!
-//! The binary tests at the end start the real `dpds-controller`; they work with whatever the
-//! build embedded (a developer machine usually has `frontend/dist`, CI has the placeholder), and
-//! the startup log must say which of the two it is.
-//! The build-script test runs a nested `cargo check` of this crate in a fresh target dir (about
-//! 10 s on 6 cores with a warm registry, no network needed, several times that on a loaded or
-//! small CI box). It stays `#[ignore]`d on purpose: it compiles the whole dependency tree again
-//! inside the default parallel run. (Its CPU burst once made
-//! `host_fixes::handlers_that_read_sysfs_do_not_block_the_async_workers` hang in about one run in
-//! ten; that test has since been made unable to hang, see its `release_fifo`, but the cost
-//! remains.) CI's `-- --ignored --test-threads=1` step runs it alone:
+//! The binary tests at the end start the real `dpds-controller` and work with whatever the build
+//! embedded (a developer machine usually has `frontend/dist`, CI the placeholder). The build-script
+//! test runs a nested `cargo check` in a fresh target dir and is `#[ignore]`d because it compiles
+//! the whole dependency tree again; CI runs it alone:
 //! `cargo test -p dpds-controller --test integration build_script -- --ignored`.
 
 use std::path::{Path, PathBuf};
@@ -764,7 +728,7 @@ fn build_script_rejects_a_dist_without_index_html_and_accepts_one_with() {
     );
 }
 
-// ---- spec 18: the browser checks for a new release ---------------------------------------------
+// ---- the browser checks for a new release ---------------------------------------------
 
 /// The directives of a CSP as `(name, sorted sources)`, white space normalised.
 fn directives(csp: &str) -> std::collections::BTreeMap<String, Vec<String>> {
@@ -803,7 +767,7 @@ async fn connect_src_allows_the_raw_githubusercontent_version_file_and_nothing_e
                 ["'self'", "https://raw.githubusercontent.com"],
                 "{what} {path}: {csp}"
             );
-            // every other directive is what it was before the update check
+            // every other directive is unchanged
             let expected: &[(&str, &[&str])] = &[
                 ("default-src", &["'self'"]),
                 ("script-src", &["'self'"]),

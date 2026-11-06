@@ -1,10 +1,8 @@
-//! `Clock::new()` in a process whose EAL was never initialised must panic
-//! with a clear message instead of silently computing `1e9 / 0 = inf`
-//! (and caching 0 / inf in the shared statics).
+//! `Clock::new()` without an initialised EAL must panic with a clear message
+//! instead of computing `1e9 / 0 = inf` (and caching it in the shared statics).
 //!
-//! Own test binary: no test here may call `Eal::new`, so `rte_get_tsc_hz()`
-//! stays 0 for the whole process (it is only set by `rte_eal_init`). The tests
-//! in this file never start an EAL.
+//! Own test binary: no test here calls `Eal::new`, so `rte_get_tsc_hz()` stays 0
+//! (only `rte_eal_init` sets it).
 
 use std::panic::catch_unwind;
 
@@ -32,9 +30,7 @@ fn clock_new_before_the_eal_panics_with_a_clear_message() {
 
 #[test]
 fn a_failed_clock_new_does_not_poison_the_shared_caches() {
-    // Calling twice must give the same clear panic both times: the first call
-    // must not have cached a 0 Hz / inf scale that the second call then
-    // silently returns.
+    // The first call must not cache a 0 Hz / inf scale that the second returns.
     for attempt in 1..=2 {
         let err = catch_unwind(Clock::new)
             .expect_err(&format!("attempt {attempt}: Clock::new() must panic again"));

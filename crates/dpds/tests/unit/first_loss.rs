@@ -1,6 +1,4 @@
-//! First-loss machinery, ported from preof's `peof/tests/first_loss.rs`,
-//! `peof/tests/hardware_drop.rs` and the `first_loss.rs` unit tests, reduced
-//! to the DPDS reasons/stages/shapes:
+//! First-loss machinery, reduced to the DPDS reasons/stages/shapes:
 //!
 //! - `FirstLossReason`: `DpdsReject`, `DescriptorFull`, and the NIC-level
 //!   `RxMissed`/`RxNoMbuf`/`RxError`/`TxError` (wire spelling `IMissed`,
@@ -108,7 +106,7 @@ fn software_reason_and_stage_display_spellings_are_pinned() {
     assert_eq!(Stage::Nic.to_string(), "nic");
 }
 
-// ── detect_hardware_drop: ported verbatim from hardware_drop.rs ──────────
+// ── detect_hardware_drop ─────────────────────────────────────
 
 mod hardware_drop {
     use dpdk::port::PortStats;

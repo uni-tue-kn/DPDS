@@ -35,7 +35,7 @@ export function config(over: Partial<ConfigDto> = {}): ConfigDto {
       half_life_period_ns: 0,
       initialization_rate_pps: 12500000,
     },
-    limiter: null, // v22: stage not added (the list reads "none")
+    limiter: null, // stage not added (the list reads "none")
     loss_model: { type: 'Random', p: 0 },
     seed: null,
     histogram: null,
@@ -44,7 +44,7 @@ export function config(over: Partial<ConfigDto> = {}): ConfigDto {
   };
 }
 
-/** v22: no stage added at all: Buffer and Statistics only. */
+/** No stage added at all: Buffer and Statistics only. */
 export function configBare(over: Partial<ConfigDto> = {}): ConfigDto {
   return {
     buffer_capacity: 1000,
@@ -59,14 +59,14 @@ export function configBare(over: Partial<ConfigDto> = {}): ConfigDto {
   };
 }
 
-// v12: every delayer carries `initialization_rate_pps` (required), with a distinct value per config; none of them is
-// the old hard-coded 15 Mpps, so a UI that falls back to a constant instead of using the stored value is caught.
+// Every delayer carries `initialization_rate_pps` (required), with a distinct value per config; none of them is a hard-coded
+// constant, so a UI that falls back to one instead of using the stored value is caught.
 
 /** Second config: everything different from `config()`. */
 export function config2(): ConfigDto {
   return {
     buffer_capacity: 5000,
-    reordering: false, // spec45: reordering excludes correlation, which this config uses
+    reordering: false, // reordering excludes correlation, which this config uses
     delayer: {
       distribution: 'GammaDistribution',
       mean_ns: 2500,
@@ -96,7 +96,7 @@ export function config3(): ConfigDto {
       half_life_period_ns: 555,
       initialization_rate_pps: 2500000,
     },
-    limiter: { mode: 'Spacer', rate_bps: 5000000000 }, // display-only fixture: never saved through the editor (spec45)
+    limiter: { mode: 'Spacer', rate_bps: 5000000000 }, // display-only fixture: never saved through the editor
     loss_model: { type: 'Random', p: 0.25 },
     seed: 7,
     histogram: { bins: 32, lo_ns: 1000, hi_ns: 50000 },
@@ -104,7 +104,7 @@ export function config3(): ConfigDto {
   };
 }
 
-/** One directed link (spec v10): ingress port -> egress port with one config. */
+/** One directed link: ingress port -> egress port with one config. */
 export function link(over: Partial<Link> = {}): Link {
   return {
     id: 1,
@@ -227,7 +227,7 @@ export function hints(): Hint[] {
 }
 
 /**
- * Spec 33: a hint that suggests shell commands for an administrator (`commands` set). DPDS never runs them; the page
+ * A hint that suggests shell commands for an administrator (`commands` set). DPDS never runs them; the page
  * shows them in a tooltip and can copy them. The commands are what the controller computes from the host it read.
  */
 export function commandsHint(over: Partial<Hint> = {}): Hint {
@@ -274,18 +274,18 @@ export function counters(over: Partial<Counters> = {}): Counters {
     tx_pkts: 990,
     tx_sent: 990,
     tx_drops: 0,
-    // spec 35 (C2), spec 47 (C4): cumulative NIC loss counters of the ingress (RX) and egress (TX) port
+    // cumulative NIC loss counters of the ingress (RX) and egress (TX) port
     nic_rx_missed: 0,
     nic_rx_nombuf: 0,
     nic_rx_port_buffer_discards: 0,
     nic_rx_phy_discards: 0,
     nic_tx_phy_discards: 0,
-    // spec 47 (C4): diagnostics, in no loss total
+    // diagnostics, in no loss total
     nic_rx_crc_errors: 0,
     nic_rx_symbol_errors: 0,
     nic_rx_length_errors: 0,
-    // spec 51: frames received by the link per size bucket (P4TG's 8: 0-63, 64, 65-127, 128-255, 256-511, 512-1023, 1024-1518,
-    // 1519+), all distinct, summing to the 1000 received packets; and the cumulative out-of-order departures (T1)
+    // frames received by the link per size bucket (8 buckets: 0-63, 64, 65-127, 128-255, 256-511, 512-1023, 1024-1518, 1519+), all
+    // distinct, summing to the 1000 received packets; and the cumulative out-of-order departures
     frame_sizes: [10, 20, 30, 40, 100, 150, 250, 400],
     out_of_order: 7,
     ...over,
@@ -328,7 +328,7 @@ export function stats(directions: DirectionStats[], over: Partial<StatsView> = {
 }
 
 /**
- * Histogram with a deliberately non-256 bin count (5). Since v8 it carries the K3 extras: percentiles (all distinct,
+ * Histogram with a deliberately non-256 bin count (5). It carries percentiles (all distinct,
  * none clamped), an `expected` curve (exact model, no limiter note) and the window fields (since start).
  */
 export function histogram(dir: number, over: Partial<HistogramView> = {}): HistogramView {
@@ -362,7 +362,7 @@ export function histogram(dir: number, over: Partial<HistogramView> = {}): Histo
 }
 
 /**
- * Spec 51 (C2): `GET /api/stats/{dir}/iat_histogram`, the delay histogram's shape without the `expected*` fields. Deliberately
+ * `GET /api/stats/{dir}/iat_histogram`, the delay histogram's shape without the `expected*` fields. Deliberately
  * different from `histogram()` in every number (5 bins of 2000 ns from 0, so an IAT chart cannot be mistaken for the delay one):
  * `count` is 91 + dir (the bins 87 + dir plus the 4 overflow), the percentiles are distinct and none is clamped.
  */
@@ -417,12 +417,12 @@ export function runningEmulation(
   return emulation(state, { config });
 }
 
-/** Spec: the rate chart plots L1 (rx_gbps + rx_mpps * 0.16); tests about something else than the L1 overhead set both Mpps to 0, so L1 = L2 and the plotted value is the rx_gbps given. */
+/** The rate chart plots L1 (rx_gbps + rx_mpps * 0.16); tests about something else than the L1 overhead set both Mpps to 0, so L1 = L2 and the plotted value is the rx_gbps given. */
 export const NO_PPS = { rx_mpps: 0, tx_mpps: 0 } as const;
 
 /**
- * Spec 29: one sample of `GET /api/stats/history` (`t_ms`: whole milliseconds since the run started). The defaults are the rates of `dirStats()` in the units of the
- * series (Gbit/s, Mpps) and cumulative drop counts (spec 43), so a chart built from the history shows what the stats cards show.
+ * One sample of `GET /api/stats/history` (`t_ms`: whole milliseconds since the run started). The defaults are the rates of `dirStats()` in the units of the
+ * series (Gbit/s, Mpps) and cumulative drop counts, so a chart built from the history shows what the stats cards show.
  */
 export function historySample(t_ms: number, over: Partial<HistorySample> = {}): HistorySample {
   return {
@@ -431,14 +431,14 @@ export function historySample(t_ms: number, over: Partial<HistorySample> = {}): 
     tx_gbps: 8.25,
     rx_mpps: 1.234567,
     tx_mpps: 1.2,
-    // spec 43 (B1): the link's cumulative drop counters at this sample, distinct per cause (they sum to 100)
+    // the link's cumulative drop counters at this sample, distinct per cause (they sum to 100)
     loss_drops: 40,
     limiter_drops: 30,
     buffer_full_drops: 20,
     nic_tx_drops: 5,
     nic_rx_missed: 4,
     nic_rx_nombuf: 1,
-    // spec 47: the three new causes are 0 by default (the six above keep their counts; tests of the new ones set them)
+    // the last three causes are 0 by default (tests of those set them)
     nic_rx_port_buffer_discards: 0,
     nic_rx_phy_discards: 0,
     nic_tx_phy_discards: 0,
@@ -447,7 +447,7 @@ export function historySample(t_ms: number, over: Partial<HistorySample> = {}): 
 }
 
 /**
- * Spec 29b: the `links` of `GET /api/stats/history`, in link-index order: the same links, names and ports as `dirStats(0)`,
+ * The `links` of `GET /api/stats/history`, in link-index order: the same links, names and ports as `dirStats(0)`,
  * `dirStats(1)` (the PCI addresses of `interfaces()`, which the dashboard shows as netdev names).
  */
 export function historyLinks(): HistoryView['links'] {
@@ -458,7 +458,7 @@ export function historyLinks(): HistoryView['links'] {
 }
 
 /**
- * `GET /api/stats/history`: the run's id (spec 29b: `run_id`, the identity of a run; the first run of a controller is 1), its
+ * `GET /api/stats/history`: the run's id (`run_id`, the identity of a run; the first run of a controller is 1), its
  * start (unix seconds, as `emulation('running')` has it), its links and the samples per link index.
  */
 export function history(samples: Record<string, HistorySample[]>, over: Partial<HistoryView> = {}): HistoryView {
@@ -466,8 +466,8 @@ export function history(samples: Record<string, HistorySample[]>, over: Partial<
 }
 
 /**
- * Spec 35 (C1): one link's final cumulative counters, as `totals` of `GET /api/stats/history` carries them. Distinct counts
- * that sum to 100 drops (loss 40, limiter 30, buffer 20, NIC TX 5, missed 4, nombuf 1; the three spec 47 causes 0) out of 10000 received packets, so the
+ * One link's final cumulative counters, as `totals` of `GET /api/stats/history` carries them. Distinct counts
+ * that sum to 100 drops (loss 40, limiter 30, buffer 20, NIC TX 5, missed 4, nombuf 1; the last three causes 0) out of 10000 received packets, so the
  * share of a cause "of all drops" is its count in percent, and differs from its share of the received packets.
  */
 export function totals(over: Partial<HistoryTotals> = {}): HistoryTotals {
@@ -479,11 +479,11 @@ export function totals(over: Partial<HistoryTotals> = {}): HistoryTotals {
     nic_tx_drops: 5,
     nic_rx_missed: 4,
     nic_rx_nombuf: 1,
-    // spec 47: the three new causes are 0 by default (the six above keep their counts; tests of the new ones set them)
+    // the last three causes are 0 by default (tests of those set them)
     nic_rx_port_buffer_discards: 0,
     nic_rx_phy_discards: 0,
     nic_tx_phy_discards: 0,
-    // spec 51: the forwarded (sent) frames: rx_pkts 10000 less the 100 drops above; frames received per size bucket (sum =
+    // the forwarded (sent) frames: rx_pkts 10000 less the 100 drops above; frames received per size bucket (sum =
     // rx_pkts 10000) and the cumulative out-of-order departures
     tx_sent: 9900,
     frame_sizes: [100, 200, 300, 400, 1000, 1500, 2500, 4000],
@@ -497,7 +497,7 @@ export function historySamples(from: number, count: number, over: Partial<Histor
   return Array.from({ length: count }, (_, i) => historySample((from + i) * 1000, over));
 }
 
-/** Spec 43 B1: the cumulative drop fields of a `HistorySample`, in the order of the donut's causes (and of the loss chart's lines): nine causes (spec 47). */
+/** The cumulative drop fields of a `HistorySample`, in the order of the donut's causes (and of the loss chart's lines): nine causes. */
 export const DROP_FIELDS = [
   'loss_drops',
   'limiter_drops',

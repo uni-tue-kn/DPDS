@@ -25,9 +25,9 @@ import {
 } from '../test/helpers';
 import { must } from '../test/must';
 
-// Contract: "v16" block of src/test/helpers.tsx. Every test runs against the link editor (the only page with the config form
-// since spec27). Stored/base values are ns, bit/s, bit and pps; the form shows units.
-const MU = 'µs'; // micro sign U+00B5, exactly as in the spec / P4TG
+// Every test runs against the link editor (the only page with the config form). Stored/base values are ns, bit/s, bit and pps; the
+// form shows units.
+const MU = 'µs'; // micro sign U+00B5
 
 const UNIT_FIELDS: [string, string[]][] = [
   ['Mean delay', TIME_UNITS],
@@ -35,7 +35,7 @@ const UNIT_FIELDS: [string, string[]][] = [
   ['Half-life period', TIME_UNITS],
   ['Histogram lo', TIME_UNITS],
   ['Histogram hi', TIME_UNITS],
-  ['IAT histogram lo', TIME_UNITS], // spec 53 A
+  ['IAT histogram lo', TIME_UNITS],
   ['IAT histogram hi', TIME_UNITS],
   ['Rate', RATE_UNITS],
   ['Initialization rate', PPS_UNITS],
@@ -200,7 +200,7 @@ const TIME_CASES: [number, number, string][] = [
   [1500000000, 1.5, 's'],
   [2000000000, 2, 's'],
 ];
-// (no 0 bit/s row: the limiter Rate must be greater than 0 (spec25), so a stored 0 is an invalid link, spec27b item 1)
+// (no 0 bit/s row: the limiter Rate must be greater than 0, so a stored 0 is an invalid link)
 const RATE_CASES: [number, number, string][] = [
   [999, 999, 'bit/s'],
   [1500, 1.5, 'kbit/s'],
@@ -408,7 +408,7 @@ describe.each(PAGES)('$name: changing a unit converts the shown value', (page: C
 
 type Pick = (c: ConfigDto) => number | null | undefined;
 type Prep = 'correlation' | undefined;
-// [label, unit, typed text, expected base value, where it ends up, switch that enables the field (v22: the limiter has none)]
+// [label, unit, typed text, expected base value, where it ends up, switch that enables the field (the limiter has none)]
 const PAYLOAD: [string, string, string, number, Pick, Prep][] = [
   ['Mean delay', 'ns', '2500', 2500, (c) => must(c.delayer).mean_ns, undefined],
   ['Mean delay', MU, '2.5', 2500, (c) => must(c.delayer).mean_ns, undefined],

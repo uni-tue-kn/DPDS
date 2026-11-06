@@ -1,4 +1,4 @@
-//! Interface discovery from a fake sysfs/procfs (B5).
+//! Interface discovery from a fake sysfs/procfs.
 
 use crate::common::*;
 use dpds_controller::discovery::discover;

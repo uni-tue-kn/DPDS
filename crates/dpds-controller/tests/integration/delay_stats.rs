@@ -1,4 +1,4 @@
-//! C7: the per-direction `delay_stats` switch in the controller.
+//! The per-direction `delay_stats` switch in the controller.
 //!
 //! - `ConfigDto` gets `delay_stats: bool` (default true when absent), kept by the API
 //!   (reported in the running configuration) and written into the v2 links file as `"delay_stats": false` of a link
@@ -208,7 +208,7 @@ async fn the_endpoints_report_the_off_direction() {
         assert!(absent(&v["directions"][1], k), "{k}");
     }
 
-    // histogram: the on direction as before ...
+    // histogram: the on direction has its bins ...
     let r = a.get("/api/stats/0/delay_histogram").await;
     assert_eq!(r.status, 200);
     assert_eq!(r.json()["bins"].as_array().unwrap().len(), 256);

@@ -1,7 +1,5 @@
-// Spec 54 L2 (user 2026-11-05: "display some loading like P4TG does ... a 'DPDS' logo as text below the loading"): the Loader
-// component, a port of P4TG's Loader.tsx (components/Loader.tsx, default export `Loader({ children, loaded = true, overlay = false })`).
-// Its styles are CSS classes in index.css (assets/stylesSpec54.test.ts). The class names are the tester's CHOICE (the spec only says
-// "as CSS classes"); they mirror P4TG's styled components:
+// The Loader component (components/Loader.tsx, default export `Loader({ children, loaded = true, overlay = false })`). Its styles
+// are CSS classes in index.css (assets/stylesSpec54.test.ts), named after P4TG's styled components:
 //   .loader-content       P4TG ContentWrapper (position: relative), the root; holds the children, the block and the overlay
 //   .loader-block         P4TG LoadWrapper, the non-overlay loader (`loaded = false`); replaces the children
 //   .loader-overlay       P4TG LoadWrapperAbsolute, the layer over the children (`overlay`)

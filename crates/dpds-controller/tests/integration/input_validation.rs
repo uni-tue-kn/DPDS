@@ -1,19 +1,14 @@
-//! C3 input validation and the `buffer_capacity` cap of C5, all through the body of
-//! `POST /api/emulation/start` (spec 22; a rejected value is a 400 `{"message"}` naming the value,
+//! Input validation and the `buffer_capacity` cap, all through the body of
+//! `POST /api/emulation/start` (a rejected value is a 400 `{"message"}` naming the value,
 //! and nothing is spawned). `POST /api/emulation/validate` applies the same rules.
 //!
-//! - port names (spec v7 S1): a PCI address `^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]$`
+//! - port names: a PCI address `^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]$`
 //!   (normalised to lower case) or exactly a vdev `^net_(null|ring)[0-9]+$`: no `,key=value`
 //!   devargs at all and no `net_pcap` (it needs `rx_pcap`/`tx_pcap`/`iface` devargs, which
 //!   write files as root or bypass the management-NIC guard); nothing with whitespace, a
 //!   leading `-`, or a smuggled option;
-//! - `settings.eal_extra_args` of the body is an allowlist of tokens: `--no-huge`, `--no-pci`,
-//!   `-m <n>`, `-n <n>`, `--socket-mem=<list>` and `--log-level=<spec>`. DPDK 26.07's
-//!   long options take their value after `=` (tested by experiment: `--log-level 7`
-//!   as two tokens is "unknown argument"), so the long forms are single tokens here;
-//!   the two-token long forms are left open (not tested either way);
-//! - the mlx5 devargs are fixed to PREOF's `txq_mpw_en=1` (spec v17): `settings.mlx5_devargs`
-//!   does not exist, so any body that carries it is a 400 naming the field, whatever the value;
+//! - the mlx5 devargs are fixed (`txq_mpw_en=1`): `settings` is no body member, so any body that
+//!   carries `settings.mlx5_devargs` is a 400 naming the field, whatever the value;
 //! - `buffer_capacity` is at most 2^31 (400 above).
 
 use crate::common::*;
@@ -96,9 +91,9 @@ async fn pci_addresses_are_reported_in_lower_case_and_conflict_across_case() {
     assert!(r.message().contains("up"), "{}", r.text());
 }
 
-/// Spec 33c item 2: two links whose ports differ only in the case of the hex digits name the same
+/// Two links whose ports differ only in the case of the hex digits name the same
 /// port, whatever the route: start, validate and the hints post all answer 409 naming the first
-/// link (the hints post used to be the one that could miss it).
+/// link.
 #[tokio::test]
 async fn ports_that_differ_only_in_case_are_a_reused_port_on_start_validate_and_hints() {
     let cases = [
@@ -262,7 +257,7 @@ async fn invalid_port_names_are_a_400_naming_the_value() {
     }
 }
 
-// ---- mlx5_devargs (gone) ------------------------------------------------------------------
+// ---- mlx5_devargs ------------------------------------------------------------------
 
 #[tokio::test]
 async fn a_settings_member_with_mlx5_devargs_is_a_400_naming_settings_whatever_the_value() {
@@ -319,7 +314,7 @@ fn the_dto_rejects_a_buffer_capacity_above_two_to_the_31() {
     assert!(e.contains("buffer_capacity"), "{e}");
 }
 
-// ---- delay accuracy mode (spec 45 B1) -----------------------------------------
+// ---- delay accuracy mode -----------------------------------------
 
 /// A link config with `reordering`, the delayer's correlation and an optional limiter mode.
 fn accuracy_link(name: &str, reordering: bool, correlation: bool, limiter: Option<&str>) -> Value {

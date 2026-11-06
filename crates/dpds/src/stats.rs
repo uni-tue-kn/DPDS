@@ -1,11 +1,10 @@
 //! Telemetry glue: the per-direction [`Stats`], the worker's [`Telemetry`] handle,
 //! the reply builders behind `/dpds/stats`, `/dpds/epochs`, `/dpds/ports`,
 //! `/nic/hw_first_loss` and `/nic/epochs`, their registration on DPDK's
-//! telemetry socket, and the main lcore's [`NicPoller`] (port of preof's
-//! `stats.rs` plus the NIC pieces of its `main.rs`).
+//! telemetry socket, and the main lcore's [`NicPoller`].
 //!
 //! Registration is a no-op without the `telemetry` feature. The reply fields are
-//! documented on the counter, epoch and first-loss types (`counters.rs`, `first_loss.rs`).
+//! documented on the counter, epoch and first-loss types.
 
 use crate::counters::{
     epochs_reply, DpdsCounters, DpdsEpochLog, EpochDriver, EpochFirstLoss, FrameSizes, NicEpochLog,
@@ -25,7 +24,7 @@ pub struct Stats {
     /// Received frames per size bucket, cumulative.
     pub frame_sizes: FrameSizes,
     pub epochs: DpdsEpochLog,
-    /// Delay (arrival until enqueued into the TX descriptors) / lateness statistics and the delay histogram.
+    /// Delay / lateness statistics and the delay histogram.
     pub delay: DelayStats,
 }
 
@@ -44,20 +43,18 @@ fn string(key: &str, v: impl Into<String>) -> (String, Value) {
 }
 
 impl Stats {
-    /// Stats whose delay histogram covers `range`.
     pub fn with_range(range: HistRange) -> Stats {
         Stats::with_delay_stats(range, true)
     }
 
-    /// As [`with_range`](Self::with_range); with `delay_stats` off the
-    /// direction records no delay statistics, its `/dpds/stats` has no delay
-    /// keys and its histogram reply is empty.
+    /// With `delay_stats` off no delay statistics are recorded, `/dpds/stats`
+    /// has no delay keys and the histogram reply is empty.
     pub fn with_delay_stats(range: HistRange, delay_stats: bool) -> Stats {
         Stats::with_hists(range, HistRange::default(), delay_stats)
     }
 
-    /// As [`with_delay_stats`](Self::with_delay_stats), with the range of the
-    /// IAT histogram (recorded exactly when `delay_stats` is on).
+    /// With the range of the IAT histogram (recorded exactly when `delay_stats`
+    /// is on).
     pub fn with_hists(range: HistRange, iat_range: HistRange, delay_stats: bool) -> Stats {
         Stats {
             first_loss: StageLossTracker::new(),
@@ -68,25 +65,22 @@ impl Stats {
         }
     }
 
-    /// Page 0 of the `/dpds/iat_hist` reply: the cumulative histogram of the
-    /// gaps between consecutive send times.
+    /// Page 0 of the `/dpds/iat_hist` reply.
     pub fn iat_hist_reply(&self) -> Reply {
         self.delay.iat_hist_page(0).unwrap_or_default()
     }
 
-    /// Page 0 of the `/dpds/delay_hist` reply: the cumulative histogram of the
-    /// delay of the packets the NIC accepted (see [`delay_hist_page`](Self::delay_hist_page)).
+    /// Page 0 of the `/dpds/delay_hist` reply.
     pub fn delay_hist_reply(&self) -> Reply {
         self.delay.hist_page(0).unwrap_or_default()
     }
 
-    /// Page `page` of the `/dpds/delay_hist` reply, `None` past the last page.
     pub fn delay_hist_page(&self, page: usize) -> Option<Reply> {
         self.delay.hist_page(page)
     }
 
-    /// The `/dpds/stats` reply: cumulative since start. Gauges are the max
-    /// over closed epochs and the live (open) epoch.
+    /// The `/dpds/stats` reply: cumulative since start; gauges are the max over
+    /// closed epochs and the open one.
     pub fn stats_reply(&self, uptime_ns: u64) -> Reply {
         let c = &self.counters;
         let tx_pkts = c.tx_pkts.get();
@@ -132,7 +126,6 @@ impl Stats {
         reply
     }
 
-    /// The `/dpds/epochs` reply.
     pub fn epochs_reply(&self) -> Reply {
         epochs_reply(
             &self.epochs,
@@ -147,8 +140,8 @@ pub struct DirectionStats {
     pub stats: Vec<Stats>,
 }
 
-/// The direction index a `,<param>` query names: a plain decimal number.
-/// Also the port index of the `/nic/*` commands.
+/// The direction (or, for `/nic/*`, port) index a `,<param>` query names: a
+/// plain decimal number.
 fn index_param(param: &str) -> Option<usize> {
     if param.is_empty() || !param.bytes().all(|b| b.is_ascii_digit()) {
         return None;
@@ -172,12 +165,10 @@ impl DirectionStats {
         DirectionStats::with_ranges(vec![HistRange::default(); num_directions])
     }
 
-    /// One direction per range, each with its own delay histogram range.
     pub fn with_ranges(ranges: Vec<HistRange>) -> DirectionStats {
         DirectionStats::with_delay_settings(ranges.into_iter().map(|r| (r, true)).collect())
     }
 
-    /// One direction per `(range, delay_stats)`.
     pub fn with_delay_settings(settings: Vec<(HistRange, bool)>) -> DirectionStats {
         DirectionStats::with_hists(
             settings
@@ -197,37 +188,35 @@ impl DirectionStats {
         }
     }
 
-    /// `/dpds/stats,<param>`: the stats reply of that direction. `None` for a
-    /// param that is not the decimal index of an existing direction.
+    /// `/dpds/stats,<param>`; `None` unless `param` is the decimal index of an
+    /// existing direction.
     pub fn stats_reply(&self, param: &str, uptime_ns: u64) -> Option<Reply> {
         Some(self.stats.get(index_param(param)?)?.stats_reply(uptime_ns))
     }
 
-    /// `/dpds/epochs,<param>`: the epochs reply of that direction. `None` for
-    /// a bad param.
+    /// `/dpds/epochs,<param>`; `None` for a bad param.
     pub fn epochs_reply(&self, param: &str) -> Option<Reply> {
         Some(self.stats.get(index_param(param)?)?.epochs_reply())
     }
 
-    /// `/dpds/delay_hist,<param>`: one page of the delay histogram of a
-    /// direction. `<param>` is `<dir>` (page 0) or `<dir>,<page>`, both plain
-    /// decimal numbers. `None` for a bad param, a direction that does not exist
-    /// or a page past the last one.
+    /// `/dpds/delay_hist,<param>`: one page of a direction's delay histogram;
+    /// `<param>` is `<dir>` (page 0) or `<dir>,<page>`. `None` for a bad param,
+    /// a missing direction or a page past the last one.
     pub fn delay_hist_reply(&self, param: &str) -> Option<Reply> {
         let (dir, page) = dir_and_page(param)?;
         self.stats.get(dir)?.delay_hist_page(page)
     }
 
-    /// `/dpds/iat_hist,<param>`: like [`delay_hist_reply`](Self::delay_hist_reply),
-    /// for the histogram of the gaps between consecutive send times.
+    /// `/dpds/iat_hist,<param>`: like [`delay_hist_reply`](Self::delay_hist_reply)
+    /// for the IAT histogram.
     pub fn iat_hist_reply(&self, param: &str) -> Option<Reply> {
         let (dir, page) = dir_and_page(param)?;
         self.stats.get(dir)?.delay.iat_hist_page(page)
     }
 
-    /// Registers `/dpds/stats`, `/dpds/epochs`, `/dpds/delay_hist` and `/dpds/iat_hist` (no-op
-    /// without the feature). `start_ns` is the shared `now_ns()` zero point. A bad param
-    /// yields an empty dict, like `/nic/epochs`.
+    /// Registers `/dpds/stats`, `/dpds/epochs`, `/dpds/delay_hist` and
+    /// `/dpds/iat_hist` (no-op without the feature). `start_ns` is the shared
+    /// `now_ns()` zero point. A bad param yields an empty dict.
     #[cfg(not(feature = "telemetry"))]
     pub fn register_telemetry(
         _stats: &'static DirectionStats,
@@ -281,7 +270,6 @@ impl DirectionStats {
     }
 }
 
-/// Copies a [`Reply`] into the telemetry thread's dict, entry by entry.
 #[cfg(feature = "telemetry")]
 fn fill(d: &mut dpdk::telemetry::Dict, reply: Reply) {
     use dpdk::telemetry::Container;
@@ -313,9 +301,7 @@ fn fill(d: &mut dpdk::telemetry::Dict, reply: Reply) {
 }
 
 /// The worker's handle on its telemetry: the shared [`Stats`] plus the
-/// worker-owned (non-atomic) epoch state. Zero-cost without the feature:
-/// the driver and scratch are unit structs and everything below compiles
-/// to nothing but the (no-op) counter calls.
+/// worker-owned (non-atomic) epoch state. Zero-cost without the feature.
 pub struct Telemetry<'a> {
     pub stats: &'a Stats,
     start_ns: f64,
@@ -328,15 +314,13 @@ impl<'a> Telemetry<'a> {
         Telemetry {
             stats,
             start_ns,
-            // The driver runs in uptime (relative to `start_ns`), so the
-            // first epoch starts at 0 and `epoch_*_uptime_ns` compare with
-            // `uptime_ns` and `first_loss_relative_ns`.
+            // The driver runs in uptime (relative to `start_ns`), so
+            // `epoch_*_uptime_ns` compare with `uptime_ns` and `first_loss_relative_ns`.
             driver: EpochDriver::new(0.0),
             epoch_first_loss: EpochFirstLoss::new(),
         }
     }
 
-    /// Records a loss: the whole-process first-loss latch plus this epoch's.
     pub fn record_loss(&mut self, reason: FirstLossReason, detail: StageLossDetail, now_ns: f64) {
         self.epoch_first_loss.record(
             &self.stats.first_loss,
@@ -348,8 +332,7 @@ impl<'a> Telemetry<'a> {
 
     /// One loop iteration (`arrivals` = packets received in it): advances the
     /// epoch state machine and, on a boundary, closes an epoch into
-    /// `stats.epochs` with the cumulative counters, this epoch's gauge
-    /// maxima (resetting the gauges) and its first loss.
+    /// `stats.epochs` (resetting the gauges).
     pub fn tick(&mut self, now_ns: f64, arrivals: u64) {
         if let Some(boundary) = self.driver.tick(now_ns - self.start_ns, arrivals) {
             let c = &self.stats.counters;
@@ -368,10 +351,10 @@ impl<'a> Telemetry<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PortInfo {
     pub name: String,
-    /// Descriptor ring sizes as applied by the driver.
+    /// Descriptor ring sizes applied by the driver.
     pub rx_ring: u16,
     pub tx_ring: u16,
-    /// Descriptor ring sizes as requested before the driver clamped them.
+    /// Descriptor ring sizes requested before the driver clamped them.
     pub rx_ring_requested: u16,
     pub tx_ring_requested: u16,
 }
@@ -381,21 +364,16 @@ pub struct PortInfo {
 pub struct DirectionInfo {
     pub rx_port: u16,
     pub tx_port: u16,
-    /// EAL lcore of the direction's worker.
     pub lcore: u32,
-    /// Where the direction's config comes from: the config file, or the links
-    /// file.
+    /// Where the config comes from: a config file or the links file.
     pub config: String,
-    /// Mbufs in the direction's mempool.
     pub pool_size: u32,
-    /// Whether the direction frees mbufs with the raw bulk free.
     pub raw_free: bool,
-    /// Name of the link the direction belongs to (`default` without `--links`).
+    /// Link name (`default` without `--links`).
     pub link: String,
-    /// DPDK device names of the receiving and the transmitting port.
+    /// DPDK device names of the receiving and transmitting port.
     pub rx_name: String,
     pub tx_name: String,
-    /// Whether the direction records delay statistics.
     pub delay_stats: bool,
 }
 
@@ -405,11 +383,10 @@ pub struct DirectionInfo {
 /// `num_directions`, `num_links` and per direction `d` `dir<d>_rx_port`,
 /// `dir<d>_tx_port`, `dir<d>_lcore`, `dir<d>_config` (string),
 /// `dir<d>_pool_size`, `dir<d>_raw_free` (0 or 1), `dir<d>_link` (string, the
-/// link name; `d` is the link's index), `dir<d>_rx_name` and `dir<d>_tx_name` (strings, DPDK device
-/// names), `dir<d>_delay_stats` (0 or 1: the direction's delay statistics are
-/// off or on). That is `3 + 5 * ports + 10 * links` keys in all, which
-/// must stay within DPDK's `RTE_TEL_MAX_DICT_ENTRIES`
-/// ([`MAX_TELEMETRY_DICT_ENTRIES`](crate::consts::MAX_TELEMETRY_DICT_ENTRIES)).
+/// link name; `d` is the link's index), `dir<d>_rx_name` and `dir<d>_tx_name`
+/// (strings, DPDK device names), `dir<d>_delay_stats` (0 or 1). That is
+/// `3 + 5 * ports + 10 * links` keys, which must stay within
+/// [`MAX_TELEMETRY_DICT_ENTRIES`](crate::consts::MAX_TELEMETRY_DICT_ENTRIES).
 pub fn ports_reply(ports: &[PortInfo], directions: &[DirectionInfo], num_links: usize) -> Reply {
     let mut reply = vec![uint("num_ports", ports.len() as u64)];
     for (i, p) in ports.iter().enumerate() {
@@ -442,8 +419,7 @@ pub fn ports_reply(ports: &[PortInfo], directions: &[DirectionInfo], num_links: 
     reply
 }
 
-/// Registers `/dpds/ports` (no-op without the feature). The values are
-/// static, so the feature gate only keeps a plain build off the socket.
+/// Registers `/dpds/ports` (no-op without the feature).
 #[cfg(not(feature = "telemetry"))]
 pub fn register_port_telemetry(
     _ports: Vec<PortInfo>,
@@ -466,8 +442,8 @@ pub fn register_port_telemetry(
     )
 }
 
-/// The main lcore's own per-port state. Separate from [`Stats`] so the main
-/// lcore never writes into state the worker owns.
+/// The main lcore's per-port state; separate from [`Stats`] so the main lcore
+/// never writes into state a worker owns.
 pub struct NicHwStats {
     pub first_loss: Vec<StageLossTracker>,
     pub epochs: Vec<NicEpochLog>,
@@ -482,8 +458,8 @@ impl NicHwStats {
     }
 
     /// `/nic/hw_first_loss,<param>`: `hw_first_loss_reason`,
-    /// `hw_first_loss_detail`, `hw_first_loss_relative_ns`. `None` for a
-    /// param that is not the decimal index of a polled port.
+    /// `hw_first_loss_detail`, `hw_first_loss_relative_ns`. `None` unless
+    /// `param` is the decimal index of a polled port.
     pub fn hw_first_loss_reply(&self, param: &str) -> Option<Reply> {
         let tracker = self.first_loss.get(index_param(param)?)?;
         let fields = format_first_loss(tracker.current());
@@ -495,7 +471,7 @@ impl NicHwStats {
     }
 
     /// `/nic/epochs,<param>`: `epochs_reply` with `rx_packets`, `imissed`,
-    /// `rx_port_discards`. `None` for a bad param.
+    /// `rx_port_discards`; `None` for a bad param.
     pub fn epochs_reply(&self, param: &str) -> Option<Reply> {
         let log = self.epochs.get(index_param(param)?)?;
         Some(epochs_reply(
@@ -541,17 +517,15 @@ pub struct NicPoller {
     start_ns: f64,
     prev: dpdk::port::PortStats,
     tracker: NicEpochTracker,
-    // `EpochLog::close` wants running totals and diffs them itself, but the
-    // tracker hands back each closed epoch's delta: keep a running sum of the
-    // deltas, which the log's own diff turns back into the same delta.
+    // `EpochLog::close` takes running totals but the tracker returns deltas:
+    // keep a running sum, which the log's diff turns back into the delta.
     cumulative_rx_packets: u64,
     cumulative_imissed: u64,
     cumulative_rx_port_discards: u64,
 }
 
 impl NicPoller {
-    /// `port` indexes `NicHwStats`; `initial` / `initial_discards` seed the
-    /// baselines.
+    /// `port` indexes `NicHwStats`; `initial` / `initial_discards` seed the baselines.
     pub fn new(
         port: usize,
         start_ns: f64,
@@ -569,11 +543,11 @@ impl NicPoller {
         }
     }
 
-    /// One 250 ms poll. (1) A rise in a hardware drop counter is recorded in
-    /// `hw.first_loss[port]` (first one wins); (2) the epoch tracker runs and
-    /// a closed epoch goes into `hw.epochs[port]` (`read_port_discards`, a
-    /// firmware query, is only called when an epoch closes); (3) `curr`
-    /// becomes the new baseline. All times are uptime (`now_ns - start_ns`).
+    /// One poll: (1) a rise in a hardware drop counter is recorded in
+    /// `hw.first_loss[port]`; (2) the epoch tracker runs and a closed epoch goes
+    /// into `hw.epochs[port]` (`read_port_discards`, a firmware query, is only
+    /// called when an epoch closes); (3) `curr` becomes the new baseline. Times
+    /// are uptime (`now_ns - start_ns`).
     pub fn poll(
         &mut self,
         now_ns: f64,

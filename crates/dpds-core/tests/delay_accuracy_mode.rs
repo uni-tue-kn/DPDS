@@ -1,9 +1,8 @@
-//! Spec 45 B1: `Buffer::try_new` rejects `reordering` combined with correlation and `reordering`
-//! combined with an active Spacer limiter, with an error whose message names the combination;
-//! every other combination builds. An inactive limiter never counts, whatever its mode.
+//! `Buffer::try_new` rejects `reordering` combined with correlation and `reordering` combined
+//! with an active Spacer limiter, with an error whose message names the combination; every other
+//! combination builds. An inactive limiter never counts, whatever its mode.
 //!
-//! The messages are the ones of the spec; the `BuildError` variant names are not fixed, so the
-//! tests look at the Display text only.
+//! The tests look at the Display text only.
 
 use dpds_core::buffer::Buffer;
 use dpds_core::delayer::RVDistribution;

@@ -1,10 +1,10 @@
-//! C4: telemetry freshness, through the REAL `Poller` against a fake telemetry socket
+//! Telemetry freshness, through the REAL `Poller` against a fake telemetry socket
 //! (`fake_telemetry.rs`) behind the REST router.
 //!
 //! `GET /api/stats` carries `age_ms` (milliseconds since the last successful poll,
 //! a number) and `stale` (bool): fresh data is `stale: false`; after 5 consecutive poll
 //! failures the cache is cleared and the endpoint answers `directions: []`,
-//! no `ports` key (spec 43), `stale: true` (and the histogram endpoint 404). A poll that works again
+//! no `ports` key, `stale: true` (and the histogram endpoint 404). A poll that works again
 //! makes the data fresh again. Fewer than 5 failures keep the last data (with a growing
 //! `age_ms`).
 //!
@@ -30,9 +30,8 @@ struct Rig {
     _dir: tempfile::TempDir,
 }
 
-/// Spec 41/43: the poll interval is a fixed 1000 ms; `Poller::spawn(runtime_dir, supervisor)` uses
-/// it. The tests keep `Poller::set_poll_interval` as a speed hook (ASSUMPTION of the tester: it
-/// stays, as an inherent method, for the tests that must not wait whole seconds).
+/// The poll interval is a fixed 1000 ms; `Poller::spawn(runtime_dir, supervisor)` uses
+/// it. `Poller::set_poll_interval` is a speed hook for the tests that must not wait whole seconds.
 fn rig(interval_ms: u64) -> Rig {
     let rt = short_tempdir();
     let supervisor = FakeSupervisor::new();

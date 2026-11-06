@@ -3,10 +3,9 @@
 //! `/dpds/ports`, `/nic/hw_first_loss` and `/nic/epochs`, and the main
 //! lcore's `NicPoller`.
 //!
-//! The reply builders return `dpds::reply::Reply` (ordered `(key, Value)`
-//! data), so the exact wire fields are asserted here without an EAL; the
-//! registration shims that copy a `Reply` into a `dpdk::telemetry::Dict` are
-//! covered by the e2e test. The wire fields follow preof's telemetry replies.
+//! The reply builders return `dpds::reply::Reply` (ordered `(key, Value)` data), so the exact
+//! wire fields are asserted here without an EAL; the registration shims that copy a `Reply` into
+//! a `dpdk::telemetry::Dict` are covered by the e2e test.
 //!
 //! Builders and tests are telemetry-feature only (they need real counters),
 //! except what must exist in both builds: `Stats`, `DirectionStats`,
@@ -862,7 +861,7 @@ mod with_feature {
         assert_eq!(string(&r, "dir0_config"), path);
     }
 
-    // ── D5 / D2: dir<d>_delay_stats and the dict limit ──────────────
+    // ── dir<d>_delay_stats and the dict limit ──────────────
 
     #[test]
     fn ports_reply_reports_the_delay_stats_switch_per_direction() {

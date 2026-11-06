@@ -4,21 +4,21 @@ import { linkPage } from '../test/configPages';
 import { numberField, section, typeInto, unitOf } from '../test/helpers';
 import { must } from '../test/must';
 
-// Spec 30, frontend part (user 2026-11-04): P4TG-like power-of-two suggestions in the Statistics section (Histogram bins,
-// lo, hi), "look and feel only": advisory, nothing is refused. Model: P4TG HistogramModal.tsx. The texts are the spec's:
+// Power-of-two suggestions in the Statistics section (Histogram bins, lo, hi), look and feel only: advisory, nothing is refused.
+// Model: P4TG HistogramModal.tsx. The texts:
 //   bins set:   "Power-of-two bin count."  |  "Tip: use a power-of-two bin count (1, 2, 4, …, 4096)."
 //   aligned:    "Binary-aligned bins: <width in the hi unit> each (2^k ns)."   (bi-check-circle-fill)
 //   otherwise, hi set:  "Suggested range: 0 – <nextPowerOfTwo(hi ns) in the hi unit> (2^k ns)."  (bi-exclamation-circle-fill)
 //                       plus a "Use suggestion" button that sets lo = 0 and hi = that value
-// CHOICES of the tester where the spec is silent:
-//   - "(2^k ns)" is literal text "2^6 ns" (no <sup>): the spec writes it that way; textContent is compared
+// Choices:
+//   - "(2^k ns)" is literal text "2^6 ns" (no <sup>); textContent is compared
 //   - the width and the suggestion are shown in the hi field's CURRENT unit, without trailing zeros (4.096, 0.064, 8192)
 //   - "Use suggestion" keeps the hi unit and writes the value in it; lo becomes 0 in lo's own unit
 //   - hi = 0 (or an empty hi) gives no range hint at all (there is nothing to round up)
 //   - the icons carry the P4TG classes histogram-optimization-icon-aligned / -icon-suggestion, the button
 //     histogram-optimization-action
 //   - the bins hint appears next to the Histogram bins field (inside the Statistics section)
-// The "Max 500" text and the Histogram bins tooltip say 4096 now (requirement 4); the cap itself is the controller's.
+// The cap of 4096 bins itself is the controller's.
 
 const stats = () => section('Statistics');
 const text = () => (stats().textContent ?? '').replace(/\s+/g, ' ');
@@ -204,11 +204,11 @@ describe('histogram range: binary-aligned check and suggested range', () => {
     await lo(user, '0', 'ns');
     await hi(user, '4096', 'ns');
     expect(text()).not.toContain('Binary-aligned');
-    // spec 28b item 6a. Was: 'Suggested range: 0 – 4096 ns (2^12 ns).' here; lo is 0 and hi already is that value, so applying
-    // the suggestion would change nothing and it is not shown (histogramHintsSpec28b.test.tsx)
+    // lo is 0 and hi already is that value, so applying the suggestion would change nothing and it is not shown
+    // (histogramHintsSpec28b.test.tsx)
     expect(text()).not.toContain('Suggested range');
     expect(useSuggestion()).not.toBeInTheDocument();
-    await bins(user, '64'); // now all three are set and aligned
+    await bins(user, '64'); // all three are set and aligned
     expect(text()).toContain('Binary-aligned bins: 64 ns each (2^6 ns).');
     await lo(user, '', undefined); // lo cleared again
     expect(text()).not.toContain('Binary-aligned');

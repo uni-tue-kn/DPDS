@@ -1,41 +1,20 @@
-//! `Buffer::push_outcome` and `Buffer::pop_due_with_time` (both additive, new
-//! API for the drop-cause counters and the delay statistics of `dpds`).
+//! `Buffer::push_outcome` and `Buffer::pop_due_with_time`.
 //!
-//! # Test-facing API (what these tests need to exist)
-//!
-//! ```text
-//! dpds_core::buffer::PushOutcome            Debug + Clone + Copy + PartialEq + Eq
-//!     Accepted { send_time_ns: u64 }
-//!     Lost                                   (the loss model dropped it)
-//!     LimiterDrop                            (the limiter rejected it)
-//!     BufferFull                             (the buffer holds `buffer_capacity` packets)
-//! Buffer::push_outcome(&mut self, ptr: *mut c_void, len: u32, now_ns: f64) -> PushOutcome
-//! Buffer::pop_due_with_time(&mut self, now_ns: f64) -> Option<(*mut c_void, u64)>
-//! ```
-//!
-//! `Buffer::push` stays, bit-identical to before: it is
-//! `matches!(self.push_outcome(..), PushOutcome::Accepted { .. })`.
-//!
-//! # Semantics pinned here
-//!
-//! - Evaluation order (spec20): the capacity check comes first, so a packet that
-//!   finds the buffer full is `BufferFull` and touches nothing else; then the
-//!   delay sample, the limiter accounting (also when the packet is lost
-//!   afterwards), the loss model, the limiter verdict, the enqueue. The
-//!   precedence of the *reported* cause is `BufferFull`, else loss model
-//!   (`Lost`), else limiter reject (`LimiterDrop`): a packet that both the loss
-//!   model and the limiter reject is `Lost`. (`tests/push_order.rs` pins that a
-//!   full-buffer push leaves delayer, limiter and dropper state untouched.)
+//! - Evaluation order: the capacity check comes first, so a packet that finds
+//!   the buffer full is `BufferFull` and touches nothing else; then the delay
+//!   sample, the limiter accounting (also when the packet is lost afterwards),
+//!   the loss model, the limiter verdict, the enqueue. The reported cause is
+//!   `BufferFull`, else `Lost`, else `LimiterDrop`. (`tests/push_order.rs` pins
+//!   that a full-buffer push leaves delayer, limiter and dropper state untouched.)
 //! - The limiter's limit is derived (`buffer_capacity * 1542 * 8` bit), see
-//!   `tests/derived_limit.rs`. Packets of `len = 1518` are exactly
-//!   `1542 * 8 - 0 = 12336` bit on the wire, `len = 1519` is 8 bit more.
+//!   `tests/derived_limit.rs`. A packet of `len = 1518` is exactly
+//!   `1542 * 8 = 12336` bit on the wire, `len = 1519` is 8 bit more.
 //! - `Accepted.send_time_ns` is the whole-ns send time that `front_time` reports
 //!   for that entry: FIFO mode `(now + delay + limiter offset) as u64`;
-//!   reordering mode `key >> 6`, i.e. INCLUDING the 1/64 ns tie offsets (the
+//!   reordering mode `key >> 6`, i.e. including the 1/64 ns tie offsets (the
 //!   65th packet pushed at one instant is reported 1 ns later than the first).
-//! - `pop_due_with_time(now)` pops exactly what `pop_due(now)` pops (same
-//!   pointer, same condition `front_time <= now`) and also returns that
-//!   whole-ns send time (= the `front_time` before the pop).
+//! - `pop_due_with_time(now)` pops exactly what `pop_due(now)` pops and also
+//!   returns that whole-ns send time (the `front_time` before the pop).
 //!
 //! Hand-derived values: `len = 100` is a 104 byte frame for the limiter (the
 //! buffer adds 4), i.e. `(104 + 20) * 8 = 992` bit on the wire; `rate_bps = 1e9`
@@ -187,7 +166,7 @@ fn lost_is_reported_by_the_loss_model_and_nothing_is_queued() {
 
 #[test]
 fn limiter_drop_of_the_spacer_and_its_recovery_by_draining() {
-    // FIFO only: reordering works only with the token bucket, not the Spacer (spec 45).
+    // FIFO only: reordering works only with the token bucket, not the Spacer.
     // capacity 2: derived limit 2 * 12336 = exactly two len-1518 packets
     let mut b = Cfg::new(2, false).spacer().build();
     assert_eq!(b.push_outcome(pkt(1), LEN_FULL, 0.0), accepted(0)); // fill 12336
@@ -266,7 +245,7 @@ fn precedence_buffer_full_before_loss_before_limiter() {
     for reordering in MODES {
         for tbf in [false, true] {
             if reordering && !tbf {
-                continue; // reordering works only with the token bucket (spec 45)
+                continue; // reordering works only with the token bucket
             }
             let with_limiter = |c: Cfg| if tbf { c.tbf() } else { c.spacer() };
 
@@ -307,7 +286,7 @@ fn precedence_buffer_full_before_loss_before_limiter() {
         // h=0): Good keeps, Bad drops.
         let ge = LossModel::GilbertElliot(1.0, 1.0, 1.0, 0.0, true);
         let limited = if reordering {
-            Cfg::new(1, reordering).tbf() // reordering works only with the token bucket (spec 45)
+            Cfg::new(1, reordering).tbf() // reordering works only with the token bucket
         } else {
             Cfg::new(1, reordering).spacer()
         };
@@ -330,7 +309,7 @@ fn a_lost_packet_still_consumes_limiter_budget() {
     // drops (u > k = 0), moves to Bad for good (p = 1, r = 0), where nothing is
     // dropped (u > h = 1 is impossible): exactly the first packet is lost.
     let ge = LossModel::GilbertElliot(1.0, 0.0, 0.0, 1.0, true);
-    // FIFO only: reordering works only with the token bucket, not the Spacer (spec 45).
+    // FIFO only: reordering works only with the token bucket, not the Spacer.
     let mut b = Cfg::new(8, false).spacer().loss(ge).build();
     assert_eq!(b.push_outcome(pkt(1), LEN, 0.0), PushOutcome::Lost);
     // the lost packet was accounted by the limiter (fill 992): the next one
@@ -342,7 +321,7 @@ fn a_lost_packet_still_consumes_limiter_budget() {
 
 #[test]
 fn a_buffer_full_packet_does_not_consume_limiter_budget() {
-    // FIFO only: reordering works only with the token bucket, not the Spacer (spec 45).
+    // FIFO only: reordering works only with the token bucket, not the Spacer.
     let mut b = Cfg::new(1, false).spacer().build();
     assert_eq!(b.push_outcome(pkt(1), LEN, 0.0), accepted(0)); // fill 992
     assert_eq!(b.push_outcome(pkt(2), LEN, 0.0), PushOutcome::BufferFull); // fill stays 992
@@ -435,7 +414,7 @@ fn push_is_bit_identical_to_push_outcome_accepted() {
     for mode in [LimiterMode::Spacer, LimiterMode::TokenBucketFilter] {
         for reordering in MODES {
             if reordering && matches!(mode, LimiterMode::Spacer) {
-                continue; // reordering works only with the token bucket (spec 45)
+                continue; // reordering works only with the token bucket
             }
             for seed in [1u64, 2, 3] {
                 let cfg = busy(mode, reordering, seed);
@@ -491,7 +470,7 @@ fn accepted_send_time_is_what_pop_due_with_time_and_front_time_report() {
     for mode in [LimiterMode::Spacer, LimiterMode::TokenBucketFilter] {
         for reordering in MODES {
             if reordering && matches!(mode, LimiterMode::Spacer) {
-                continue; // reordering works only with the token bucket (spec 45)
+                continue; // reordering works only with the token bucket
             }
             let cfg = busy(mode, reordering, 99);
             let mut buf = Buffer::new(cfg);
@@ -559,7 +538,7 @@ fn pop_due_with_time_pops_exactly_at_the_send_time_and_returns_it() {
 
 #[test]
 fn pop_due_with_time_returns_the_limiter_shifted_time() {
-    // FIFO only: reordering works only with the token bucket, not the Spacer (spec 45).
+    // FIFO only: reordering works only with the token bucket, not the Spacer.
     let mut b = Cfg::new(8, false).spacer().build();
     for i in 0..3 {
         assert!(b.push(pkt(i + 1), LEN, 0.0)); // send times 0, 992, 1984
@@ -575,7 +554,7 @@ fn pop_due_with_time_pops_the_same_pointers_in_the_same_order_as_pop_due() {
     for mode in [LimiterMode::Spacer, LimiterMode::TokenBucketFilter] {
         for reordering in MODES {
             if reordering && matches!(mode, LimiterMode::Spacer) {
-                continue; // reordering works only with the token bucket (spec 45)
+                continue; // reordering works only with the token bucket
             }
             let cfg = busy(mode, reordering, 5);
             let (mut a, mut b) = (Buffer::new(cfg), Buffer::new(cfg));

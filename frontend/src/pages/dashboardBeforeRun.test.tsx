@@ -24,18 +24,16 @@ import { renderApp, seedStore, tick } from '../test/helpers';
 import { api, serveHistory } from '../test/mockApi';
 import { must } from '../test/must';
 
-// Spec 39 (user 2026-11-05: "like P4TG the overview should still show the empty diagrams even when nothing is run so far"),
-// section "Spec 39" of .git/claude-specs/spec35-dashboard.md; contract: header of src/test/dashboardUi.tsx.
-//   - before any run (no history samples, state not running/starting): the Summary tab plus one tab per STORED link in
-//     stored order, titled "name: ingress → egress" with netdev names, no ended badge; no stored links: the Summary only;
-//   - every tab: the empty Rate chart (axes titled, legend on), radios Rate / Delay histogram (disabled) / Loss, the grey
+// Before any run (no history samples, state not running/starting) the dashboard shows the empty diagrams (contract: header of
+// src/test/dashboardUi.tsx):
+//   - the Summary tab plus one tab per STORED link in stored order, titled "name: ingress → egress" with netdev names, no ended
+//     badge; no stored links: the Summary only;
+//   - every tab: the empty Rate chart (axes titled, legend on), the radios with "Delay histogram" present but disabled, the grey
 //     "No drops" donut with the nine-cause legend;
 //   - nothing polls getDelayHistogram;
-//   - once a run starts the tabs come from the run (as before); an ended run's tabs stay, the stored links only fill in
-//     the before-any-run view.
-// CHOICE: "disabled Delay histogram" is a present, disabled radio on link tabs as well (as on the Summary tab).
-// Spec 54 L3 (was: "starting" shows no tabs, the tabs come from the run): the tabs a view has stay while a run is starting, the overlay
-// covers them (dashboardSpec54.test.tsx); stopping/stopped/failed without samples show the stored view.
+//   - once a run starts the tabs come from the run; an ended run's tabs stay, the stored links only fill in the before-any-run view;
+//   - while a run is starting the tabs a view has stay, the overlay covers them (dashboardSpec54.test.tsx); stopping/stopped/failed
+//     without samples show the stored view.
 
 const LINKS = [fx.link(), fx.linkRev()];
 
@@ -114,7 +112,6 @@ describe('Dashboard before any run (spec 39): the tabs', () => {
     },
   );
 
-  // Spec 54 L3. Was: 'does not show them while the run is starting, the tabs come from the run then' (no tablist).
   it('a page opened while the run is starting shows the loading overlay (spec 54 L3), not an empty page', async () => {
     api.getEmulation.mockResolvedValue(fx.emulation('starting'));
     api.getStats.mockResolvedValue(fx.stats([], { stale: true, age_ms: undefined }));
@@ -142,11 +139,10 @@ describe('Dashboard before any run (spec 39): the tabs', () => {
     renderApp('/');
     await waitFor(() => expect(tabs()).toHaveLength(1));
     await waitFor(() => expect(tabTitle(0)).toBe('a-b: enp101s0f0 → enp101s0f1'));
-    expect(tabBadge(0)).toBe(''); // spec 54 L1
+    expect(tabBadge(0)).toBe('');
     expect(tabs()).toHaveLength(1);
   });
 
-  // Spec 54 L3. Was: 'a new start replaces them: no tab while starting'.
   it('a new start keeps them: the tabs stay while starting', async () => {
     await open();
     expect(tabs()).toHaveLength(2);
@@ -186,7 +182,7 @@ describe('Dashboard before any run (spec 39): the empty diagrams', () => {
     fireEvent.click(within(panel).getByRole('radio', { name: 'Packet loss' }));
     expect(within(panel).getByRole('img', { name: /^(Loss|Packet loss) chart/ })).toBeInTheDocument();
     const data = line(panel);
-    expect(data.datasets.map((s) => s.label)).toEqual([...CAUSES]); // spec 43 F1: one line per cause
+    expect(data.datasets.map((s) => s.label)).toEqual([...CAUSES]); // one line per cause
     for (const s of data.datasets) expect(s.data).toEqual([]);
   });
 

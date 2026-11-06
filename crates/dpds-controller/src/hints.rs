@@ -1,8 +1,7 @@
-//! Host hints (B6), shared by `serve` and `check`. Computing them changes nothing: a hint that
-//! can be fixed lists the exact shell commands an administrator would run as root
-//! (`Hint::commands`, display strings only, never executed), computed from what the controller
-//! read. The only tools it runs are read-only queries (see `nic_hints`). The kernel command line
-//! checks name the parameters to add and have no commands.
+//! Host hints, shared by `serve` and `check`. Computing them changes nothing: a hint that
+//! can be fixed lists the shell commands an administrator would run as root (`Hint::commands`,
+//! display strings only, never executed). The only tools run are read-only queries (see
+//! `nic_hints`). The kernel command line checks name the parameters to add and have no commands.
 //!
 //! Thresholds follow the "Performance tuning" section of the DPDS README: isolated
 //! cores with `nohz_full` and `rcu_nocbs`, hugepages for the mbuf pools,

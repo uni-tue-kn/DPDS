@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { renderApp } from './test/helpers';
 import { must } from './test/must';
 
-// User (2026-11-05): the frontend shows the DPDS logo (README's docs/img/logo.png) instead of the plain text "DPDS".
+// The frontend shows the DPDS logo (README's docs/img/logo.png) instead of the plain text "DPDS".
 describe('sidebar brand', () => {
   it('is the DPDS logo image, not the text "DPDS"', () => {
     renderApp('/settings');
@@ -16,7 +16,7 @@ describe('sidebar brand', () => {
     expect(brand.textContent?.trim()).toBe('');
   });
 
-  // Spec 50 F (user 2026-11-05: "Clicking on the DPDS logo should send a user to the GitHub repository").
+  // Clicking the DPDS logo sends the user to the GitHub repository.
   it('is a link to the GitHub repository that opens in a new tab safely, with an accessible name', () => {
     renderApp('/settings');
     const logo = screen.getByRole('img', { name: 'DPDS logo' });
@@ -36,8 +36,7 @@ describe('sidebar brand', () => {
   });
 });
 
-// User 2026-11-05: "on the bottom of the page I also want a 'DPDS @ ' and then the github sign. And this should also link
-// to the GitHub page." A footer at the end of the main content, on every page.
+// A footer at the end of the main content, on every page: "DPDS @ " and the GitHub icon, linking to the GitHub page.
 describe('page footer', () => {
   it.each(['/', '/interfaces', '/hints', '/settings'])(
     'on %s reads "DPDS @" with the GitHub icon and links to the repository',

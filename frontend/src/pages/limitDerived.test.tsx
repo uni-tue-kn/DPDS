@@ -6,12 +6,10 @@ import type { ConfigPage } from '../test/configPages';
 import * as fx from '../test/fixtures';
 import { addButton, numberField, removeButton, section, typeInto, unitOf } from '../test/helpers';
 
-// v22: the limiter is an optional stage (no "Limiter active" switch, `activate` is gone), so the info line exists only while
-// the limiter is added (forms are opened with `openFull()` unless said otherwise).
-// Contract: "v21" block of src/test/helpers.tsx (spec20). The limiter's limit is derived by dpds-core from the buffer
-// capacity (capacity x 1542 B x 8 bit, the same for Spacer and Token Bucket Filter); `limit_bit` is gone from the API.
-// The form has no "Burst limit" field; the Limiter subsection shows the derived limit read-only. Every test runs
-// against the link editor (the only page with the config form since spec27).
+// The limiter is an optional stage, so the info line exists only while the limiter is added (forms are opened with `openFull()`
+// unless said otherwise). The limiter's limit is derived by dpds-core from the buffer capacity (capacity x 1542 B x 8 bit, the same
+// for Spacer and Token Bucket Filter). The form has no "Burst limit" field; the Limiter subsection shows the derived limit
+// read-only. Every test runs against the link editor (the only page with the config form).
 const body = () => document.body;
 const BITS_PER_PACKET = 1542 * 8; // 12336
 

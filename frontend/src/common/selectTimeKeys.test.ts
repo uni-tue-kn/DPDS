@@ -1,11 +1,8 @@
 import { selectTimeKeys } from './selectTimeKeys';
 
-// Spec 50 G (user: the DPDS diagrams look more crowded than P4TG's): at most 100 points per time chart, chosen like P4TG's
-// `select_time_keys` (Controller/src/api/statistics.rs): evenly spaced BY POSITION, first and last kept, samples selected and
-// never averaged. With n items and limit L: n <= L gives all of them; L == 1 the first; else the positions
-// { floor(j * (n - 1) / (L - 1)) | j = 0 .. L - 1 }.
-// CHOICE (the spec names no module): `selectTimeKeys<T>(items: readonly T[], limit: number): T[]` in src/common/selectTimeKeys.ts,
-// a pure function that returns a new array. The positions below were worked out by hand from the formula, not with the helper.
+// `selectTimeKeys` picks like P4TG's `select_time_keys`: evenly spaced BY POSITION, first and last kept, samples selected and never
+// averaged. With n items and limit L: n <= L gives all of them; L == 1 the first; else the positions
+// { floor(j * (n - 1) / (L - 1)) | j = 0 .. L - 1 }. The positions below were worked out by hand from the formula, not with the helper.
 
 const range = (n: number) => Array.from({ length: n }, (_, i) => i);
 

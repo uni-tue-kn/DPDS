@@ -5,7 +5,7 @@
 # Plain bash, no dependencies (no bats, no shellcheck). Exit 0 iff every test passes.
 #
 # =====================================================================================
-# CONTRACT (this header is the spec the tests enforce; dpds.sh must satisfy it)
+# CONTRACT (the tests enforce it; dpds.sh must satisfy it)
 # =====================================================================================
 #
 # Command line:   dpds.sh [--nightly|--stable] [--yes] COMMAND
@@ -13,66 +13,78 @@
 #   Flags come before the command (any order between them).
 #   - no arguments, unknown command or unknown option: exit 1, usage text (containing the word
 #     "Usage" and every command name) on stdout or stderr, nothing else is executed. The usage text
-#     (also for --help, exit 0) mentions no docker, compose, container or image, and (spec v15) no
-#     download, CI-built frontend, release asset or DPDS_FRONTEND_DIST; it mentions Node or npm
-#     (install and update build the frontend on the host).
-#   - Release channel (spec v21, like P4TG's P4TG_CHANNEL): DPDS_CHANNEL is `latest` (the default; also when the variable is
-#     empty or unset) or `nightly`. `--nightly` selects nightly and `--stable` selects latest, both override the variable
-#     (even an invalid one); both flags together: exit non-zero naming both, nothing executed. Any other value (`beta`,
-#     `Nightly`, `main`, ...): exit non-zero, stderr "Invalid DPDS channel '<value>' (expected 'latest', 'nightly' or a
-#     release tag like 'v1.0.0')", before any git, cargo, npm or systemctl call, for check, install and update.
-#     The channel's branch is `main` for latest and `nightly` for nightly.
-#   - Release tag channel (spec v25): DPDS_CHANNEL (the variable only; the flags stay as they are and still override it)
-#     also accepts a release tag matching ^v[0-9]+\.[0-9]+\.[0-9]+$ (`v1.0.0`). update then: prerequisites, dirty-tree
-#     refusal, `git fetch --tags`, the tag lookup `git rev-parse -q --verify "refs/tags/<tag>^{commit}"` (a missing tag is an
-#     error naming it, nothing changed), `git checkout --detach <tag>`, no `git pull`, then the usual rebuild, reinstall and
-#     restart. install stays read-only and warns (naming the tag and HEAD, telling to run `update`) when HEAD is not the tag's
-#     commit. status prints `Channel: <tag> (tag <tag>), checkout: ...`. The git stub answers the tag lookup with
-#     `commit-of-<tag>` for tags listed in STUB_GIT_TAGS (else exit 1) and `rev-parse HEAD` with STUB_GIT_HEAD_COMMIT.
-#   - update: after the prerequisites and the dirty-tree refusal, `git fetch`, `git checkout <branch>`,
-#     `git pull --ff-only` (repo root, in this order, each failing step aborts before the frontend, any build and any
-#     systemctl change), then the frontend and cargo builds. A warning names the checked-out branch and the channel's branch
-#     when they differ ("detached" for a detached HEAD) and update switches anyway. No tag lookup: no `git tag`, no
-#     `git fetch --tags`, no checkout of a v* tag (spec v18's --stable tag selection is gone; CI tags every version
-#     that reaches main, so main's head is the latest release).
-#   - install makes only read-only git calls (to find the checked-out branch): no fetch, checkout, pull or tag. When the
-#     checkout is on another branch than the channel's, it warns naming both branches and telling to run `update`, and
-#     installs anyway. A tree without git (a tarball) is not an error. No warning when the branch matches.
-#   - The git stub's current branch is `main` unless STUB_GIT_BRANCH says otherwise (`HEAD` = detached);
-#     STUB_GIT_NOT_A_REPO makes every git call fail like outside a repository; STUB_GIT_TAGS lists tags
-#     (they must not matter).
-#   - `status` (spec v21) also prints the release channel and the branch of the checkout (a line with the word "channel"
-#     and its value, and the branch name; exit 0 even without git).
-#   - `status` (spec v18) prints the installed version taken from the /api/online answer ("version"),
-#     on a line of its own besides the raw answer, also when the key is not the first one. Nothing
-#     reads the version from jq (not on the PATH) or from the repository.
-#   - --nightly together with --stable: exit non-zero, nothing is executed.
+#     (also for --help, exit 0) mentions no docker, compose, container or image, no download,
+#     CI-built frontend, release asset or DPDS_FRONTEND_DIST; it mentions Node or npm.
+#   - Release channel: DPDS_CHANNEL is `latest` (the default; also when empty or unset) or
+#     `nightly`. `--nightly` selects nightly and `--stable` selects latest, both override the
+#     variable (even an invalid one); both flags together: exit non-zero naming both, nothing
+#     executed. Any other value (`beta`, `Nightly`, `main`, ...): exit non-zero, stderr "Invalid
+#     DPDS channel '<value>' (expected 'latest', 'nightly' or a release tag like 'v1.0.0')", before
+#     any git, cargo, npm or systemctl call, for check, install and update. The channel's branch is
+#     `main` for latest and `nightly` for nightly.
+#   - Release tag channel: DPDS_CHANNEL (the variable only; the flags still override it) also
+#     accepts a release tag matching ^v[0-9]+\.[0-9]+\.[0-9]+$ (`v1.0.0`). update then:
+#     prerequisites, dirty-tree refusal, `git fetch --tags`, the tag lookup
+#     `git rev-parse -q --verify "refs/tags/<tag>^{commit}"` (a missing tag is an error naming it,
+#     nothing changed), `git checkout --detach <tag>`, no `git pull`, then rebuild, reinstall and
+#     restart. install stays read-only and warns (naming the tag and HEAD, telling to run `update`)
+#     when HEAD is not the tag's commit. status prints `Channel: <tag> (tag <tag>), checkout: ...`.
+#     The git stub answers the tag lookup with `commit-of-<tag>` for tags listed in STUB_GIT_TAGS
+#     (else exit 1) and `rev-parse HEAD` with STUB_GIT_HEAD_COMMIT.
+#   - update on a branch channel: after the prerequisites and the dirty-tree refusal, `git fetch`,
+#     `git checkout <branch>`, `git pull --ff-only` (repo root, in this order, each failing step
+#     aborts before the frontend, any build and any systemctl change), then the frontend and cargo
+#     builds. A warning names the checked-out branch and the channel's branch when they differ
+#     ("detached" for a detached HEAD) and update switches anyway. No tag lookup: no `git tag`, no
+#     `git fetch --tags`, no checkout of a v* tag.
+#   - install makes only read-only git calls (to find the checked-out branch): no fetch, checkout,
+#     pull or tag. On another branch than the channel's it warns naming both branches and telling
+#     to run `update`, and installs anyway. A tree without git (a tarball) is not an error. No
+#     warning when the branch matches.
+#   - The git stub's current branch is `main` unless STUB_GIT_BRANCH says otherwise (`HEAD` =
+#     detached); STUB_GIT_NOT_A_REPO makes every git call fail like outside a repository;
+#     STUB_GIT_TAGS lists tags (they must not matter on a branch channel).
+#   - `status` prints the release channel and the branch of the checkout (a line with the word
+#     "channel" and its value, and the branch name; exit 0 even without git), and the installed
+#     version taken from the /api/online answer ("version") on a line of its own besides the raw
+#     answer, also when the key is not the first one. Nothing reads the version from jq (not on
+#     the PATH) or from the repository.
 #   - Errors go to stderr. The script may be started from any working directory: it works on the
 #     repository it lives in (cargo, npm and git run there; npm in its frontend/ directory).
-#   - No command ever calls docker (the stub is a tripwire, see below), and the script has no
-#     docker, compose or nginx code, no DPDS_FRONTEND_BIND/DPDS_FRONTEND_PORT and no DPDS_CONTROLLER
-#     setting (DPDS_CONTROLLER_BIND of the env file stays).
+#   - No command ever calls docker (the stub is a tripwire), and the script has no docker, compose
+#     or nginx code, no DPDS_FRONTEND_BIND/DPDS_FRONTEND_PORT and no DPDS_CONTROLLER setting
+#     (DPDS_CONTROLLER_BIND of the env file stays).
+#   - Root: every command, with any flags, refuses to run when EUID is 0 (through `sudo` with
+#     SUDO_USER set, or as plain root), at once, before any tool or sudo call and before anything
+#     is written: non-zero exit and a stderr message with "as your user", "not with sudo" and
+#     "PATH". A non-root user is not refused, even with SUDO_USER left in the environment. The
+#     tests become root through `sudo -n` (EUID cannot be faked) and print SKIP without it. Run the
+#     suite itself as a normal user.
+#   - Not installed: `start`, `restart` and `status` check that the unit file of `install`
+#     ($DPDS_SYSTEMD_DIR/dpds-controller.service) exists. Without it they say "dpds-controller is
+#     not installed: run ./dpds.sh install first" (start and restart on stderr with a non-zero
+#     exit, status with exit 0) and show none of systemctl's own complaints ("does not exist",
+#     "not found", "could not be found"). The stub systemctl answers like real systemd for a
+#     missing unit file, so tests of start/restart/status call `seed_unit` (or fake_install)
+#     first. `stop` and `uninstall` do not need the unit.
 #
 # Environment overrides (so tests never touch the real system):
 #   DPDS_PREFIX       install prefix; binaries go to $DPDS_PREFIX/bin     (default /usr/local)
 #   DPDS_ETC_DIR      config dir; env file is $DPDS_ETC_DIR/controller.env (default /etc/dpds)
-#   (spec 22: there is no DPDS_STATE_DIR any more; the controller stores nothing, see "spec 22" below)
 #   DPDS_SYSTEMD_DIR  where the unit is installed                         (default /etc/systemd/system)
 #   DPDS_BIND         bind address written into a NEW env file            (default 0.0.0.0:8100)
 #   CARGO_TARGET_DIR  standard cargo variable; built binaries are read from
 #                     $CARGO_TARGET_DIR/release/{dpds,dpds-controller}    (default <repo>/target)
-#   There is no DPDS_FRONTEND_ASSET_URL any more, and a DPDS_FRONTEND_DIST in the caller's
-#   environment is ignored by install and update (spec v15; it stays a way to feed a plain
-#   `cargo build` by hand, which is not dpds.sh's business).
-#   Privileged operations go through sudo when EUID != 0 (like p4tg.sh's run_privileged). Tests
-#   do not require that sudo is used, only that the effects happen.
+#   The controller stores nothing: a DPDS_STATE_DIR in the environment is ignored, whatever it
+#   holds. A DPDS_FRONTEND_DIST in the caller's environment is ignored by install and update.
+#   Privileged operations go through sudo when EUID != 0.
 #
-# Prerequisites (spec v15; checked by `check`, `install`, `update`; NOT by start/stop/restart/
-# status/uninstall, which only need systemctl and, for status, curl). The script never installs
-# anything. Every unmet prerequisite is reported as an ERROR line on stderr that names the tool, says
-# what to install ("install" in the line, for a missing tool) and, for a version, the required version;
-# ALL unmet prerequisites are reported, not only the first (one run, several ERROR lines), then the
-# command exits non-zero. Met ones are reported as OK lines (stdout or stderr).
+# Prerequisites (checked by `check`, `install`, `update`; NOT by start/stop/restart/status/
+# uninstall, which only need systemctl and, for status, curl). The script never installs
+# anything. Every unmet prerequisite is an ERROR line on stderr that names the tool, says what to
+# install ("install" in the line, for a missing tool) and, for a version, the required version;
+# ALL unmet prerequisites are reported (one run, several ERROR lines), then the command exits
+# non-zero. Met ones are OK lines (stdout or stderr).
 #   cargo, rustc                         on PATH; rustc's version is part of its OK line, and a
 #                                        rustc below the `rust-version` the workspace declares
 #                                        (crates/dpds-core/Cargo.toml) is an error naming rustc
@@ -88,7 +100,6 @@
 #                                        per component, "9" < "22" < "100"); an older node is an
 #                                        error naming node and the required version (22.22).
 #   curl, sha256sum, tar                 NOT prerequisites of anything but (curl) `status`.
-#   No system packages are ever installed. Docker is not a prerequisite of anything.
 #   install and update run all of this before any git call, cargo build, npm call or systemctl call.
 #
 # check
@@ -96,13 +107,12 @@
 #   a prerequisite is unmet, `dpds-controller check` is not run).
 #   Binary used: $DPDS_PREFIX/bin/dpds-controller if executable; otherwise the one in
 #   $CARGO_TARGET_DIR/release if present; otherwise it first runs
-#   `cargo build --release -p dpds-controller` (the build is in the repo root) and uses that. That
-#   build runs no npm and downloads nothing (no curl, no `git rev-parse HEAD:frontend`).
+#   `cargo build --release -p dpds-controller` (in the repo root) and uses that. That build runs
+#   no npm and downloads nothing.
 #
-# frontend (install and update; spec v15, replaces the CI release asset of spec v13). The controller
-#   embeds the web frontend at compile time. install and update build it from the checked-out tree
-#   (for update after checkout/pull, so the pulled sources are built, local changes included, no
-#   warning about them), before ANY cargo build:
+# frontend (install and update). The controller embeds the web frontend at compile time. install and
+#   update build it from the checked-out tree (for update after checkout/pull, local changes
+#   included, no warning about them), before ANY cargo build:
 #   - `npm ci`, then `npm run build`, both with the working directory <repo>/frontend,
 #   - `<repo>/frontend/dist/index.html` must exist afterwards, else an error naming index.html and
 #     the dist directory,
@@ -121,8 +131,10 @@
 #      `cargo build --release ... dpds ... --features telemetry` (one invocation naming only dpds)
 #      and `cargo build --release ... dpds-controller` (a separate invocation, with the frontend dist).
 #   2. runs `dpds-controller check` on the freshly built controller, through the privileged runner
-#      (sudo when EUID != 0) so root-only hints work; its output is shown. Its exit
-#      code is feedback only and never aborts the install (hints are not errors for installing).
+#      (sudo when EUID != 0) so root-only hints work, with no state argument; its output is shown.
+#      Any non-zero exit of it only gives a warning that names the exit code (hints, not blockers),
+#      then the prompt (--yes skips it). The stub controller takes STUB_CONTROLLER_RC and
+#      STUB_CONTROLLER_ERR (a message for stderr).
 #   3. unless --yes: asks "continue?" on stdin. y/yes (any case) continues; anything else
 #      including EOF aborts: exit 1, nothing installed, no daemon-reload.
 #   4. installs dpds and dpds-controller (executable) into $DPDS_PREFIX/bin; the unit from
@@ -132,7 +144,8 @@
 #      creates $DPDS_ETC_DIR/controller.env ONLY if absent (never overwritten) containing
 #        DPDS_CONTROLLER_BIND=<DPDS_BIND or 0.0.0.0:8100>
 #        DPDS_CONTROLLER_DPDS_BIN=$DPDS_PREFIX/bin/dpds
-#      (values may be double-quoted; no state directory is created and none is named: spec 22).
+#      (values may be double-quoted). No state directory is created or named, no
+#      DPDS_CONTROLLER_STATE_DIR is written, the unit has no StateDirectory= or state path.
 #   5. `systemctl daemon-reload`.
 #   6. Does NOT enable or start anything (no `systemctl enable|start`).
 #   7. Re-running install is fine (idempotent). Failure of a build step: exit non-zero.
@@ -148,21 +161,33 @@
 #          Always runs both, prints their output, exits 0 even if the service is inactive or the API
 #          is unreachable.
 # update   prerequisites first; `systemctl is-active dpds-controller` is queried; a dirty working tree is
-#          refused (error, non-zero, before any checkout/pull/build); a warning names the current branch
-#          (or "detached") when it is not the channel's branch (main, nightly with --nightly); then `git fetch`, `git checkout <branch>`,
-#          `git pull --ff-only` (in the repo root; a failing git call aborts before building);
+#          refused (error, non-zero, before any checkout/pull/build); then the git steps (see above);
 #          then the frontend build for the pulled tree and the install flow (same prompt unless
 #          --yes); then, only if the service was active, restart (= stop + start). If it was not
 #          active nothing is started.
-# uninstall (needs --yes semantic only for install-like prompts; none here)
+# uninstall
 #          `systemctl disable --now dpds-controller` (failure tolerated),
-#          removes $DPDS_PREFIX/bin/{dpds,dpds-controller} and the unit, `systemctl daemon-reload`.
-#          KEEPS $DPDS_ETC_DIR/controller.env untouched. Spec 22: removes a LEFTOVER `/var/lib/dpds-controller` (the state
-#          directory of older installs) when it exists, through the privileged helper (sudo), and says so in an info line that
+#          removes $DPDS_PREFIX/bin/{dpds,dpds-controller}, the unit and the stamp, `systemctl daemon-reload`.
+#          KEEPS $DPDS_ETC_DIR/controller.env untouched. Removes a LEFTOVER `/var/lib/dpds-controller`
+#          when it exists, through the privileged helper (sudo), and says so in an info line that
 #          names the directory; with no leftover it says nothing about it. Nothing installed => still exit 0.
+#          The harness runs a COPY of the script in which that literal is replaced by $LEGACY_STATE_DIR
+#          (a path in the sandbox), so no test can touch the real directory: the script must name the
+#          directory exactly as that literal (not assemble it from parts).
+#
+# Stamp file $DPDS_ETC_DIR/installed-commit (default /etc/dpds/installed-commit; its name has no "state"): one line, the full
+#   `git rev-parse HEAD` of the installed tree. install_flow removes any existing stamp right before it copies the binaries
+#   (after the host check and the confirmation), and writes the new one after everything else (binaries, unit, env file,
+#   daemon-reload) succeeded, so a failed install never leaves a stamp claiming success. A tree without git writes no stamp and
+#   is not an error; a declined confirmation or a failed build leaves the existing stamp alone.
+#   update: when the stamp equals HEAD and $BIN_DIR/dpds, $BIN_DIR/dpds-controller and the unit file exist, it prints an info
+#   line (naming the commit; saying it is already up to date and that `./dpds.sh install` rebuilds anyway) and exits 0 with
+#   no npm, no cargo, no host check, no question, no install of binaries/unit/env and no systemctl call that changes anything
+#   (the service stays as it was). The git steps still run. Otherwise it proceeds as usual and writes the stamp. install always
+#   rebuilds and reinstalls and writes the stamp.
 #
 # Never tunes the host: no ethtool, dcb, setpci, sysctl, mlxconfig, mstconfig, cpupower, hugepage/proc/sys writes,
-# neither in the script nor in the unit file. Spec 33: the controller does not tune either; its `check` prints the root
+# neither in the script nor in the unit file. The controller's `check` prints the root
 # commands an administrator would run, indented under each hint after a `# run as root:` line, and dpds.sh shows the
 # controller's lines exactly as they are (the stub controller below answers STUB_CONTROLLER_HINT_TEXT, which may span
 # several lines). dpds.sh never runs those commands and never calls the controller's routes.
@@ -170,49 +195,8 @@
 # packaging/dpds-controller.service
 #   runs as root (no User= or User=root), `EnvironmentFile=-/etc/dpds/controller.env`,
 #   ExecStart=/usr/local/bin/dpds-controller serve, KillSignal=SIGTERM, TimeoutStopSec >= 120 s,
-#   LimitMEMLOCK=infinity in [Service] (spec v17; dpds locks its memory), Restart=on-failure, [Install] WantedBy=multi-user.target; parses without warnings under
-#   `systemd-analyze verify`.
-#
-# spec v19 (fixes from the first install on a testbed host)
-#   - Root: every command, with any flags, refuses to run when EUID is 0, whether through `sudo` (SUDO_USER set) or as plain
-#     root. At once, before any tool or sudo call and before anything is written: non-zero exit and an error on stderr
-#     that says "Run dpds.sh as your user, not with sudo: it calls sudo itself for the privileged steps; under sudo,
-#     root's PATH lacks cargo/rustc/clang" (the tests look for "as your user", "not with sudo" and "PATH"). Not refused:
-#     a non-root user, even with SUDO_USER left in the environment. The tests become root through `sudo -n` (EUID cannot be
-#     faked); where that is not available they print SKIP. Run the suite itself as a normal user: as root every test would hit
-#     the refusal.
-#   - Not installed: `start`, `restart` and `status` check that the unit file of `install`
-#     ($DPDS_SYSTEMD_DIR/dpds-controller.service) exists. Without it they say "dpds-controller is not installed: run
-#     ./dpds.sh install first" (start and restart on stderr with a non-zero exit, status with exit 0) and show none of
-#     systemctl's own complaints ("does not exist", "not found", "could not be found"). The stub systemctl answers like real
-#     systemd for a missing unit file (enable/start/restart/status/cat/is-enabled/show/list-unit-files), so tests of
-#     start/restart/status call `seed_unit` (or fake_install) first. `stop` and `uninstall` are unchanged.
-#   - Host check of install and update: spec 22 removed the "unloadable state file" branch (exit code 2 of
-#     `dpds-controller check`, an [ERROR] that stopped the install before the prompt). Any non-zero exit of the check, 2
-#     included, is now handled the same generic way: a warning that names the exit code (hints, not blockers), then the
-#     prompt (--yes skips it). The stub controller takes STUB_CONTROLLER_RC and STUB_CONTROLLER_ERR (a message for stderr).
-#
-# spec 22 (stateless controller)
-#   - No DPDS_STATE_DIR (a value in the environment is ignored, whatever it holds, even whitespace or a relative path), no
-#     state-dir step in install (no directory created, no `install -d` of one), no DPDS_CONTROLLER_STATE_DIR in a new
-#     controller.env, no StateDirectory= or state path in the unit. The host check (`dpds-controller check`) is called with
-#     no state argument. `uninstall` removes a leftover /var/lib/dpds-controller (see above).
-#   - The harness runs a COPY of the script in which the literal `/var/lib/dpds-controller` is replaced by $LEGACY_STATE_DIR
-#     (a path in the sandbox), so no test can touch the real directory: the script must name the old state directory exactly
-#     as that literal (not assemble it from parts) for the uninstall tests to see it.
-#
-# spec 42 (update does nothing when already up to date)
-#   - Stamp file $DPDS_ETC_DIR/installed-commit (default /etc/dpds/installed-commit; its name has no "state"): one line, the full
-#     `git rev-parse HEAD` of the installed tree. install_flow removes any existing stamp right before it copies the binaries
-#     (after the host check and the confirmation), and writes the new one after everything else (binaries, unit, env file,
-#     daemon-reload) succeeded, so a failed install never leaves a stamp claiming success. A tree without git writes no stamp and
-#     is not an error; a declined confirmation or a failed build leaves the existing stamp alone.
-#   - update (prerequisites, dirty-tree refusal and git steps unchanged): when the stamp equals HEAD and $BIN_DIR/dpds,
-#     $BIN_DIR/dpds-controller and the unit file exist, it prints an info line (naming the commit; saying it is already up to
-#     date and that `./dpds.sh install` rebuilds anyway) and exits 0 with no npm, no cargo, no host check, no question, no
-#     install of binaries/unit/env and no systemctl call that changes anything (the service stays as it was). Otherwise it
-#     proceeds as before and writes the stamp. install always rebuilds and reinstalls and writes the stamp. uninstall removes
-#     the stamp. The git stub answers `rev-parse HEAD` with STUB_GIT_HEAD_COMMIT.
+#   LimitMEMLOCK=infinity in [Service] (dpds locks its memory), Restart=on-failure,
+#   [Install] WantedBy=multi-user.target; parses without warnings under `systemd-analyze verify`.
 #
 # Sandbox conventions used by this file (PATH contains only stubs + whitelisted base utilities):
 #   Every test runs a COPY of dpds.sh in a sandbox repository ($T/repo, with the unit file,
@@ -275,7 +259,7 @@ assert_file()    { [[ -f "$1" ]] || fail "missing file $1"; }
 assert_no_file() { [[ ! -e "$1" ]] || fail "unexpected $1"; }
 assert_exec()    { [[ -x "$1" ]] || fail "not executable: $1"; }
 assert_file_has() { grep -Eq -- "$2" "$1" 2>/dev/null || fail "$1 lacks /$2/"; }
-# Spec 22: no state directory was created or named by a privileged call, in the sandbox or at the script's old path.
+# No state directory was created or named by a privileged call, in the sandbox or at the old path.
 assert_no_state_dir_anywhere() {
   assert_no_file "$LEGACY_STATE_DIR"
   [[ -z "$(find "$T" -iname '*state*' -not -path "$T/stubs/*" 2>/dev/null)" ]] \
@@ -359,7 +343,7 @@ setup_sandbox() {
   # The sandbox repository: a copy of the script and of the few files it reads.
   mkdir -p "$T/repo/packaging" "$T/repo/frontend" "$T/repo/crates/dpds-core"
   cp "$SRC_ROOT/dpds.sh" "$T/repo/dpds.sh"
-  # the old state directory of the script is a sandbox path, never the real one
+  # the script's state directory is a sandbox path, never the real one
   sed -i "s|/var/lib/dpds-controller|$LEGACY_STATE_DIR|g" "$T/repo/dpds.sh"
   ! grep -q '/var/lib/dpds-controller' "$T/repo/dpds.sh" || fail "the sandbox copy still names the real state directory"
   cp "$SRC_ROOT/packaging/dpds-controller.service" "$T/repo/packaging/"
@@ -378,8 +362,7 @@ EOF
   make_stub systemctl <<'EOF'
 echo "systemctl $*" >> "$LOG"; echo "systemctl $* @ $PWD" >> "$LOG.dirs"
 sub=""; for a in "$@"; do case $a in -*) ;; *) sub=$a; break;; esac; done
-# spec v19: a unit that is not installed (no $DPDS_SYSTEMD_DIR/dpds-controller.service) answers like real systemd, so a script
-# that passes systemctl's complaint through, or that asks systemctl whether the unit exists, is exercised realistically.
+# A unit that is not installed (no $DPDS_SYSTEMD_DIR/dpds-controller.service) answers like real systemd.
 unit_file="${DPDS_SYSTEMD_DIR:-/nonexistent}/dpds-controller.service"
 if [ ! -f "$unit_file" ]; then
   case $sub in
@@ -424,9 +407,9 @@ br="${STUB_GIT_BRANCH:-main}"
 [ -n "${STUB_GIT_FAIL_SUB:-}" ] && [ "${1:-}" = "$STUB_GIT_FAIL_SUB" ] && { echo "fatal: stub git failure" >&2; exit 1; }
 case "${1:-}" in
   rev-parse)
-    # spec v25: a tag lookup (`rev-parse -q --verify refs/tags/<tag>^{commit}`) answers `commit-of-<tag>` for a tag listed in
+    # a tag lookup (`rev-parse -q --verify refs/tags/<tag>^{commit}`) answers `commit-of-<tag>` for a tag listed in
     # STUB_GIT_TAGS and fails silently (exit 1, like `-q`) for any other; HEAD (as a commit, not --abbrev-ref) answers
-    # STUB_GIT_HEAD_COMMIT (default headcommit-0000). Everything else answers the current branch, as before.
+    # STUB_GIT_HEAD_COMMIT (default headcommit-0000). Everything else answers the current branch.
     want=""
     for a in "$@"; do case "$a" in *refs/tags/*) want=${a#*refs/tags/}; want=${want%%^*};; esac; done
     if [ -n "$want" ]; then
@@ -618,15 +601,14 @@ fake_install() {
   printf '[Service]\nExecStart=%s/bin/dpds-controller serve\n' "$DPDS_PREFIX" >"$DPDS_SYSTEMD_DIR/dpds-controller.service"
 }
 
-# The state directory an older install left behind (the script's `/var/lib/dpds-controller`, see the header).
+# A leftover state directory (the script's `/var/lib/dpds-controller`, see the header).
 fake_legacy_state() {
   mkdir -p "$LEGACY_STATE_DIR"
   echo '{"links":[],"settings":{},"next_id":1}' >"$LEGACY_STATE_DIR/state.json"
   echo keep >"$LEGACY_STATE_DIR/marker"
 }
 
-# Only the unit file of a finished install (what `systemctl` needs to know the service): start, restart and status refuse
-# to run without it (spec v19).
+# Only the unit file of a finished install: start, restart and status refuse to run without it.
 seed_unit() {
   mkdir -p "$DPDS_SYSTEMD_DIR"
   printf '[Service]\nExecStart=%s/bin/dpds-controller serve\n' "$DPDS_PREFIX" >"$DPDS_SYSTEMD_DIR/dpds-controller.service"
@@ -641,7 +623,7 @@ run_dpds() {
   ( cd "$T/cwd" && PATH="$T/stubs:$T/base" TMPDIR="$T/tmp" timeout 60 bash "$SCRIPT" "$@" <"${STDIN:-/dev/null}" >"$outf" 2>"$errf" )
   RC=$?
   OUT="$(cat "$outf")"; ERR="$(cat "$errf")"
-  # spec v13: no command ever calls docker
+  # no command ever calls docker
   [[ ! -s "$STUB_LOG.docker" ]] || fail "dpds.sh called docker: $(tr '\n' '|' <"$STUB_LOG.docker")"
 }
 feed() { STDIN="$T/stdin"; printf '%s' "$1" >"$STDIN"; }
@@ -677,7 +659,7 @@ test_unknown_option_exit1() {
   assert_log_empty
 }
 
-# ------------------------------------------------------------------ tests: spec v21 (release channel: DPDS_CHANNEL, --nightly, --stable)
+# ------------------------------------------------------------------ tests: release channel (DPDS_CHANNEL, --nightly, --stable)
 # latest = branch main (the default), nightly = branch nightly; --nightly / --stable override DPDS_CHANNEL. The git stub's
 # current branch is `main` unless a test sets STUB_GIT_BRANCH, so with the default channel nothing warns about a switch.
 
@@ -696,7 +678,7 @@ assert_update_follows() {
   assert_before '^git pull --ff-only$' '^npm ci( |$)'
   assert_before '^git pull --ff-only$' '^cargo build'
   assert_dir_of '^git (fetch|checkout|pull)' "$REPO_ROOT"
-  # the tag lookup of spec v18 is gone
+  # no tag lookup on a branch channel
   assert_log_lacks '^git tag'
   assert_log_lacks '--tags'
   assert_log_lacks '^git checkout (--detach )?v[0-9]'
@@ -754,13 +736,13 @@ test_the_flags_override_the_environment_both_ways() {
   assert_rc 0 "$ERR"
   CTX="DPDS_CHANNEL=nightly --stable" assert_update_follows main
   : >"$STUB_LOG"
-  rm -f "$(stamp_file)"  # spec 42: see above
+  rm -f "$(stamp_file)"
   export STUB_GIT_BRANCH=nightly
   DPDS_CHANNEL=latest run_dpds --nightly --yes update
   assert_rc 0 "$ERR"
   CTX="DPDS_CHANNEL=latest --nightly" assert_update_follows nightly
   : >"$STUB_LOG"
-  rm -f "$(stamp_file)"  # spec 42: see above
+  rm -f "$(stamp_file)"
   # the same value as the flag
   DPDS_CHANNEL=nightly run_dpds --nightly --yes update
   assert_rc 0 "$ERR"
@@ -847,13 +829,13 @@ test_update_restarts_only_a_service_that_was_active_on_every_channel() {
   local args
   for args in "--stable" "--nightly"; do
     : >"$STUB_LOG"
-    rm -f "$(stamp_file)"  # spec 42: see above
+    rm -f "$(stamp_file)"
     STUB_ACTIVE=1 run_dpds $args --yes update
     CTX="active, $args" assert_rc 0 "$ERR"
     CTX="active, $args" assert_log_has '^systemctl disable --now dpds-controller$'
     CTX="active, $args" assert_log_has '^systemctl enable --now dpds-controller$'
     : >"$STUB_LOG"
-    rm -f "$(stamp_file)"  # spec 42: see above
+    rm -f "$(stamp_file)"
     STUB_ACTIVE=0 run_dpds $args --yes update
     CTX="inactive, $args" assert_rc 0 "$ERR"
     CTX="inactive, $args" assert_log_lacks '^systemctl (enable|start|restart)'
@@ -942,7 +924,7 @@ test_the_release_tags_are_not_consulted_any_more() {
 }
 
 test_stable_needs_no_release_tag_any_more() {
-  # spec v18 failed "--stable" without a v* tag; now it follows main, tags or not
+  # --stable follows main, tags or not
   fake_install
   export STUB_GIT_TAGS=""
   run_dpds --stable --yes update
@@ -1055,7 +1037,7 @@ test_help_documents_the_channel() {
   ! grep -E -- '--nightly' <<<"$OUT" | grep -qi 'default' || fail "--help still calls --nightly the default: $OUT"
   grep -Ei 'default' <<<"$OUT" | grep -qi 'latest' || fail "--help does not say that latest is the default: $OUT"
   grep -Eqi "latest.*main|main.*latest" <<<"$OUT" || fail "--help does not say that latest means main: $OUT"
-  # spec v25 documents the tag form (see the v25 tests), but the old tag selection of --stable stays gone
+  # the tag form is documented, but --stable does not select a tag
   ! grep -Eqi 'v\*|git tag|highest' <<<"$OUT" || fail "--help still talks about the old tag selection: $OUT"
 }
 
@@ -1070,7 +1052,7 @@ test_the_channel_does_not_change_the_other_commands() {
   done
 }
 
-# ------------------------------------------------------------------ tests: spec v25 (DPDS_CHANNEL=<release tag>)
+# ------------------------------------------------------------------ tests: release tag channel (DPDS_CHANNEL=<release tag>)
 # DPDS_CHANNEL=v1.0.0 installs exactly that release: update detaches onto the tag, install only warns when HEAD is elsewhere.
 # The git stub knows a tag when it is listed in STUB_GIT_TAGS; its commit is `commit-of-<tag>`, HEAD's is STUB_GIT_HEAD_COMMIT.
 
@@ -1159,7 +1141,7 @@ test_update_on_a_tag_from_a_detached_head_or_another_branch_works_and_never_pull
   local br
   for br in HEAD nightly main feature-x; do
     : >"$STUB_LOG"
-    rm -f "$(stamp_file)"  # spec 42: see above
+    rm -f "$(stamp_file)"
     STUB_GIT_BRANCH="$br" DPDS_CHANNEL=v1.0.0 run_dpds --yes update
     CTX="on '$br'" assert_rc 0 "$ERR"
     CTX="on '$br'" assert_update_detaches_onto v1.0.0
@@ -1248,13 +1230,13 @@ test_the_flags_override_a_tag_channel_in_the_environment() {
   assert_rc 0 "$ERR"
   CTX="v1.0.0 --nightly" assert_update_follows nightly
   : >"$STUB_LOG"
-  rm -f "$(stamp_file)"  # spec 42: see above
+  rm -f "$(stamp_file)"
   DPDS_CHANNEL=v1.0.0 run_dpds --stable --yes update
   assert_rc 0 "$ERR"
   CTX="v1.0.0 --stable" assert_update_follows main
   # also over an invalid value, and with install and status the flag's channel is the one shown
   : >"$STUB_LOG"
-  rm -f "$(stamp_file)"  # spec 42: see above
+  rm -f "$(stamp_file)"
   DPDS_CHANNEL=v1 run_dpds --nightly --yes update
   assert_rc 0 "$ERR"
   CTX="v1 --nightly" assert_update_follows nightly
@@ -1277,7 +1259,7 @@ test_a_branch_channel_after_a_tag_goes_back_to_the_branch() {
   assert_rc 0 "$ERR"
   assert_update_follows nightly
   : >"$STUB_LOG"
-  rm -f "$(stamp_file)"  # spec 42: the previous update stamped HEAD; this one must not be a no-op
+  rm -f "$(stamp_file)"  # the previous update stamped HEAD; this one must not be a no-op
   run_dpds --yes update
   assert_rc 0 "$ERR"
   assert_update_follows main
@@ -1417,19 +1399,19 @@ test_the_header_comment_of_the_script_documents_the_release_tag_form() {
   grep -Eqi 'release tag|tag' <<<"$header" || fail "the header comment never mentions tags"
 }
 
-# ------------------------------------------------------------------ tests: spec v18 (status shows the installed version)
+# ------------------------------------------------------------------ tests: status shows the installed version
 # a line of the output that is not the raw JSON answer
 plain_line_with() { grep -v '[{"]' <<<"$OUT" | grep -Fq -- "$1"; }
 
 test_status_prints_the_installed_version_on_its_own_line() {
-  seed_unit  # spec v19: start, restart and status need the installed unit
+  seed_unit
   run_dpds status
   assert_rc 0 "$ERR"
   plain_line_with "7.8.9" || fail "no plain line shows the version 7.8.9: $OUT"
 }
 
 test_status_finds_the_version_whatever_the_key_order_and_spacing() {
-  seed_unit  # spec v19: start, restart and status need the installed unit
+  seed_unit
   export STUB_ONLINE_JSON='{"dpds_bin":"/usr/local/bin/dpds","telemetry":true,"version": "3.4.5","root":true}'
   run_dpds status
   assert_rc 0 "$ERR"
@@ -1444,7 +1426,7 @@ test_status_finds_the_version_whatever_the_key_order_and_spacing() {
 }
 
 test_status_shows_no_version_when_the_api_is_down_and_still_exits_zero() {
-  seed_unit  # spec v19: start, restart and status need the installed unit
+  seed_unit
   export STUB_CURL_RC=7
   run_dpds status
   assert_rc 0 "$ERR"
@@ -1452,7 +1434,7 @@ test_status_shows_no_version_when_the_api_is_down_and_still_exits_zero() {
 }
 
 test_status_survives_an_answer_without_a_version() {
-  seed_unit  # spec v19: start, restart and status need the installed unit
+  seed_unit
   export STUB_ONLINE_JSON='{"telemetry":true}'
   run_dpds status
   assert_rc 0 "$ERR"
@@ -1679,7 +1661,7 @@ test_install_env_file_default_bind_and_paths() {
   local f="$DPDS_ETC_DIR/controller.env"
   assert_file_has "$f" '^DPDS_CONTROLLER_BIND="?0\.0\.0\.0:8100"?$'
   assert_file_has "$f" "^DPDS_CONTROLLER_DPDS_BIN=\"?$DPDS_PREFIX/bin/dpds\"?\$"
-  # spec 22: nothing about a state directory
+  # nothing about a state directory
   ! grep -qi 'STATE' "$f" || fail "the env file mentions a state directory: $(cat "$f")"
   [[ "$(grep -c '^[A-Z_]*=' "$f")" == 2 ]] || fail "exactly BIND and DPDS_BIN are written: $(cat "$f")"
 }
@@ -1805,7 +1787,7 @@ test_install_build_failure_installs_nothing() {
 
 # ------------------------------------------------------------------ tests: start/stop/restart/status
 test_start_enables_and_starts_the_service_only() {
-  seed_unit  # spec v19: start, restart and status need the installed unit
+  seed_unit
   run_dpds start
   assert_rc 0 "$ERR"
   assert_log_has '^systemctl enable --now dpds-controller$'
@@ -1813,7 +1795,7 @@ test_start_enables_and_starts_the_service_only() {
 }
 
 test_start_needs_no_build_tools() {
-  seed_unit  # spec v19: start, restart and status need the installed unit
+  seed_unit
   local t
   for t in cargo rustc clang ld.lld pkg-config git curl node npm; do remove_stub "$t"; done
   run_dpds start
@@ -1822,7 +1804,7 @@ test_start_needs_no_build_tools() {
 }
 
 test_start_systemctl_failure_propagates() {
-  seed_unit  # spec v19: start, restart and status need the installed unit
+  seed_unit
   export STUB_SYSTEMCTL_RC=1
   run_dpds start
   assert_rc_nonzero
@@ -1842,14 +1824,14 @@ test_stop_systemctl_failure_propagates() {
 }
 
 test_restart_is_stop_then_start() {
-  seed_unit  # spec v19: start, restart and status need the installed unit
+  seed_unit
   run_dpds restart
   assert_rc 0 "$ERR"
   assert_before '^systemctl disable --now dpds-controller' '^systemctl enable --now dpds-controller'
 }
 
 test_status_runs_both_probes() {
-  seed_unit  # spec v19: start, restart and status need the installed unit
+  seed_unit
   run_dpds status
   assert_rc 0 "$ERR"
   assert_log_has '^systemctl .*status.* dpds-controller'
@@ -1859,7 +1841,7 @@ test_status_runs_both_probes() {
 }
 
 test_status_uses_port_from_env_file() {
-  seed_unit  # spec v19: start, restart and status need the installed unit
+  seed_unit
   mkdir -p "$DPDS_ETC_DIR"
   printf 'DPDS_CONTROLLER_BIND=0.0.0.0:9123\n' >"$DPDS_ETC_DIR/controller.env"
   run_dpds status
@@ -1868,7 +1850,7 @@ test_status_uses_port_from_env_file() {
 }
 
 test_status_exit_zero_when_everything_is_down() {
-  seed_unit  # spec v19: start, restart and status need the installed unit
+  seed_unit
   export STUB_SYSTEMCTL_RC=3 STUB_CURL_RC=7
   run_dpds status
   assert_rc 0 "$ERR"
@@ -1936,7 +1918,7 @@ test_update_prerequisites_are_checked() {
 write_env_bind() { mkdir -p "$DPDS_ETC_DIR"; printf 'DPDS_CONTROLLER_BIND=%s\n' "$1" >"$DPDS_ETC_DIR/controller.env"; }
 
 test_status_probes_the_configured_bind_address() {
-  seed_unit  # spec v19: start, restart and status need the installed unit
+  seed_unit
   write_env_bind 10.0.0.5:9123
   run_dpds status
   assert_rc 0 "$ERR"
@@ -1945,7 +1927,7 @@ test_status_probes_the_configured_bind_address() {
 }
 
 test_status_probes_loopback_for_a_wildcard_bind() {
-  seed_unit  # spec v19: start, restart and status need the installed unit
+  seed_unit
   write_env_bind 0.0.0.0:9123
   run_dpds status
   assert_rc 0 "$ERR"
@@ -1954,13 +1936,13 @@ test_status_probes_loopback_for_a_wildcard_bind() {
 }
 
 test_status_probes_a_loopback_bind_as_is() {
-  seed_unit  # spec v19: start, restart and status need the installed unit
+  seed_unit
   write_env_bind 127.0.0.1:9000
   run_dpds status
   assert_log_has '^curl .*http://127\.0\.0\.1:9000/api/online'
 }
 
-# ------------------------------------------------------------------ tests: spec v7 P2 (update safety, failed stop)
+# ------------------------------------------------------------------ tests: update safety, failed stop
 test_update_refuses_a_dirty_working_tree_before_anything_else() {
   fake_install
   export STUB_ACTIVE=1 STUB_GIT_DIRTY=1
@@ -2015,7 +1997,7 @@ test_update_pulls_fast_forward_only() {
 }
 
 test_restart_still_starts_when_the_service_stop_fails() {
-  seed_unit  # spec v19: start, restart and status need the installed unit
+  seed_unit
   export STUB_SYSTEMCTL_FAIL_SUB=disable
   run_dpds restart
   assert_rc_nonzero
@@ -2034,7 +2016,7 @@ test_update_restart_still_starts_when_the_stop_fails() {
   assert_log_has '^systemctl enable --now dpds-controller$'
 }
 
-# ------------------------------------------------------------------ tests: spec v7 P3 (prerequisites, host check)
+# ------------------------------------------------------------------ tests: prerequisites, host check
 test_install_runs_the_host_check_through_the_privileged_runner() {
   if [[ "$(id -u)" == 0 ]]; then echo "    (skipped: running as root, sudo is not used)"; return; fi
   run_dpds --yes install
@@ -2053,7 +2035,7 @@ test_the_standalone_check_command_keeps_running_as_the_caller() {
 }
 
 
-# ------------------------------------------------------------------ tests: spec v15 (frontend built on the host, prerequisites)
+# ------------------------------------------------------------------ tests: frontend built on the host, prerequisites
 # ---- helpers
 PREREQ_TOOLS="cargo rustc clang ld.lld pkg-config libdpdk node npm"
 # break_prereq TOOL: make one prerequisite unavailable (libdpdk: the package, not pkg-config)
@@ -2573,18 +2555,18 @@ test_install_after_a_failed_install_still_works() {
   assert_exec "$DPDS_PREFIX/bin/dpds-controller"
 }
 
-# ---- frontend: nothing is downloaded, the caller's DPDS_FRONTEND_DIST is not a thing any more
+# ---- frontend: nothing is downloaded, the caller's DPDS_FRONTEND_DIST is ignored
 test_install_and_update_download_and_unpack_nothing() {
   run_dpds --yes install
   assert_rc 0 "$ERR"
   assert_nothing_downloaded
-  assert_log_lacks '^git (fetch|checkout|pull|tag|merge|reset|switch|clean|stash)'  # spec v21: install only reads the branch
+  assert_log_lacks '^git (fetch|checkout|pull|tag|merge|reset|switch|clean|stash)'  # install only reads the branch
   fake_install
   : >"$STUB_LOG"
   run_dpds --yes update
   assert_rc 0 "$ERR"
   assert_nothing_downloaded
-  assert_log_lacks '^git (rev-parse .*frontend|status .*frontend)'  # spec 42 needs plain `git rev-parse HEAD`
+  assert_log_lacks '^git (rev-parse .*frontend|status .*frontend)'  # the stamp needs plain `git rev-parse HEAD`
   assert_no_temp_leftovers
 }
 
@@ -2641,7 +2623,7 @@ test_a_dirty_frontend_is_built_as_it_is_without_a_warning() {
   export STUB_GIT_DIRTY_FRONTEND=1
   run_dpds --yes install
   assert_rc 0 "$ERR"
-  assert_log_lacks '^git (fetch|checkout|pull|tag|merge|reset|switch|clean|stash)'  # spec v21: install only reads the branch
+  assert_log_lacks '^git (fetch|checkout|pull|tag|merge|reset|switch|clean|stash)'  # install only reads the branch
   ! grep -Ei 'warn' <<<"$OUT$ERR" | grep -Eqi 'frontend|uncommitted|DPDS_FRONTEND_DIST' || fail "unexpected warning: $(grep -Ei warn <<<"$OUT$ERR")"
   assert_log_has '^npm run build( |$)'
   assert_controller_built_with_repo_dist
@@ -2705,8 +2687,7 @@ test_uninstall_removes_binaries_and_unit_keeps_env() {
   assert_eq "$(cat "$DPDS_ETC_DIR/controller.env")" "$env_before" "env file kept"
 }
 
-# Spec 22: older installs left /var/lib/dpds-controller (state.json, the links file); the controller does not use it any more
-# and uninstall cleans it up: through the privileged helper, with an info line that names the directory.
+# uninstall cleans up a leftover /var/lib/dpds-controller through the privileged helper, with an info line that names the directory.
 test_uninstall_removes_a_leftover_state_dir_and_says_so() {
   fake_install
   fake_legacy_state
@@ -2750,7 +2731,7 @@ test_uninstall_removes_a_leftover_state_dir_even_when_the_service_was_not_instal
 }
 
 test_uninstall_ignores_a_state_dir_variable() {
-  # the variable is gone: a value (even a bad one) neither makes uninstall fail nor names a directory to remove
+  # a value (even a bad one) neither makes uninstall fail nor names a directory to remove
   fake_install
   mkdir -p "$T/mine"
   echo precious >"$T/mine/data"
@@ -2805,7 +2786,7 @@ test_no_tuning_tool_is_ever_called() {
   ! grep -Eq '/proc/|/sys/|nr_hugepages|hugepages' "$STUB_LOG.sudo" || fail "privileged command touches /proc, /sys or hugepages: $(grep -E '/proc/|/sys/|hugepages' "$STUB_LOG.sudo" | head -3 | tr '\n' '|')"
 }
 
-# Spec 33: the controller's check output, with the commands it suggests under a hint, is shown as it is (indentation and
+# The controller's check output, with the commands it suggests under a hint, is shown as it is (indentation and
 # order kept), once, and nothing is run.
 CONTROLLER_HINT_BLOCK='INFO  vm.swappiness: vm.swappiness is 60, the target is 0 -> Set it to 0.
     # run as root:
@@ -2892,9 +2873,8 @@ test_unit_timeout_stop_at_least_120s() {
   (( secs >= 120 )) || fail "TimeoutStopSec=$v is shorter than 120 s"
 }
 
-# Spec v17: dpds calls mlockall(MCL_CURRENT|MCL_FUTURE) before EAL init, and its parent is this
-# unit's controller, so the unit sets the memlock limit of the service to unlimited explicitly
-# instead of relying on systemd's default or on root's CAP_IPC_LOCK.
+# dpds calls mlockall(MCL_CURRENT|MCL_FUTURE) before EAL init, so the unit sets the memlock limit
+# explicitly instead of relying on systemd's default or on root's CAP_IPC_LOCK.
 test_unit_lifts_the_memlock_limit_in_the_service_section() {
   local n; n="$(grep -Ec '^LimitMEMLOCK=' "$UNIT")"
   assert_eq "$n" "1" "number of LimitMEMLOCK= lines"
@@ -2924,14 +2904,14 @@ test_unit_passes_systemd_analyze_verify() {
   fi
 }
 
-# ------------------------------------------------------------------ tests: spec v19 (testbed fixes)
+# ------------------------------------------------------------------ tests: refusal to run as root, not-installed messages
 #
-# Item 1: dpds.sh refuses to run as root. EUID is a read-only bash variable that no test can fake, and the script may read
+# dpds.sh refuses to run as root. EUID is a read-only bash variable that no test can fake, and the script may read
 # it through $EUID or `id -u`, so these tests really become root: `sudo -n` (passwordless sudo, as on the CI runner and in
 # the dev container). Without it the tests print a SKIP line and pass vacuously; the report says so. The sandbox is the
 # same as for every test (stubs only, all paths below $T), root just runs the script; afterwards the files root created are
-# handed back to the caller so the cleanup can remove them. `sudo` sets SUDO_USER, which is the observed scenario
-# (`sudo ./dpds.sh install`); the plain-root variant removes the SUDO_* variables again.
+# handed back to the caller so the cleanup can remove them. `sudo` sets SUDO_USER (`sudo ./dpds.sh install`);
+# the plain-root variant removes the SUDO_* variables again.
 SUDO_PHRASES=("as your user" "not with sudo" "PATH")
 
 can_become_root() { sudo -n true >/dev/null 2>&1; }
@@ -3032,7 +3012,7 @@ test_the_usage_error_of_a_normal_user_is_unchanged() {
   ! grep -qi 'as your user' <<<"$OUT$ERR" || fail "a sudo message for a normal user: $ERR"
 }
 
-# Item 2: start, restart and status say what to do when the unit is not installed. "Installed" = the unit file of
+# start, restart and status say what to do when the unit is not installed. "Installed" = the unit file of
 # `dpds.sh install` exists in $DPDS_SYSTEMD_DIR (the stub systemctl answers like real systemd for a missing unit: "does not
 # exist", "not found", "could not be found"; none of that may reach the user).
 SYSTEMCTL_COMPLAINTS='does not exist|not found|could not be found|Unit file'
@@ -3108,9 +3088,7 @@ test_the_unit_is_looked_for_in_the_configured_systemd_dir() {
   assert_rc 0 "$ERR"
 }
 
-# ------------------------------------------------------------------ tests: spec 22 (stateless controller)
-# The controller has no state file any more, so the check cannot fail because of one: the spec19 branch for exit code 2
-# ("the controller will not start with this state", an [ERROR] that stopped install and update before the prompt) is gone.
+# ------------------------------------------------------------------ tests: stateless controller, host check exit codes
 # Exit codes of `dpds-controller check` are handled generically: 0 = fine, anything else = hints worth a warning and one
 # question, never a blocker.
 
@@ -3226,12 +3204,12 @@ test_the_script_has_no_state_dir_setting_or_state_step() {
   local code; code="$(grep -v '^[[:space:]]*#' "$SRC_ROOT/dpds.sh")"
   ! grep -Eq 'DPDS_STATE_DIR|DPDS_CONTROLLER_STATE_DIR|STATE_DIR' <<<"$code" || fail "dpds.sh still has a state dir setting: $(grep -En 'STATE_DIR' <<<"$code" | head -3)"
   ! grep -Eiq 'state file|not a valid state|rc == 2|exit code 2' <<<"$code" || fail "dpds.sh still has the unloadable-state-file branch"
-  # the one place the old directory is named: the uninstall cleanup of a leftover
+  # the one place the directory is named: the uninstall cleanup of a leftover
   [[ "$(grep -c '/var/lib/dpds-controller' <<<"$code")" -ge 1 ]] || fail "uninstall must name /var/lib/dpds-controller (literally) to clean it up"
 }
 
 test_a_state_dir_variable_in_the_environment_changes_nothing() {
-  # not read, not validated (a bad value used to be refused), not created
+  # not read, not validated, not created
   local bad
   for bad in "$T/ignored-state" "relative/state" "with space/state" ""; do
     : >"$STUB_LOG"
@@ -3264,7 +3242,7 @@ test_install_leaves_an_existing_leftover_state_dir_alone() {
   assert_file "$LEGACY_STATE_DIR/state.json"
 }
 
-# ------------------------------------------------------------------ tests: spec 42 (update is a no-op when up to date)
+# ------------------------------------------------------------------ tests: update is a no-op when up to date
 stamp_file() { echo "$DPDS_ETC_DIR/installed-commit"; }
 write_stamp() { mkdir -p "$DPDS_ETC_DIR"; printf '%s\n' "$1" >"$(stamp_file)"; }
 # A complete install (binaries, unit, env) whose stamp names COMMIT; the git stub's HEAD is COMMIT as well.
@@ -3448,7 +3426,7 @@ test_install_from_a_tree_without_git_writes_no_stamp_and_drops_an_old_one() {
   assert_rc 0 "$ERR"
   assert_exec "$DPDS_PREFIX/bin/dpds-controller"
   assert_no_file "$(stamp_file)"
-  # an old stamp must not survive an install that cannot say which commit it installed
+  # a previous stamp must not survive an install that cannot say which commit it installed
   write_stamp oldoldoldoldoldoldoldoldoldoldoldoldold0
   run_dpds --yes install
   assert_rc 0 "$ERR"

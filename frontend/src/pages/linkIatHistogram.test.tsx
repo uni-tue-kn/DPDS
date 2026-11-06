@@ -6,13 +6,12 @@ import * as fx from '../test/fixtures';
 import { must } from '../test/must';
 import { expectOptional, numberField, section, TIME_UNITS, typeInto, unitOf, unitSelect } from '../test/helpers';
 
-// Spec 53 A (user 2026-11-05: "IAT histogram should be configurable as well"). The link config gets an optional
-// `iat_histogram` {bins, lo_ns, hi_ns} of the delay histogram's shape. In the Statistics section, next to the delay histogram
-// fields: "IAT histogram bins" (no unit), "IAT histogram lo" and "IAT histogram hi" (time units, default ms), empty = default
-// (256 bins, lo 0, hi 4 x 1e9 / initialization rate), enabled exactly when the delay histogram fields are. Empty fields are
-// not sent; the validation messages name "IAT histogram" (not "Histogram", which is the delay histogram).
-// Choices where the spec is silent: only the checks the delay histogram form has are pinned here (a non-integer bins value, a
-// negative lo / hi; the range rules lo < hi and 1..=4096 bins are the controller's); "null or absent" are the same optional value.
+// The link config has an optional `iat_histogram` {bins, lo_ns, hi_ns} of the delay histogram's shape. In the Statistics section,
+// next to the delay histogram fields: "IAT histogram bins" (no unit), "IAT histogram lo" and "IAT histogram hi" (time units, default
+// ms), empty = default (256 bins, lo 0, hi 4 x 1e9 / initialization rate), enabled exactly when the delay histogram fields are.
+// Empty fields are not sent; the validation messages name "IAT histogram" (not "Histogram", which is the delay histogram).
+// Only the checks the delay histogram form has are pinned here (a non-integer bins value, a negative lo / hi; the range rules
+// lo < hi and 1..=4096 bins are the controller's); "null or absent" are the same optional value.
 const BINS = 'IAT histogram bins';
 const LO = 'IAT histogram lo';
 const HI = 'IAT histogram hi';

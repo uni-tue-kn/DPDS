@@ -1,11 +1,11 @@
-//! Who else has the GUI open (spec 48), like P4TG's `SessionTracker`: every `GET /api/online` poll refreshes its
-//! session id; a session that has not polled for `CLIENT_TIMEOUT_SECS` is forgotten.
+//! Who else has the GUI open: every `GET /api/online` poll refreshes its session id; a session
+//! that has not polled for `CLIENT_TIMEOUT_SECS` is forgotten.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-/// A session counts while its last poll is at most this old (inclusive, like P4TG's `<=`).
+/// A session counts while its last poll is at most this old (inclusive).
 pub const CLIENT_TIMEOUT_SECS: u64 = 15;
 
 /// Session ids are cut to this many bytes (on a char boundary).

@@ -1,9 +1,8 @@
-//! The limiter's limit is derived, not configured (spec20): for both modes it is
+//! The limiter's limit is derived, not configured: for both modes it is
 //! `buffer_capacity * MAX_FRAME_WIRE_BYTES * 8` bit with `MAX_FRAME_WIRE_BYTES = 1542`
 //! (1518 B maximum Ethernet frame + 4 FEC bytes + 20 B L1 overhead, as the limiter counts a
-//! packet): exactly `buffer_capacity` maximum frames fit. It is
-//! the Spacer's fill-state limit and the Token Bucket Filter's bucket depth;
-//! the TBF still starts full.
+//! packet): exactly `buffer_capacity` maximum frames fit. It is the Spacer's
+//! fill-state limit and the Token Bucket Filter's bucket depth; the TBF starts full.
 //!
 //! Wire size of a pushed packet of `len` bytes: `(len + 4 + 20) * 8` bit, so
 //! `len = 1518` is exactly `1542 * 8 = 12336` bit (one "slot" of the limit) and
@@ -13,8 +12,8 @@
 //! To observe the limiter alone, the buffer is popped after every push, so the
 //! buffer itself never holds more than one packet and `BufferFull` cannot occur.
 //!
-//! The constant itself is not imported (its path is not part of the spec);
-//! these tests pin its value through the exact boundaries.
+//! The constant itself is not imported; the tests pin its value through the
+//! exact boundaries.
 
 use std::ffi::c_void;
 
@@ -52,7 +51,7 @@ fn config(capacity: usize, mode: LimiterMode, rate_bps: f64, reordering: bool) -
     }
 }
 
-/// Reordering works only with the token bucket (spec 45): the Spacer runs in FIFO mode only.
+/// Reordering works only with the token bucket: the Spacer runs in FIFO mode only.
 fn allowed(mode: LimiterMode, reordering: bool) -> bool {
     !(reordering && matches!(mode, LimiterMode::Spacer))
 }
@@ -230,7 +229,7 @@ fn the_limit_does_not_depend_on_the_current_buffer_content() {
     }
 }
 
-/// FIFO only: reordering does not work with the Spacer (spec 45).
+/// FIFO only: reordering does not work with the Spacer.
 #[test]
 fn spacer_offsets_grow_by_one_slot_up_to_the_derived_limit() {
     let mut b = Buffer::new(config(3, LimiterMode::Spacer, 1e9, false));

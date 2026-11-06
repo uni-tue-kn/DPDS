@@ -28,7 +28,7 @@ export const NO_DROPS: DropCounts = {
   txPhy: 0,
 };
 
-/** The frame size buckets of P4TG's donut. */
+/** The frame size buckets of the donut. */
 export const SIZE_BUCKETS = 8;
 
 export const NO_STATS: LinkStats = {

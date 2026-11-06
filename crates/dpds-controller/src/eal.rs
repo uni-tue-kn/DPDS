@@ -1,4 +1,4 @@
-//! Pure functions behind the supervisor (B3): EAL command line, the links file
+//! Pure functions behind the supervisor: EAL command line, the links file
 //! handed to `dpds --links`, and the drain timeout.
 
 use std::path::PathBuf;
@@ -15,8 +15,7 @@ use crate::model::Link;
 /// Margin on top of the longest delay when waiting for `dpds` to drain.
 const DRAIN_MARGIN: Duration = Duration::from_secs(5);
 
-/// The mlx5 devargs of every `-a <pci>` on an mlx5_core port. Fixed to preof's value, not
-/// configurable.
+/// The mlx5 devargs of every `-a <pci>` on an mlx5_core port. Fixed, not configurable.
 pub const MLX5_DEVARGS: &str = "txq_mpw_en=1";
 
 /// A DPDK device of the links and the kernel driver of a PCI port, if known.
@@ -35,8 +34,7 @@ pub struct EalInput {
 }
 
 /// `dpds` arguments without the binary name. Vdev names (`net_*`) become
-/// `--vdev`; PCI ports bound to mlx5_core get [`MLX5_DEVARGS`], the same fixed devargs as
-/// preof. Nothing else is ever appended.
+/// `--vdev`; PCI ports bound to mlx5_core get [`MLX5_DEVARGS`]. Nothing else is ever appended.
 pub fn eal_argv(i: &EalInput) -> Vec<String> {
     let lcores: Vec<String> = std::iter::once(i.main_lcore)
         .chain(i.worker_lcores.iter().copied())
@@ -71,7 +69,7 @@ pub fn eal_argv(i: &EalInput) -> Vec<String> {
     argv
 }
 
-/// The `--links` file (v2): one entry per link with its `dpds_core::Config` JSON and the
+/// The `--links` file: one entry per link with its `dpds_core::Config` JSON and the
 /// explicit lcore of its direction plan; `histogram` and `iat_histogram` only when the link has
 /// them and `delay_stats: false` only when delay statistics are off.
 pub fn links_file_json(links: &[Link], directions: &[DirectionPlan]) -> Result<Value, DtoError> {

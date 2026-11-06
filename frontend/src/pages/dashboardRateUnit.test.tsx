@@ -1,6 +1,5 @@
-// The rate chart plots L1 like P4TG (tx_rate_l1 / rx_rate_l1): gbps + mpps * 0.16 per sample (20 B * 8 bit per frame); the unit is picked from the L1 peak.
-// User 2026-11-05: the rate chart's y axis is titled with the unit only, "Gbit/s" like P4TG (Visuals.tsx: y title 'Gbit/s'),
-// and "if it is only Mbit/s we show a lower unit". Contract:
+// The rate chart plots L1 like P4TG (tx_rate_l1 / rx_rate_l1): gbps + mpps * 0.16 per sample (20 B * 8 bit per frame); the unit is
+// picked from the L1 peak. The y axis is titled with the unit only, "Gbit/s" like P4TG, or a lower unit when the traffic is small:
 //   - the unit is the largest of Gbit/s, Mbit/s, kbit/s, bit/s in which the chart's largest RX or TX value is >= 1;
 //     no samples or only zeros: Gbit/s;
 //   - the y title is that unit alone ("Gbit/s", "Mbit/s", ...), and both datasets are scaled into it;
@@ -97,8 +96,7 @@ describe('rate chart unit (P4TG "Gbit/s", a lower unit for slow links)', () => {
   });
 });
 
-// User 2026-11-05: "the colors of the TX and RX are the wrong way in DPDS compared to P4TG. TX has to be the first in
-// blue and RX the second in red." P4TG Visuals.tsx rateDatasets: 'TX rate' rgb(53, 162, 235) / rgba(53, 162, 235, 0.5),
+// TX comes first, in blue, RX second, in red, as in P4TG's rateDatasets: 'TX rate' rgb(53, 162, 235) / rgba(53, 162, 235, 0.5),
 // then 'RX rate' rgb(183,85,40) / rgb(250,122,64, 0.5).
 describe('rate chart datasets like P4TG', () => {
   it('TX rate first in blue, RX rate second in red', async () => {

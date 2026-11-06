@@ -1,5 +1,5 @@
-// Spec 46 (user 2026-11-05): the top row's pills are styled inline like P4TG's styled-components (pinned in
-// pages/dashboardTopRow.test.tsx), so the stylesheet loses the rules of the old pills. The colour variables they use must stay.
+// The top row's pills are styled inline (pinned in pages/dashboardTopRow.test.tsx), so the stylesheet has no pill rules; the colour
+// variables they use must stay.
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 

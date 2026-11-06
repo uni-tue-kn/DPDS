@@ -28,7 +28,7 @@ function CountCell({ count }: { count: number }) {
   );
 }
 
-/** P4TG's rate table (StatView.tsx): TX and RX at layer 1 and layer 2. */
+/** The rate table: TX and RX at layer 1 and layer 2. */
 export function RateTable({ rates }: { rates: Rates }) {
   const { txBps, txPps, rxBps, rxPps } = rates;
   return (
@@ -55,7 +55,7 @@ export function RateTable({ rates }: { rates: Rates }) {
   );
 }
 
-/** P4TG's loss table (StatView.tsx): lost frames, their share of all frames, and the out-of-order departures. */
+/** The loss table: lost frames, their share of all frames, and the out-of-order departures. */
 export function LossTable({ lost, frames }: { lost: number; frames: FrameTotals }) {
   const ratio = lost > 0 ? `${((lost * 100) / (lost + frames.forwarded)).toFixed(2)} %` : '0.00 %';
   return (

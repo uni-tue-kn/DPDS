@@ -1,4 +1,4 @@
-// Spec 48 F1: a per-tab session id (sessionStorage key `dpds-session-id`, crypto.randomUUID() when available, else
+// A per-tab session id (sessionStorage key `dpds-session-id`, crypto.randomUUID() when available, else
 // `Math.random().toString(36).slice(2) + Date.now().toString(36)`), sent as `X-Session-Id` on EVERY API request.
 // Tests the REAL client module (setup.ts mocks it for everything else) against a stubbed fetch.
 import { vi } from 'vitest';

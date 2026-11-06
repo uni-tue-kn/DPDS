@@ -1,64 +1,28 @@
-//! Spec 29: server-side chart history, `GET /api/stats/history[?since_ms=<t>]`.
+//! Server-side chart history, `GET /api/stats/history[?since_ms=<t>]`: an in-memory per-second
+//! series per link for the current run, so the dashboard charts survive navigation and reload.
 //!
-//! The controller keeps an in-memory per-second series per link for the current run (runtime
-//! data, not stored configuration), so the dashboard charts survive navigation and reload.
+//! - Answer: `{"started_at": <unix s or null>, "samples": {"<link index>": [sample, ...]}}`, the
+//!   key being the link index in start-body order. Before any run `started_at` is null (or absent)
+//!   and `samples` is `{}`.
+//! - A sample has `t_ms` (u64 ms since the run started, strictly increasing), the rates
+//!   `rx_gbps`, `tx_gbps`, `rx_mpps`, `tx_mpps` (`/api/stats` `rx_bps / 1e9` etc.) and the link's
+//!   cumulative drop counters (u64, `/api/stats` `counters`; `tx_drops` is `nic_tx_drops`).
+//! - One sample per link per second, from the poller's snapshots (no extra telemetry query), all
+//!   links at the same `t_ms`. `since_ms` (digits only) returns the samples with `t_ms > since_ms`,
+//!   keeping the key of a known link; a bad `since_ms` or any other parameter is a 400.
+//! - Retention is `HISTORY_MAX_SAMPLES` (86400) per link, oldest dropped first. A new start clears
+//!   the series; stop and telemetry failures keep it.
+//! - `GET /api/stats` has `elapsed_ms` (u64) from a monotonic clock started with the run, frozen at
+//!   the stop, null or absent before any run. The history's `t_ms` uses the same clock. The clock may
+//!   start up to one poll interval after the start request, so the tests allow 0.6 s below and
+//!   0.3 s above the wall time they measured.
+//! - Same guards as the other routes (Host allow-list, 405) and documented in OpenAPI.
 //!
-//! # Contract the tests pin (the spec leaves some of it open; the choices are the tester's)
-//!
-//! - `GET /api/stats/history` answers 200 `{"started_at": <unix seconds or null>, "samples":
-//!   {"<link index>": [sample, ...]}}`. The key is the link index in the order of the start body
-//!   ("0", "1", ...), like `{dir}` of the histogram route. `started_at` is the run's start as
-//!   `/api/emulation` reports it. Nothing ran since the controller started: `started_at` null (or
-//!   absent) and `samples` `{}`.
-//! - A sample is `{t_ms, rx_gbps, tx_gbps, rx_mpps, tx_mpps, loss_drops, limiter_drops,
-//!   buffer_full_drops, nic_tx_drops, nic_rx_missed, nic_rx_nombuf}`, all numbers (spec 43: the
-//!   five `*_pct` shares are gone; the nine counters are the link's cumulative drops, u64). `t_ms` is a whole number of
-//!   milliseconds since the start of the run, strictly increasing (u64, never a fraction). The rates are `/api/stats`' `rx_bps / 1e9`, `tx_bps / 1e9`,
-//!   `rx_pps / 1e6`, `tx_pps / 1e6`; the counters are `/api/stats`' `counters.loss_drops`,
-//!   `limiter_drops`, `buffer_full_drops`, `tx_drops` (as `nic_tx_drops`), `nic_rx_missed`,
-//!   `nic_rx_nombuf` of the same poll.
-//! - At most one sample per link per second, taken from the poller's snapshots with no extra
-//!   telemetry query; every link gets a sample at the same `t_ms`.
-//! - `since_ms` (a u64: digits only, no sign, fraction, exponent or hex) returns only samples with
-//!   `t_ms > since_ms`; the key of a known link stays, with `[]` when nothing is newer. Without
-//!   `since_ms` everything is returned. A bad `since_ms` or any other query parameter is a 400
-//!   `{"message"}` (the message of a bad `since_ms` names `since_ms`).
-//! - Retention: the whole run up to `HISTORY_MAX_SAMPLES` (86400) samples per link, the oldest
-//!   dropped first. The series is cleared when a new run starts (a new start request, with a new
-//!   pid and start time) and kept after stop and after telemetry failures until then.
-//! - Same guards as the other routes: Host allow-list 421, wrong method 405, documented in the
-//!   OpenAPI document.
-//!
-//! # Second round (user 2026-11-04): relative timestamps, like P4TG
-//!
-//! - `GET /api/stats` has `elapsed_ms` (u64, whole milliseconds) since the run started, from a monotonic clock
-//!   (`Instant`) taken when the run starts. Null or absent while nothing has run. Frozen at the stop
-//!   instant after a stop (the same value on every later read), also in the stopped payload with
-//!   no directions. A new run restarts it near 0. It keeps counting when the stats cache is
-//!   cleared by failed polls (the run is still going). OpenAPI lists it on `StatsView`.
-//! - The history's `t_ms` is measured from that same clock: the newest `t_ms` is never above
-//!   `elapsed_ms` read afterwards, and at most about one sampling period below it.
-//! - Tolerance: the clock may start in the start handler or at the poller's first look at the
-//!   running state (up to one poll interval later), so the tests allow 0.6 s below and 0.3 s above
-//!   the wall time they measured around the start request.
-//!
-//! # NEW Rust API the tests assume (ASSUMPTION: the spec names none)
-//!
-//! ```ignore
-//! // dpds_controller::telemetry
-//! pub const HISTORY_MAX_SAMPLES: usize = 86_400;
-//! impl Poller {
-//!     /// Like `Poller::spawn`, with the per-link retention cap of the series.
-//!     pub fn spawn_with_history_cap(runtime_dir: PathBuf, supervisor: Arc<dyn Supervisor>,
-//!                                   max_samples: usize) -> Arc<Poller>;
-//! }
-//! ```
-//!
-//! `Poller::spawn` uses `HISTORY_MAX_SAMPLES`. The REST route reaches the series through
-//! `TelemetrySource` (whatever method the implementation adds); a source that records nothing, like
-//! `FakeTelemetry`, gives the empty answer. The tests run the real `Poller` against a fake
-//! `dpds` socket whose counters grow at constant rates, so every poll (and every sample) shows the
-//! same rates, and use real time: one second per sample, a few seconds per test.
+//! Tests assume `Poller::spawn_with_history_cap(runtime_dir, supervisor, max_samples)` and
+//! `HISTORY_MAX_SAMPLES` in `dpds_controller::telemetry`; the route reaches the series through
+//! `TelemetrySource`, and a source that records nothing (`FakeTelemetry`) gives the empty answer.
+//! They run the real `Poller` against a fake `dpds` socket whose counters grow at constant rates,
+//! with real time (one second per sample).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -72,7 +36,7 @@ use dpds_controller::supervisor::{LaunchPlan, State, Supervisor, SupervisorStatu
 use dpds_controller::telemetry::{socket_path, Poller, TelemetrySource, HISTORY_MAX_SAMPLES};
 use serde_json::{json, Value};
 
-/// Spec 43 (B1): a sample has the rates and, instead of the five per-cause shares, the link's
+/// A sample has the rates and the link's
 /// cumulative drop counters (named like `HistoryTotals`; all u64).
 const SAMPLE_FIELDS: [&str; 14] = [
     "t_ms",
@@ -91,7 +55,7 @@ const SAMPLE_FIELDS: [&str; 14] = [
     "nic_tx_phy_discards",
 ];
 
-/// The cumulative counters of a sample (spec 47: nine causes).
+/// The cumulative counters of a sample (nine causes).
 const COUNTER_FIELDS: [&str; 9] = [
     "loss_drops",
     "limiter_drops",
@@ -104,7 +68,7 @@ const COUNTER_FIELDS: [&str; 9] = [
     "nic_tx_phy_discards",
 ];
 
-/// The old per-cause shares, gone from the samples.
+/// The per-cause shares, which a sample does not have.
 const GONE_FIELDS: [&str; 5] = [
     "loss_pct",
     "limiter_pct",
@@ -207,7 +171,7 @@ fn at(uptime_ns: u64) -> dpds_controller::stats::Snapshot {
             },
         ],
     );
-    // spec 47: the other loss xstats, per second: link 0 (rx port 0, tx port 1) and link 1 (rx
+    // the other loss xstats, per second: link 0 (rx port 0, tx port 1) and link 1 (rx
     // port 1, tx port 0) get different numbers. Port-buffer discards are the sum of several
     // priorities, buf and cong.
     set_xstats(
@@ -343,7 +307,7 @@ impl Rig {
         self.speed_up_poller();
     }
 
-    /// The start body has no poll interval (spec 41/43: a fixed 1000 ms); this test hook speeds the
+    /// The start body has no poll interval (a fixed 1000 ms); this test hook speeds the
     /// poller up after a start so that the tests need not wait whole seconds.
     fn speed_up_poller(&self) {
         self._poller.set_poll_interval(POLL_MS);
@@ -572,9 +536,9 @@ async fn the_samples_equal_the_rates_of_api_stats() {
     }
 }
 
-/// Spec 43 (B1): per second the fake `dpds` adds this many drops to link 0 and link 1:
+/// Per second the fake `dpds` adds this many drops to link 0 and link 1:
 /// loss, limiter, buffer full, tx_drops, rx_missed, rx_nombuf, port buffer (sum of prio buf+cong),
-/// rx phy, tx phy of the egress port (spec 47; the first four are `EXPECT`'s shares of the rx rate).
+/// rx phy, tx phy of the egress port (the first four are `EXPECT`'s shares of the rx rate).
 const DROPS_PER_S: [[f64; 9]; 2] = [
     [
         40_000.0, 20_000.0, 10_000.0, 5_000.0, 2_000.0, 1_000.0, 4_500.0, 700.0, 300.0,
@@ -674,7 +638,7 @@ async fn recording_the_series_asks_dpds_for_nothing_extra() {
         "/dpds/stats,1",
         "/dpds/delay_hist,0",
         "/dpds/delay_hist,1",
-        // spec 51 C2: page 0 of the IAT histogram of each link
+        // page 0 of the IAT histogram of each link
         "/dpds/iat_hist,0",
         "/dpds/iat_hist,1",
         "/ethdev/xstats,0",
@@ -898,7 +862,7 @@ async fn a_new_start_clears_the_history() {
     // run 2: another pid, another start time, the clock of the fake restarts at 0
     r.start_run(4243, 1_700_000_900).await;
     // the poller may take up to a poll interval to notice the new run; from then on the old
-    // run's samples are gone (no start time of the old run, at most one fresh sample)
+    // run's samples are gone (no start time of the previous run, at most one fresh sample)
     let now = r
         .wait_history("the old run to be cleared", 5, |v| {
             v["started_at"] != json!(1_700_000_000)
@@ -970,7 +934,7 @@ async fn a_bad_query_is_a_400_with_a_message() {
         "?since=1",
         "?since_ms=1&foo=2",
         "?foo=2&since_ms=1",
-        // the old name is just an unknown parameter now
+        // an unknown parameter
         "?since_s=1",
         "?since_s=1.5",
         "?since_ms=1&since_s=1",
@@ -1013,7 +977,7 @@ async fn other_methods_are_a_405_and_other_paths_a_404() {
         assert_eq!(r.status, 404, "{path}: {}", r.text());
         r.message();
     }
-    // the histogram route next to it still works as before
+    // the histogram route next to it still works
     let r = a.get("/api/stats/0/delay_histogram").await;
     assert_eq!(r.status, 404, "{}", r.text());
 }
@@ -1141,7 +1105,7 @@ async fn openapi_documents_the_history_route() {
     }
 }
 
-// ---- second round: elapsed_ms on /api/stats, one clock for stats and history ----------------------------
+// ---- elapsed_ms on /api/stats, one clock for stats and history ----------------------------
 
 /// `elapsed_ms` of a stats reply in seconds; it must be an integer number of ms.
 fn elapsed(v: &Value) -> Option<f64> {
@@ -1320,12 +1284,11 @@ async fn openapi_lists_elapsed_ms_on_the_stats_view() {
     assert!(!required.iter().any(|k| k == "elapsed_ms"), "{required:?}");
 }
 
-// ---- spec 29b item 1: run_id and links ------------------------------------------------------------
+// ---- run_id and links ------------------------------------------------------------
 //
 // `GET /api/stats/history` also returns `run_id` (u64, one more with every new run the controller
 // sees, null before any run) and `links: [{name, ingress, egress}]` of that run in link-index order,
-// both kept after the stop like the samples and replaced together when a new run begins. Choices of
-// the tester (the spec leaves them open): before any run `links` is `[]`; the link objects have
+// both kept after the stop like the samples and replaced together when a new run begins. Before any run `links` is `[]`; the link objects have
 // exactly the three fields (no `config`, no `worker`); a new run's id is the previous one plus 1;
 // an answer never pairs the `run_id` of one run with the `links` or `started_at` of another; a
 // request that is refused (400) changes neither.
@@ -1575,12 +1538,12 @@ async fn openapi_documents_run_id_and_links_on_the_history() {
     );
 }
 
-// ---- spec 29b item 2: a reader never applies a stale supervisor status -----------------------------
+// ---- a reader never applies a stale supervisor status -----------------------------
 //
-// Observable part of the locking change: a reader (`run_history`, `elapsed_ms`) reads the supervisor
+// A reader (`run_history`, `elapsed_ms`) reads the supervisor
 // status after it took the run lock. The supervisor below stalls one reader inside `status()` after
 // that call has already decided what to return, as a thread descheduled between reading the
-// status and using it. With the status read BEFORE the lock (the spec 29 code) another reader
+// status and using it. With the status read BEFORE the lock another reader
 // applies the newer status meanwhile and the stalled one then applies its stale one and throws the
 // newer run away. With the status read AFTER taking the lock the other reader waits for the stalled
 // one, and no stale status is ever applied.
@@ -1823,19 +1786,18 @@ async fn a_stalled_elapsed_reader_does_not_restart_the_clock_of_an_older_run() {
     );
 }
 
-// ---- spec 35 (C1): `totals`, the run's final cumulative counters --------------------------------
+// ---- `totals`, the run's final cumulative counters --------------------------------
 //
-// Contract the tests pin (coordinator's design, not user-confirmed in detail; the wording of the
-// choices is the tester's):
+// Contract the tests pin:
 //
 // - `GET /api/stats/history` also carries `totals`: `{"<link index>": {rx_pkts, loss_drops,
 //   limiter_drops, buffer_full_drops, nic_tx_drops, nic_rx_missed, nic_rx_nombuf}}`, the key set
-//   of the samples (the order of the start body), each object with exactly these ten u64 fields (spec 47).
+//   of the samples (the order of the start body), each object with exactly these ten u64 fields.
 //   They are the cumulative counters since the `dpds` process started, taken from the NEWEST
 //   successful poll of the run (not from the newest once-a-second sample): `rx_pkts`,
 //   `loss_drops`, `limiter_drops`, `buffer_full_drops` are the counters of `/api/stats` of the
 //   same names; `nic_tx_drops` is its `counters.tx_drops` (the link's `tx_drops` of `/dpds/stats`,
-//   there is no counter called `nic_tx_drops` today); `nic_rx_missed` and `nic_rx_nombuf` are
+//   there is no counter called `nic_tx_drops`); `nic_rx_missed` and `nic_rx_nombuf` are
 //   `counters.nic_rx_missed` and `counters.nic_rx_nombuf` (the receiving port's cumulative
 //   `imissed` and `rx_nombuf`).
 // - Every answer has it, incremental ones (`since_ms`) too, also when no sample is newer.
@@ -1856,7 +1818,7 @@ const COUNT_STEP_NS: u64 = 100_000_000;
 /// Packets per poll of link 0 and link 1 (`EXPECT`'s rates times 100 ms).
 const RX_PER_POLL: [u64; 2] = [200_000, 100_000];
 
-/// Spec 51 C1/T1 added `out_of_order` (an integer) and `frame_sizes` (an array of 8 integers).
+/// `out_of_order` is an integer and `frame_sizes` an array of 8 integers.
 const TOTALS_FIELDS: [&str; 12] = [
     "rx_pkts",
     "loss_drops",

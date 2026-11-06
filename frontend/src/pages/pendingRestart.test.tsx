@@ -6,8 +6,8 @@ import * as fx from '../test/fixtures';
 import { dropNulls, rawStore, renderApp, seedRaw, seedStore, storedDoc } from '../test/helpers';
 import { must } from '../test/must';
 
-// Contract: "Pending restart" and "Load running configuration" in the v22 block of src/test/helpers.tsx. The controller stores
-// nothing: the page compares the LOCAL document with `GET /api/emulation`.config (the running start request) and flags what differs.
+// The controller stores nothing: the page compares the LOCAL document with `GET /api/emulation`.config (the running start request)
+// and flags what differs.
 
 const LINKS = () => [fx.link(), fx.linkRev()]; // a-b (id 1), b-a (id 3)
 const RUNNING = (links: Link[] = LINKS()) => fx.runningConfig(links);

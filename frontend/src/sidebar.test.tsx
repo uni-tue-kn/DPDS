@@ -4,13 +4,13 @@ import { renderApp } from './test/helpers';
 import { setPrefersDark } from './test/matchMedia';
 import { must } from './test/must';
 
-// Spec 28 item 3 (user 2026-11-04): the P4TG icon-only sidebar. CHOICES of the tester where the spec is silent:
-//   - "icon-only": a navigation link has no text of its own (textContent empty); its accessible name is an aria-label equal
-//     to the old visible label, and hovering or focusing it shows a react-bootstrap tooltip (role=tooltip) with that label
+// The P4TG icon-only sidebar:
+//   - a navigation link has no text of its own (textContent empty); its accessible name is an aria-label equal to its label;
+//     hovering it shows no tooltip
 //   - the active item is the router's `aria-current="page"` link (class `active`); "solid red block" is pinned in
 //     assets/stylesSpec28.test.ts
 //   - the footer toggle shows bi-moon-fill in light mode and bi-brightness-high-fill in dark mode (P4TG's FooterButtons)
-// The existing layout.test.tsx keeps pinning names, order, aria-current, the docs link and "no localStorage write".
+// layout.test.tsx pins names, order, aria-current, the docs link and "no localStorage write".
 
 const LABELS = ['Dashboard', 'Interfaces', 'Host hints', 'Settings'];
 const ICONS: Record<string, string> = {
@@ -47,7 +47,7 @@ describe('sidebar (spec 28): icon only', () => {
     }
   });
 
-  // spec 41 (user 2026-11-05): "don't show the page name when hovering above the icons": no tooltip, no visible text
+  // no tooltip and no visible text when hovering above the icons
   it.each(LABELS)('hovering "%s" shows nothing: no tooltip, no text; the aria-label stays', async (name) => {
     const user = userEvent.setup();
     renderApp('/');
@@ -63,7 +63,7 @@ describe('sidebar (spec 28): icon only', () => {
     const user = userEvent.setup();
     renderApp('/');
     await user.tab();
-    // spec 50 F: the first stop is now the logo link, the nav links follow
+    // the first stop is the logo link, the nav links follow
     expect(must(document.activeElement as HTMLElement | null, 'focused element').getAttribute('aria-label')).toBe(
       'DPDS on GitHub',
     );

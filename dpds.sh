@@ -4,16 +4,15 @@
 # Usage: [DPDS_CHANNEL=latest|nightly|vX.Y.Z] ./dpds.sh [--nightly|--stable] [--yes] {check|install|update|start|stop|restart|status|uninstall}
 #
 # The controller (dpds-controller) runs natively on the host as root and starts dpds as its child
-# process. It embeds the web frontend at build time and serves it on its own port. install and
-# update build the frontend from the checked-out tree (npm ci, then npm run build in frontend/)
-# and build the controller with the resulting frontend/dist. The host therefore needs Node and
-# npm next to Rust, clang/lld and DPDK; check, install and update verify all of them first and
-# list every missing one (nothing is ever installed for you). This script only builds, installs
-# and runs the service and never changes host settings. The controller only reports hints
-# (`dpds.sh check`).
+# process. It embeds the web frontend, built at install and update time from the checked-out tree
+# (npm ci, then npm run build in frontend/), and serves it on its own port. The host therefore
+# needs Node and npm next to Rust, clang/lld and DPDK; check, install and update verify all of
+# them first and list every missing one (nothing is ever installed for you). This script only
+# builds, installs and runs the service and never changes host settings. The controller only
+# reports hints (`dpds.sh check`).
 #
-# Channels (like P4TG's P4TG_CHANNEL): DPDS_CHANNEL is latest (the default), nightly or a release tag
-# such as v1.0.0. latest follows the branch main, nightly the branch nightly. --nightly and --stable
+# Channels: DPDS_CHANNEL is latest (the default), nightly or a release tag such as v1.0.0.
+# latest follows the branch main, nightly the branch nightly. --nightly and --stable
 # override the variable. update switches to the channel's branch (git fetch, checkout, pull --ff-only);
 # install builds the tree as it is and only warns when it is on another branch.
 #
@@ -49,8 +48,7 @@ PREFIX="${DPDS_PREFIX:-/usr/local}"
 ETC_DIR="${DPDS_ETC_DIR:-/etc/dpds}"
 SYSTEMD_DIR="${DPDS_SYSTEMD_DIR:-/etc/systemd/system}"
 BIND="${DPDS_BIND:-0.0.0.0:8100}"
-# The controller is built with the frontend this script builds, never with one from the caller's
-# environment.
+# Never embed a frontend from the caller's environment.
 unset DPDS_FRONTEND_DIST
 FRONTEND_DIR="$REPO_ROOT/frontend"
 FRONTEND_DIST="$FRONTEND_DIR/dist"
@@ -67,7 +65,6 @@ STAMP_FILE="$ETC_DIR/installed-commit"
 BIN_DIR="$PREFIX/bin"
 DEFAULT_PORT=8100
 
-# latest follows the branch main, nightly the branch nightly. The flags override DPDS_CHANNEL.
 CHANNEL="${DPDS_CHANNEL:-}"
 CHANNEL_OVERRIDE=""
 CHANNEL_BRANCH=""
@@ -607,7 +604,6 @@ cmd_uninstall() {
   info "Removing binaries, unit and $STAMP_FILE"
   run_privileged rm -f "$BIN_DIR/dpds" "$BIN_DIR/dpds-controller" "$UNIT_DEST" "$STAMP_FILE"
   run_privileged systemctl daemon-reload || warn "systemctl daemon-reload failed."
-  # An older version kept the controller's configuration here; nothing reads it any more.
   local leftover=/var/lib/dpds-controller
   if [[ -e "$leftover" ]]; then
     info "Removing $leftover, left behind by an older version"

@@ -1,4 +1,4 @@
-// Spec 18: the sidebar shows `v<version>` and tells when a newer release is on main, like P4TG
+// The sidebar shows `v<version>` and tells when a newer release is on main, like P4TG
 // (`isUpdateAvailable` in its Helper.ts, the update modal in App.tsx, the arrow in Navbar.tsx).
 //
 // Contract these tests pin:

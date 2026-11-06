@@ -42,8 +42,7 @@
 //! };
 //! let mut buf = Buffer::try_new(config).expect("valid configuration");
 //!
-//! // A packet is an opaque pointer; here just a number. `now` is any
-//! // monotonic clock in nanoseconds.
+//! // A packet is an opaque pointer; `now` is any monotonic clock in ns.
 //! let packet = 1usize as *mut c_void;
 //! assert!(buf.push(packet, 1500, /* now_ns */ 0.0));
 //!
@@ -52,35 +51,28 @@
 //! assert!(buf.is_empty());
 //! ```
 //!
-//! ## Order of a push, and the derived limiter limit
+//! ## Push order and the limiter limit
 //!
-//! **API change (emulation order, user-authorised):** `Buffer::push_outcome`
-//! first checks for room: a buffer already holding `buffer_capacity` packets
-//! answers `BufferFull` and touches no delayer, limiter or dropper state (the
-//! packet never takes part in the emulation, so nothing is accounted for it).
-//! Only then come the delay sample, the limiter accounting, the loss draw, the
-//! limiter verdict and the enqueue.
+//! [`Buffer::push_outcome`](buffer::Buffer::push_outcome) first checks for
+//! room: a buffer already holding `buffer_capacity` packets answers
+//! `BufferFull` and touches no delayer, limiter or dropper state. Only then
+//! come the delay sample, the limiter accounting, the loss draw, the limiter
+//! verdict and the enqueue.
 //!
-//! **API change:** `LimiterConfig.limit_bit` is removed (a `limit_bit` key in
-//! JSON is a parse error). The limiter's limit is derived for both modes as
+//! The limiter's limit is derived for both modes as
 //! `buffer_capacity * MAX_FRAME_WIRE_BYTES * 8` bit, with
 //! [`MAX_FRAME_WIRE_BYTES`] `= 1542`: exactly `buffer_capacity` maximum-size
-//! frames fit. Every `LimiterConfig { .. }` struct literal must drop
-//! `limit_bit`.
+//! frames fit.
 //!
 //! ## Why a packet was rejected
 //!
-//! **API change (addition):** [`Buffer::push_outcome`](buffer::Buffer::push_outcome)
-//! returns a [`PushOutcome`](buffer::PushOutcome): `Accepted { send_time_ns }`,
-//! `Lost` (loss model), `LimiterDrop` or `BufferFull`. `push` is a wrapper of it.
-//! A packet that both the loss model and the limiter reject is `Lost` (the
-//! precedence is loss model, limiter; `BufferFull` is decided first), and
-//! [`Buffer::pop_due_with_time`](buffer::Buffer::pop_due_with_time) also returns
-//! the send time of the popped packet.
+//! `push_outcome` returns a [`PushOutcome`](buffer::PushOutcome):
+//! `Accepted { send_time_ns }`, `Lost` (loss model), `LimiterDrop` or
+//! `BufferFull`. `push` wraps it. A packet that both the loss model and the
+//! limiter reject is `Lost`. [`Buffer::pop_due_with_time`](buffer::Buffer::pop_due_with_time)
+//! also returns the send time of the popped packet.
 //!
-//! **API change:** `DelayerConfig.initialization_rate_pps` is a new required
-//! public field (no serde default, no built-in rate): every `DelayerConfig { .. }`
-//! struct literal and every JSON config needs it. [`Delayer::try_new`](delayer::Delayer::try_new)
+//! `DelayerConfig::initialization_rate_pps` is required. [`Delayer::try_new`](delayer::Delayer::try_new)
 //! and [`Buffer::try_new`](buffer::Buffer::try_new) reject a value that is not
 //! finite or below 1 with [`BuildError::InitializationRate`].
 //!
@@ -99,10 +91,6 @@
 //! give identical push results and send times. Seeded streams are reproducible
 //! only for the same `rand` version and the same target word size.
 //!
-//! **API change:** `Config.seed` is a new public field and `Config` is not
-//! `#[non_exhaustive]`, so every `Config { .. }` struct literal needs
-//! `seed: None` (JSON files need no change).
-//!
 //! ## Ordering
 //!
 //! With `reordering = false` the buffer is a FIFO: packets leave in push order
@@ -112,10 +100,10 @@
 //! order: every packet's send time gets a tie offset of 1/64 ns per earlier
 //! packet of that instant. See [`buffer::Buffer`] for the exact rule.
 //!
-//! Caveat: a burst of n packets pushed at one instant shifts its last keys by
-//! up to (n-1)/64 ns, so a packet from a later instant that is less than that
-//! apart can sort between them. With the 32-packet burst of `dpds` that is at
-//! most about 0.5 ns.
+//! A burst of n packets pushed at one instant shifts its last keys by up to
+//! (n-1)/64 ns, so a packet from a later instant that is less than that apart
+//! can sort between them (at most about 0.5 ns for the 32-packet burst of
+//! `dpds`).
 //!
 //! ## Features
 //!
@@ -144,11 +132,11 @@ pub mod limiter;
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DelayerConfig {
-    pub distribution: RVDistribution, // which distribution to use for the delay
-    pub mean_ns: f64,                 // in nanoseconds
-    pub std_ns: f64,                  // in nanoseconds
-    pub activate_correlation: bool,   // true if correlation should be applied
-    pub half_life_period_ns: f64,     // configurable memory of the UTEMA
+    pub distribution: RVDistribution,
+    pub mean_ns: f64,
+    pub std_ns: f64,
+    pub activate_correlation: bool,
+    pub half_life_period_ns: f64, // memory of the UTEMA
     /// Required: the packet rate (packets per second) the correlated delay
     /// starts with, until the first 1 ms rate estimate replaces it. Use the
     /// expected packet rate of the link. Finite and at least 1, validated
@@ -176,21 +164,19 @@ pub fn derived_limit_bit(buffer_capacity: usize) -> f64 {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct LimiterConfig {
-    pub mode: LimiterMode, // which limiter to use (Spacer or TokenBucketFilter)
-    pub activate: bool,    // true if limiter should be applied
-    pub rate_bps: f64,     // in bits per second
+    pub mode: LimiterMode,
+    pub activate: bool,
+    pub rate_bps: f64, // bits per second
 }
 
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Config {
-    pub buffer_capacity: usize, // Max size of the buffer
-    pub reordering: bool,       // true if reordering is permitted
+    pub buffer_capacity: usize, // max packets in the buffer
+    pub reordering: bool,
     pub delayer: DelayerConfig,
     pub limiter: LimiterConfig,
-    pub loss_model: LossModel, // which loss model to use for the dropper
-    /// API change: new field, struct literals need `seed: None`.
-    ///
+    pub loss_model: LossModel,
     /// `Some(s)` seeds the delayer and dropper random number generators
     /// deterministically; `None` (also when absent from the JSON) seeds them
     /// from the OS entropy source.

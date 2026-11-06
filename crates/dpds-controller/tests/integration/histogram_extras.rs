@@ -1,33 +1,26 @@
-//! K3 (spec v8), the part that needs no history: `percentiles`, `count` and `expected` on
-//! `GET /api/stats/{dir}/delay_histogram` (the `window_s` part is in `histogram_window.rs`).
+//! `count`, `percentiles` and `expected` on `GET /api/stats/{dir}/delay_histogram` (`window_s` is
+//! in `histogram_window.rs`).
 //!
-//! # Reply fields the tests assume (spec text first)
+//! - `count`: samples of the returned histogram including under- and overflow.
+//! - `percentiles: {p50, p90, p99, p999}` in ns, linear interpolation inside the bin: with rank
+//!   `r = q * count` over the order underflow, bin 0 .. bin n-1, overflow, the percentile lies in
+//!   the first bin whose cumulative count reaches `r`, at
+//!   `edge_lo + (r - cumulative_before) / bin_count * bin_ns`. A rank inside the underflow gives
+//!   `lo_ns`, inside the overflow the upper edge `lo_ns + n * bin_ns`; no samples give `null`. The
+//!   ranks used below never fall exactly on a bin boundary. The clamp flag of `pXX` is the sibling
+//!   key `pXX_clamped` inside `percentiles` (`"underflow"`, `"overflow"`, absent or null).
+//! - `expected: [f64; num_bins]`, `expected_underflow`, `expected_overflow`: expected counts for
+//!   `count` samples under the direction's delay distribution. `dpds` clamps negative delays to 0,
+//!   so mass below 0 sits in the bin containing 0 (with `lo_ns = 0`: bin 0, underflow 0) or, when
+//!   `lo_ns > 0`, in the underflow. `expected_model` is `"exact"` or, with `activate_correlation`,
+//!   `"normal_approximation"`. With an active limiter `expected_note == "excludes limiter queueing
+//!   delay"`, otherwise absent or null.
+//! - Direction `d` uses the config of link `d` of the start body: `a-to-b` is direction 0,
+//!   `b-to-a` direction 1. A missing delayer is a Deterministic 0 ns delay.
 //!
-//! - `count`: samples of the returned histogram incl. under- and overflow;
-//! - `percentiles: {p50, p90, p99, p999}` in ns, linear interpolation inside the bin. With
-//!   rank `r = q * count` over the order underflow, bin 0 .. bin n-1, overflow, the percentile
-//!   lies in the first bin whose cumulative count reaches `r`, at
-//!   `edge_lo + (r - cumulative_before) / bin_count * bin_ns`. A rank inside the underflow
-//!   gives `lo_ns`, one inside the overflow gives the upper edge `lo_ns + n * bin_ns`; no
-//!   samples give `null`. (The ranks used below never fall exactly on a bin boundary.)
-//! - ASSUMPTION (the spec says "a flag ... style field per percentile"): the clamp flag of
-//!   percentile `pXX` is the sibling key `pXX_clamped` INSIDE `percentiles`, `"underflow"`
-//!   or `"overflow"`, and absent or null when the percentile is not clamped.
-//! - `expected: [f64; num_bins]`, `expected_underflow`, `expected_overflow`: expected counts
-//!   for `count` samples under the direction's configured delay distribution; negative
-//!   delays are clamped to 0 by `dpds`, so mass below 0 sits in the bin containing 0 (with
-//!   `lo_ns = 0` that is bin 0 and the underflow expectation is 0) or, when `lo_ns > 0`,
-//!   in the underflow. `expected_model` is `"exact"` or, with `activate_correlation`,
-//!   `"normal_approximation"` (Normal(mean, std)). With an active limiter
-//!   `expected_note == "excludes limiter queueing delay"`, otherwise it is absent or null.
-//! - Direction `d` uses the config of the link with index `d` of the body the emulation was
-//!   started with: link `a-to-b` (first) is direction 0, link `b-to-a` (second) is direction 1,
-//!   the two links the fake telemetry names. A missing delayer stage is a Deterministic delay of
-//!   0 ns (spec 22, optional stages), a missing limiter adds no note.
-//!
-//! Every expected number below was computed with Python's `math` (erf for Normal and
-//! LogNormal, the closed-form Erlang CDF for Gamma with integer shape, the linear CDF for
-//! Uniform) from the parameterisation of the spec, not with the controller code.
+//! Every expected number below was computed with Python's `math` (erf for Normal and LogNormal,
+//! the closed-form Erlang CDF for Gamma with integer shape, the linear CDF for Uniform), not with
+//! the controller code.
 
 use crate::common::*;
 use dpds_controller::stats::Snapshot;
@@ -37,7 +30,7 @@ pub const TOTAL: u64 = 10_000;
 
 /// A controller whose emulation was started with the links `a-to-b` (direction 0, config `c0`)
 /// and `b-to-a` (direction 1, config `c1`): the expected counts follow the configuration the
-/// emulation was started with (spec 22: the controller has no other configuration).
+/// emulation was started with.
 pub fn app_with(c0: Value, c1: Value) -> TestApp {
     let a = TestApp::new(FakeHost::bare_metal());
     let body = setup(vec![

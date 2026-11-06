@@ -5,9 +5,9 @@ use std::ptr::NonNull;
 
 use crate::error::DpdkError;
 
-/// `rte_ring` element size for an element type of `size` bytes, or `None`
-/// if DPDK would reject it: `size` is 0, not a multiple of 4
-/// (`rte_ring_create_elem`'s EINVAL condition), or doesn't fit in a `u32`.
+/// `rte_ring` element size for an element of `size` bytes, or `None` if DPDK
+/// would reject it: `size` is 0, not a multiple of 4 (`rte_ring_create_elem`'s
+/// EINVAL condition) or does not fit in a `u32`.
 pub const fn checked_ring_esize(size: usize) -> Option<u32> {
     if size == 0 || !size.is_multiple_of(4) || size > u32::MAX as usize {
         None
@@ -16,9 +16,8 @@ pub const fn checked_ring_esize(size: usize) -> Option<u32> {
     }
 }
 
-/// [`checked_ring_esize`], panicking where that returns `None`. Usable in
-/// a `const` context, so an invalid element type fails at compile time
-/// once [`Ring::ESIZE`] is evaluated.
+/// [`checked_ring_esize`], panicking on `None`. `const`, so an invalid element
+/// type fails at compile time once [`Ring::ESIZE`] is evaluated.
 pub const fn ring_esize(size: usize) -> u32 {
     match checked_ring_esize(size) {
         Some(esize) => esize,
@@ -26,35 +25,26 @@ pub const fn ring_esize(size: usize) -> u32 {
     }
 }
 
-/// Owned `rte_ring` holding elements of type `T` by value: a lock-free,
-/// fixed-capacity queue used for handoff between pipeline stages pinned to
-/// different lcores. Built on DPDK's element ring API
-/// (`rte_ring_create_elem`, `rte_ring_*_burst_elem`), so `T` can carry
-/// per-packet metadata next to the mbuf pointer instead of storing it in the
-/// mbuf. The default `T = *mut c_void` is the classic pointer ring (element
-/// size 8, the same code path `rte_ring_create`/`rte_ring_*_burst` take).
+/// Owned `rte_ring` of `T` by value: a lock-free, fixed-capacity queue for
+/// handoff between stages pinned to different lcores. Built on DPDK's element
+/// ring API, so `T` can carry per-packet metadata next to the mbuf pointer. The
+/// default `T = *mut c_void` is the classic pointer ring (element size 8).
 ///
-/// Every ring in this application's pipeline has exactly one producer
-/// lcore and one consumer lcore (the forwarding graph fans a stage's
-/// output out to several *distinct* rings, and fans several stages' output
-/// into several *distinct* rings — never many writers into the same
-/// ring), so every ring is created single-producer/single-consumer:
-/// `RING_F_SP_ENQ | RING_F_SC_DEQ`. That lets `rte_ring` skip its
-/// multi-producer/multi-consumer CAS retry loop entirely.
+/// Every ring has exactly one producer lcore and one consumer lcore, so it is
+/// created single-producer/single-consumer (`RING_F_SP_ENQ | RING_F_SC_DEQ`),
+/// which skips `rte_ring`'s multi-producer CAS retry loop.
 pub struct Ring<T: Copy = *mut c_void> {
     ptr: NonNull<dpdk_sys::rte_ring>,
     _elem: PhantomData<T>,
 }
 
 impl<T: Copy> Ring<T> {
-    /// Element size handed to DPDK; evaluating it rejects an invalid `T` at
-    /// compile time (see [`ring_esize`]).
+    /// Element size handed to DPDK; rejects an invalid `T` at compile time.
     const ESIZE: u32 = ring_esize(size_of::<T>());
 
-    /// Creates a single-producer/single-consumer ring of `count` slots.
-    /// `count` must be a power of two: DPDK 26.07's `rte_ring_create_elem`
-    /// fails with EINVAL otherwise (it does not round), and one slot always
-    /// stays unused, so the usable capacity is `count - 1`.
+    /// Creates a single-producer/single-consumer ring of `count` slots. `count`
+    /// must be a power of two (`rte_ring_create_elem` fails with EINVAL
+    /// otherwise); one slot stays unused, so the capacity is `count - 1`.
     pub fn create_spsc(name: &str, count: u32, socket_id: i32) -> Result<Self, DpdkError> {
         let c_name = CString::new(name).expect("ring name contains interior NUL");
         let flags = dpdk_sys::RING_F_SP_ENQ | dpdk_sys::RING_F_SC_DEQ;
@@ -69,9 +59,8 @@ impl<T: Copy> Ring<T> {
             .ok_or_else(DpdkError::from_rte_errno)
     }
 
-    /// Enqueues as many of `objs` as fit; returns the number actually
-    /// enqueued (`<= objs.len()`). The caller must handle the remainder
-    /// (e.g. free or retry) — mirrors `TxQueue::tx_burst`'s contract.
+    /// Enqueues as many of `objs` as fit; returns the number enqueued. The
+    /// caller handles the remainder (free or retry), like `TxQueue::tx_burst`.
     #[inline(always)]
     pub fn enqueue_burst(&self, objs: &[T]) -> u16 {
         let n = objs.len().min(u16::MAX as usize) as u16;
@@ -86,8 +75,7 @@ impl<T: Copy> Ring<T> {
         }
     }
 
-    /// Dequeues into `objs`, returning the number actually dequeued
-    /// (`<= objs.len()`).
+    /// Dequeues into `objs`, returning the number dequeued.
     #[inline(always)]
     pub fn dequeue_burst(&self, objs: &mut [T]) -> u16 {
         let n = objs.len().min(u16::MAX as usize) as u16;
@@ -102,14 +90,9 @@ impl<T: Copy> Ring<T> {
         }
     }
 
-    /// Same as [`dequeue_burst`](Self::dequeue_burst), but also returns the
-    /// ring's own depth at the moment of this call: the number of entries
-    /// that were actually waiting in the ring just before this dequeue, i.e.
-    /// the dequeued count plus `rte_ring_sc_dequeue_burst_elem`'s own
-    /// `available` out-param (how many entries were still left in the ring
-    /// after this call drained up to `objs.len()` of them). Used to sample
-    /// the high-water mark of a consumer's lag behind its producer without a
-    /// second, separate call.
+    /// Like [`dequeue_burst`](Self::dequeue_burst), but also returns the ring's
+    /// depth just before this dequeue (dequeued count plus the `available`
+    /// out-param), to sample a consumer's lag without a second call.
     #[inline(always)]
     pub fn dequeue_burst_with_depth(&self, objs: &mut [T]) -> (u16, u32) {
         let n = objs.len().min(u16::MAX as usize) as u16;
@@ -133,43 +116,33 @@ impl<T: Copy> Drop for Ring<T> {
     }
 }
 
-/// Marker for types that may be passed by value from one lcore to another
-/// through a [`Ring`], which makes `Ring<T>` `Send + Sync`.
+/// Marker for types that may be passed by value between lcores through a
+/// [`Ring`], which makes `Ring<T>` `Send + Sync`.
 ///
 /// # Safety
-/// Copying a `T` into the ring on one thread and reading the copy on
-/// another must be sound: `T` must be plain data whose pointers (if any)
-/// hand over ownership of what they point at, never share it (so e.g.
-/// `&Cell<_>` must not implement this). Raw pointers are not `Send`, so
-/// this can't simply be `T: Send`.
+/// Copying a `T` into the ring on one thread and reading the copy on another
+/// must be sound: `T` must be plain data whose pointers (if any) hand over
+/// ownership of what they point at, never share it (so e.g. `&Cell<_>` must not
+/// implement this). Raw pointers are not `Send`, so this cannot simply be
+/// `T: Send`.
 pub unsafe trait RingElem: Copy {}
 
-// SAFETY: the pointer ring carries mbuf pointers; each one is handed over
-// with ownership of its mbuf (the producer never touches it after the
-// enqueue), so moving it to the consumer lcore shares nothing.
+// SAFETY: the pointer ring carries mbuf pointers; each is handed over with
+// ownership of its mbuf (the producer never touches it after the enqueue), so
+// moving it to the consumer lcore shares nothing.
 unsafe impl RingElem for *mut c_void {}
 
-// Safety: a `Ring` is handed to exactly one producer lcore and one
-// consumer lcore by construction in this pipeline (never both from the
-// same thread concurrently in a way `rte_ring`'s SP/SC mode doesn't
-// already support); the underlying `rte_ring` synchronizes the actual
-// enqueue/dequeue. Elements are moved by value between those two lcores,
-// which `RingElem` vouches is sound for `T`.
+// Safety: a `Ring` is handed to exactly one producer lcore and one consumer
+// lcore by construction (never used concurrently beyond what `rte_ring`'s SP/SC
+// mode supports); the underlying `rte_ring` synchronizes the enqueue/dequeue.
+// Elements move by value between those two lcores, which `RingElem` vouches is
+// sound for `T`.
 unsafe impl<T: RingElem> Send for Ring<T> {}
 unsafe impl<T: RingElem> Sync for Ring<T> {}
 
-// ── Generic element ring ────────────────────────────────────────────────────
-//
-// `Ring<T>` wraps DPDK's element ring API, with `T` copied by value into each
-// slot; the pointer ring is the `T = *mut c_void` case (esize 8).
-//
-// The element size passed to DPDK comes from `ring_esize`, which panics if
-// `size` is 0, not a multiple of 4 (DPDK's EINVAL condition) or doesn't fit
-// in a `u32`; `checked_ring_esize` returns `None` in exactly those cases.
 // `Ring<T>` is `Send + Sync` only for element types marked `RingElem`.
-//
-// Creating and using a ring needs EAL, so only the size rule and the type-level
-// properties are tested here.
+// Creating and using a ring needs an EAL, so only the size rule and the
+// type-level properties are tested here.
 #[cfg(test)]
 mod elem_tests {
     use std::ffi::c_void;
@@ -190,7 +163,7 @@ mod elem_tests {
     // two words are plain data.
     unsafe impl RingElem for Elem24 {}
 
-    /// Same shape as `Elem24`, but not marked `RingElem`.
+    /// Not marked `RingElem`.
     #[derive(Clone, Copy)]
     #[allow(dead_code)]
     struct Unmarked {
@@ -229,7 +202,7 @@ mod elem_tests {
     #[test]
     #[should_panic]
     fn ring_esize_rejects_a_size_that_does_not_fit_in_u32() {
-        // A multiple of 4, so only the u32 range can reject it.
+        // A multiple of 4, so only the u32 range rejects it.
         let _ = ring_esize(u32::MAX as usize + 1);
     }
 
@@ -238,7 +211,6 @@ mod elem_tests {
         for size in [4usize, 8, 12, 16, 24, 32, 64, 4096] {
             assert_eq!(checked_ring_esize(size), Some(size as u32), "size {size}");
         }
-        // Largest multiple of 4 that still fits.
         assert_eq!(
             checked_ring_esize(u32::MAX as usize - 3),
             Some(u32::MAX - 3)
@@ -254,8 +226,7 @@ mod elem_tests {
         assert_eq!(checked_ring_esize(u32::MAX as usize + 1), None);
     }
 
-    /// `Ring` without a type argument still means the pointer ring, so
-    /// `Arc<Ring>` call sites keep compiling.
+    /// `Ring` without a type argument is the pointer ring.
     #[test]
     fn ring_defaults_to_a_pointer_ring() {
         let none: Option<&Ring> = None;
@@ -264,18 +235,17 @@ mod elem_tests {
 
     fn assert_send_sync<T: Send + Sync>() {}
 
-    /// Each ring is shared (`Arc`) between one producer and one consumer
-    /// lcore, so it must be `Send + Sync` even when `T` holds a raw pointer.
+    /// A ring is shared between a producer and a consumer lcore, so it must be
+    /// `Send + Sync` even when `T` holds a raw pointer.
     #[test]
     fn rings_of_pointers_and_of_pointer_carrying_elements_are_send_and_sync() {
         assert_send_sync::<Ring>();
         assert_send_sync::<Ring<Elem24>>();
     }
 
-    /// `IS_SEND_SYNC` resolves to the inherent `true` only when `T: Send +
-    /// Sync`; otherwise it falls back to the blanket trait's `false`. This
-    /// is the `impls` crate pattern, a negative trait check on stable Rust
-    /// without a compile-fail harness.
+    /// `IS_SEND_SYNC` is the inherent `true` only when `T: Send + Sync`, else the
+    /// blanket trait's `false`: a negative trait check on stable Rust without a
+    /// compile-fail harness (the `impls` crate pattern).
     struct Probe<T>(std::marker::PhantomData<T>);
     trait NotSendSync {
         const IS_SEND_SYNC: bool = false;
@@ -285,10 +255,9 @@ mod elem_tests {
         const IS_SEND_SYNC: bool = true;
     }
 
-    /// `Ring<T>` must not be `Send`/`Sync` for an arbitrary `Copy` element:
-    /// a safe caller could otherwise move a non-thread-safe value (e.g. a
-    /// shared `&Cell<_>`) to another lcore. Only `RingElem` opts in. The
-    /// checks are `const` blocks, so a regression fails the build.
+    /// `Ring<T>` must not be `Send`/`Sync` for an arbitrary `Copy` element (a
+    /// safe caller could move a `&Cell<_>` to another lcore); only `RingElem`
+    /// opts in. The checks are `const` blocks, so a regression fails the build.
     #[test]
     fn ring_is_send_and_sync_only_for_ring_elem_types() {
         const {

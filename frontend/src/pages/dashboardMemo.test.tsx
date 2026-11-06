@@ -8,23 +8,18 @@ import { renderApp, tick } from '../test/helpers';
 import { card, delayBar, lossDonut } from '../test/dashboardUi';
 import { must } from '../test/must';
 
-// Spec 35 (F7): the loss donut is memoised too: its data depend on the six counts only, its options on the theme only (the
-// Chart.js tooltip callback is part of the options, so a counter change must not rebuild them). The stub below records the
-// Doughnut like the other charts. The link's chart area is a tab now (`card(d)` of src/test/dashboardUi.tsx), "Drops" is "Loss".
+// The charts' data and options are memoised on their inputs (history, histogram, theme, selected view); an unrelated re-render does
+// not recompute them. The loss donut's data depend on the cause counts only, its options on the theme only (the Chart.js tooltip
+// callback is part of the options, so a counter change must not rebuild them).
 //
-// Spec 28b item 2: rendering cost. "Chart data/options are memoized on their inputs (history, histogram, theme, selected
-// view); DirectionCard and Histogram do not recompute charts on unrelated re-renders; the elapsed pill ticks in its own
-// component, so the 1 Hz tick re-renders only that pill." The last clause is superseded: the pill has no tick any more.
-//
-// What can be observed, and is pinned here: this file replaces the chart stubs of test/setup.ts by ones that record the
-// `data` and `options` objects (by reference) and count their renders.
-//   - an unrelated re-render (theme toggle: only the options may change; a new sample: only the data may change) hands the
-//     chart the same object for the input that did not change;
-//   - a stats poll that changes only `elapsed_ms` (the pill; see the last describe, spec 29 round 2) leaves data and options
-//     as they were.
-// NOT observable here, left to the review: which `useMemo`/`memo` calls the implementation uses, and that the dependency
-// lists are right (a memo that never recomputes fails the tests with changed inputs in dashboardHistory.test.tsx and
-// dashboardP4tg.test.tsx; one that always recomputes fails the identity tests below).
+// This file replaces the chart stubs of test/setup.ts by ones that record the `data` and `options` objects (by reference) and count
+// their renders:
+//   - an unrelated re-render (theme toggle: only the options may change; a new sample: only the data may change) hands the chart the
+//     same object for the input that did not change;
+//   - a stats poll that changes only `elapsed_ms` (the pill) leaves data and options as they were.
+// NOT observable here: which `useMemo`/`memo` calls the implementation uses, and that the dependency lists are right (a memo that
+// never recomputes fails the tests with changed inputs in dashboardHistory.test.tsx and dashboardP4tg.test.tsx; one that always
+// recomputes fails the identity tests below).
 
 interface Seen {
   data: unknown;
@@ -51,7 +46,7 @@ vi.mock('react-chartjs-2', () => {
 });
 
 const last = (kind: 'line') => must(seen[kind].at(-1), `a rendered ${kind} chart`);
-// Spec 51: the link view has two doughnuts (loss, frame sizes) and two bar charts (delay, IAT): the chart under test is the
+// The link view has two doughnuts (loss, frame sizes) and two bar charts (delay, IAT): the chart under test is the
 // newest render of the stub whose element is the one in its image box.
 const lastAt = (kind: 'bar' | 'doughnut', el: Element) =>
   must(seen[kind].filter((s) => s.el === el).at(-1), `a rendered ${kind} chart`);
@@ -210,10 +205,8 @@ describe('Dashboard (spec 35 F7): the loss donut keeps its data and options obje
   });
 });
 
-// Spec 29, second round: the elapsed pill no longer ticks by itself (it shows the `elapsed_ms` of the stats poll, with no
-// browser clock). Was: "the elapsed pill ticks alone", three tests that held every poll back and checked that the 1 Hz tick
-// rendered no chart. A poll is now the only thing that changes the pill, so the pinned property is: a stats poll that changes
-// only `elapsed_ms` leaves the charts' `data` and `options` objects as they were.
+// The elapsed pill shows the `elapsed_ms` of the stats poll (no browser clock), so a poll is the only thing that changes it: a stats
+// poll that changes only `elapsed_ms` leaves the charts' `data` and `options` objects as they were.
 describe('Dashboard (spec 28b item 2 / spec 29): a stats poll that changes only elapsed_ms leaves the charts alone', () => {
   /** Every other request answers once and never again; getStats answers every poll with fresh objects and a later elapsed_ms. */
   function onlyStatsKeepAnswering() {

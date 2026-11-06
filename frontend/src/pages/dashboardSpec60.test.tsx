@@ -8,16 +8,16 @@ import { deferred, renderApp, seedStore, tick } from '../test/helpers';
 import { ApiError, api, fakeController, type HistoryServer, serveHistory } from '../test/mockApi';
 import { must } from '../test/must';
 
-// Spec 60 (user 2026-11-06: "DPDS still re-draws the diagrams completely. P4TG does the spinning wheel and just clears the diagram
-// content."). Spec: .git/claude-specs/spec60-charts-start-stop.md.
-//   R1 Start / Restart click: the overlay shows and, in the same render, every chart is cleared (no samples, zero tables, grey donuts,
-//      dash pills); the old run does not come back (also not when a Restart's stop reports `stopped`).
-//   R2 the chart elements (Summary, link tabs) stay the same elements from the click through `starting` into `running`; without
-//      reported directions the tabs are the stored links.
-//   R3 running: same elements, new data.   R4 Stop: no overlay, no clearing, same elements.
-//   R5 a failed start removes the overlay, shows the error, the charts stay cleared.   R6 page load: unchanged.
-// CHOICES (spec silent): "cleared" tables are either absent or show zeros (every body cell 0, 0 Bit/s or 0.00 %); the controller is
-// simulated as the real one: while a run starts it keeps serving the old run's series until the new run (new run_id) exists.
+// After a Start/Restart click the diagrams are cleared (the spinning wheel, the diagram content cleared) rather than redrawn like
+// P4TG does:
+//   - Start / Restart click: the overlay shows and, in the same render, every chart is cleared (no samples, zero tables, grey
+//     donuts, dash pills); the old run does not come back (also not when a Restart's stop reports `stopped`);
+//   - the chart elements (Summary, link tabs) stay the same elements from the click through `starting` into `running`; without
+//     reported directions the tabs are the stored links;
+//   - running: same elements, new data. Stop: no overlay, no clearing, same elements;
+//   - a failed start removes the overlay, shows the error, the charts stay cleared. Page load: unchanged.
+// "Cleared" tables are either absent or show zeros (every body cell 0, 0 Bit/s or 0.00 %); the controller is simulated as the real
+// one: while a run starts it keeps serving the old run's series until the new run (new run_id) exists.
 
 const LINKS = [fx.link(), fx.linkRev()];
 const TITLES = ['a-b: enp101s0f0 → enp101s0f1', 'b-a: enp101s0f1 → enp101s0f0'];
@@ -146,7 +146,7 @@ beforeEach(() => {
   seedStore({ links: LINKS });
 });
 
-// ---- R1 ----------------------------------------------------------------------------------------------------------------------
+// ---- click clears ----------------------------------------------------------------------------------------------------------------------
 
 describe('spec 60 R1: Start / Restart clear every chart at once, under the overlay', () => {
   it('Start after an ended run: in the render of the click the charts, tables, donuts and pills are empty, and stay so while it starts', async () => {
@@ -198,7 +198,7 @@ describe('spec 60 R1: Start / Restart clear every chart at once, under the overl
   });
 });
 
-// ---- R2 ----------------------------------------------------------------------------------------------------------------------
+// ---- same elements ----------------------------------------------------------------------------------------------------------------------
 
 describe('spec 60 R2: the chart elements stay mounted from the click into the run', () => {
   it('Start after an ended run: same Summary and link charts before the click, under the overlay, starting, running without directions and with data', async () => {
@@ -280,7 +280,7 @@ describe('spec 60 R2: the chart elements stay mounted from the click into the ru
   });
 });
 
-// ---- R3 ----------------------------------------------------------------------------------------------------------------------
+// ---- running ----------------------------------------------------------------------------------------------------------------------
 
 describe('spec 60 R3: a running run updates the charts in place', () => {
   it('new samples change the data of the same chart elements', async () => {
@@ -301,7 +301,7 @@ describe('spec 60 R3: a running run updates the charts in place', () => {
   });
 });
 
-// ---- R4 ----------------------------------------------------------------------------------------------------------------------
+// ---- Stop ----------------------------------------------------------------------------------------------------------------------
 
 describe('spec 60 R4: Stop neither covers nor clears the charts', () => {
   it('Draining… (disabled) while stopping, then stopped: no overlay, the same elements, the final charts stay', async () => {
@@ -332,7 +332,7 @@ describe('spec 60 R4: Stop neither covers nor clears the charts', () => {
   });
 });
 
-// ---- R5 ----------------------------------------------------------------------------------------------------------------------
+// ---- failed start ----------------------------------------------------------------------------------------------------------------------
 
 describe('spec 60 R5: a failed start removes the overlay, shows the error, and the charts stay cleared', () => {
   it('Start rejected by the controller', async () => {
@@ -375,7 +375,7 @@ describe('spec 60 R5: a failed start removes the overlay, shows the error, and t
   });
 });
 
-// ---- R6 ----------------------------------------------------------------------------------------------------------------------
+// ---- page load ----------------------------------------------------------------------------------------------------------------------
 
 describe('spec 60 R6: page load is unchanged', () => {
   it('a controller that still has its last run shows its charts, without overlay', async () => {

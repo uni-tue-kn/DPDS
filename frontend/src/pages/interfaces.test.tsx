@@ -5,7 +5,7 @@ import { renderApp } from '../test/helpers';
 
 // Columns (columnheader names, in this order): PCI, Vendor, Driver, Netdev, MAC, State, Speed, MTU, NUMA,
 // PCIe link, Usable, Reason. Null values print "n/a". Speed 100000 Mb/s prints "100 Gb/s", 10000 "10 Gb/s".
-// uplink interfaces (the host uses them, spec v27) carry the text "uplink" in their row, never "management"; no other row
+// uplink interfaces (the host uses them) carry the text "uplink" in their row, never "management"; no other row
 // says "uplink". The reason text comes from the API; without one the row falls back to the word "uplink".
 const COLUMNS = [
   'PCI',

@@ -20,14 +20,12 @@ const DROPPER_SEED_XOR: u64 = 0x9E37_79B9_7F4A_7C15;
 
 /// What [`Buffer::push_outcome`] did with a packet.
 ///
-/// The cause of a rejection follows the evaluation order of the push: the
-/// capacity is checked first (`BufferFull`, nothing else is touched), then the
-/// limiter accounts the packet (also when the packet is rejected afterwards)
-/// and the loss model decides. The reported cause is the first that rejects the
-/// packet: the capacity (`BufferFull`), else the loss model (`Lost`), else the
-/// limiter (`LimiterDrop`). A packet that both the loss model and the limiter reject therefore counts as
-/// `Lost`, so with a loss model active `LimiterDrop` can under-count the
-/// packets the limiter alone would have rejected.
+/// The reported cause is the first that rejects the packet: the capacity
+/// (`BufferFull`, checked first, nothing else is touched), else the loss model
+/// (`Lost`), else the limiter (`LimiterDrop`). The limiter accounts the packet
+/// even when the loss model drops it afterwards, so with a loss model active
+/// `LimiterDrop` can under-count the packets the limiter alone would have
+/// rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PushOutcome {
     /// The packet is queued and leaves at `send_time_ns` (whole ns, exactly
@@ -123,19 +121,19 @@ impl HeapEntry {
 /// With `reordering: true` packets leave in send-time order, and packets that
 /// enter at the same instant keep their entry order. The order does not use
 /// the arrival sequence number (kept only for [`Buffer::out_of_order`]): every
-/// entry's send time is kept in fixed point with 1/64 ns
-/// resolution (`key = floor(t * 64) + tie`, `t` the send time in ns) and `tie`
-/// counts the packets accepted since the last push with a different
-/// `current_time_ns`, so each packet entering at the same instant sorts 1/64 ns
-/// after the previous one. Rejected pushes do not advance `tie`. The key
-/// saturates at `u64::MAX` instead of overflowing. [`Buffer::front_time`]
-/// reports `key >> 6` (whole ns). Packets that enter at *different* instants
-/// and end up with exactly equal keys may leave in either order.
+/// entry's send time is kept in fixed point with 1/64 ns resolution
+/// (`key = floor(t * 64) + tie`, `t` the send time in ns) and `tie` counts the
+/// packets accepted since the last push with a different `current_time_ns`, so
+/// each packet entering at the same instant sorts 1/64 ns after the previous
+/// one. Rejected pushes do not advance `tie`. The key saturates at `u64::MAX`.
+/// [`Buffer::front_time`] reports `key >> 6` (whole ns). Packets that enter at
+/// *different* instants and end up with exactly equal keys may leave in either
+/// order.
 ///
-/// The offsets also reach across instants: a burst of `n` packets at one
-/// instant shifts its last keys by up to `(n - 1)/64` ns, so a packet pushed at
-/// a later instant that is less than that apart can sort between them. With
-/// the 32-packet burst of `dpds` that is at most about 0.5 ns.
+/// A burst of `n` packets at one instant shifts its last keys by up to
+/// `(n - 1)/64` ns, so a packet pushed at a later instant that is less than
+/// that apart can sort between them (at most about 0.5 ns for the 32-packet
+/// burst of `dpds`).
 pub struct Buffer {
     inner: InnerBuffer,
     capacity: usize,
@@ -155,7 +153,7 @@ pub struct Buffer {
 }
 
 impl Buffer {
-    /// Creates an empty buffer (and its delayer, limiter and dropper) from `config`.
+    /// Creates an empty buffer from `config`.
     ///
     /// # Panics
     ///
@@ -164,15 +162,14 @@ impl Buffer {
         Buffer::try_new(config).unwrap_or_else(|e| panic!("{e}"))
     }
 
-    /// Like [`Buffer::new`], but returns an error for invalid delay
-    /// distribution parameters, a `half_life_period_ns` that is negative, NaN
-    /// or infinite (0 is valid) or, with correlation, so long that its
-    /// smoothing weight is not below 1, an `initialization_rate_pps` that is
-    /// not finite or below 1, or an unallocatable `buffer_capacity`
-    /// instead of panicking. Also rejects `reordering` combined with
-    /// correlation or with an active Spacer limiter. Only the initial parameters are validated: the
-    /// correlated delay re-derives its distribution from the measured packet
-    /// rate, which a huge finite half-life can still push out of range later.
+    /// Like [`Buffer::new`], but returns a [`BuildError`] instead of panicking:
+    /// invalid delay distribution parameters, a bad `half_life_period_ns`, an
+    /// `initialization_rate_pps` that is not finite or below 1, an
+    /// unallocatable `buffer_capacity`, or `reordering` combined with
+    /// correlation or with an active Spacer limiter. Only the initial
+    /// parameters are validated: the correlated delay re-derives its
+    /// distribution from the measured packet rate, which a huge finite
+    /// half-life can still push out of range later.
     pub fn try_new(config: Config) -> Result<Buffer, BuildError> {
         if config.reordering && config.delayer.activate_correlation {
             return Err(BuildError::ReorderingWithCorrelation);
@@ -250,10 +247,8 @@ impl Buffer {
         })
     }
 
-    /// Pushes a packet into the buffer, applying the delayer, limiter and
-    /// dropper. Returns `false` if the packet was dropped or the buffer is full.
-    ///
-    /// Same as [`Buffer::push_outcome`] reduced to "accepted or not".
+    /// Pushes a packet, applying the delayer, limiter and dropper. Returns
+    /// `false` if the packet was dropped or the buffer is full.
     ///
     /// The buffer does not own `packet_ptr` and never dereferences it; the
     /// caller must keep it valid until it is popped.
@@ -272,30 +267,28 @@ impl Buffer {
     /// Like [`Buffer::push`], but tells why a packet was rejected and, for an
     /// accepted one, when it leaves. See [`PushOutcome`] for the precedence of
     /// the causes.
-    ///
-    /// **API change (addition):** new method; `push` is a wrapper around it.
     pub fn push_outcome(
         &mut self,
         packet_ptr: *mut c_void,
         packet_length_byte: u32,
         current_time_ns: f64,
     ) -> PushOutcome {
-        // Room first: a packet that cannot be enqueued must not be accounted
-        // anywhere (it would drift the limiter and consume random draws).
+        // Room first: a packet that cannot be enqueued must not drift the
+        // limiter or consume random draws.
         if self.len() >= self.capacity {
             return PushOutcome::BufferFull;
         }
 
         let time_to_send_ns = current_time_ns + self.delayer.delayer_sample_ns(current_time_ns);
 
-        // Increase by 4 because L2 FEC is removed
+        // Add the 4 L2 FEC bytes that were removed from the length.
         let packet_length_byte = packet_length_byte + 4;
 
         let limiter_result = self
             .limiter
             .limiter_calculate_offset_ns(time_to_send_ns, packet_length_byte);
 
-        // Drop packets after they are accounted for the limiter
+        // The limiter has accounted the packet; the loss model decides after.
         if self.dropper.dropper_drop() {
             return PushOutcome::Lost;
         }
@@ -339,7 +332,7 @@ impl Buffer {
         }
     }
 
-    /// Removes and returns the head packet pointer, or `None` if the buffer is empty.
+    /// Removes and returns the head packet pointer.
     #[inline]
     pub fn pop(&mut self) -> Option<*mut c_void> {
         match &mut self.inner {
@@ -380,8 +373,6 @@ impl Buffer {
 
     /// Like [`Buffer::pop_due`], but also returns the send time (whole ns, as
     /// [`Buffer::front_time`] reported it before the pop) of the popped packet.
-    ///
-    /// **API change (addition):** new method.
     #[inline]
     pub fn pop_due_with_time(&mut self, now_ns: f64) -> Option<(*mut c_void, u64)> {
         match &mut self.inner {
@@ -426,7 +417,7 @@ impl Buffer {
         self.out_of_order
     }
 
-    /// Returns the send time (in ns) of the head packet, or `None` if the buffer is empty.
+    /// Returns the send time (ns) of the head packet.
     #[inline]
     pub fn front_time(&self) -> Option<f64> {
         match &self.inner {

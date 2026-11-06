@@ -26,21 +26,15 @@ import { ApiError, api, fakeController, serveHistory } from '../test/mockApi';
 import { must } from '../test/must';
 import { expectBars } from '../test/probabilities';
 
-// Spec 28 (user 2026-11-04): the P4TG-like dashboard. Spec: items 1-3 of scratchpad/spec28.md (item 4, server-side history, is
-// spec 29 and not tested here). The tester's choices where the spec is silent are marked "CHOICE" and listed in the report:
-//   - test ids: pill-tx, pill-rx, pill-status, pill-elapsed, loss-pct (spec 46, dashboardTopRow.test.tsx: P4TG's order and texts; was
-//     pill-lost "Lost N frames" of spec 43; there is no state-badge any more)
-//   - the rate pills read "<n> Gbit/s (<m> Mpps)" (spec 46: P4TG's formatBits, no label, no padded decimals), e.g. "9.25 Gbit/s (7.31 Mpps)"
-//   - radio group named "Chart", radios named "Traffic rates", "Packet loss", "Delay histogram" (spec 43 F5); the last one only with delay_stats on
-//   - the loss chart has nine lines (spec 47), one per donut cause, of cumulative counts (spec 43 F1; was two percent datasets)
+// The P4TG-like dashboard:
+//   - test ids: pill-tx, pill-rx, pill-status, pill-elapsed, loss-pct (dashboardTopRow.test.tsx has P4TG's order and texts); there
+//     is no state-badge
+//   - the rate pills read "<n> Gbit/s (<m> Mpps)", e.g. "9.25 Gbit/s (7.31 Mpps)"
+//   - radio group named "Chart", radios named "Traffic rates", "Packet loss", "Delay histogram"; the last one only with delay_stats on
+//   - the loss chart has nine lines, one per donut cause, of cumulative counts
 //   - Restart refuses locally (no stop) when the local document has no links or is unreadable
-//   - the histogram controls, percentile list and under/overflow line belong to the histogram view only
+//   - the histogram has no controls, percentile list or expected overlay; the percentile lines are annotations
 // The chart stubs in test/setup.ts expose the chart data as `data-chart` and the options as `data-options`.
-//
-// Spec 35 (2026-11-05) reworked this file; each changed or removed block says what it was. In short: the button group always
-// holds [Restart] [Start|Stop|...] (spec 43 F8: now Stop/Restart, Draining…/Restart or Start, see the Start/Stop/Restart block); the "dropped" pill is always there (spec 38: now the "lost" pill, only while NIC drops > 0); the
-// per-card radio group is per-tab ("Drops" is "Loss", "Delay histogram" is second); the histogram has no controls, no percentile
-// list and no expected overlay (F4); the NIC ports table moved to the Interfaces page (interfacesPorts.test.tsx).
 
 const STATES: EmulationState[] = ['stopped', 'starting', 'running', 'stopping', 'failed'];
 
@@ -55,10 +49,9 @@ async function openIn(state: EmulationState, over: Partial<ReturnType<typeof fx.
   await findState(state);
 }
 
-// Spec 43 F8. Was (spec 28, spec 35 F1): a ButtonGroup of [Restart] and one contextual Start/Stop/"Stopping…" button, Restart
-// always present and enabled only while running, "Stopping…" with a spinner. Now like P4TG's Home.tsx: plain Buttons with `mb-1`,
-// no group, no spinners; starting/running [Stop (danger, bi-stop-fill)] [Restart (primary, bi-arrow-clockwise)]; stopping the
-// same two disabled with "Draining…" for Stop; any other state only [Start (primary, bi-play-circle-fill)].
+// Like P4TG's Home.tsx: plain Buttons with `mb-1`, no group, no spinners; starting/running [Stop (danger, bi-stop-fill)]
+// [Restart (primary, bi-arrow-clockwise)]; stopping the same two disabled with "Draining…" for Stop; any other state only
+// [Start (primary, bi-play-circle-fill)].
 describe('Dashboard (spec 43 F8): Start / Stop / Restart like P4TG', () => {
   beforeEach(() => {
     seedStore({ links: [fx.link(), fx.linkRev()] });
@@ -181,9 +174,8 @@ describe('Dashboard (spec 28): Restart = stop, then start with the current local
     seedStore({ links: [fx.link(), fx.linkRev()] });
   });
 
-  // Spec 28b item 1: the real controller answers a stop with `stopping` and refuses a start (409) until a later poll reports
-  // `stopped` or `failed`. These tests used a stop that resolved with `stopped` at once, which the controller never does:
-  // they now run against `fakeController` (src/test/mockApi.ts) and finish the stop by setting its state, under fake timers.
+  // The real controller answers a stop with `stopping` and refuses a start (409) until a later poll reports `stopped` or `failed`, so
+  // these tests run against `fakeController` (src/test/mockApi.ts) and finish the stop by setting its state, under fake timers.
   const openRunning = async () => {
     vi.useFakeTimers();
     const c = fakeController('running');
@@ -261,7 +253,7 @@ describe('Dashboard (spec 28): Restart = stop, then start with the current local
     await tick(0);
     fireEvent.click(must(restartBtn()));
     await tick(0);
-    // spec 43 F8: no "Restarting…" and no spinner any more; while it waits every run button is disabled
+    // no "Restarting…" and no spinner; while it waits every run button is disabled
     expect(runButtons().length).toBeGreaterThan(0);
     for (const b of runButtons()) expect(b).toBeDisabled();
     expect(screen.getByTestId('run-buttons').querySelector('.spinner-border')).toBeNull();
@@ -318,8 +310,7 @@ describe('Dashboard (spec 28): status pills', () => {
     await waitFor(() => expect(pill).toHaveTextContent(/8\.26 Gbit\/s \(6\.31 Mpps\)/));
   });
 
-  // Spec 46. Was: 'RX and TX are told apart in the pills (RX first)', with the labels "RX" and "TX" in the text. P4TG has no
-  // labels (the arrows tell them apart) and TX comes first.
+  // P4TG's pills have no RX/TX labels (the arrows tell them apart) and TX comes first.
   it('TX and RX are told apart by their arrows, TX first, with no label in the text', async () => {
     renderApp('/');
     const rx = await screen.findByTestId('pill-rx');
@@ -344,7 +335,6 @@ describe('Dashboard (spec 28): status pills', () => {
     expect(screen.getByTestId('pill-rx')).toHaveTextContent(/1\.7 Gbit\/s \(1\.25 Mpps\)/);
   });
 
-  // Spec 43 F3. Was: 'the state pill stays (same test id and live region)'.
   it('there is no state badge left of the RX pill', async () => {
     renderApp('/');
     await screen.findByTestId('pill-rx');
@@ -352,10 +342,8 @@ describe('Dashboard (spec 28): status pills', () => {
     expect(screen.queryByText(/^running$/i)).not.toBeInTheDocument();
   });
 
-  // Spec 29, second round (user 2026-11-04): relative times like P4TG. The pill shows the `elapsed_ms` of the stats poll
-  // (whole milliseconds since the controller started the run, from its own monotonic clock) and the browser's clock is not
-  // used at all. Was: "elapsed time from started_at (unix seconds)", where the pill was `Date.now()` minus `started_at`
-  // and counted up by itself once a second; its four tests are rewritten below. `started_at` is for display only.
+  // Relative times like P4TG: the pill shows the `elapsed_ms` of the stats poll (whole milliseconds since the controller started the
+  // run, from its own monotonic clock); the browser's clock is not used at all. `started_at` is for display only.
   describe('elapsed time from the polled elapsed_ms (spec 29, no browser clock)', () => {
     const polled = (elapsed_ms?: number, over: Partial<ReturnType<typeof fx.stats>> = {}) =>
       fx.stats([fx.dirStats(0), fx.dirStats(1)], { ...(elapsed_ms === undefined ? {} : { elapsed_ms }), ...over });
@@ -421,7 +409,7 @@ describe('Dashboard (spec 28): status pills', () => {
       expect(pill()).toHaveTextContent(text);
     });
 
-    // Spec 46 item 4. Was: [0, '0h 0m 0s'] "0 is a value, not absent" (and 999 -> '0h 0m 0s'): the duration shows only when > 0.
+    // The duration shows only when > 0.
     it('is not shown at elapsed_ms 0', async () => {
       await open(0);
       expect(screen.queryByTestId('pill-elapsed')).not.toBeInTheDocument();
@@ -447,7 +435,6 @@ describe('Dashboard (spec 28): status pills', () => {
       expect(pill()).toHaveTextContent('0h 1m 5s');
     });
 
-    // Spec 46 item 4. Was: 'CHOICE: after a stop the pill keeps the frozen final time the controller still reports'.
     it.each(['stopped', 'failed'] as const)(
       'after a run ended ("%s") the pill is gone although the controller still reports the time',
       async (state) => {
@@ -473,7 +460,7 @@ describe('Dashboard (spec 28): status pills', () => {
       expect(screen.queryByTestId('pill-elapsed')).not.toBeInTheDocument();
     });
 
-    // Spec 35: DirectionCard.tsx is gone; the scan covers Dashboard.tsx and every page source that draws a chart.
+    // The scan covers Dashboard.tsx and every page source that draws a chart.
     it('the dashboard sources use no browser clock and no local tick', () => {
       const dir = join(process.cwd(), 'src/pages');
       const files = readdirSync(dir)
@@ -530,11 +517,7 @@ function twoDirections() {
   return fx.stats([fx.dirStats(0), fx.dirStats(1)]);
 }
 
-/**
- * Spec 29: the rate and drops charts are built from the controller's series (`GET /api/stats/history`), no longer from the
- * stats polls. This serves one sample per link with the values of `fx.dirStats()` (RX 9.5 Gbit/s, TX 8.25 Gbit/s, shares
- * 0.5 / 1.25 / 2.5 / 0.1 / 0.75 %), so the chart tests below keep their numbers.
- */
+/** The rate and loss charts are built from the controller's series (`GET /api/stats/history`). This serves one sample per link with the values of `fx.dirStats()` (RX 9.5 Gbit/s, TX 8.25 Gbit/s). */
 function serveFixtureHistory() {
   serveHistory({ startedAt: 1762000000, samples: { '0': [fx.historySample(1000)], '1': [fx.historySample(1000)] } });
 }
@@ -555,10 +538,8 @@ async function showChart(
   return name === 'Delay histogram' ? findDelayBar(card(d)) : within(card(d)).findByTestId('chart-line');
 }
 
-// Spec 35 F3/F4. Was: 'radio chart selector per link' with a radio group per card (Rate, Drops, Delay histogram) and the
-// histogram's own controls. Now: the radios sit in the chart area of each link's tab (Rate, Delay histogram, Loss). Removed
-// here: 'each link has its own selection' (the spec only says the selection persists; dashboardSpec35.test.tsx pins that it
-// survives polls and a visit to the other tab) and every histogram control (window, log scale, expected overlay, percentile list).
+// The radios sit in the chart area of each link's tab (Rate, Delay histogram, Loss); the selection persists across polls and a visit
+// to the other tab (dashboardSpec35.test.tsx). The histogram has no controls (window, log scale, expected overlay, percentile list).
 describe("Dashboard (spec 28, spec 35 F3): radio chart selector in each link's tab", () => {
   beforeEach(() => {
     api.getEmulation.mockResolvedValue(fx.emulation('running'));
@@ -651,7 +632,7 @@ describe('Dashboard (spec 28): rate chart in the P4TG look', () => {
   beforeEach(() => {
     api.getEmulation.mockResolvedValue(fx.emulation('running'));
     api.getStats.mockResolvedValue(twoDirections());
-    serveFixtureHistory(); // spec 29
+    serveFixtureHistory();
   });
 
   const rate = async () => {
@@ -707,13 +688,12 @@ describe('Dashboard (spec 28): rate chart in the P4TG look', () => {
     expect(o.plugins?.legend?.position).toBe('top');
   });
 
-  // Spec 58 S6 (P4TG): no tooltips on the line and bar charts. Was: 'hover tooltips stay enabled'.
+  // No tooltips on the line and bar charts (as in P4TG).
   it('has no hover tooltips', async () => {
     const o = optsOf(await rate());
     expect(o.plugins?.tooltip?.enabled).toBe(false);
   });
 
-  // Spec 29. Was: "keeps one sample per poll (the 120 s client history is unchanged)", which counted one point per stats poll.
   it('has one point per sample of the series, however often the stats are polled', async () => {
     vi.useFakeTimers();
     renderApp('/');
@@ -725,13 +705,12 @@ describe('Dashboard (spec 28): rate chart in the P4TG look', () => {
   });
 });
 
-// Spec 43 F1. Was: two datasets, "Model loss %" (loss_pct) and "Overload drops %" (limiter + buffer full + NIC TX + NIC RX shares).
-// Now one line per donut cause, each the cumulative count of that cause at the sample.
+// One line per donut cause, each the cumulative count of that cause at the sample.
 describe('Dashboard (spec 43 F1): the loss chart plots cumulative dropped packets per cause', () => {
   beforeEach(() => {
     api.getEmulation.mockResolvedValue(fx.emulation('running'));
     api.getStats.mockResolvedValue(twoDirections());
-    serveFixtureHistory(); // spec 29: one sample per link with the default counts 40 / 30 / 20 / 5 / 4 / 1 / 0 / 0 / 0
+    serveFixtureHistory(); // one sample per link with the default counts 40 / 30 / 20 / 5 / 4 / 1 / 0 / 0 / 0
   });
 
   const drops = async () => {
@@ -784,7 +763,7 @@ describe('Dashboard (spec 43 F1): the loss chart plots cumulative dropped packet
   it('the lines are told apart by colour, and each has the colour of its donut segment', async () => {
     const chart = await drops();
     const colours = dataOf(chart).datasets.map((s) => s.borderColor);
-    expect(new Set(colours).size).toBe(9); // spec 47: nine causes
+    expect(new Set(colours).size).toBe(9); // nine causes
     const donut = JSON.parse(lossDonut(card(0)).getAttribute('data-chart') ?? 'null');
     expect(colours).toEqual(donut.datasets[0].backgroundColor);
   });
@@ -798,7 +777,6 @@ describe('Dashboard (spec 43 F1): the loss chart plots cumulative dropped packet
     expect(o.plugins?.tooltip?.enabled).toBe(false);
   });
 
-  // Spec 29. Was: "collects one point per poll" (a client-side sample per stats poll).
   it('has one point per sample of the series in every dataset, as many as there are labels', async () => {
     vi.useFakeTimers();
     serveHistory({
@@ -856,7 +834,7 @@ describe('Dashboard (spec 28): delay histogram chart look and percentile lines',
     }
   });
 
-  // Spec 58 A1: a percentile is a line (no text) and a separate label. Was: every annotation carries a percentile name.
+  // A percentile is a line (no text) and a separate label.
   it('draws nothing else: only lines and labels, the labels carrying the names', async () => {
     const o = optsOf(await hist());
     expect(annotations(o)).toHaveLength(8);
@@ -924,9 +902,6 @@ describe('Dashboard (spec 28): delay histogram chart look and percentile lines',
     expect(annotations(optsOf(await hist()))).toEqual([]);
   });
 
-  // Spec 35 F4. Was: 'the percentile list under the chart stays' (p50..p99.9 as a list, with clamp markers; removed, the dashed
-  // annotation lines stay), 'y axis titled ... legend on top' (the legend assertion is dropped: with the expected overlay gone
-  // the single series needs none) and 'keeps the expected overlay in the legend and the log toggle' (overlay and log toggle gone).
   it('y axis titled with the probability, starts at zero and linear, x axis titled with the delay range; no tooltips (spec 58 S3, S4, S6)', async () => {
     const o = optsOf(await hist());
     expect(o.scales?.y?.title?.text).toBe('Probability (%)');
@@ -950,8 +925,7 @@ describe('Dashboard (spec 28): delay histogram chart look and percentile lines',
     expect(optsOf(chart).scales?.y?.type ?? 'linear').toBe('linear');
   });
 
-  // Spec 36 removes the title line "Mean <d> · Jitter (σ) <d>" of spec 35 F4 (its tests were here); the numbers are in the
-  // histogram tables above the chart (histogramTables.test.tsx).
+  // The numbers are in the histogram tables above the chart (histogramTables.test.tsx), not in a title line.
 });
 
 describe('Dashboard (spec 28): chart text and grid colours follow dark mode', () => {
@@ -1034,6 +1008,3 @@ describe('Dashboard (spec 28): chart text and grid colours follow dark mode', ()
     expect(tx?.borderColor?.replace(/\s/g, '')).toBe('rgb(53,162,235)');
   });
 });
-
-// Spec 35 F6. Removed: 'PortsTable style' (striped, dark header) and its rows/heading test; the table is on the Interfaces page and
-// interfacesPorts.test.tsx pins them there.

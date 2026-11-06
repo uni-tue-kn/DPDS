@@ -1,7 +1,7 @@
-//! Evaluation order of `Buffer::push_outcome` (spec20): the buffer-room check
-//! comes first. A packet that finds the buffer full is `BufferFull` and takes
-//! no part in the emulation: no delay sample, no limiter accounting, no loss
-//! draw. Otherwise the order is delay, limiter accounting, loss draw (`Lost`),
+//! Evaluation order of `Buffer::push_outcome`: the buffer-room check comes
+//! first. A packet that finds the buffer full is `BufferFull` and takes no part
+//! in the emulation: no delay sample, no limiter accounting, no loss draw.
+//! Otherwise the order is delay, limiter accounting, loss draw (`Lost`),
 //! limiter verdict (`LimiterDrop`), enqueue.
 //!
 //! # How "untouched" is proven
@@ -22,8 +22,8 @@
 //!
 //! Each of the three states is isolated in one scenario (only the delayer is
 //! stochastic, only the limiter is active, only the dropper is stochastic), and
-//! one scenario switches everything on. All run in FIFO and reordering mode, except those with the
-//! correlated delayer or the Spacer, which run in FIFO mode only (spec 45: reordering excludes them).
+//! one scenario switches everything on. All run in FIFO and reordering mode,
+//! except those with the correlated delayer or the Spacer (FIFO only).
 
 use std::ffi::c_void;
 
@@ -230,7 +230,7 @@ fn a_full_buffer_push_does_not_sample_the_delayer() {
 fn a_full_buffer_push_does_not_advance_the_correlated_delayer() {
     // The extra pushes are 1.5 ms apart: every one would refresh the rate
     // estimate (every > 1 ms) and move the correlation weight and the EMA.
-    // FIFO only: reordering cannot be combined with correlation (spec 45).
+    // FIFO only: reordering cannot be combined with correlation.
     let s = Scenario {
         delay: Delay::Correlated,
         extra_gap_ns: 1_500_000.0,
@@ -246,7 +246,7 @@ fn a_full_buffer_push_does_not_account_bits_in_the_spacer() {
     // The extra pushes (12336 bit each) sit at the same instants as the tail;
     // accounting them would push the tail's spacing offsets up and its limit
     // drops earlier.
-    // FIFO only: reordering works only with the token bucket (spec 45).
+    // FIFO only: reordering works only with the token bucket.
     let s = Scenario {
         limiter: Some(LimiterMode::Spacer),
         ..Scenario::base(false)
@@ -301,7 +301,7 @@ fn a_full_buffer_push_does_not_step_the_gilbert_elliot_chain() {
 
 #[test]
 fn a_full_buffer_push_leaves_every_stage_untouched_when_all_are_active() {
-    // FIFO only: reordering cannot be combined with correlation (spec 45).
+    // FIFO only: reordering cannot be combined with correlation.
     for mode in [LimiterMode::Spacer, LimiterMode::TokenBucketFilter] {
         let s = Scenario {
             delay: Delay::Correlated,
@@ -322,7 +322,7 @@ fn a_buffer_full_push_reports_buffer_full_whatever_the_stages_would_say() {
     for reordering in MODES {
         for mode in [LimiterMode::Spacer, LimiterMode::TokenBucketFilter] {
             if reordering && matches!(mode, LimiterMode::Spacer) {
-                continue; // reordering works only with the token bucket (spec 45)
+                continue; // reordering works only with the token bucket
             }
             let mut cfg = Scenario {
                 limiter: Some(mode),

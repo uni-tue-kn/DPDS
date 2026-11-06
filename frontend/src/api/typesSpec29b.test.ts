@@ -1,7 +1,6 @@
-// Spec 29b item 9: the hand-written DTO types follow the API. `GET /api/stats` omits `elapsed_ms` when nothing has run (it is
-// never `null`), so the key is `elapsed_ms?: number`, with no `| null` (the `?:`-only rule for keys the API omits). The history
-// answer carries `run_id` (null before any run) and `links` (spec 29b item 1). Types do not exist at run time, so the source is
-// read.
+// The hand-written DTO types follow the API: `GET /api/stats` omits `elapsed_ms` when nothing has run (it is never `null`), so the
+// key is `elapsed_ms?: number` with no `| null`. The history answer carries `run_id` (null before any run) and `links`. Types do
+// not exist at run time, so the source is read.
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 

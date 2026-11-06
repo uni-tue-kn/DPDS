@@ -57,7 +57,7 @@ export function linkLabel(
   return `${name || '?'}: ${label(ingress) || '?'} → ${label(egress) || '?'}`;
 }
 
-// The four formatters below are ported exactly from P4TG's SendReceiveMonitor.tsx and Helper.ts.
+// These four formatters match P4TG's SendReceiveMonitor output exactly.
 const K = 1000;
 
 function unitScaled(v: number, sizes: string[], decimals: number): [number, string] {
@@ -92,7 +92,7 @@ export function secondsToTime(seconds: number): string {
 }
 
 /**
- * Preamble and inter-frame gap per frame, in bits: P4TG's L1 is L2 plus 20 B per frame. Whether DPDK's byte counters include the
+ * Preamble and inter-frame gap per frame, in bits: L1 is L2 plus 20 B per frame. Whether DPDK's byte counters include the
  * 4 B FCS is unverified; it is not added here.
  */
 export const L1_OVERHEAD_BITS = 20 * 8;
@@ -100,5 +100,5 @@ export const L1_OVERHEAD_BITS = 20 * 8;
 /** The L1 bit rate of an L2 bit rate `bps` at `pps` frames per second. */
 export const l1Bps = (bps: number, pps: number) => bps + pps * L1_OVERHEAD_BITS;
 
-/** The L1 rate in Gbit/s of a chart sample's L2 `gbps` at `mpps` million frames per second (P4TG's charts plot L1). */
+/** The L1 rate in Gbit/s of a chart sample's L2 `gbps` at `mpps` million frames per second. */
 export const l1Gbps = (gbps: number, mpps: number) => gbps + (mpps * 1e6 * L1_OVERHEAD_BITS) / 1e9;

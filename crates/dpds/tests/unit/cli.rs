@@ -6,9 +6,7 @@
 //!   excluded) is `Cli::eal_args`; everything after it is app args.
 //! - No `--` means no app args (all defaults).
 //! - `Cli` keeps the raw flags: `config`, `config0`, `config1` are `None`
-//!   when absent. The pool size is no longer an option (it is derived from
-//!   `buffer_capacity` and the descriptor counts, see `setup::required_mbufs`):
-//!   `--num-mbufs` is an unknown flag and `DEFAULT_NUM_MBUFS` is gone.
+//!   when absent. `--num-mbufs` is an unknown flag (the pool size is derived).
 //! - Unknown app arg (`--num-mbufs` included), missing option value, a second
 //!   `--`, or a flag given TWICE => `Err(CliError)` whose Display contains
 //!   "Usage" and names the offending argument.
@@ -158,7 +156,7 @@ fn eal_flags_that_look_like_app_flags_stay_with_eal() {
 
 #[test]
 fn a_flag_given_twice_is_an_error_naming_the_flag() {
-    // Replaces the old "last occurrence wins" rule (now an error).
+    // A flag given twice is an error, not "last occurrence wins".
     for flag in ["--config", "--config0", "--config1"] {
         let value = "a.json";
         let err = parse_args(&args(&["dpds", "--", flag, value, flag, value])).unwrap_err();
@@ -248,7 +246,7 @@ fn option_without_value_is_an_error() {
 
 #[test]
 fn num_mbufs_is_an_unknown_flag_in_every_form() {
-    // The pool size is derived now; the old option is a usage error whatever
+    // `--num-mbufs` is a usage error whatever
     // follows it (a number, nothing, `=value`, a bad number).
     for form in [
         &["--num-mbufs", "4096"][..],
@@ -373,11 +371,10 @@ fn config0_with_one_port_is_fine() {
 
 // ── --links (multi-link mode) ───────────────────────────────────────
 //
-// `Cli` gets `pub links: Option<PathBuf>` (None when absent). `--links <file>`
-// is mutually exclusive with `--config`, `--config0` and `--config1`:
-// `parse_args` returns an Err whose Display names `--links` and the other flag
-// and contains "Usage". A second `--links` or a missing value is an error like
-// for the other flags; the usage line lists `--links`.
+// `--links <file>` is mutually exclusive with `--config`, `--config0` and `--config1`:
+// `parse_args` returns an Err whose Display names `--links` and the other flag and contains
+// "Usage". A second `--links` or a missing value is an error like for the other flags; the usage
+// line lists `--links`.
 
 #[test]
 fn links_is_parsed_and_alone_leaves_the_config_flags_unset() {

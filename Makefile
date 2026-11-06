@@ -1,8 +1,7 @@
 BIN := target/release/dpds
 
-# Empty by default: the `telemetry` feature is off unless requested
-# (`make build FEATURES=telemetry`), so a plain `make build` produces a binary
-# with zero instrumentation overhead.
+# `telemetry` is off unless requested (`make build FEATURES=telemetry`), so a plain
+# `make build` has no instrumentation overhead.
 FEATURES ?=
 CARGO_FEATURES := $(if $(FEATURES),--features $(FEATURES))
 
@@ -11,9 +10,8 @@ CARGO_FEATURES := $(if $(FEATURES),--features $(FEATURES))
 
 # Maximum-performance build: cross-language LTO inlines DPDK's rx_burst/
 # tx_burst fast path into the Rust loops. Needs a clang/lld with the same LLVM
-# major as rustc (README.md, "Building"). If this fails with "Unable to find
-# libclang" or an lld/bitcode mismatch, that is a host toolchain problem to
-# fix, not something to route around here.
+# major as rustc (README.md, "Building"). A "Unable to find libclang" or lld/bitcode
+# mismatch error is a host toolchain problem.
 build:
 	cargo build --release -p dpds $(CARGO_FEATURES)
 
@@ -22,13 +20,10 @@ build:
 # below, and lists each caller -> callee. Without working cross-language LTO
 # (clang's LLVM major != rustc's) bindgen's `*__extern` wrappers become real
 # calls.
-# LTO_DPDK_BIG is listed but never fails the check: the inliner may keep these
-# bulk-free wrappers out of line even with LTO working (preof saw that for
-# rte_mbuf_raw_free_bulk, whose inlining it never observed). Whether it does
-# for DPDS is not yet observed.
-# When the hot path starts calling another static-inline DPDK function, add
-# its `__extern` wrapper to one of these lists, otherwise a silent LTO failure
-# leaves it an out-of-line call nobody notices.
+# LTO_DPDK_BIG never fails the check: the inliner may keep these bulk-free wrappers out of
+# line even with LTO working (preof saw that for rte_mbuf_raw_free_bulk).
+# A new static-inline DPDK function on the hot path must be added to one of these lists,
+# or a silent LTO failure goes unnoticed.
 # Matches x86_64 (`call`/`jmp`, space before the operand) and AArch64 (`bl`/
 # `b`, tab); `+0x` targets are jumps within one function. Needs objdump.
 LTO_DPDK_HOT := (rx_burst|tx_burst|rdtsc)__extern

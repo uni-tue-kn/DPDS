@@ -1,6 +1,5 @@
-// Units of the config form, modelled on P4TG's histogram dialog. The API and the stored values stay in the base unit
-// (ns, bit/s, bit, pps); the form shows a number plus a unit. All conversions shift the decimal point of the text, so
-// 2.5 µs is exactly 2500 ns and never 2499.9999999999995.
+// Units of the config form. The API and the stored values stay in the base unit (ns, bit/s, bit, pps); the form shows a number
+// plus a unit. All conversions shift the decimal point of the text, so 2.5 µs is exactly 2500 ns and never 2499.9999999999995.
 
 export interface Unit {
   label: string;

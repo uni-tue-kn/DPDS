@@ -8,21 +8,19 @@ import type { HistoryServer } from '../test/mockApi';
 import { ApiError, api, serveHistory } from '../test/mockApi';
 import { must } from '../test/must';
 
-// Spec 29b (fixes from the review of c4e3fd6 and f0c921d), frontend items 4 to 8. Item 9 (the `elapsed_ms` type) is pinned in
-// src/api/typesSpec29b.test.ts. Contract, with the tester's choices marked CHOICE (not user-confirmed):
-//   4. A run is identified by `run_id` of `GET /api/stats/history`. A changed `run_id` (also null -> n and n -> null) drops the
-//      data and fetches in full again; a changed `started_at` with the same `run_id` changes nothing.
-//   5. History cards (the final charts, no live stat list) show for `stopping`, `stopped` and `failed` whenever the history has
-//      samples. Spec 54 L1: they carry no state badge any more (was: "Stopping", "Stopped", "Failed"). Their titles come from the history's `links`
-//      (`name: ingress → egress`, ports labelled with the netdev as everywhere), never from the stats of an earlier poll or
-//      the plan of the emulation; `Link <n>` only for an index `links` has no entry for.
-//   6. While the state is `starting`, live cards chart nothing: the history still held is the old run's.
-//   7. At most 86400 samples per link are kept, the oldest are dropped first.
-//   8. A failing history request shows a warning (CHOICE: `data-testid="history-warning"`, visible text naming the history and
-//      the error message, separate from `stats-warning`) until the next success; the charts keep their data.
+// A run is identified by `run_id` of `GET /api/stats/history`:
+//   - A changed `run_id` (also null -> n and n -> null) drops the data and fetches in full again; a changed `started_at` with the same
+//     `run_id` changes nothing.
+//   - History tabs (the final charts, no live stat list) show for `stopping`, `stopped` and `failed` whenever the history has samples.
+//     They carry no state badge. Their titles come from the history's `links` (`name: ingress → egress`, ports labelled with the
+//     netdev as everywhere), never from the stats of an earlier poll or the plan of the emulation; `Link <n>` only for an index
+//     `links` has no entry for.
+//   - While the state is `starting`, live tabs chart nothing: the history still held is the old run's.
+//   - At most 86400 samples per link are kept, the oldest are dropped first.
+//   - A failing history request shows a warning (`data-testid="history-warning"`, visible text naming the history and the error
+//     message, separate from `stats-warning`) until the next success; the charts keep their data.
 
-// Spec 35 F3: a card is a tab and its chart area (src/test/dashboardUi.tsx); the badge and the title are the tab's. Changed
-// below: the badge, title and "RX rate" (stat list) expectations moved from the card to the tab, "no cards" is "no tabs".
+// A link's chart area is a tab (src/test/dashboardUi.tsx); the title is the tab's.
 const dataOf = (el: HTMLElement) => JSON.parse(el.getAttribute('data-chart') ?? 'null') as ChartData;
 interface ChartData {
   labels: string[];
@@ -61,7 +59,7 @@ beforeEach(() => {
   api.getStats.mockResolvedValue(fx.stats([fx.dirStats(0), fx.dirStats(1)]));
 });
 
-// ---- item 4: run identity is run_id --------------------------------------------------------------------------------------
+// ---- run identity is run_id --------------------------------------------------------------------------------------
 
 describe('Dashboard (spec 29b item 4): a run is its run_id, not its started_at', () => {
   it('a changed started_at with the same run_id is not a new run: the data stays and the polls stay incremental', async () => {
@@ -150,7 +148,7 @@ describe('Dashboard (spec 29b item 4): a run is its run_id, not its started_at',
   });
 });
 
-// ---- item 5: cards for stopping, stopped and failed; titles from the history's links ---------------------------------------
+// ---- cards for stopping, stopped and failed; titles from the history's links ---------------------------------------
 
 describe('Dashboard (spec 29b item 5): history cards for stopping, stopped and failed, titled from the history', () => {
   const settle = (state: 'stopping' | 'stopped' | 'failed') => {
@@ -176,7 +174,7 @@ describe('Dashboard (spec 29b item 5): history cards for stopping, stopped and f
       }
       expect(rxOf(0)).toEqual(Array(5).fill(1.5));
       expect(rxOf(1)).toEqual(Array(5).fill(2.5));
-      // spec 50 A3 (was: the final charts only, no histogram): no stored config says delay_stats is off, so the histogram stays
+      // no stored config says delay_stats is off, so the histogram stays
       expect(radioNames(0)).toEqual(CHART_RADIOS);
     },
   );
@@ -358,7 +356,7 @@ describe('Dashboard (spec 29b item 5): history cards for stopping, stopped and f
   });
 });
 
-// ---- item 6: no old-run points on the cards of a starting run -----------------------------------------------------------
+// ---- no old-run points on the cards of a starting run -----------------------------------------------------------
 
 describe('Dashboard (spec 29b item 6): while the emulation is starting, live cards get no history', () => {
   it('live cards of a starting emulation chart nothing although the history still holds the old run', async () => {
@@ -419,14 +417,14 @@ describe('Dashboard (spec 29b item 6): while the emulation is starting, live car
   });
 });
 
-// ---- item 7: at most 86400 samples per link ---------------------------------------------------------------------------
+// ---- at most 86400 samples per link ---------------------------------------------------------------------------
 
 describe('Dashboard (spec 29b item 7): the client keeps at most 86400 samples per link, dropping the oldest', () => {
   /** `count` samples a second apart from t = `from` seconds, `rx_gbps` = the sample's own number of seconds. */
   const numbered = (from: number, count: number): HistorySample[] =>
     Array.from({ length: count }, (_, i) => fx.historySample((from + i) * 1000, { ...fx.NO_PPS, rx_gbps: from + i }));
 
-  // Spec 50 G: a time chart plots at most 100 points, the first and the last of the history the page holds. So the cap of 86400
+  // A time chart plots at most 100 points, the first and the last of the history the page holds. So the cap of 86400
   // samples is seen at the chart's FIRST point (the oldest sample the page still holds) and its last one (the newest).
   it('a series at the cap that grows by 3 keeps 86400 samples: the 3 oldest are gone', async () => {
     const s = server({ '0': numbered(0, 86400), '1': fx.historySamples(0, 10) });
@@ -451,7 +449,7 @@ describe('Dashboard (spec 29b item 7): the client keeps at most 86400 samples pe
     s.samples['1'].push(fx.historySample(86_400_000));
     await tick(2000);
     expect(rxOf(0)).toHaveLength(100);
-    expect(rxOf(0)[0]).toBe(1); // the one oldest sample is gone (spec 50 G: seen at the first point)
+    expect(rxOf(0)[0]).toBe(1); // the one oldest sample is gone (seen at the first point)
     expect(rxOf(0).at(-1)).toBe(86400);
     expect(rxOf(1)).toHaveLength(11);
   });
@@ -492,7 +490,7 @@ describe('Dashboard (spec 29b item 7): the client keeps at most 86400 samples pe
   });
 });
 
-// ---- item 8: a failing history request is visible ---------------------------------------------------------------------
+// ---- a failing history request is visible ---------------------------------------------------------------------
 
 describe('Dashboard (spec 29b item 8): a failing history request shows a warning until the next success', () => {
   const warning = () => screen.queryByTestId('history-warning');

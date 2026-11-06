@@ -34,7 +34,7 @@ ChartJS.register(
   Tooltip,
 );
 
-/** The colours of P4TG's rate chart (Visuals.tsx rateDatasets): TX blue, RX orange-red, each with its translucent fill. */
+/** The colours of the rate chart: TX blue, RX orange-red, each with its translucent fill. */
 export const TX_COLOR = 'rgb(53, 162, 235)';
 export const TX_FILL = 'rgba(53, 162, 235, 0.5)';
 export const RX_COLOR = 'rgb(183, 85, 40)';
@@ -57,7 +57,7 @@ export function hexAlpha(hex: string, alpha: number): string {
 }
 
 /**
- * The options the line and bar charts share: P4TG look (wide and short by `aspectRatio`, titled axes, legend on top, y
+ * The options the line and bar charts share: wide and short by `aspectRatio`, titled axes, legend on top, y
  * from zero, no tooltips), text and grid in the colours of the theme. Chart.js animates and draws points by default;
  * animation is off for reduced motion.
  */

@@ -18,14 +18,14 @@ import {
   watchStoreWrites,
 } from '../test/helpers';
 
-// Spec 27 (user 2026-11-04): a button "Duplicate <link name>" (icon bi-files, P4TG's "Clone") sits in each Links-list row
-// between Edit and Delete. It opens the NEW-link editor pre-filled with a copy: same config and frame size, and
-// the name `<name>_copy` (taken: `<name>_copy2`, `_copy3` ...; the base is shortened so the whole name has at most 32
-// characters). Ingress and Egress are left UNSET (both are required, so the user must pick ports before saving; a copy on the
-// source's ports would collide with it at start). Spec 41: there is no worker field any more. The seed and the frame size are still copied. Nothing is stored until the
-// user saves; saving goes through the normal checks. Item 6: the router state of Duplicate is consumed once (see the last block).
-// Tester's choices where the spec is silent: the shortened base is `name.slice(0, 32 - suffix.length)`; the names that count as
-// taken are those of ALL stored links (exact match); the URL of the editor is not pinned (only its heading "New link").
+// A button "Duplicate <link name>" (icon bi-files, P4TG's "Clone") sits in each Links-list row between Edit and Delete. It opens the
+// NEW-link editor pre-filled with a copy: same config, seed and frame size, and the name `<name>_copy` (taken: `<name>_copy2`,
+// `_copy3` ...; the base is shortened so the whole name has at most 32 characters). Ingress and Egress are left UNSET (both are
+// required, so the user must pick ports before saving; a copy on the source's ports would collide with it at start). There is no
+// worker field. Nothing is stored until the user saves; saving goes through the normal checks. The router state of Duplicate is
+// consumed once (see the last block).
+// The shortened base is `name.slice(0, 32 - suffix.length)`; the names that count as taken are those of ALL stored links (exact
+// match); the URL of the editor is not pinned (only its heading "New link").
 
 const framed = (l: Link, frame: number | null): Link => ({
   ...l,
@@ -136,7 +136,7 @@ describe('Duplicate: the editor opens pre-filled with the copy', () => {
     expect(screen.getByLabelText('Egress')).toHaveValue('');
   });
 
-  // spec 53 A: the IAT histogram is part of the config, so a copy carries it like `histogram`
+  // the IAT histogram is part of the config, so a copy carries it like `histogram`
   it('copies the IAT histogram: the fields show it, and saving the copy stores it next to the delay histogram', async () => {
     const withIat = fx.link({
       id: 3,
@@ -528,7 +528,7 @@ function RouterSpy({ spy }: { spy: Partial<Spy> }) {
   return null;
 }
 
-// Spec 27b item 6: the router state `{ copyOf }` of Duplicate is consumed once. After the form is filled, the history entry is
+// The router state `{ copyOf }` of Duplicate is consumed once. After the form is filled, the history entry is
 // replaced (not pushed) without the state, so Back / Forward / reload do not pre-fill it again. The tests watch the router
 // from a spy component next to the app (MemoryRouter has no browser buttons: navigate(-1) / navigate(1) are Back and Forward).
 describe('Duplicate: the router state is consumed once', () => {

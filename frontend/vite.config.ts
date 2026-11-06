@@ -10,7 +10,6 @@ export default defineConfig({
     rolldownOptions: {
       output: {
         // Vendor chunks (rolldown `output.codeSplitting.groups`; a lower `priority` loses to a higher one).
-        // The result stays a static index.html plus hashed assets under assets/.
         codeSplitting: {
           groups: [
             { name: 'react', test: /node_modules[\\/](react|react-dom|react-router|scheduler)[\\/]/, priority: 3 },

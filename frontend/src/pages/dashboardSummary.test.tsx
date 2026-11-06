@@ -28,19 +28,17 @@ import { renderApp, tick } from '../test/helpers';
 import { api, serveHistory } from '../test/mockApi';
 import { must } from '../test/must';
 
-// Spec 36 S1 (user 2026-11-05: "one summary tab which displays the aggregates of all links"). Contract: header of
-// src/test/dashboardUi.tsx. The tests below pin, per the spec:
-//   - the Summary tab is first, titled "Summary", selected by default; the link tabs keep titles and badges;
+// One Summary tab shows the aggregates of all links. Contract: header of src/test/dashboardUi.tsx.
+//   - the Summary tab is first, titled "Summary", selected by default; the link tabs keep their titles;
 //   - radios Traffic rates / Delay histogram / Packet loss, "Delay histogram" disabled with the tooltip
 //     "Delay histograms are per link; select a link tab.", and nothing in the Summary polls getDelayHistogram;
 //   - Rate: RX and TX in Gbit/s summed per t_ms over the times at which every link has a sample;
-//   - Loss (spec 43 F1, was "Model loss %" / "Overload drops %" weighted by rx_mpps): one line per cause of the donut, in its order, each
-//     the plain sum over the links of the cumulative count at the sample time;
+//   - Loss: one line per cause of the donut, in its order, each the plain sum over the links of the cumulative count at the sample
+//     time;
 //   - donut: counters (live) or totals (ended) summed per cause; legend, hover and "No drops" as for a link;
 //   - shown whenever a link tab is shown (also after a stop), absent without link tabs; the selection persists across polls.
-// CHOICE (spec silent): the spec says RX and TX are summed "in both Gbit/s and Mpps, like the per-link chart", but the per-link chart
-// plots Gbit/s only; the Mpps sums are not observable in a chart's data and are pinned only through the weights of the loss view.
-// CHOICE: when the selected link tab disappears, the first tab (the Summary) is selected (the old "first tab" rule).
+// The per-link chart plots Gbit/s only, so the Mpps sums are not observable in a chart's data. When the selected link tab
+// disappears, the first tab (the Summary) is selected.
 
 const SUMMARY_TEXT = 'Delay histograms are per link; select a link tab.';
 

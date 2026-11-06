@@ -10,10 +10,7 @@ function toParts(v: string): number[] | null {
   return m ? m.slice(1).map(Number) : null;
 }
 
-/**
- * Is the VERSION.md on main newer than `localVersion`? Like P4TG: the browser asks GitHub, and any failure
- * (network, bad status, malformed version on either side) means "no update".
- */
+/** Is the VERSION.md on main newer than `localVersion`? Any failure (network, bad status, malformed version on either side) means "no update". */
 export async function isUpdateAvailable(localVersion: string): Promise<boolean> {
   const local = toParts(localVersion);
   if (!local) return false;

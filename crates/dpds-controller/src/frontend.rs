@@ -19,10 +19,9 @@ const IMMUTABLE: &str = "public, max-age=31536000, immutable";
 /// Styles may be inline because React and the UI library set `style` attributes. There is no
 /// inline or `eval`ed script.
 ///
-/// `'unsafe-inline'` in `style-src` stays until it is tried in a real browser. React sets styles
-/// through the CSSOM (`element.style.x = ...`), which a CSP does not block, so a stricter
-/// `style-src 'self'` is likely possible. Try it in a browser (check the console for violations)
-/// before tightening it; nothing here has run in one yet.
+/// `'unsafe-inline'` in `style-src` is untested in a browser: React sets styles through the
+/// CSSOM, which a CSP does not block, so `style-src 'self'` may work. Check the console for
+/// violations before tightening.
 const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
                    img-src 'self' data:; font-src 'self'; \
                    connect-src 'self' https://raw.githubusercontent.com; object-src 'none'; \

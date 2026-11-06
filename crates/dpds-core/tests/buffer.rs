@@ -1,11 +1,5 @@
-//! Tests for the Rust `Buffer` API (replacement of the C FFI `buffer_*`).
-//!
-//! API assumed (all in `dpds_core::buffer`):
-//! - `Buffer::new(config: Config) -> Buffer`
-//! - `Buffer::push(&mut self, pkt: *mut c_void, len_byte: u32, now_ns: f64) -> bool`
-//! - `Buffer::pop(&mut self) -> Option<*mut c_void>`
-//! - `Buffer::front_time(&self) -> Option<f64>`
-//! - `Buffer::is_empty(&self) -> bool`, `len(&self) -> usize`, `capacity(&self) -> usize`
+//! Tests for the basic `Buffer` API: `new`, `push`, `pop`, `front_time`,
+//! `is_empty`, `len`, `capacity`.
 //!
 //! Packet pointers are opaque here (never dereferenced), so small integers
 //! cast to pointers serve as fake packets.

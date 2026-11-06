@@ -12,7 +12,7 @@
 //! `Var(d) = (1 - w)^2 (sigma_r^2 + Var(x_{i-1}))`.
 //! - Fixed order: `Var(x) = sigma^2` (stationary) and `Var(d) = 2 (1 - w)
 //!   sigma^2`, i.e. `std(d) = sigma sqrt(2 (1 - w))`.
-//! - Bug (innovation std computed with weight 0, so `sigma_r = sigma`):
+//! - Wrong start (innovation std computed with weight 0, so `sigma_r = sigma`):
 //!   `Var(x) = sigma^2 (1 - w)/(1 + w)` and `Var(d) = 2 (1 - w)^2/(1 + w)
 //!   sigma^2`; for the weights used here that is 5 to 7 times smaller than the
 //!   fixed value, far outside every tolerance below.
@@ -97,7 +97,6 @@ fn m1_innovation_std_matches_the_configured_std_from_the_first_packet() {
             &format!("seed {seed}: std of successive differences, all packets"),
         );
         // Also in the very first packets: 400 differences (s.e. 3.5%, bound 15%).
-        // Before the fix this stays at ~0.13 of the expected value.
         assert_close(
             diff_rms(&x, 1, 401),
             expected,

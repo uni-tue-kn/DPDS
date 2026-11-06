@@ -1,19 +1,18 @@
-//! Spec 55: the host hints are computed in the background when the controller starts serving,
+//! The host hints are computed in the background when the controller starts serving,
 //! `GET /api/host/hints` answers the stored result, `GET ?recheck=true` computes it again.
 //!
-//! # Assumptions (the spec leaves the hook open)
+//! # Contract
 //!
 //! - `dpds_controller::api::router_with_startup(deps: Deps, frontend: Frontend) -> axum::Router`
 //!   is `router_with` plus the startup task of H1, spawned on the tokio runtime the caller is in
 //!   (so it must be called inside a runtime) and started before it returns. `main.rs` serves this
-//!   router. `router` / `router_with` stay without the task and keep today's behaviour (a plain GET
-//!   computes on demand), so the other tests, which count tool calls, do not change. All of this
-//!   file's tests reach the task through [`warm_app`], so changing the name is a one-line edit.
+//!   router. `router` / `router_with` stay without the task (a plain GET computes on demand), so the
+//!   other tests, which count tool calls, do not change. All of this file's tests reach the task
+//!   through [`warm_app`].
 //! - The task computes the host hints (no links) and queries the firmware of every mlx5 NIC of the
 //!   fake host (`0000:17:00.0` and `0000:65:00.0`; the tg3, ice and NVMe devices are not queried)
 //!   through the existing `FirmwareCache`. `GET` waits for it while it runs.
-//! - A failed firmware query is not cached (like today: only successful results are), and it does
-//!   not stop the task.
+//! - A failed firmware query is not cached (only successful results are), and it does not stop the task.
 //! - `GET ?recheck=true` while an emulation is starting, running or stopping computes the host
 //!   hints without tools: it reads the host again but runs no command and keeps the cache.
 
@@ -213,7 +212,7 @@ async fn a_failing_startup_query_does_not_stop_the_task_and_is_not_cached() {
     assert_eq!(mst(&exec, BDF0), 1, "tried once, no retry loop");
     assert_eq!(mst(&exec, NIC1), 1, "the other NIC was still queried");
     get_ok(&a, "").await; // the task finished
-                          // like today's results: the failed card is asked again by a request, the good one is cached
+                          // a failed card is asked again by a request, the good one is cached
     let h = post_ok(&a, "", &link_on(NIC0)).await;
     assert_eq!(mst(&exec, BDF0), 2);
     assert_no_commands(&h, &nic_id("firmware", NIC0));

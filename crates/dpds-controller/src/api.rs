@@ -1,4 +1,4 @@
-//! The REST API (B2): routes under `/api`, Swagger UI at `/api/docs`, the
+//! The REST API: routes under `/api`, Swagger UI at `/api/docs`, the
 //! OpenAPI document at `/api/openapi.json`. Error bodies are `{"message": ...}`.
 
 use std::collections::{HashMap, HashSet};
@@ -547,8 +547,7 @@ async fn host_hints(
     Ok(Json(stored.clone().unwrap_or_default()))
 }
 
-/// The host hints after the firmware of every NIC was queried into the cache (all NICs again
-/// with `recheck`). The emulation state is read once: no tool runs while one is busy.
+/// The host hints after the firmware of every NIC was queried into the cache (again with `recheck`).
 fn compute_host_hints(app: &App, recheck: bool) -> Vec<Hint> {
     let tools = tools_may_run(app);
     warm_firmware(&app.deps.roots, tools, &app.firmware, recheck);
@@ -609,9 +608,8 @@ fn parse_recheck(query: Option<&str>) -> Result<bool, ApiError> {
     Ok(recheck.unwrap_or(false))
 }
 
-/// Computes the hints. The emulation state is read once: tools run only while no emulation is
-/// starting, running or stopping. No lock is taken, so a start or stop is never delayed by a
-/// running query and queries do not queue behind each other.
+/// Computes the hints. No lock is taken: a start or stop is never delayed by a query, and
+/// queries do not queue behind each other.
 async fn hints_of(
     app: Arc<App>,
     config: RunConfig,

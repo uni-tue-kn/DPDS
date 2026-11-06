@@ -1,8 +1,8 @@
-//! Spec 22: the running configuration (`GET /api/emulation`) and `POST /api/emulation/validate`.
+//! The running configuration (`GET /api/emulation`) and `POST /api/emulation/validate`.
 //!
 //! `GET /api/emulation` reports, while the emulation is starting, running, stopping or failed,
 //! the configuration it was started with in `config`: `{links: [{id, name, ingress, egress,
-//! config, worker?}], settings: {main_lcore, eal_extra_args, poll_interval_ms}}`. It is the
+//! config}]}`. It is the
 //! start body as accepted (PCI addresses in lower case, the order kept, optional stages left
 //! out as they were sent) with an id per link; `directions` and `main_lcore` are the planned
 //! lcores. While stopped, `config` is null or absent, `directions` is `[]` and `main_lcore`

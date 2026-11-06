@@ -28,7 +28,7 @@ import { expectBars } from '../test/probabilities';
 const STATES: EmulationState[] = ['stopped', 'starting', 'running', 'stopping', 'failed'];
 
 /**
- * Spec 28: each link shows ONE chart, chosen with a radio group (Rate is the default). Every test that needs the delay
+ * Each link shows ONE chart, chosen with a radio group (Rate is the default). Every test that needs the delay
  * histogram first picks "Delay histogram" in the card(s) with this helper. `fireEvent` so it also works under fake timers.
  */
 function showHistogram(...links: number[]): void {
@@ -39,15 +39,14 @@ function twoDirections() {
   return fx.stats([fx.dirStats(0), fx.dirStats(1, { rx_pps: 500, tx_pps: 400, rx_bps: 2.5e6, tx_bps: 1.5e3 })]);
 }
 
-// v22: Start sends the whole LOCAL configuration (contract: "Start" in the v22 block of src/test/helpers.tsx). The tests of the
-// control block start with one stored link; pending restart and "Load running configuration" are in pendingRestart.test.tsx.
+// Start sends the whole LOCAL configuration (contract: src/test/helpers.tsx). The tests of the control block start with one stored
+// link; pending restart and "Load running configuration" are in pendingRestart.test.tsx.
 describe('Dashboard: emulation state and control', () => {
   beforeEach(() => {
     seedStore({ links: [fx.link(), fx.linkRev()] });
   });
 
-  // Spec 43 F3. Was: 'shows a state badge for "%s"' (text and data-state of `state-badge`) and, below, 'the state badge is a polite
-  // live region'. The badge is gone; the state shows in the run buttons (spec 43 F8: see dashboardP4tg.test.tsx).
+  // There is no state badge: the state shows in the run buttons (see dashboardP4tg.test.tsx).
   it.each(STATES)('has no state badge in "%s"', async (state) => {
     api.getEmulation.mockResolvedValue(fx.emulation(state));
     renderApp('/');
@@ -56,8 +55,7 @@ describe('Dashboard: emulation state and control', () => {
     expect(screen.getByTestId('top-pills').querySelector('.badge, [data-state]')).toBeNull();
   });
 
-  // Spec 28: one contextual button instead of a Start and a Stop button that are both always there (details in
-  // dashboardP4tg.test.tsx). Spec 43 F8: Start alone, Stop + Restart, or Draining… + Restart (both disabled).
+  // Start alone, Stop + Restart, or Draining… + Restart (both disabled); details in dashboardP4tg.test.tsx.
   it.each(STATES)('the run buttons in "%s"', async (state) => {
     api.getEmulation.mockResolvedValue(fx.emulation(state));
     renderApp('/');
@@ -215,7 +213,7 @@ describe('Dashboard: emulation state and control', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('cannot signal child');
   });
 
-  // Spec 35 F6. Was: the log tail was always on the page; it is now only shown for `failed`, inside a collapsed "Show log".
+  // The log tail is only shown for `failed`, inside a collapsed "Show log".
   it('shows the error when failed and keeps the log tail behind a collapsed "Show log"', async () => {
     api.getEmulation.mockResolvedValue(
       fx.emulation('failed', {
@@ -246,9 +244,7 @@ describe('Dashboard: emulation state and control', () => {
   });
 });
 
-// Spec 35 F3/F6. Was: 'Dashboard: per-direction cards', one card per link with a stat list (rates, drop shares per cause, mean
-// delay +- std, lateness, buffer max). The cards are tabs now and the stat list is gone (see dashboardSpec35.test.tsx); the
-// tests of the removed list (RX/TX rate, scaled units, drop shares, delay values, n/a, zero values) are removed with it.
+// The links are tabs and have no stat list (see dashboardSpec35.test.tsx).
 describe('Dashboard: one tab per link', () => {
   beforeEach(() => {
     api.getEmulation.mockResolvedValue(fx.emulation('running'));
@@ -270,8 +266,7 @@ describe('Dashboard: one tab per link', () => {
     expect(tabs()).toHaveLength(0);
   });
 
-  // Spec 28: a radio selector shows one chart per link; Rate is the default. Was: findAllByTestId('chart-line') with the
-  // rate and the drops chart both on the page.
+  // A radio selector shows one chart per link; Rate is the default.
   it('draws the rate line chart once directions exist (one chart per link, Rate by default)', async () => {
     renderApp('/');
     await findCard(0);
@@ -409,7 +404,6 @@ describe('Dashboard: delay histogram', () => {
     expect(data.labels).toHaveLength(500);
   });
 
-  // Spec 35 F4. Was: 'shows the underflow and overflow counts' (under/overflow text under the histogram; removed).
   it('shows no underflow or overflow text under the histogram', async () => {
     renderApp('/');
     await findCard(0);
@@ -437,7 +431,7 @@ describe('Dashboard: delay histogram', () => {
     await findCard(0);
     await findCard(1);
     showHistogram(0);
-    expect(within(card(1)).queryByRole('radio', { name: 'Delay histogram' })).not.toBeInTheDocument(); // spec 28: no choice
+    expect(within(card(1)).queryByRole('radio', { name: 'Delay histogram' })).not.toBeInTheDocument();
     await findDelayBar(card(0));
     expect(queryDelayBar(card(1))).not.toBeInTheDocument();
     expect(api.getDelayHistogram).not.toHaveBeenCalledWith(1);
@@ -539,7 +533,7 @@ describe('Dashboard: polling (fake timers)', () => {
     const view = renderApp('/');
     await tick(3000);
     view.unmount();
-    // spec 29: the history poll stops too
+    // the history poll stops too
     const polled = [api.getEmulation, api.getStats, api.getDelayHistogram, api.getStatsHistory];
     const counts = polled.map((m) => m.mock.calls.length);
     expect(api.getStatsHistory.mock.calls.length).toBeGreaterThanOrEqual(1);
@@ -560,10 +554,6 @@ describe('Dashboard: polling (fake timers)', () => {
     errors.mockRestore();
   });
 });
-
-// Spec 35 F6. Removed: 'Dashboard: delay min/max and first loss (F2)' (delay min / max and first loss belonged to the stat list
-// of the card, which is gone) and 'Dashboard: NIC ports table (F2)' (the table moved to the Interfaces page, see
-// interfacesPorts.test.tsx).
 
 describe('Dashboard: visible errors (F3)', () => {
   const quiet = () => vi.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -636,7 +626,7 @@ describe('Dashboard: visible errors (F3)', () => {
     vi.useFakeTimers();
     api.getEmulation.mockResolvedValue(fx.emulation('running'));
     api.getStats.mockResolvedValue(twoDirections());
-    // the first fetch made after the histogram was chosen fails (spec 28: it is one choice of the card's selector)
+    // the first fetch made after the histogram was chosen fails
     let chosen = false;
     let failed = false;
     api.getDelayHistogram.mockImplementation(async (dir) => {
@@ -677,9 +667,7 @@ describe('Dashboard: accessibility and labels (F4)', () => {
     api.getStats.mockResolvedValue(twoDirections());
   });
 
-  // Spec 28: one chart per card at a time. Was: the rate, drops and histogram charts all on the page (three images).
-  // Spec 35: "Drops" is "Loss"; the donut below the chart is not part of the check, so the chart is the first image of the
-  // chart area (the old test required exactly one image).
+  // One chart per tab at a time. The donut below the chart is not part of the check, so the chart is the first image of the chart area.
   it('every chart sits in a role="img" element with an aria-label (rate, loss, histogram: one at a time)', async () => {
     renderApp('/');
     await findCard(0);
@@ -689,7 +677,7 @@ describe('Dashboard: accessibility and labels (F4)', () => {
       ['Delay histogram', /histogram/i, 'chart-bar'],
     ] as const) {
       fireEvent.click(within(card(0)).getByRole('radio', { name: choice }));
-      // Spec 51: the IAT bar chart and the donuts share the panel, so the chart is looked for inside the first image only.
+      // The IAT bar chart and the donuts share the panel, so the chart is looked for inside the first image only.
       const img = await waitFor(() => {
         const first = must(within(card(0)).getAllByRole('img')[0], 'the chart image');
         within(first).getByTestId(id);
@@ -728,7 +716,7 @@ describe('Dashboard: accessibility and labels (F4)', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('dpds exited during startup (status 1)');
   });
 
-  // Spec 35 F3: the title is the tab's (it was the card header's).
+  // The title is the tab's.
   it('tabs are titled "<link>: <ingress label> -> <egress label>" (v16: the netdev only)', async () => {
     renderApp('/');
     await findCard(1);
@@ -793,7 +781,7 @@ describe('Dashboard: port labels are the netdev, device name as fallback (v16, r
     await findCard(0);
     const title = await within(tab(0)).findByText(AB);
     expect(title.textContent?.trim()).toBe(AB);
-    expect(tab(0).textContent).not.toMatch(/0000:65:00\.[01] \(/); // never "PCI (netdev)" any more
+    expect(tab(0).textContent).not.toMatch(/0000:65:00\.[01] \(/); // never "PCI (netdev)"
     expect(card(0).textContent).not.toMatch(/0000:65:00\.[01] \(/);
   });
 
@@ -885,6 +873,4 @@ describe('Dashboard: port labels are the netdev, device name as fallback (v16, r
     expect(api.getInterfaces).toHaveBeenCalledTimes(1);
     expect(screen.getByText(PLAIN_AB)).toBeInTheDocument();
   });
-
-  // Spec 35 F6. Removed: the 'NIC ports table' sub-block (port names in the ports table); it moved to interfacesPorts.test.tsx.
 });

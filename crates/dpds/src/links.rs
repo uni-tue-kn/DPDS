@@ -1,5 +1,4 @@
-//! The `--links <file>` file: parsing, validation and the numbering of the
-//! directions.
+//! The `--links <file>` file: parsing, validation and direction numbering.
 //!
 //! ```json
 //! { "links": [
@@ -13,17 +12,16 @@
 //! ] }
 //! ```
 //!
-//! A link is one direction: packets that arrive on the `ingress` port leave on
-//! the `egress` port with the link's one config. Ports are DPDK device names
-//! (PCI address or vdev name). `ingress == egress` (a hairpin on one port) is
-//! allowed. Across all links a port is the ingress of at most one link and the
-//! egress of at most one link, so every RX queue and every TX queue has exactly
-//! one worker. The direction index is the link's index in the file.
+//! A link is one direction: packets arriving on `ingress` leave on `egress`
+//! with the link's config. Ports are DPDK device names (PCI address or vdev
+//! name); `ingress == egress` (a hairpin) is allowed. A port is the ingress of
+//! at most one link and the egress of at most one link, so every RX and TX
+//! queue has exactly one worker. The direction index is the link's index in
+//! the file.
 //!
-//! `lcore` is all-or-none across the links. `delay_stats: false` switches the
-//! intended-delay / lateness statistics and the delay histogram of that link
-//! off (counters and drop causes stay). A key the format does not know (the
-//! old `ports`, `configs`, `lcores`, `histograms` too) is an error naming it.
+//! `lcore` is all-or-none across the links. `delay_stats: false` switches off
+//! the intended-delay / lateness statistics and the delay histogram of that
+//! link (counters and drop causes stay). An unknown key is an error naming it.
 //!
 //! `/dpds/ports` must fit DPDK's 256-key telemetry dict (`3 + 5 * ports + 10 *
 //! links` keys, `ports` = distinct ports named by the links).
@@ -41,27 +39,26 @@ use crate::delay_stats::HistogramSpec;
 /// Longest link name.
 pub const MAX_NAME_LEN: usize = 32;
 
-/// One link of the file, validated by [`parse_links`].
+/// One validated link of the file.
 #[derive(Debug, Clone)]
 pub struct LinkSpec {
     pub name: String,
-    /// DPDK device name of the port the link receives on.
+    /// Device name of the receiving port.
     pub ingress: String,
-    /// DPDK device name of the port the link transmits on.
+    /// Device name of the transmitting port.
     pub egress: String,
     pub config: Config,
-    /// Explicit worker lcore, if the file gives any.
+    /// Explicit worker lcore, if the file gives one.
     pub lcore: Option<u32>,
-    /// `HistogramSpec::default()` if the file has none.
     pub histogram: HistogramSpec,
-    /// The IAT histogram, `HistogramSpec::default()` if the file has none.
+    /// Inter-arrival-time histogram.
     pub iat_histogram: HistogramSpec,
-    /// Whether the link records delay statistics (`true` if the file has none).
+    /// Whether the link records delay statistics (default `true`).
     pub delay_stats: bool,
 }
 
-/// A problem with the links file or with how it fits the probed ports and
-/// lcores. The message names the link, port or lcore concerned.
+/// A problem with the links file or how it fits the probed ports and lcores;
+/// the message names the link, port or lcore.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinksError(String);
 
@@ -112,8 +109,7 @@ fn valid_name(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
 }
 
-/// Parses and validates the text of a links file (everything that needs no
-/// EAL): see the module docs for the format.
+/// Parses and validates the text of a links file (needs no EAL).
 pub fn parse_links(json: &str) -> Result<Vec<LinkSpec>, LinksError> {
     let raw: RawFile =
         serde_json::from_str(json).map_err(|e| LinksError(format!("invalid links file: {e}")))?;
@@ -188,7 +184,6 @@ pub fn parse_links(json: &str) -> Result<Vec<LinkSpec>, LinksError> {
         });
     }
 
-    // `/dpds/ports` has 3 + 5 keys per distinct port + 10 per link.
     let ports = distinct_ports(&links).len();
     let keys = 3 + 5 * ports + 10 * links.len();
     if keys > MAX_TELEMETRY_DICT_ENTRIES {
@@ -228,27 +223,25 @@ fn distinct_ports(links: &[LinkSpec]) -> HashSet<&str> {
         .collect()
 }
 
-/// One link (= direction), resolved against the probed ports.
+/// One link (= direction) resolved against the probed ports.
 #[derive(Debug, Clone)]
 pub struct LinkDirection {
-    /// Index of the link in the file (= the direction index).
+    /// Index of the link in the file.
     pub link: usize,
     pub rx_port: u16,
     pub tx_port: u16,
     pub config: Config,
     pub histogram: HistogramSpec,
     pub iat_histogram: HistogramSpec,
-    /// Whether the link records delay statistics.
     pub delay_stats: bool,
     /// The worker lcore that runs the link.
     pub lcore: u32,
 }
 
-/// Maps the device names to port ids with `probed` (`(device name, port id)` of
-/// every probed ethdev), returns one direction per link in file order
-/// (`rx_port` = ingress, `tx_port` = egress) and assigns the worker lcores: the
-/// listed ones, or the i-th of `workers` (ascending, main lcore excluded) to
-/// link i.
+/// Maps device names to port ids via `probed` (`(device name, port id)` of every
+/// probed ethdev) and returns one direction per link in file order. Worker
+/// lcores are the listed ones, or the i-th of `workers` (ascending, main lcore
+/// excluded) for link i.
 pub fn resolve_directions(
     links: &[LinkSpec],
     probed: &[(String, u16)],

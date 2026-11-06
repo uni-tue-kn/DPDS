@@ -1,13 +1,12 @@
 //! DPDS: DPDK-based network-link emulator. See the README for usage.
 //!
-//! One worker lcore per link (each with its own config, buffer and mempool; a
-//! link is one direction: the traffic received on its ingress port leaves on
-//! its egress port): the EAL main lcore handles signals and polls the NIC
-//! hardware counters; every worker lcore runs RX -> DPDS -> TX
-//! (`dpds::forward::run`). The links come from the `--links` file (ports named
-//! by their DPDK device name) or, with `--config*`, from the one or two probed
-//! ports: one port is a hairpin link `dir0`, two ports are the links `dir0`
-//! (port 0 -> port 1) and `dir1` (port 1 -> port 0).
+//! One worker lcore per link (own config, buffer and mempool; a link is one
+//! direction: traffic received on its ingress port leaves on its egress port).
+//! The EAL main lcore handles signals and polls the NIC hardware counters; each
+//! worker runs RX -> DPDS -> TX (`dpds::forward::run`). The links come from the
+//! `--links` file or, with `--config*`, from the one or two probed ports: one
+//! port is a hairpin link `dir0`, two ports are `dir0` (port 0 -> port 1) and
+//! `dir1` (port 1 -> port 0).
 
 use std::error::Error;
 use std::process::ExitCode;
@@ -47,8 +46,8 @@ fn main() -> ExitCode {
 }
 
 // ── Signals ──────────────────────────────────────────────────────────────────
-// SIGINT/SIGTERM set the quit flag: every worker stops receiving, drains its
-// delay buffer and returns; the main lcore then shuts down.
+// SIGINT/SIGTERM set the quit flag: workers stop receiving, drain their delay
+// buffers and return; the main lcore then shuts down.
 
 extern "C" fn on_signal(_signum: i32) {
     QUIT.request();
@@ -63,16 +62,16 @@ extern "C" {
 }
 
 // ── Memory locking ───────────────────────────────────────────────────────────
-// Like preof: lock the whole process into RAM before EAL starts, so with `MCL_FUTURE` every
-// later mapping (EAL heap, mempools, the delay buffers' up-front reservation, telemetry) is
-// locked and populated when it is created and no worker lcore takes a page fault mid-run.
+// Lock the process into RAM before EAL starts: with `MCL_FUTURE` every later mapping
+// (EAL heap, mempools, the delay buffers) is locked and populated when created, so no
+// worker lcore takes a page fault mid-run.
 
-/// `mlockall(2)` flag (`<sys/mman.h>`, Linux): lock every page mapped now.
+/// `mlockall(2)` flag (Linux): lock every page mapped now.
 const MCL_CURRENT: i32 = 1;
-/// `mlockall(2)` flag (`<sys/mman.h>`, Linux): lock every page mapped later too.
+/// `mlockall(2)` flag (Linux): lock every page mapped later too.
 const MCL_FUTURE: i32 = 2;
 
-/// `getrlimit(2)` resource (`<sys/resource.h>`, Linux): locked-memory limit.
+/// `getrlimit(2)` resource (Linux): locked-memory limit.
 const RLIMIT_MEMLOCK: i32 = 8;
 /// `RLIM_INFINITY` (Linux, 64-bit `rlim_t`).
 const RLIM_INFINITY: u64 = u64::MAX;
@@ -94,12 +93,11 @@ extern "C" {
 /// What `lock_memory` does for a given effective uid and `RLIMIT_MEMLOCK`.
 #[derive(Debug, PartialEq, Eq)]
 enum MemlockPlan {
-    /// Call `mlockall`.
     Lock,
-    /// Raise the soft limit to unlimited (the hard limit allows it), then call `mlockall`.
+    /// Raise the soft limit to unlimited (the hard limit allows it), then lock.
     RaiseThenLock,
-    /// Don't lock: `mlockall` would succeed while the process is small, then `MCL_FUTURE` makes
-    /// every later mapping count against the finite limit and EAL's allocations fail.
+    /// Don't lock: `mlockall` would succeed while the process is small, then `MCL_FUTURE`
+    /// counts every later mapping against the finite limit and EAL's allocations fail.
     Skip,
 }
 
@@ -113,9 +111,9 @@ fn memlock_plan(euid: u32, soft: u64, hard: u64) -> MemlockPlan {
     }
 }
 
-/// `mlockall(MCL_CURRENT | MCL_FUTURE)`, unless a finite `RLIMIT_MEMLOCK` makes it harmful (see
-/// [`MemlockPlan`]; the skip prints its own warning and returns `Ok`). Failure (no
-/// `CAP_IPC_LOCK` and a low limit) is the caller's warning, not an error: unlocked still works.
+/// `mlockall(MCL_CURRENT | MCL_FUTURE)`, unless a finite `RLIMIT_MEMLOCK` makes it harmful
+/// (see [`MemlockPlan`]; the skip warns and returns `Ok`). Failure is the caller's warning:
+/// running unlocked still works.
 fn lock_memory() -> std::result::Result<(), std::io::Error> {
     let mut lim = Rlimit { cur: 0, max: 0 };
     // SAFETY: getrlimit writes one `struct rlimit` into `lim`, which has that layout.
@@ -168,14 +166,13 @@ fn install_signal_handlers() -> Result<()> {
 
 // ── Setup ────────────────────────────────────────────────────────────────────
 
-/// Data room of every mbuf: the largest frame (MTU + Ethernet header + FCS)
-/// plus headroom, instead of DPDK's generic 2176-byte default.
+/// Data room of every mbuf: the largest frame (MTU + Ethernet header + FCS) plus headroom.
 const MBUF_DATA_ROOM: u16 = mbuf_buf_size_for_frame((MTU + 14 + 4) as u16);
 
 /// A direction as set up before its worker starts.
 struct Direction {
     worker: Worker,
-    /// Where the config comes from: the config file or the links file.
+    /// The config file, or the links file.
     config: String,
     link: String,
     rx_name: String,
@@ -187,8 +184,8 @@ struct Direction {
 }
 
 /// One mempool of `num_mbufs` per link on the socket of its ingress port (the
-/// socket of the calling lcore if the port reports none). Leaked: the ports'
-/// queue handles and the workers need `'static` access.
+/// calling lcore's if the port reports none). Leaked: queue handles and workers
+/// need `'static` access.
 fn create_pool(
     direction: usize,
     rx_port: u16,
@@ -212,7 +209,6 @@ fn burst_mode(mode: Option<String>) -> String {
     mode.unwrap_or_else(|| "unknown".into())
 }
 
-/// The ports' RX/TX queue 0 handles, taken once by the directions.
 struct Queues {
     rx: Vec<Option<RxQueue<'static>>>,
     tx: Vec<Option<TxQueue<'static>>>,
@@ -220,9 +216,9 @@ struct Queues {
 
 // ── Main lcore: NIC hardware counters ────────────────────────────────────────
 
-/// One `NicPoller` per port, with the port-buffer discard xstats resolved
-/// once (telemetry builds only: firmware xstats queries are suspected of
-/// amplifying NIC stalls, so a plain build never makes them).
+/// One `NicPoller` per port, with the port-buffer discard xstats resolved once
+/// (telemetry builds only: firmware xstats queries are suspected of amplifying
+/// NIC stalls).
 fn nic_pollers(ids: &[u16], start_ns: f64) -> Vec<(u16, NicPoller, Option<PortDiscardXstats>)> {
     ids.iter()
         .map(|&id| {
@@ -248,9 +244,8 @@ fn nic_pollers(ids: &[u16], start_ns: f64) -> Vec<(u16, NicPoller, Option<PortDi
         .collect()
 }
 
-/// Polls every port's hardware counters every `HW_STATS_POLL_INTERVAL_MS`
-/// until all `workers` are done. Writes only into `hw`, never into worker
-/// state.
+/// Polls every port's hardware counters every `HW_STATS_POLL_INTERVAL_MS` until
+/// all `workers` are done. Writes only into `hw`.
 fn poll_nics(
     pollers: &mut [(u16, NicPoller, Option<PortDiscardXstats>)],
     hw: &NicHwStats,
@@ -280,8 +275,7 @@ struct Layout {
 }
 
 /// The `--config*` mode: one port is the link `dir0` from the port to itself,
-/// two ports are `dir0` (port 0 -> port 1) and `dir1` (port 1 -> port 0), each
-/// with its own config file.
+/// two ports are `dir0` (port 0 -> port 1) and `dir1` (port 1 -> port 0).
 fn shorthand_links(cli: &dpds::cli::Cli, probed: &[(String, u16)]) -> Result<Layout> {
     validate_port_count(probed.len())?;
     let paths = cli.direction_configs(probed.len())?;
@@ -305,7 +299,7 @@ fn shorthand_links(cli: &dpds::cli::Cli, probed: &[(String, u16)]) -> Result<Lay
 }
 
 fn run() -> Result<()> {
-    // First thing, before EAL: non-fatal, a container or non-root run just stays unlocked.
+    // Before EAL; non-fatal, a container or non-root run just stays unlocked.
     if let Err(e) = lock_memory() {
         eprintln!("WARNING: mlockall failed, continuing unlocked: {e}");
     }
@@ -362,10 +356,8 @@ fn run() -> Result<()> {
     }
     let name_of = |id: u16| probed[id as usize].0.clone();
 
-    // The pool size of a direction is derived: its delay buffer plus the RX
-    // ring it fills and the TX ring it feeds. The drivers' applied ring sizes
-    // come from `rte_eth_dev_adjust_nb_rx_tx_desc`, which works on a port that
-    // is not configured yet, so the pools exist before the ports are set up.
+    // Applied ring sizes come from `rte_eth_dev_adjust_nb_rx_tx_desc`, which works
+    // on an unconfigured port, so the pools exist before the ports are set up.
     let applied: Vec<(u16, u16)> = port_ids
         .iter()
         .map(|&id| {
@@ -374,10 +366,9 @@ fn run() -> Result<()> {
         })
         .collect::<std::result::Result<_, _>>()?;
 
-    // One pool per link, then every port with the pool of the link that
-    // receives on it. A port that is only an egress is never polled, but its
-    // RX ring is still filled: it takes the pool of the link that transmits on
-    // it, and that pool grows by the ring.
+    // One pool per link; every port gets the pool of the link that receives on
+    // it. An egress-only port is never polled but its RX ring is still filled:
+    // it takes the pool of the link that transmits on it, which grows by the ring.
     let mut pool_of_port = vec![None; port_ids.len()];
     for (d, dir) in dirs.iter().enumerate() {
         pool_of_port[dir.rx_port as usize] = Some(d);
@@ -397,7 +388,7 @@ fn run() -> Result<()> {
         pools.push(create_pool(d, dir.rx_port, size)?);
         pool_sizes.push(size as u32);
     }
-    // On an early return the already started ports are dropped, which stops them.
+    // An early return drops (and so stops) the ports started so far.
     let mut ports = Vec::new();
     for &id in &port_ids {
         let port = Port::init(
@@ -412,8 +403,8 @@ fn run() -> Result<()> {
         if !port.link_up()? {
             return Err(format!("link is down on port {id}").into());
         }
-        // the NIC counters count from this process's start, like dpds's own; a PMD
-        // without a reset is not fatal, its counters then count from the NIC's start
+        // Count from this process's start; a PMD without a reset is not fatal, its
+        // counters then count from the NIC's start.
         if let Err(e) = port::eth_stats_reset(id) {
             eprintln!("dpds: warning: could not reset the NIC counters of port {id}: {e}");
         }
@@ -482,9 +473,8 @@ fn run() -> Result<()> {
         })
         .collect();
 
-    // Leaked: `remote_launch` needs `'static` queue handles and `Port::queues`
-    // only hands out `'static` ones for a `'static` port. The ports are
-    // stopped explicitly with `shutdown_port` at the end.
+    // Leaked: `remote_launch` needs `'static` queue handles, which `Port::queues`
+    // only hands out for a `'static` port. `shutdown_port` stops the ports at the end.
     let mut queues = Queues {
         rx: Vec::new(),
         tx: Vec::new(),
@@ -506,15 +496,15 @@ fn run() -> Result<()> {
         layout.links.len(),
     );
 
-    // The ports were leaked (no `Drop`), stop and close them by id.
+    // The ports were leaked (no `Drop`): stop them by id.
     for id in port_ids {
         shutdown_port(id);
     }
     result
 }
 
-/// Registers telemetry, launches one worker per direction and runs the main
-/// lcore's poll loop until all of them have finished.
+/// Registers telemetry, launches one worker per direction and polls the NICs
+/// on the main lcore until all workers have finished.
 fn serve(
     port_ids: &[u16],
     directions: Vec<Direction>,
@@ -525,7 +515,7 @@ fn serve(
     num_links: usize,
 ) -> Result<()> {
     let clock = Clock::new();
-    // The shared zero point of every `uptime_ns` / `relative_ns` / epoch time.
+    // Zero point of every `uptime_ns` / `relative_ns` / epoch time.
     let start_ns = clock.now_ns();
     let stats: &'static DirectionStats = Box::leak(Box::new(DirectionStats::with_hists(ranges)));
     let hw: &'static NicHwStats = Box::leak(Box::new(NicHwStats::new(port_ids.len())));
@@ -556,9 +546,8 @@ fn serve(
     static WORKERS_DONE: AtomicUsize = AtomicUsize::new(0);
     let num_directions = directions.len();
 
-    // Every direction's queue handles first, so that a failure here cannot
-    // leave already launched workers running. Each queue belongs to exactly
-    // one direction; with a single port its RX and TX queue are both port 0's.
+    // Take every direction's queue handles first, so a failure cannot leave
+    // launched workers running. Each queue belongs to exactly one direction.
     let mut handles = Vec::new();
     for dir in &directions {
         let rx_queue = queues.rx[dir.worker.rx_port() as usize]
@@ -587,13 +576,12 @@ fn serve(
                 let mut tx_nic = NicTx::new(tx_port, tx_queue);
                 let mut telemetry = Telemetry::new(&stats.stats[d], start_ns);
                 let now = move || clock.now_ns();
-                // SAFETY: `rx_nic` hands out valid mbufs we own, `tx_nic` and
-                // the free implementation take them over. `RawFree` is only
-                // chosen when both ports of the direction use MBUF_FAST_FREE.
-                // The TX port's flag covers the mbufs it did not accept
-                // (direct, refcount 1, from the direction's pool). The
-                // rejected RX mbufs are single-segment because RX scatter is
-                // off and the data room fits the largest frame; they are
+                // SAFETY: `rx_nic` hands out valid mbufs we own, `tx_nic` and the free
+                // implementation take them over. `RawFree` is only chosen when both
+                // ports of the direction use MBUF_FAST_FREE. The TX port's flag covers
+                // the mbufs it did not accept (direct, refcount 1, from the
+                // direction's pool). The rejected RX mbufs are single-segment because
+                // RX scatter is off and the data room fits the largest frame; they are
                 // direct with refcount 1 as received from the direction's pool.
                 unsafe {
                     if raw_free {
@@ -624,7 +612,7 @@ fn serve(
             lcore,
         );
         if let Err(e) = launch {
-            // Stop the workers that already run before reporting.
+            // Stop the workers already running.
             QUIT.request();
             for &l in &launched {
                 let _ = eal::wait_lcore(l);
@@ -651,10 +639,9 @@ fn serve(
 mod tests {
     use super::{lock_memory, memlock_plan, MemlockPlan, RLIM_INFINITY};
 
-    /// Smoke test only (PREOF's `lock_memory_does_not_panic`): `lock_memory` wraps a raw
-    /// `mlockall(MCL_CURRENT | MCL_FUTURE)`, which legitimately fails without `CAP_IPC_LOCK` and
-    /// with a low `RLIMIT_MEMLOCK`, so it asserts neither `Ok` nor `Err`, only that the call is
-    /// wired up, returns the OS error as `io::Error` and does not crash the test process.
+    /// Smoke test: `mlockall` legitimately fails without `CAP_IPC_LOCK` and with a low
+    /// `RLIMIT_MEMLOCK`, so this asserts neither `Ok` nor `Err`, only that the call does not
+    /// crash the process.
     #[test]
     fn lock_memory_does_not_panic() {
         let result: Result<(), std::io::Error> = lock_memory();

@@ -1,23 +1,11 @@
-//! `dpdk::mempool::mbuf_buf_size_for_frame`, restored verbatim from preof
-//! (commit 760c60c, `dpdk-peof/dpdk/src/mempool.rs`):
-//!
-//! ```ignore
-//! pub const fn mbuf_buf_size_for_frame(max_frame_len: u16) -> u16 {
-//!     const STRIDE: u16 = 64;
-//!     let rounded = max_frame_len.div_ceil(STRIDE) * STRIDE;
-//!     dpdk_sys::RTE_PKTMBUF_HEADROOM as u16 + rounded
-//! }
-//! ```
-//!
-//! i.e. headroom (128) + the frame length rounded up to a multiple of 64. The
-//! tests are preof's own, ported to the public path, plus the DPDS values:
-//! DPDS passes `MTU + 14 + 4` (`MTU = 1500`, so a 1518-byte frame) -> 1536 +
-//! 128 = 1664.
+//! `dpdk::mempool::mbuf_buf_size_for_frame`: headroom (128) + the frame length
+//! rounded up to a multiple of 64. DPDS passes `MTU + 14 + 4` (`MTU = 1500`, a
+//! 1518-byte frame) -> 1536 + 128 = 1664.
 
 use dpdk::mempool::mbuf_buf_size_for_frame;
 use dpdk::Mempool;
 
-// preof's MAX_FRAME_LEN (14 + 1508 + 4), a frame that is not a multiple of 64.
+// 14 + 1508 + 4, a frame length that is not a multiple of 64.
 const PEOF_MAX_FRAME_LEN: u16 = 1526;
 
 #[test]
@@ -58,7 +46,7 @@ fn zero_length_frame_is_just_the_headroom() {
 fn dpds_frame_size_derived_from_mtu_1500() {
     // DPDS: mbuf_buf_size_for_frame(MTU + 14 + 4) with MTU = 1500.
     assert_eq!(mbuf_buf_size_for_frame(1500 + 14 + 4), 1664);
-    // and jumbo: 9000 + 18 = 9018 -> 9024 + 128.
+    // jumbo: 9000 + 18 = 9018 -> 9024 + 128
     assert_eq!(mbuf_buf_size_for_frame(9000 + 14 + 4), 9152);
 }
 
@@ -93,7 +81,7 @@ fn result_is_always_at_least_headroom_plus_the_raw_frame_len() {
 
 #[test]
 fn rounding_adds_less_than_one_stride_and_lands_on_a_multiple_of_64() {
-    // Exhaustive over every frame length for which the u16 result is defined.
+    // Exhaustive over every frame length whose u16 result is defined.
     for frame_len in 0u16..=65_000 {
         let result = mbuf_buf_size_for_frame(frame_len);
         let data_room = result - 128;

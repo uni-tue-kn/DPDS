@@ -1,6 +1,4 @@
-//! Input validation (C3): port names.
-//! Everything the controller puts on the `dpds` command line
-//! comes from here or from its own code, never from a free-form string.
+//! Port-name validation: nothing from a free-form string reaches the `dpds` command line.
 
 /// A DPDK device name: a PCI address (returned in lower case) or a vdev that
 /// takes no arguments, `net_null<N>` or `net_ring<N>`. `net_pcap` and any

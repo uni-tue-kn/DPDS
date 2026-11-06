@@ -1,7 +1,7 @@
 import { expect } from 'vitest';
 import type { HistogramView } from '../api/types';
 
-/** Spec 58 S3: a histogram bar is bin count / total recorded (bins + under + overflow) * 100. */
+/** A histogram bar is bin count / total recorded (bins + under + overflow) * 100. */
 export function percent(h: Pick<HistogramView, 'bins' | 'underflow' | 'overflow'>): number[] {
   const total = h.bins.reduce((a, b) => a + b, 0) + h.underflow + h.overflow;
   return h.bins.map((b) => (total === 0 ? 0 : (b / total) * 100));

@@ -1,6 +1,5 @@
-// User 2026-11-05: "The loss colors are all in similar red. Make they differ more. Like the frame sizes." The nine loss
-// causes (donut segments and Packet loss chart lines) use clearly different colours: every pair is at least 60 apart in
-// RGB (Euclidean, 0-255 per channel); the old warm/red palette had pairs only ~20 apart.
+// The nine loss causes (donut segments and Packet loss chart lines) use clearly different colours: every pair is at least 60 apart
+// in RGB (Euclidean, 0-255 per channel).
 import { CAUSES } from './LossDonut';
 
 const rgb = (hex: string) => [1, 3, 5].map((i) => Number.parseInt(hex.slice(i, i + 2), 16));

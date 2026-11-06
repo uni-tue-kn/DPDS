@@ -1,6 +1,6 @@
-//! DTO <-> `dpds_core::Config` conversion (B1). Spec 22 (optional stages): `delayer`, `limiter` and
-//! `loss_model` may be absent or `null`; a missing stage maps to a no-op core stage (see
-//! `noop_core`), a present one requires and validates all its fields; `limiter.activate` is gone.
+//! DTO <-> `dpds_core::Config` conversion. `delayer`, `limiter` and `loss_model` may be absent or
+//! `null`; a missing stage maps to a no-op core stage (see `noop_core`), a present one requires
+//! and validates all its fields.
 
 use crate::common::*;
 use dpds_controller::dto::{ConfigDto, HistogramDto, MAX_HISTOGRAM_BINS};
@@ -62,7 +62,7 @@ fn json_with_random_loss_converts_to_the_core_config() {
 
 #[test]
 fn gilbert_elliot_uses_named_fields() {
-    // Spec 26: the DTO has no `state_is_good`; the core is always handed `true`.
+    // the DTO has no `state_is_good`; the core is always handed `true`.
     let v = with_loss(json!({"type":"GilbertElliot","p":0.01,"r":0.3,"k":1.0,"h":0.5}));
     let core = dto_from(v).to_core().unwrap();
     match core.loss_model {
@@ -167,7 +167,7 @@ fn negative_half_life_is_a_validation_error() {
     assert!(err.contains("half_life"), "{err}");
 }
 
-// ---- initialization_rate_pps (spec v12 B) -----------------------------------------------
+// ---- initialization_rate_pps -----------------------------------------------
 
 #[test]
 fn the_initialization_rate_is_required_and_has_no_default() {
@@ -262,7 +262,7 @@ fn validation_does_not_allocate_the_buffer() {
     assert_eq!(core.buffer_capacity, 2_147_483_648);
 }
 
-// ---- optional stages (spec 22) -------------------------------------------------------------
+// ---- optional stages -------------------------------------------------------------
 
 /// The core config a config with no stage maps to: Deterministic 0 ns, no correlation, half-life
 /// 0 and the internal rate 1; inactive Spacer, rate 0; `Random(0)` loss.
@@ -519,7 +519,7 @@ fn a_config_with_every_stage_still_roundtrips_exactly() {
     }
 }
 
-// ---- spec 30: the histogram holds up to 4096 bins -------------------------------------------------
+// ---- the histogram holds up to 4096 bins -------------------------------------------------
 
 fn hist_bins(bins: u32) -> HistogramDto {
     HistogramDto {

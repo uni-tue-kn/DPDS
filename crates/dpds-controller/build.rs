@@ -29,9 +29,8 @@ fn main() {
     } else {
         (manifest.join("placeholder"), "placeholder")
     };
-    // Cargo scans a directory recursively, so a rebuilt dist is noticed. A path that does not
-    // exist would make cargo rerun this script (and rebuild the crate) on every build, so the
-    // placeholder case watches nothing more: `npm run build` touches this file, so the next cargo build picks the new dist up.
+    // Watching a path that does not exist would rerun this script on every build, so the
+    // placeholder case watches nothing.
     if kind == "bundled" {
         println!("cargo:rerun-if-changed={}", dir.display());
     }

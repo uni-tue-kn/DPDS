@@ -1,65 +1,42 @@
-//! End-to-end tests: run the real `dpds` binary (one worker lcore per
-//! direction: 1 port = `-l 0-1`, 2 ports = `-l 0-2`) against DPDK virtual
-//! devices.
+//! End-to-end tests: run the real `dpds` binary (one worker lcore per link: 1 port = `-l 0-1`,
+//! 2 ports = `-l 0-2`) against DPDK virtual devices (`net_pcap`, `net_null`; no root, no
+//! hugepages: `--no-huge -m 256 --no-pci --in-memory`).
 //!
-//! Environment: DPDK 26.07 with the `net_pcap` and `net_null` PMDs, no root,
-//! no hugepages (`--no-huge -m 256 --no-pci --in-memory`).
+//! Exact packet counts are checked through two channels: the `tx_pcap` output files (frame by
+//! frame against the input) and, with `--features telemetry`, DPDK's telemetry socket
+//! (`/dpds/stats,<dir>`, `/dpds/epochs`, `/dpds/ports`, `/nic/*`), queried BEFORE the SIGINT.
+//! Tests that need the socket are `#[cfg(feature = "telemetry")]`; without the feature nothing of
+//! dpds may be registered on it (`without_the_feature_nothing_is_registered`).
 //!
-//! ## Oracle
+//! ## DPDK telemetry socket facts (DPDK 26.07, non-root)
 //!
-//! Exact packet counts are checked through TWO independent channels:
-//! 1. the `tx_pcap` output files (frame by frame against the input), and
-//! 2. with `--features telemetry`: DPDK's telemetry socket,
-//!    `/dpds/stats,<dir>` (`tx_sent == N`, `dpds_rejects == 0`, ...), queried
-//!    BEFORE the SIGINT, plus `/dpds/epochs`, `/dpds/ports`, `/nic/*`.
+//! - The socket exists in `--in-memory` mode too: `$XDG_RUNTIME_DIR/dpdk/<file-prefix>/dpdk_telemetry.v2`,
+//!   or `/tmp/dpdk/...` when XDG_RUNTIME_DIR is unset. It is removed when the process exits.
+//! - `sockaddr_un.sun_path` holds 108 bytes: a longer path makes `rte_eal_init` FAIL, so the
+//!   tests point XDG_RUNTIME_DIR at a short `/tmp/dpds-x......` directory.
+//! - SOCK_SEQPACKET: on connect the server first sends an info message; then every request gets
+//!   exactly one datagram `{"<command WITHOUT the ,param>":<value>}` of at most max_output_len
+//!   (16384) bytes. A command that does not exist (or returned an error) answers `{"/cmd":null}`.
+//! - Application commands exist only once its startup code has run: clients retry until non-null.
 //!
-//! Tests that need the socket oracle are `#[cfg(feature = "telemetry")]`;
-//! the suite also has to pass without the feature (then nothing of dpds may
-//! be registered on the socket, see `without_the_feature_nothing_is_registered`).
+//! ## Topology
 //!
-//! ## DPDK telemetry socket facts (verified by experiment with
-//! `dpdk-testpmd` and a SOCK_SEQPACKET client on DPDK 26.07, non-root)
+//! A link is one direction, ingress port -> egress port, with its own worker lcore, config,
+//! mempool and telemetry counters (`/dpds/stats,<d>`, d = link index). The `--config*`
+//! shorthand builds the links `dir0` and `dir1`: direction `d` = traffic received on port `d`,
+//! config `--config<d>`; with two ports frames read from port 0 leave on port 1 and vice versa;
+//! with one port they leave on the port they came in on (one hairpin link `dir0`). The input
+//! files hold a different number of frames so a mix-up cannot go unnoticed.
 //!
-//! - The socket exists in `--in-memory` mode too. Path:
-//!   `$XDG_RUNTIME_DIR/dpdk/<file-prefix>/dpdk_telemetry.v2`, or
-//!   `/tmp/dpdk/<file-prefix>/dpdk_telemetry.v2` when XDG_RUNTIME_DIR is unset
-//!   (non-root). It is removed again when the process exits.
-//! - `sockaddr_un.sun_path` holds 108 bytes: a longer path makes
-//!   `rte_eal_init` FAIL (`TELEMETRY: Error with socket binding, path too
-//!   long`, exit code 1). So the tests point XDG_RUNTIME_DIR at a short
-//!   `/tmp/dpds-x......` directory (also keeps /tmp/dpdk clean).
-//! - SOCK_SEQPACKET: on connect the server first sends the info message
-//!   `{"version":"DPDK 26.07.0","pid":N,"max_output_len":16384}`; then every
-//!   request (e.g. `/ethdev/stats,0`) gets exactly one datagram back:
-//!   `{"<command WITHOUT the ,param>":<value>}`, at most max_output_len
-//!   bytes. A command that does not exist (or returned an error) answers
-//!   `{"/cmd":null}`; `/` lists all commands.
-//! - Commands registered by the application are only there once its startup
-//!   code has run: clients retry until the command is non-null.
+//! Pool size: direction d's pool holds `buffer_capacity_d + rx_desc(port d) + tx_desc(port e(d))
+//! + 768 + 64` mbufs, derived at startup from the applied descriptor counts (rings are requested
+//! with 4096 descriptors; net_null applies them unchanged). Tests that need a small pool use a
+//! small `buffer_capacity`; the size is read back from `/dpds/ports` (`dir<d>_pool_size`).
 //!
-//! ## Other tests
-//!
-//! Network topology: a link is one direction, ingress port -> egress port, with
-//! its own worker lcore, its own config, its own mempool and its own
-//! telemetry counters (`/dpds/stats,<d>`, d = link index). The `--config*`
-//! shorthand builds the links `dir0` and `dir1`: direction `d` = traffic
-//! received on port `d`, config `--config<d>`; with two ports frames read
-//! from port 0 leave on port 1 and vice versa; with one port they leave on
-//! the port they came in on (one hairpin link `dir0`). The input files hold
-//! a different number of frames so a mix-up cannot go unnoticed.
-//!
-//! Pool size: there is no `--num-mbufs` (it is a usage error). Direction d's
-//! pool holds `buffer_capacity_d + rx_desc(port d) + tx_desc(port e(d)) + 768 +
-//! 64` mbufs, derived at startup from the applied descriptor counts (rings are
-//! requested with 4096 descriptors; net_null applies them unchanged). Tests
-//! that need a small pool use a small `buffer_capacity`; the size is read back
-//! from `/dpds/ports` (`dir<d>_pool_size`) and the startup log.
-//!
-//! Tests are serialised with a global lock (each spawns a busy-polling lcore,
-//! and EAL runtime directories are per `--file-prefix`, which is also unique
-//! per test). Every child is killed on drop, and every wait has a timeout.
-//! A host with too few CPUs is a test FAILURE with a clear message, not a
-//! silent pass.
+//! Tests are serialised with a global lock (each spawns a busy-polling lcore; EAL runtime
+//! directories are per `--file-prefix`, which is also unique per test). Every child is killed on
+//! drop, and every wait has a timeout. A host with too few CPUs is a test FAILURE, not a silent
+//! pass.
 
 use std::fs;
 use std::io::Read;
@@ -75,7 +52,7 @@ use serde_json::Value;
 const DPDS: &str = env!("CARGO_BIN_EXE_dpds");
 #[cfg(feature = "telemetry")]
 const BURST_SIZE: u64 = 32;
-/// `dpds::consts::TX_BURST_SIZE`: the staging capacity, the largest `tx_burst` (spec 57).
+/// `dpds::consts::TX_BURST_SIZE`: the staging capacity, the largest `tx_burst`.
 #[cfg(feature = "telemetry")]
 const TX_BURST_SIZE: u64 = dpds::consts::TX_BURST_SIZE as u64;
 const FRAME_LEN: usize = 64;
@@ -100,9 +77,7 @@ fn require_cpus(n: usize) {
     );
 }
 
-// ---------------------------------------------------------------------------
 // pcap helpers (classic pcap, little endian, microsecond timestamps)
-// ---------------------------------------------------------------------------
 
 /// A frame carrying `tag` (which input port) and `seq` (frame number) so that
 /// every frame is unique and traceable.
@@ -170,10 +145,6 @@ fn read_pcap(path: &Path) -> Vec<Vec<u8>> {
     out
 }
 
-// ---------------------------------------------------------------------------
-// config helper
-// ---------------------------------------------------------------------------
-
 fn config_json(delay_ns: u64, loss: f64) -> String {
     config_json_cap(delay_ns, loss, 4096)
 }
@@ -233,9 +204,7 @@ fn config_full(delay_ns: u64, loss: f64, buffer_capacity: usize, reordering: boo
     )
 }
 
-// ---------------------------------------------------------------------------
 // telemetry client: SOCK_SEQPACKET, info message first, one JSON datagram per reply
-// ---------------------------------------------------------------------------
 
 struct TelClient {
     fd: i32,
@@ -243,7 +212,6 @@ struct TelClient {
 }
 
 impl TelClient {
-    /// Connects and consumes the initial info message.
     fn connect(path: &Path) -> std::io::Result<TelClient> {
         use std::os::unix::ffi::OsStrExt;
         let bytes = path.as_os_str().as_bytes();
@@ -315,8 +283,7 @@ impl TelClient {
         Ok(String::from_utf8(buf[..n as usize].to_vec()).expect("reply is not UTF-8"))
     }
 
-    /// Sends one command (`/cmd` or `/cmd,param`) and returns the reply
-    /// value. One request -> exactly one datagram `{"<cmd w/o param>": value}`.
+    /// Sends one command (`/cmd` or `/cmd,param`) and returns the reply value.
     fn query(&mut self, command: &str) -> std::io::Result<Value> {
         let rc = unsafe {
             libc::send(
@@ -343,7 +310,6 @@ impl TelClient {
             .unwrap_or_else(|| panic!("reply is not an object: {text}"));
         assert_eq!(obj.len(), 1, "reply must have exactly one key: {text}");
         let name = command.split(',').next().unwrap();
-        // DPDK drops the ",param" part of the command in the reply key
         Ok(obj
             .get(name)
             .unwrap_or_else(|| panic!("reply key must be {name:?} (param dropped): {text}"))
@@ -356,10 +322,6 @@ impl Drop for TelClient {
         unsafe { libc::close(self.fd) };
     }
 }
-
-// ---------------------------------------------------------------------------
-// process harness
-// ---------------------------------------------------------------------------
 
 struct Run {
     child: Child,
@@ -570,7 +532,6 @@ impl Env {
         Env::with_lcores("0-2", config)
     }
 
-    /// Writes an extra config file next to the default one.
     fn write_config(&self, name: &str, contents: &str) -> PathBuf {
         let p = self.path(name);
         fs::write(&p, contents).unwrap();
@@ -678,8 +639,7 @@ fn assert_clean_exit(st: ExitStatus, run: &Run) {
     );
 }
 
-/// The per-second dashboard, the final-stats print, the burst histograms and
-/// the CSV export are gone.
+/// None of the dashboard, final-stats, burst-histogram or CSV output appears.
 fn assert_no_old_output(run: &Run) {
     let out = run.output();
     for gone in [
@@ -695,10 +655,6 @@ fn assert_no_old_output(run: &Run) {
         );
     }
 }
-
-// ---------------------------------------------------------------------------
-// JSON field helpers
-// ---------------------------------------------------------------------------
 
 fn u(v: &Value, key: &str) -> u64 {
     v[key]
@@ -740,9 +696,7 @@ fn arr_s(v: &Value, key: &str) -> Vec<String> {
         .collect()
 }
 
-// ---------------------------------------------------------------------------
 // "RX has read everything": the telemetry oracle with the feature, time without
-// ---------------------------------------------------------------------------
 
 /// Waits until direction `dir` has received `n` packets. With telemetry:
 /// `/dpds/stats,<dir>` `rx_pkts >= n`. Without: a fixed grace period (pcap
@@ -758,7 +712,6 @@ fn wait_rx(run: &mut Run, dir: usize, n: u64) {
     }
 }
 
-/// Waits until the pcap file holds at least `n` frames.
 fn wait_frames(run: &mut Run, path: &Path, n: usize) {
     run.wait_until(
         &format!("{n} frames in {}", path.display()),
@@ -767,9 +720,7 @@ fn wait_frames(run: &mut Run, path: &Path, n: usize) {
     );
 }
 
-// ---------------------------------------------------------------------------
 // exact-count oracle
-// ---------------------------------------------------------------------------
 
 fn exact_count(in_frames: &[Vec<Vec<u8>>]) {
     let ports = in_frames.len();
@@ -902,9 +853,7 @@ fn pcap_two_ports_one_input_empty() {
     exact_count(&[Vec::new(), frames(1, 300)]);
 }
 
-// ---------------------------------------------------------------------------
 // per-direction configs (two net_pcap ports, `-l 0-2`)
-// ---------------------------------------------------------------------------
 
 /// Two pcap ports; `c0`/`c1` are passed as `--config0`/`--config1` when given,
 /// `base` is the plain `--config`.
@@ -1103,9 +1052,7 @@ fn reordering_mode_with_a_constant_delay_keeps_the_frame_order() {
     assert!(read_pcap(&out0) == frames(1, N1));
 }
 
-// ---------------------------------------------------------------------------
 // loss
-// ---------------------------------------------------------------------------
 
 #[test]
 fn full_loss_transmits_nothing_and_counts_dpds_rejects() {
@@ -1142,9 +1089,7 @@ fn full_loss_transmits_nothing_and_counts_dpds_rejects() {
     assert_eq!(read_pcap(&env.path("out0.pcap")).len(), 0);
 }
 
-// ---------------------------------------------------------------------------
 // ordered shutdown: packets still delayed in the buffer must be flushed
-// ---------------------------------------------------------------------------
 
 #[test]
 fn sigint_drains_packets_still_held_in_the_delay_buffer() {
@@ -1207,9 +1152,7 @@ fn sigterm_drains_like_sigint() {
     assert!(read_pcap(&out0) == frames(1, N));
 }
 
-// ---------------------------------------------------------------------------
 // net_null smoke tests (line-rate packet source, packets are just freed)
-// ---------------------------------------------------------------------------
 
 fn null_smoke(ports: usize, sig: i32) {
     require_cpus(ports + 1);
@@ -1227,7 +1170,6 @@ fn null_smoke(ports: usize, sig: i32) {
 
     #[cfg(feature = "telemetry")]
     for d in 0..ports {
-        // Traffic is flowing and keeps growing in every direction.
         let cmd = format!("/dpds/stats,{d}");
         run.wait_until("rx traffic", START_TIMEOUT, |r| {
             r.try_query(&cmd).is_some_and(|v| u(&v, "rx_pkts") > 0)
@@ -1271,9 +1213,7 @@ fn null_two_ports_sigterm() {
     null_smoke(2, libc::SIGTERM);
 }
 
-// ---------------------------------------------------------------------------
 // the telemetry socket: what is registered, and what the commands answer
-// ---------------------------------------------------------------------------
 
 #[test]
 fn without_the_feature_nothing_is_registered() {
@@ -1895,9 +1835,7 @@ mod with_telemetry {
     }
 }
 
-// ---------------------------------------------------------------------------
 // error paths: must exit with a status code (no panic/abort, no hang)
-// ---------------------------------------------------------------------------
 
 fn expect_failure_args(args: Vec<String>, xdg: &Path) -> String {
     let mut run = Run::spawn_in(&args, Some(xdg), None, None);
@@ -2112,7 +2050,7 @@ fn a_config_without_initialization_rate_pps_fails_startup_naming_the_field() {
     assert!(out.contains("initialization_rate_pps"), "{out}");
 }
 
-// ── limit_bit: gone, the limiter's limit is derived from the buffer capacity ──
+// ── limit_bit: rejected, the limiter's limit is derived from the buffer capacity ──
 
 #[test]
 fn a_config_that_still_has_limit_bit_fails_startup_naming_the_field() {
@@ -2216,7 +2154,7 @@ fn num_mbufs_is_an_unknown_flag_and_a_usage_error() {
             out.contains("unknown"),
             "{value:?}: it is an unknown argument\n{out}"
         );
-        // the usage text does not advertise the removed option any more
+        // the usage text does not advertise the option
         let usage = out.lines().find(|l| l.contains("Usage")).unwrap();
         assert!(!usage.contains("num-mbufs"), "{usage}");
     }
@@ -2274,8 +2212,7 @@ fn the_startup_log_shows_each_directions_own_pool_size() {
 
 #[test]
 fn a_small_buffer_capacity_gives_a_small_pool_that_starts_fine() {
-    // The old way to get a small pool was `--num-mbufs`; now buffer_capacity 0
-    // (everything is rejected) derives 0 + 4096 + 4096 + 768 + 64 = 9024.
+    // buffer_capacity 0 (everything is rejected) derives 0 + 4096 + 4096 + 768 + 64 = 9024.
     require_cpus(2);
     let _g = serial();
     let mut env = Env::new(&config_json_cap(0, 0.0, 0));
@@ -2291,9 +2228,8 @@ fn a_small_buffer_capacity_gives_a_small_pool_that_starts_fine() {
     assert_clean_exit(run.wait_exit(), &run);
 }
 
-/// A pool that cannot be created (here: a buffer_capacity whose mbufs exceed
-/// the 256 MB of `-m 256`) is a clean error naming the direction and the size
-/// that was tried. There is no "too small" message any more.
+/// A pool that cannot be created (here: a buffer_capacity whose mbufs exceed the 256 MB of
+/// `-m 256`) is a clean error naming the direction and the size that was tried.
 fn assert_pool_creation_error(out: &str, direction: usize, size: u64) {
     assert!(
         out.to_lowercase()
@@ -2362,9 +2298,7 @@ fn default_config_path_is_config_json_in_the_working_directory() {
     assert_clean_exit(run.wait_exit(), &run);
 }
 
-// ---------------------------------------------------------------------------
 // README: the "Without hardware" examples run as written
-// ---------------------------------------------------------------------------
 
 /// One step of the first fenced block under "### Without hardware" in README.md.
 #[derive(Debug)]
@@ -2376,8 +2310,8 @@ enum ReadmeStep {
     Run(Vec<String>),
 }
 
-/// The steps of the block. Spec 22: DPDS ships no default config, so the examples write theirs
-/// inline (a heredoc into a temporary file) and the dpds commands name that file.
+/// The steps of the block. DPDS ships no default config, so the examples write theirs inline
+/// (a heredoc into a temporary file) and the dpds commands name that file.
 fn readme_without_hardware_steps() -> Vec<ReadmeStep> {
     let readme = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../README.md"))
         .expect("README.md");
@@ -2551,7 +2485,7 @@ fn the_readme_without_hardware_examples_start_cleanly_and_stop_with_sigint() {
             cmd[0], "./target/release/dpds",
             "README example does not start with the binary: {cmd:?}"
         );
-        // spec v17: like PREOF, runs by hand use `--in-memory` (no hugepage files)
+        // runs by hand use `--in-memory` (no hugepage files)
         let eal = cmd.split(|a| a == "--").next().unwrap();
         assert!(
             eal.iter().any(|a| a == "--in-memory"),
@@ -2604,14 +2538,12 @@ fn the_readme_without_hardware_examples_start_cleanly_and_stop_with_sigint() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// memory locking (spec v17, v24): `dpds` calls mlockall(MCL_CURRENT | MCL_FUTURE) first thing,
-// before EAL init, like PREOF, unless a finite hard RLIMIT_MEMLOCK makes that break EAL (v24).
-// A failure or a skipped lock is a warning, never fatal.
-// ---------------------------------------------------------------------------
+// memory locking: `dpds` calls mlockall(MCL_CURRENT | MCL_FUTURE) first thing, before EAL init,
+// unless a finite hard RLIMIT_MEMLOCK would make that break EAL. A failure or a skipped lock is a
+// warning, never fatal.
 
-/// Is this process root (euid 0)? Spec v24 keys the "lock whatever the limit says" rule on the
-/// effective uid, not on the capability: root has `CAP_IPC_LOCK`, so the limit does not apply.
+/// Is this process root (euid 0)? The "lock whatever the limit says" rule keys on the effective
+/// uid, not on the capability: root has `CAP_IPC_LOCK`, so the limit does not apply.
 fn is_root() -> bool {
     // SAFETY: geteuid(2) has no arguments and cannot fail.
     unsafe { libc::geteuid() == 0 }
@@ -2714,8 +2646,8 @@ fn started_null_run(env: &mut Env, soft: libc::rlim_t, hard: libc::rlim_t) -> Ru
 
 const MIB: libc::rlim_t = 1024 * 1024;
 
-/// The warning of spec v24 case 4 (a finite hard limit): no `mlockall` call, a warning that names
-/// the soft limit in KiB, and before anything EAL prints.
+/// The warning for a finite hard limit: no `mlockall` call, a warning that names the soft limit
+/// in KiB, and before anything EAL prints.
 fn assert_rlimit_warning(err: &str, limit_kib: u64, run: &Run) {
     let want =
         format!("WARNING: RLIMIT_MEMLOCK is {limit_kib} KiB, not unlimited: continuing unlocked");
@@ -2844,7 +2776,7 @@ fn a_zero_memlock_limit_is_a_warning_naming_the_limit_and_dpds_runs_on_unlocked(
     let run = started_null_run(&mut env, 0, 0);
     let err = run.stderr.lock().unwrap().clone();
     if is_root() {
-        // root has CAP_IPC_LOCK: the limit does not apply, so it locks (spec v24 case 1)
+        // root has CAP_IPC_LOCK: the limit does not apply, so it locks
         assert!(!err.contains("RLIMIT_MEMLOCK"), "{}", run.output());
         assert!(!err.contains("mlockall"), "{}", run.output());
         assert!(vm_lck_kb(run.child.id()) > 0, "{}", run.output());
@@ -2870,8 +2802,6 @@ fn with_the_limit_lifted_dpds_locks_its_whole_memory_without_a_warning() {
     assert!(!err.contains("WARNING"), "{}", run.output());
     assert!(!err.contains("RLIMIT_MEMLOCK"), "{}", run.output());
     assert!(!err.contains("mlockall"), "{}", run.output());
-    // MCL_FUTURE: the 256 MiB EAL heap (`-m 256`) is mapped after the call, so it is locked and
-    // resident as well, not only what existed at the time of the call.
     let locked_kb = vm_lck_kb(run.child.id());
     assert!(
         locked_kb >= 128 * 1024,
@@ -2881,32 +2811,15 @@ fn with_the_limit_lifted_dpds_locks_its_whole_memory_without_a_warning() {
     stop_cleanly(run);
 }
 
-// ---------------------------------------------------------------------------
-// directed links: `--links <file>` (v2), drop causes, delay statistics and
-// histogram
-// ---------------------------------------------------------------------------
-//
-// Test-facing behaviour (see crates/dpds/tests/unit/links.rs for the unit API):
-// - `--links <file>`, JSON `{"links": [{"name", "ingress", "egress", "config",
-//   "lcore"?, "histogram"?, "delay_stats"?}]}`, is mutually exclusive with
-//   `--config*`. A link is ONE direction: packets arriving on `ingress` leave
-//   on `egress` with the link's config.
-// - Ports are DPDK device names (here `net_pcap<i>` / `net_null<i>` vdevs),
-//   resolved by name. Direction index = link index (file order). `ingress ==
-//   egress` is a hairpin. A port is the ingress of at most one link and the
-//   egress of at most one link; every probed port must be used. `-l` must
-//   name exactly `1 + number of links` lcores; the i-th worker lcore runs
-//   link i (or the link's explicit `lcore`, all links or none).
-// - `/dpds/ports`: `num_links` (= `num_directions`), per link `dir<d>_link`,
-//   `dir<d>_rx_name` (ingress), `dir<d>_tx_name` (egress); the `--config*`
-//   shorthand is one link `dir0` (1 port: p0 -> p0) or two links `dir0`
-//   (p0 -> p1, config0) and `dir1` (p1 -> p0, config1). The reply has
-//   `3 + 5 * ports + 10 * links` keys.
-// - `/dpds/stats,<d>`: `loss_drops`, `limiter_drops`, `buffer_full_drops`
-//   (their sum is `dpds_rejects`), `delay_*`/`lateness_*` (numbers, as Uint or
-//   2-decimal strings), first-loss detail "from=dpds,cause=<loss|limiter|buffer_full>".
-// - `/dpds/delay_hist,<d>`: `lo_ns`, `bin_ns` (numbers), `bins` (256 uints),
-//   `underflow`, `overflow`; the range rule is in unit/delay_stats.rs.
+// directed links: `--links <file>`, drop causes, delay statistics and histogram
+// `--links <file>` is JSON `{"links": [{"name", "ingress", "egress", "config", "lcore"?,
+// "histogram"?, "delay_stats"?}]}`, mutually exclusive with `--config*`. A link is ONE direction.
+// Ports are DPDK device names, direction index = link index (file order). A port is the ingress
+// of at most one link and the egress of at most one; every probed port must be used. `-l` names
+// exactly `1 + number of links` lcores; the i-th worker lcore runs link i (or its explicit
+// `lcore`, all links or none).
+// `/dpds/ports` has `3 + 5 * ports + 10 * links` keys; the `--config*` shorthand is link `dir0`
+// (1 port) or `dir0` and `dir1` (2 ports).
 
 /// One link object of the links file: `extra` is `""` or further members,
 /// e.g. `"lcore": 2`.
@@ -3147,7 +3060,7 @@ fn links_file_with_a_pair_and_a_hairpin_forwards_every_link_by_its_own_config() 
         for (d, delay) in [(0, 1_000_000.0), (1, 0.0), (2, 2_000_000.0)] {
             let st = run.query(&format!("/dpds/stats,{d}"));
             let mean = num(&st, "delay_mean_ns");
-            // realized delay (spec 57): the intended delay plus the staging wait
+            // realized delay: the intended delay plus the staging wait
             // (at most TX_MAX_WAIT_NS) plus the poll loop's own latency
             assert!(
                 (delay..=delay + dpds::consts::TX_MAX_WAIT_NS + 1e6).contains(&mean),
@@ -3623,7 +3536,7 @@ mod links_telemetry {
             "from=dpds,cause=buffer_full",
             "{d1}"
         );
-        // the delay is recorded when a packet is enqueued into the TX descriptors (spec 57):
+        // the delay is recorded when a packet is enqueued into the TX descriptors:
         // the 8 accepted packets are held for 5 s, so nothing is recorded yet
         assert_eq!(num(&d1, "delay_mean_ns"), 0.0, "{d1}");
         let h = run.query("/dpds/delay_hist,1");
@@ -3742,7 +3655,7 @@ mod links_telemetry {
             "from=dpds,cause=buffer_full",
             "{st}"
         );
-        // nothing is enqueued yet, so nothing is recorded (spec 57)
+        // nothing is enqueued yet, so nothing is recorded
         assert_eq!(u(&st, "tx_sent"), 0, "{st}");
         assert_eq!(hist_total(&run.query("/dpds/delay_hist,0")), 0);
         // the four frames wait 2 s plus 0, 1.2336, 2.4672, 3.7008 us of spacing, then leave
@@ -3850,7 +3763,7 @@ mod links_telemetry {
         assert_eq!((u(&h0, "page"), u(&h0, "first_bin")), (0, 0), "{h0}");
         assert_eq!(bins_of(&h0).len(), 256, "{h0}");
         assert_eq!(hist_total(&h0), N0 as u64, "{h0}");
-        // spec 57 T9: [mean, mean + 2 * TX_MAX_WAIT_NS); the realized delay (2 ms + the staging
+        // [mean, mean + 2 * TX_MAX_WAIT_NS); the realized delay (2 ms + the staging
         // wait + loop latency) is inside it unless the worker was preempted (CI)
         assert_hist_overflow_only_when_late(&h0, &st);
         assert!((num(&h0, "lo_ns") - 2_000_000.0).abs() < 1.0, "{h0}");
@@ -3863,7 +3776,7 @@ mod links_telemetry {
         let st = run.query("/dpds/stats,1");
         assert_eq!(u(&st, "dpds_rejects"), 0, "{st}");
         let mean = num(&st, "delay_mean_ns");
-        // the realized delay of a FIFO link is not the intended distribution (spec 57): a
+        // the realized delay of a FIFO link is not the intended distribution: a
         // packet leaves with its batch and behind the slowest earlier packet, so the mean is
         // above the intended 5 ms and the spread is narrower
         assert!(
@@ -4009,7 +3922,7 @@ fn a_custom_histogram_per_link_sets_bins_and_range() {
     assert_clean_exit(run.wait_exit(), &run);
 }
 
-/// Spec 30: a histogram of 4096 bins is read in pages of at most 500 bins
+/// A histogram of 4096 bins is read in pages of at most 500 bins
 /// (`/dpds/delay_hist,<dir>,<page>`); the pages together are the whole histogram.
 #[cfg(feature = "telemetry")]
 #[test]
@@ -4126,9 +4039,7 @@ fn a_4096_bin_histogram_is_read_in_nine_pages() {
     assert_clean_exit(run.wait_exit(), &run);
 }
 
-// ---------------------------------------------------------------------------
 // the --config shorthand: dir0 (and dir1)
-// ---------------------------------------------------------------------------
 
 #[cfg(feature = "telemetry")]
 #[test]
@@ -4204,9 +4115,7 @@ fn the_shorthand_with_one_port_is_the_single_hairpin_link_dir0() {
     assert_clean_exit(run.wait_exit(), &run);
 }
 
-// ---------------------------------------------------------------------------
 // --links: startup errors must be clean error exits that name the problem
-// ---------------------------------------------------------------------------
 
 #[test]
 fn links_with_the_wrong_lcore_count_names_the_requirement() {
@@ -4325,7 +4234,7 @@ fn bad_explicit_lcores_are_clean_exits_naming_the_problem() {
     let out = links_failure(&two(1, 1), 2, "0-2");
     assert!(out.contains("lcore"), "duplicate\n{out}");
 
-    // an array instead of one lcore (the v1 per-direction shape)
+    // an array instead of one lcore
     let out = links_failure(
         &[link_json_extra(
             "one",
@@ -4570,7 +4479,7 @@ fn bad_histogram_settings_are_clean_exits_naming_the_link() {
             assert!(out.contains("4096"), "{what}: the maximum is named\n{out}");
         }
     }
-    // the histogram is one object per link, not the v1 array
+    // the histogram is one object per link, not an array
     let out = links_failure(
         &[link_json_hist(
             "lenlink",
@@ -4611,9 +4520,7 @@ fn a_missing_or_malformed_links_file_is_an_error_exit_not_a_crash() {
     expect_failure(&env);
 }
 
-// ---------------------------------------------------------------------------
 // unknown keys, the telemetry dict limit, delay statistics off
-// ---------------------------------------------------------------------------
 
 #[test]
 fn an_unknown_key_in_the_links_file_is_a_clean_exit_naming_it() {
@@ -4876,7 +4783,7 @@ fn delay_stats_default_to_on_and_ports_reports_the_switch_of_every_link() {
 fn a_bad_delay_stats_value_is_a_clean_exit() {
     require_cpus(2);
     let _g = serial();
-    // the v1 per-direction array form is gone: `delay_stats` is one bool
+    // `delay_stats` is one bool, not a per-direction array
     let out = links_failure(
         &[link_json_extra(
             "flaglink",
