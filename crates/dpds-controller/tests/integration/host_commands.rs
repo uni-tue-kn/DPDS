@@ -197,7 +197,7 @@ fn nic_irqs_on_housekeeping_cores_are_ok() {
 #[test]
 fn no_link_means_no_nic_irqs_to_check() {
     let host = FakeHost::bare_metal();
-    host.irq_effective(101, "3");
+    host.irq_affinity(101, "3");
     let h = hints_json(&host, &Setup::default());
     assert_level(&h, "irq_affinity", "ok", "ok");
     assert_no_commands(&h, "irq_affinity");
@@ -206,7 +206,7 @@ fn no_link_means_no_nic_irqs_to_check() {
 #[test]
 fn a_nic_irq_on_an_isolated_core_warns_and_names_the_commands() {
     let host = FakeHost::bare_metal();
-    host.irq_effective(101, "3");
+    host.irq_affinity(101, "3");
     let h = hints_json(&host, &link_on(NIC0));
     assert_level(&h, "irq_affinity", "warn", "warn");
     let cmds = commands_of(&h, "irq_affinity");
@@ -218,21 +218,86 @@ fn a_nic_irq_on_an_isolated_core_warns_and_names_the_commands() {
 }
 
 #[test]
-fn the_irq_hint_reads_the_smp_affinity_when_there_is_no_effective_list() {
+fn the_irq_hint_works_from_the_smp_affinity_when_there_is_no_effective_list() {
     let host = FakeHost::bare_metal();
     host.remove("proc/irq/101/effective_affinity_list");
-    host.write("proc/irq/101/smp_affinity_list", "3\n");
+    host.irq_affinity(101, "3");
     let h = hints_json(&host, &link_on(NIC0));
     assert_level(&h, "irq_affinity", "warn", "warn");
     let cmds = commands_of(&h, "irq_affinity");
     assert_eq!(cmds.len(), 1, "{cmds:?}");
-    assert_eq!(irq_command(&cmds[0]).0, 101);
+    assert_eq!(irq_command(&cmds[0]), (101, vec![0, 1]));
+}
+
+#[test]
+fn an_irq_without_a_smp_affinity_list_is_skipped() {
+    // the effective list alone on an isolated core does not count
+    let host = FakeHost::bare_metal();
+    host.remove("proc/irq/101/smp_affinity_list");
+    host.irq_effective(101, "3");
+    let h = hints_json(&host, &link_on(NIC0));
+    assert_level(&h, "irq_affinity", "ok", "ok");
+    assert_no_commands(&h, "irq_affinity");
+    // the other IRQs of the NIC are still judged
+    host.irq_affinity(100, "2");
+    let h = hints_json(&host, &link_on(NIC0));
+    assert_level(&h, "irq_affinity", "warn", "warn");
+    let cmds = commands_of(&h, "irq_affinity");
+    assert_eq!(cmds.len(), 1, "{cmds:?}");
+    assert_eq!(irq_command(&cmds[0]).0, 100);
+}
+
+#[test]
+fn a_move_still_pending_is_ok_and_named_in_the_detail() {
+    // `echo 0,1 > smp_affinity_list` was run, the IRQ has not fired since: effective is still core 3
+    let host = FakeHost::bare_metal();
+    host.irq_affinity(101, "0,1");
+    host.irq_effective(101, "3");
+    let h = hints_json(&host, &link_on(NIC0));
+    assert_level(&h, "irq_affinity", "ok", "ok");
+    assert_no_commands(&h, "irq_affinity");
+    assert!(detail_has(&h, "irq_affinity", "101"), "names the irq: {h}");
+    assert!(
+        detail_has(&h, "irq_affinity", "next"),
+        "says the kernel moves it when it next fires: {h}"
+    );
+}
+
+#[test]
+fn the_requested_affinity_on_an_isolated_core_warns_even_when_the_effective_one_is_housekeeping() {
+    let host = FakeHost::bare_metal();
+    host.irq_affinity(101, "3");
+    host.irq_effective(101, "1");
+    let h = hints_json(&host, &link_on(NIC0));
+    assert_level(&h, "irq_affinity", "warn", "warn");
+    let cmds = commands_of(&h, "irq_affinity");
+    assert_eq!(cmds.len(), 1, "{cmds:?}");
+    assert_eq!(irq_command(&cmds[0]), (101, vec![0, 1]));
+}
+
+#[test]
+fn a_pending_irq_next_to_a_warning_one_gets_no_command_but_is_named() {
+    let host = FakeHost::bare_metal();
+    host.irq_affinity(100, "2"); // still requested on an isolated core
+    host.irq_affinity(101, "0,1"); // moved already, effective not yet
+    host.irq_effective(101, "3");
+    let h = hints_json(&host, &link_on(NIC0));
+    assert_level(&h, "irq_affinity", "warn", "warn");
+    let cmds = commands_of(&h, "irq_affinity");
+    assert_eq!(cmds.len(), 1, "{cmds:?}");
+    assert_eq!(irq_command(&cmds[0]), (100, vec![0, 1]));
+    assert!(detail_has(&h, "irq_affinity", "100"), "{h}");
+    assert!(
+        detail_has(&h, "irq_affinity", "101"),
+        "the pending irq is named too: {h}"
+    );
+    assert!(detail_has(&h, "irq_affinity", "next"), "{h}");
 }
 
 #[test]
 fn only_the_irqs_of_the_used_nics_count() {
     let host = FakeHost::bare_metal();
-    host.irq_effective(110, "2"); // NIC1, on an isolated core
+    host.irq_affinity(110, "2"); // NIC1, on an isolated core
     let h = hints_json(&host, &link_on(NIC0));
     assert_level(&h, "irq_affinity", "ok", "ok");
     let h = hints_json(&host, &link_on(NIC1));
@@ -246,7 +311,7 @@ fn only_the_irqs_of_the_used_nics_count() {
 fn without_isolated_cores_there_is_nothing_to_move_away_from() {
     let host = FakeHost::bare_metal();
     host.cpus(8, Some(""), &[(0, "0-3"), (1, "4-7")]);
-    host.irq_effective(101, "3");
+    host.irq_affinity(101, "3");
     let h = hints_json(&host, &link_on(NIC0));
     assert_level(&h, "irq_affinity", "ok", "info");
     assert_no_commands(&h, "irq_affinity");
@@ -257,7 +322,7 @@ fn nohz_full_cores_count_as_isolated_too() {
     let host = FakeHost::bare_metal();
     host.cpus(8, Some(""), &[(0, "0-3"), (1, "4-7")]);
     host.write("sys/devices/system/cpu/nohz_full", "2-3\n");
-    host.irq_effective(101, "3");
+    host.irq_affinity(101, "3");
     let h = hints_json(&host, &link_on(NIC0));
     assert_level(&h, "irq_affinity", "warn", "warn");
     let cmds = commands_of(&h, "irq_affinity");
@@ -269,7 +334,7 @@ fn nohz_full_cores_count_as_isolated_too() {
 #[test]
 fn a_running_irqbalance_is_named_in_the_detail() {
     let host = FakeHost::bare_metal();
-    host.irq_effective(101, "3");
+    host.irq_affinity(101, "3");
     host.processes(&[(812, "irqbalance")]);
     let h = hints_json(&host, &link_on(NIC0));
     assert!(detail_has(&h, "irq_affinity", "irqbalance"), "{h}");
@@ -278,9 +343,9 @@ fn a_running_irqbalance_is_named_in_the_detail() {
 #[test]
 fn the_irq_commands_move_only_the_irqs_on_isolated_cores_to_the_housekeeping_cores_of_the_node() {
     let host = FakeHost::bare_metal(); // isolated 2-3,6-7 of 8 CPUs
-    host.irq_effective(100, "2");
-    host.irq_effective(101, "3");
-    host.irq_effective(110, "2"); // NIC1: not used by the link
+    host.irq_affinity(100, "2");
+    host.irq_affinity(101, "3");
+    host.irq_affinity(110, "2"); // NIC1: not used by the link
     let h = hints_json(&host, &link_on(NIC0));
     let cmds = commands_of(&h, "irq_affinity");
     let parsed: Vec<(u32, Vec<u32>)> = cmds.iter().map(|c| irq_command(c)).collect();
@@ -296,12 +361,9 @@ fn the_irq_commands_move_only_the_irqs_on_isolated_cores_to_the_housekeeping_cor
             "the real /proc path, not the fake root: {c}"
         );
     }
-    assert!(
-        !host
-            .tmp
-            .path()
-            .join("proc/irq/100/smp_affinity_list")
-            .exists(),
+    assert_eq!(
+        std::fs::read_to_string(host.tmp.path().join("proc/irq/100/smp_affinity_list")).unwrap(),
+        "2\n",
         "nothing is written"
     );
 }
@@ -311,7 +373,7 @@ fn the_target_is_the_non_isolated_online_cores_of_the_nics_node() {
     // node 1 is cores 4-7; core 4 is isolated and core 7 is offline
     let host = FakeHost::bare_metal();
     host.cpus(7, Some("2-3,4"), &[(0, "0-3"), (1, "4-7")]);
-    host.irq_effective(110, "4");
+    host.irq_affinity(110, "4");
     let h = hints_json(&host, &link_on(NIC1));
     let cmds = commands_of(&h, "irq_affinity");
     assert_eq!(cmds.len(), 1, "{cmds:?}");
@@ -321,9 +383,9 @@ fn the_target_is_the_non_isolated_online_cores_of_the_nics_node() {
 #[test]
 fn each_nic_gets_the_housekeeping_cores_of_its_own_node() {
     let host = FakeHost::bare_metal(); // node 0: 0-3, node 1: 4-7, isolated 2-3,6-7
-    host.irq_effective(101, "3"); // NIC0, node 0
-    host.irq_effective(110, "6"); // NIC1, node 1
-    host.irq_effective(111, "7");
+    host.irq_affinity(101, "3"); // NIC0, node 0
+    host.irq_affinity(110, "6"); // NIC1, node 1
+    host.irq_affinity(111, "7");
     let h = hints_json(&host, &setup(vec![link("l", NIC0, NIC1)]));
     let parsed: Vec<(u32, Vec<u32>)> = commands_of(&h, "irq_affinity")
         .iter()
@@ -340,8 +402,8 @@ fn a_node_without_housekeeping_cores_falls_back_to_all_non_isolated_online_cores
     // all of node 1 (4-7) is isolated
     let host = FakeHost::bare_metal();
     host.cpus(8, Some("2-3,4-7"), &[(0, "0-3"), (1, "4-7")]);
-    host.irq_effective(110, "5");
-    host.irq_effective(111, "0"); // already on a housekeeping core
+    host.irq_affinity(110, "5");
+    host.irq_affinity(111, "0"); // already on a housekeeping core
     let h = hints_json(&host, &link_on(NIC1));
     let cmds = commands_of(&h, "irq_affinity");
     assert_eq!(cmds.len(), 1, "{cmds:?}");
@@ -360,7 +422,7 @@ fn without_numa_information_the_target_is_all_non_isolated_online_cores() {
     // a NIC whose numa_node is -1 (unknown) is no different
     let host = FakeHost::bare_metal();
     host.write("sys/bus/pci/devices/0000:65:00.0/numa_node", "-1\n");
-    host.irq_effective(110, "6");
+    host.irq_affinity(110, "6");
     let h = hints_json(&host, &link_on(NIC1));
     let cmds = commands_of(&h, "irq_affinity");
     assert_eq!(cmds.len(), 1, "{cmds:?}");
@@ -373,9 +435,9 @@ fn nics_that_are_uplinks_or_not_usable_are_skipped_and_named() {
     // on an isolated core. NIC0, which is usable, has one too
     let host = FakeHost::bare_metal();
     host.addr("ens2f0", "192.168.7.7");
-    host.irq_effective(101, "3");
-    host.irq_effective(110, "6");
-    host.irq_effective(120, "2");
+    host.irq_affinity(101, "3");
+    host.irq_affinity(110, "6");
+    host.irq_affinity(120, "2");
     let h = hints_json(
         &host,
         &setup(vec![link("a", NIC0, NIC1), link("b", INTEL, NIC0)]),
@@ -406,8 +468,8 @@ fn nics_that_are_uplinks_or_not_usable_are_skipped_and_named() {
 fn when_every_used_nic_is_skipped_there_is_no_irq_command_and_the_detail_names_them() {
     let host = FakeHost::bare_metal();
     host.addr("ens2f0", "192.168.7.7");
-    host.irq_effective(110, "6");
-    host.irq_effective(120, "2");
+    host.irq_affinity(110, "6");
+    host.irq_affinity(120, "2");
     for (pci, name) in [(NIC1, "ens2f0"), (INTEL, "enp179s0")] {
         let h = hints_json(&host, &link_on(pci));
         assert_no_commands(&h, "irq_affinity");
@@ -1726,7 +1788,7 @@ fn the_hints_that_have_commands_are_exactly_the_ones_that_can_be_fixed() {
     host.sysctl("swappiness", Some("60"));
     host.sysctl("zone_reclaim_mode", Some("1"));
     host.governor_all(8, "powersave");
-    host.irq_effective(101, "3");
+    host.irq_affinity(101, "3");
     set_mrr(&host, NIC0, 512);
     let h = hints_json(&host, &setup(vec![link("l", NIC0, NIC1)]));
     assert_no_action_members(&h);

@@ -323,15 +323,25 @@ impl FakeHost {
     }
 
     /// The interrupts of a PCI device: `msi_irqs/<n>` below the device (as the kernel lists them)
-    /// and `/proc/irq/<n>/effective_affinity_list` with the given CPU list.
+    /// and a settled affinity: `smp_affinity_list` and `effective_affinity_list` both with the given
+    /// CPU list.
     pub fn nic_irqs(&self, pci: &str, irqs: &[(u32, &str)]) {
         for (n, cpus) in irqs {
             self.write(&format!("sys/bus/pci/devices/{pci}/msi_irqs/{n}"), "msix\n");
+            self.irq_affinity(*n, cpus);
             self.irq_effective(*n, cpus);
         }
     }
 
-    /// `/proc/irq/<n>/effective_affinity_list`.
+    /// `/proc/irq/<n>/smp_affinity_list`: the requested affinity (it shows a move that is still pending).
+    pub fn irq_affinity(&self, irq: u32, cpus: &str) {
+        self.write(
+            &format!("proc/irq/{irq}/smp_affinity_list"),
+            &format!("{cpus}\n"),
+        );
+    }
+
+    /// `/proc/irq/<n>/effective_affinity_list`: where the IRQ last ran (updated when it fires).
     pub fn irq_effective(&self, irq: u32, cpus: &str) {
         self.write(
             &format!("proc/irq/{irq}/effective_affinity_list"),

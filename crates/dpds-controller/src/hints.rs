@@ -738,7 +738,9 @@ fn irqbalance_running(roots: &HostRoots) -> bool {
     })
 }
 
-/// NIC interrupts of the used NICs that run on isolated cores.
+/// NIC interrupts of the used NICs whose requested affinity (`smp_affinity_list`) includes an
+/// isolated core. A move requested off the isolated cores that has not taken effect yet (the
+/// interrupt has not fired since) is named, not warned about.
 fn irq_affinity(ctx: &Ctx) -> Hint {
     let (id, title) = ("irq_affinity", "NIC interrupts");
     let nics = ctx.used_nics();
@@ -797,6 +799,8 @@ fn irq_affinity(ctx: &Ctx) -> Hint {
         .collect();
     // (irq, NIC, cores it runs on, cores to move it to)
     let mut on_isolated: Vec<(u32, String, Vec<u32>, Vec<u32>)> = Vec::new();
+    // (irq, NIC, cores it still runs on) of requested moves that have not taken effect yet
+    let mut pending: Vec<(u32, String, Vec<u32>)> = Vec::new();
     for nic in usable {
         let label = nic_label(nic);
         // the housekeeping cores of the NIC's node, else all of them
@@ -815,12 +819,19 @@ fn irq_affinity(ctx: &Ctx) -> Hint {
         };
         for irq in msi_irqs(ctx.roots, &nic.pci) {
             let dir = ctx.roots.proc(&format!("irq/{irq}"));
-            let cpus = read_trim(&dir.join("effective_affinity_list"))
-                .or_else(|| read_trim(&dir.join("smp_affinity_list")))
+            let Some(requested) = read_trim(&dir.join("smp_affinity_list")) else {
+                continue;
+            };
+            let requested = parse_cpulist(&requested);
+            if requested.iter().any(|c| isolated.contains(c)) {
+                on_isolated.push((irq, label.clone(), requested, target.clone()));
+                continue;
+            }
+            let effective = read_trim(&dir.join("effective_affinity_list"))
                 .map(|s| parse_cpulist(&s))
                 .unwrap_or_default();
-            if cpus.iter().any(|c| isolated.contains(c)) {
-                on_isolated.push((irq, label.clone(), cpus, target.clone()));
+            if effective.iter().any(|c| isolated.contains(c)) {
+                pending.push((irq, label.clone(), effective));
             }
         }
     }
@@ -829,12 +840,24 @@ fn irq_affinity(ctx: &Ctx) -> Hint {
     } else {
         ""
     };
+    let pending = if pending.is_empty() {
+        String::new()
+    } else {
+        let list = pending
+            .iter()
+            .map(|(irq, nic, cpus)| {
+                format!("IRQ {irq} of {nic} still on core(s) {}", fmt_cpus(cpus))
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("; {list}: the kernel moves them to their requested cores when they next fire")
+    };
     if on_isolated.is_empty() {
         return hint(
             id,
             Level::Ok,
             title,
-            format!("NIC interrupts are off the isolated cores{balance}{skipped}"),
+            format!("NIC interrupts are off the isolated cores{pending}{balance}{skipped}"),
             "",
         );
     }
@@ -855,7 +878,7 @@ fn irq_affinity(ctx: &Ctx) -> Hint {
         Level::Warn,
         title,
         format!(
-            "{list}; the isolated cores are {}{balance}{skipped}. The commands move them to the non-isolated online cores of the NIC's NUMA node, or to all of them when the node has none ({}); the kernel refuses to move managed interrupts",
+            "{list}; the isolated cores are {}{balance}{skipped}. The commands move them to the non-isolated online cores of the NIC's NUMA node, or to all of them when the node has none ({}); the kernel refuses to move managed interrupts{pending}",
             fmt_cpus(&isolated),
             targets.join("; ")
         ),
