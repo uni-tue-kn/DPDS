@@ -19,44 +19,50 @@ beforeEach(() => {
   seedLinks([fx.link()]);
 });
 
-// The DPDS logo is the visible title of every page: the h1 keeps the page name as its accessible name, visually hidden, and
-// shows the decorative logo image (alt "") instead.
-describe('page title logo', () => {
-  it.each(PAGES)(
-    'on %s the only h1 is named "%s", hides the name and shows the decorative logo',
-    async (path, name) => {
-      renderApp(path);
-      const h1 = await screen.findByRole('heading', { level: 1, name });
-      expect(screen.getAllByRole('heading', { level: 1 })).toEqual([h1]);
-      expect(h1).toHaveAccessibleName(name);
+// Pages show no visible heading: the h1 keeps the page name as its accessible name, but contains only the visually hidden name.
+describe('page title', () => {
+  it.each(PAGES)('on %s the only h1 is named "%s" and holds only the visually hidden name', async (path, name) => {
+    renderApp(path);
+    const h1 = await screen.findByRole('heading', { level: 1, name });
+    expect(screen.getAllByRole('heading', { level: 1 })).toEqual([h1]);
+    expect(h1).toHaveAccessibleName(name);
 
-      const hidden = must(h1.querySelector('.visually-hidden'), 'the visually hidden page name') as HTMLElement;
-      expect(hidden.textContent?.trim()).toBe(name);
+    const hidden = must(h1.querySelector('.visually-hidden'), 'the visually hidden page name') as HTMLElement;
+    expect(hidden.textContent?.trim()).toBe(name);
+    expect(h1.querySelector('img')).toBeNull();
 
-      const logo = must(h1.querySelector('img'), 'the logo inside the h1') as HTMLImageElement;
-      expect(logo.getAttribute('src')).toMatch(/logo/);
-      expect(logo.getAttribute('alt')).toBe('');
-      expect(h1.querySelectorAll('img')).toHaveLength(1);
-
-      const visible = Array.from(h1.childNodes)
-        .filter((n) => n !== hidden)
-        .map((n) => n.textContent ?? '')
-        .join('');
-      expect(visible.trim()).toBe('');
-    },
-  );
+    const visible = Array.from(h1.childNodes)
+      .filter((n) => n !== hidden)
+      .map((n) => n.textContent ?? '')
+      .join('');
+    expect(visible.trim()).toBe('');
+  });
 });
 
-// The sidebar no longer carries the logo or the GitHub link (the footer keeps it).
-describe('sidebar without brand', () => {
-  it.each(PAGES)('on %s has no brand, no image and no GitHub link', async (path, name) => {
+// The DPDS logo sits at the top of the sidebar, as a plain image: not a link, no GitHub link in the sidebar (the footer keeps it).
+describe('sidebar brand', () => {
+  it.each(PAGES)('on %s shows the unlinked "DPDS logo" in .sidebar-brand', async (path, name) => {
     renderApp(path);
     await screen.findByRole('heading', { level: 1, name });
     const sidebar = must(document.querySelector('.sidebar'), 'the sidebar') as HTMLElement;
-    expect(document.querySelector('.sidebar-brand')).toBeNull();
-    expect(sidebar.querySelector('img')).toBeNull();
+    const brand = must(sidebar.querySelector('.sidebar-brand'), 'the sidebar brand') as HTMLElement;
+    const logo = must(brand.querySelector('img'), 'the logo in the brand') as HTMLImageElement;
+    expect(logo.getAttribute('src')).toMatch(/logo/);
+    expect(logo.getAttribute('alt')).toBe('DPDS logo');
+    expect(screen.getByRole('img', { name: 'DPDS logo' })).toBe(logo);
+    expect(sidebar.querySelectorAll('img')).toHaveLength(1);
+    expect(logo.closest('a')).toBeNull();
+    expect(brand.querySelector('a')).toBeNull();
     expect(sidebar.querySelector('a[href="https://github.com/uni-tue-kn/DPDS"]')).toBeNull();
-    expect(screen.queryByRole('img', { name: 'DPDS logo' })).not.toBeInTheDocument();
+  });
+
+  it('is the first thing in the sidebar, before the navigation', async () => {
+    renderApp('/');
+    await screen.findByRole('heading', { level: 1, name: 'Dashboard' });
+    const sidebar = must(document.querySelector('.sidebar'), 'the sidebar') as HTMLElement;
+    const brand = must(sidebar.querySelector('.sidebar-brand'), 'the sidebar brand');
+    const nav = must(sidebar.querySelector('nav'), 'the sidebar nav');
+    expect(brand.compareDocumentPosition(nav) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });
 
