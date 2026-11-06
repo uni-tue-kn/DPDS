@@ -26,6 +26,7 @@ use dpds_controller::stats::{compute_stats, iat_histogram, HistoryTotals, Snapsh
 use dpds_controller::supervisor::{State, SupervisorStatus};
 use dpds_controller::telemetry::{poll_once, socket_path, Client};
 use serde_json::{json, Value};
+use std::collections::HashSet;
 
 const URL: &str = "/api/stats/0/iat_histogram";
 
@@ -335,7 +336,7 @@ fn poll_once_reads_the_iat_histogram_of_every_link_with_delay_statistics() {
 // ---- frame_sizes and out_of_order -----------------------------------------------------------------
 
 fn counters_of(s: &Snapshot, prev: Option<&Snapshot>) -> Vec<Value> {
-    let v = serde_json::to_value(compute_stats(prev, s)).unwrap();
+    let v = serde_json::to_value(compute_stats(prev, s, &HashSet::new())).unwrap();
     v["directions"]
         .as_array()
         .unwrap()
@@ -403,7 +404,7 @@ fn the_history_totals_carry_them_too() {
     let mut s = shot(1);
     s.dirs[0]["frame_sizes"] = json!([1, 2, 3, 4, 5, 6, 7, 8]);
     s.dirs[0]["out_of_order"] = json!(17);
-    let view = compute_stats(None, &s);
+    let view = compute_stats(None, &s, &HashSet::new());
     let t = serde_json::to_value(HistoryTotals::from(&view.directions[0].counters)).unwrap();
     assert_eq!(t["frame_sizes"], json!([1, 2, 3, 4, 5, 6, 7, 8]));
     assert_eq!(t["out_of_order"], 17);

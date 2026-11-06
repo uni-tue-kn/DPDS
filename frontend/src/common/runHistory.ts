@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import * as api from '../api/client';
 import type { HistoryLink, HistorySample, HistoryTotals } from '../api/types';
-import { errorMessage } from './format';
+import { addNullable, errorMessage } from './format';
 import { startPolling } from './polling';
 
 const POLL_MS = 1000;
@@ -23,10 +23,10 @@ const SUMMED = [
   'nic_tx_drops',
   'nic_rx_missed',
   'nic_rx_nombuf',
-  'nic_rx_port_buffer_discards',
-  'nic_rx_phy_discards',
-  'nic_tx_phy_discards',
 ] as const;
+
+/** Counts that are null on an SR-IOV virtual function. */
+const NULLABLE = ['nic_rx_port_buffer_discards', 'nic_rx_phy_discards', 'nic_tx_phy_discards'] as const;
 
 const ZERO_SAMPLE: HistorySample = {
   t_ms: 0,
@@ -40,9 +40,9 @@ const ZERO_SAMPLE: HistorySample = {
   nic_tx_drops: 0,
   nic_rx_missed: 0,
   nic_rx_nombuf: 0,
-  nic_rx_port_buffer_discards: 0,
-  nic_rx_phy_discards: 0,
-  nic_tx_phy_discards: 0,
+  nic_rx_port_buffer_discards: null,
+  nic_rx_phy_discards: null,
+  nic_tx_phy_discards: null,
 };
 
 /** The newest `MAX_SAMPLES` of `list`. */
@@ -135,7 +135,7 @@ export function useRunHistory(): {
 
 /**
  * The aggregate of several links' series, at the times every link has a sample: rates and cumulative drop counts are
- * summed. The result has the shape of a link's series, so it is drawn by the same charts. Empty without links or when one
+ * summed (a count that is null on some links is the sum of the others, null when it is null on all). The result has the shape of a link's series, so it is drawn by the same charts. Empty without links or when one
  * link has no sample.
  */
 export function sumHistories(lists: HistorySample[][]): HistorySample[] {
@@ -149,6 +149,7 @@ export function sumHistories(lists: HistorySample[][]): HistorySample[] {
       }
       acc.n += 1;
       for (const key of SUMMED) acc.s[key] += x[key];
+      for (const key of NULLABLE) acc.s[key] = addNullable(acc.s[key], x[key]);
     }
   }
   return [...sums.values()]

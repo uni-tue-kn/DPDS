@@ -565,7 +565,7 @@ impl FakeHost {
             ..Nic::mlx5("0000:00:03.0", "ens3", None)
         });
         h.add_nic(&Nic {
-            device: "0x1018".into(),
+            device: "0x1017".into(),
             numa: None,
             pcie: None,
             max_read_req: None,

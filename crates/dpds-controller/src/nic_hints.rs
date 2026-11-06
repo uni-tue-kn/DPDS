@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-use crate::discovery::Interface;
+use crate::discovery::{is_vf, Interface};
 use crate::hints::{escape_control, hint, nic_label, Ctx, Hint, Level};
 
 /// The PCIe maximum, the target of MaxReadReq.
@@ -131,6 +131,10 @@ pub(crate) fn nic_hints(ctx: &Ctx) -> Vec<Hint> {
     }
     for nic in ctx.used_nics() {
         let label = &nic_label(nic);
+        if is_vf(ctx.roots, nic) {
+            hints.extend(vf_hints(nic, label));
+            continue;
+        }
         let pause = tool_netdev(nic).map(|nd| read_pause(ctx, nd));
         let mut set = vec![
             flow_control(nic, label, pause.as_ref()),
@@ -156,15 +160,45 @@ pub(crate) fn nic_hints(ctx: &Ctx) -> Vec<Hint> {
     hints
 }
 
+/// The settings of a virtual function belong to the physical function on the hypervisor, so no
+/// tool runs and no command is suggested.
+fn vf_hints(nic: &Interface, label: &str) -> Vec<Hint> {
+    let mut kinds = vec![
+        ("flow_control", "Flow control", "flow control"),
+        ("pcie_maxreadreq", "PCIe MaxReadReq", "PCIe MaxReadReq"),
+    ];
+    if is_mlx5(nic) {
+        kinds.push(("port_buffer", "Port buffer", "port buffer"));
+        kinds.push(("firmware", "NIC firmware", "firmware"));
+    }
+    kinds
+        .into_iter()
+        .map(|(id, title, what)| {
+            hint(
+                &format!("{id}:{}", nic.pci),
+                Level::Info,
+                &format!("{title} {label}"),
+                format!(
+                    "SR-IOV virtual function: {what} is set on the physical function on the hypervisor"
+                ),
+                "",
+            )
+        })
+        .collect()
+}
+
 fn is_mlx5(nic: &Interface) -> bool {
     nic.vendor_id.as_deref() == Some("0x15b3") && nic.driver.as_deref() == Some("mlx5_core")
 }
 
-/// Queries the firmware settings of every mlx5 NIC of `nics` into the cache, which is what a
+/// Queries the firmware settings of every mlx5 NIC of `nics` that is not a VF into the cache, which is what a
 /// link on each of them would query; the hints are dropped. With `recheck` (and tools allowed)
 /// the cached results of all of them are dropped first.
 pub(crate) fn warm_firmware(ctx: &Ctx, nics: &[Interface]) {
-    let mlx5: Vec<&Interface> = nics.iter().filter(|n| is_mlx5(n)).collect();
+    let mlx5: Vec<&Interface> = nics
+        .iter()
+        .filter(|n| is_mlx5(n) && !is_vf(ctx.roots, n))
+        .collect();
     if let (Some(cache), true) = (ctx.cache, ctx.recheck && ctx.run_tools) {
         for nic in &mlx5 {
             cache.drop_card(&function_zero(&nic.pci));
@@ -425,12 +459,6 @@ fn maxreadreq(ctx: &Ctx, nic: &Interface, label: &str) -> Hint {
     }
     let suggestion =
         "Raise the PCIe maximum read request size to 4096 B; 1024 B and above is acceptable.";
-    if fs::symlink_metadata(roots.pci_dir(&nic.pci).join("physfn")).is_ok() {
-        detail.push_str(
-            "; this is a virtual function, so no command is suggested: its MaxReadReq belongs to the physical function",
-        );
-        return hint(&id, level, &title, detail, suggestion);
-    }
     hint(&id, level, &title, detail, suggestion)
         .with_commands(vec![format!("setpci -s {} CAP_EXP+8.w=5000:7000", nic.pci)])
 }

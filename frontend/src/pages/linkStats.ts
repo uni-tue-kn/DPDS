@@ -1,4 +1,5 @@
 import type { Counters, DirectionStats, HistoryTotals } from '../api/types';
+import { addNullable } from '../common/format';
 import { type DropCounts, dropsOfCounters, dropsOfTotals } from './LossDonut';
 
 /** Everything the chart area of a link (or of all links added up) shows besides the time series. */
@@ -49,9 +50,9 @@ const addDrops = (a: DropCounts, b: DropCounts): DropCounts => ({
   nicTx: a.nicTx + b.nicTx,
   missed: a.missed + b.missed,
   nombuf: a.nombuf + b.nombuf,
-  portBuffer: a.portBuffer + b.portBuffer,
-  rxPhy: a.rxPhy + b.rxPhy,
-  txPhy: a.txPhy + b.txPhy,
+  portBuffer: addNullable(a.portBuffer, b.portBuffer),
+  rxPhy: addNullable(a.rxPhy, b.rxPhy),
+  txPhy: addNullable(a.txPhy, b.txPhy),
 });
 
 /** The sum of several links. */

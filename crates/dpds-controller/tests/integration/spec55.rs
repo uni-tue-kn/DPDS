@@ -180,6 +180,30 @@ async fn the_startup_task_queries_the_firmware_of_every_mlx5_nic_once_without_a_
 }
 
 #[tokio::test]
+async fn the_host_only_firmware_query_skips_sriov_virtual_functions() {
+    let host = FakeHost::bare_metal();
+    // NIC0 is a ConnectX VF (device 0x101e), NIC1 a PF
+    host.add_nic(&Nic {
+        device: "0x101e".into(),
+        ..Nic::mlx5(BDF0, "ens1f0", Some(0))
+    });
+    let exec = host.exec();
+    fake_mst(&exec, "mstconfig", BDF0, MstState::untuned());
+    fake_mst(&exec, "mstconfig", NIC1, MstState::untuned());
+    let a = warm_over(host, State::Stopped);
+    until("the PF query", || mst(&exec, NIC1) >= 1).await;
+    settle().await;
+    get_ok(&a, "?recheck=true").await;
+    assert_eq!(mst(&exec, NIC1), 2, "{:?}", exec.calls());
+    assert_eq!(
+        mst(&exec, BDF0),
+        0,
+        "the VF is not queried: {:?}",
+        exec.calls()
+    );
+}
+
+#[tokio::test]
 async fn a_running_startup_task_does_not_delay_the_rest_of_the_service() {
     let host = FakeHost::bare_metal();
     let exec = host.exec();

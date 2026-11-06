@@ -16,6 +16,7 @@ use dpds_controller::eal::links_file_json;
 use dpds_controller::lcores::DirectionPlan;
 use dpds_controller::stats::{compute_stats, Snapshot};
 use serde_json::{json, Value};
+use std::collections::HashSet;
 
 const DELAY_FIELDS: [&str; 6] = [
     "delay_mean_ns",
@@ -169,6 +170,7 @@ fn an_off_direction_has_no_delay_values_but_everything_else() {
     let v = serde_json::to_value(compute_stats(
         Some(&off_snapshot(0)),
         &off_snapshot(1_000_000_000),
+        &HashSet::new(),
     ))
     .unwrap();
     let (d0, d1) = (&v["directions"][0], &v["directions"][1]);
@@ -189,7 +191,7 @@ fn a_missing_switch_in_ports_means_on() {
     // an older dpds: no dir<d>_delay_stats keys at all
     let s = snapshot([sample(10), sample(20)], [port(1_000), port(2_000)]);
     assert!(s.ports.get("dir0_delay_stats").is_none());
-    let v = serde_json::to_value(compute_stats(None, &s)).unwrap();
+    let v = serde_json::to_value(compute_stats(None, &s, &HashSet::new())).unwrap();
     for d in v["directions"].as_array().unwrap() {
         assert_eq!(d["delay_stats"], true, "{d}");
         assert!(!absent(d, "delay_mean_ns"), "{d}");

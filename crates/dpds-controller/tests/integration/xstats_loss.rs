@@ -24,6 +24,7 @@ use crate::fake_telemetry::{short_tempdir, FakeTelemetryServer};
 use dpds_controller::stats::{compute_stats, HistorySample, HistoryTotals, Snapshot};
 use dpds_controller::telemetry::{poll_once, socket_path, Client};
 use serde_json::{json, Value};
+use std::collections::HashSet;
 
 fn dir(uptime_ns: u64, rx: u64, tx: u64, tx_drops: u64) -> DirSample {
     DirSample {
@@ -101,7 +102,9 @@ fn loaded() -> Snapshot {
 }
 
 fn counters(s: &Snapshot, d: usize) -> Value {
-    serde_json::to_value(compute_stats(None, s)).unwrap()["directions"][d]["counters"].clone()
+    serde_json::to_value(compute_stats(None, s, &HashSet::new())).unwrap()["directions"][d]
+        ["counters"]
+        .clone()
 }
 
 fn num(c: &Value, k: &str) -> u64 {
@@ -190,7 +193,7 @@ fn rates_come_from_rx_good_bytes_and_tx_good_bytes() {
         }
         s
     };
-    let v = serde_json::to_value(compute_stats(Some(&mk(1)), &mk(2))).unwrap();
+    let v = serde_json::to_value(compute_stats(Some(&mk(1)), &mk(2), &HashSet::new())).unwrap();
     // link 0: rx port 0 (1 MB/s), tx port 1 (7 MB/s); link 1: rx port 1 (5 MB/s), tx port 0 (3 MB/s)
     assert_close(f(&v["directions"][0], "rx_bps"), 1_000_000.0 * 8.0);
     assert_close(f(&v["directions"][0], "tx_bps"), 7_000_000.0 * 8.0);
@@ -339,7 +342,7 @@ fn diagnostics_are_passed_through_in_the_counters_only() {
         [7, 8, 9]
     );
     // history samples and totals carry the causes, never the diagnostics
-    let view = &compute_stats(None, &s).directions[0];
+    let view = &compute_stats(None, &s, &HashSet::new()).directions[0];
     let sample = serde_json::to_value(HistorySample::new(5000, view)).unwrap();
     let totals = serde_json::to_value(HistoryTotals::from(&view.counters)).unwrap();
     for k in [
@@ -375,7 +378,12 @@ fn diagnostics_move_no_loss_total_and_no_share() {
         }
         s
     };
-    let view = serde_json::to_value(compute_stats(Some(&mk(1, 0)), &mk(2, 50_000))).unwrap();
+    let view = serde_json::to_value(compute_stats(
+        Some(&mk(1, 0)),
+        &mk(2, 50_000),
+        &HashSet::new(),
+    ))
+    .unwrap();
     for d in view["directions"].as_array().unwrap() {
         let c = &d["counters"];
         let sum: u64 = [
@@ -404,7 +412,7 @@ fn diagnostics_move_no_loss_total_and_no_share() {
 #[test]
 fn history_samples_and_totals_carry_the_nine_causes() {
     let s = loaded();
-    let view = &compute_stats(None, &s).directions[0];
+    let view = &compute_stats(None, &s, &HashSet::new()).directions[0];
     let sample = serde_json::to_value(HistorySample::new(5000, view)).unwrap();
     let totals = serde_json::to_value(HistoryTotals::from(&view.counters)).unwrap();
     // link 0: ingress port 0, egress port 1
@@ -432,7 +440,7 @@ fn history_nic_tx_drops_is_still_the_dpds_tx_drops() {
         ],
         quiet_ports(),
     );
-    let view = &compute_stats(None, &s).directions[0];
+    let view = &compute_stats(None, &s, &HashSet::new()).directions[0];
     let sample = serde_json::to_value(HistorySample::new(1, view)).unwrap();
     let totals = serde_json::to_value(HistoryTotals::from(&view.counters)).unwrap();
     assert_eq!(sample["nic_tx_drops"], 10);
@@ -475,7 +483,7 @@ fn the_nic_shares_include_the_new_causes() {
         set_xstats(&mut s, 1, &[("tx_phy_discard_packets", 1_500 * t_s)]);
         s
     };
-    let v = compute_stats(Some(&mk(0)), &mk(1));
+    let v = compute_stats(Some(&mk(0)), &mk(1), &HashSet::new());
     let d0 = &v.directions[0];
     // (1,000 + 500 + 2,250 + 750) / 1e6 = 0.45 %
     assert_close(d0.nic_rx_pct, 0.45);

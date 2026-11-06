@@ -63,10 +63,13 @@ export interface DropCounts {
   nicTx: number;
   missed: number;
   nombuf: number;
-  portBuffer: number;
-  rxPhy: number;
-  txPhy: number;
+  /** The physical-port counts are null on an SR-IOV virtual function. */
+  portBuffer: number | null;
+  rxPhy: number | null;
+  txPhy: number | null;
 }
+
+const NOT_MEASURABLE = 'Not measurable on an SR-IOV virtual function; see the physical function on the hypervisor';
 
 /** From the live counters of `GET /api/stats`. */
 export const dropsOfCounters = (c: Counters): DropCounts => ({
@@ -96,13 +99,22 @@ export const dropsOfTotals = (t: HistoryTotals): DropCounts => ({
 
 /** All causes together; 0 means nothing was dropped. */
 export const totalDrops = (d: DropCounts) =>
-  d.loss + d.limiter + d.bufferFull + d.nicTx + d.missed + d.nombuf + d.portBuffer + d.rxPhy + d.txPhy;
+  d.loss +
+  d.limiter +
+  d.bufferFull +
+  d.nicTx +
+  d.missed +
+  d.nombuf +
+  (d.portBuffer ?? 0) +
+  (d.rxPhy ?? 0) +
+  (d.txPhy ?? 0);
 
 /** The one neutral segment shown instead of the causes when nothing was dropped. */
 const PLACEHOLDER = { label: 'No drops', color: '#adb5bd' } as const;
 
 /** The hover text of a segment: its count and its share of all drops. */
-function hoverText(label: string, count: number, total: number): string {
+function hoverText(label: string, count: number | null, total: number): string {
+  if (count === null) return `${label}: n/a`;
   const share = total > 0 ? (count / total) * 100 : 0;
   return `${label}: ${formatCount(count)} packets (${share.toFixed(2)} % of drops)`;
 }
@@ -130,6 +142,7 @@ function CauseInfo({ label, help }: { label: string; help: string }) {
 export default function LossDonut({ drops }: { drops: DropCounts }) {
   const theme = useTheme();
   const { loss, limiter, bufferFull, nicTx, missed, nombuf, portBuffer, rxPhy, txPhy } = drops;
+  const counts = [loss, limiter, bufferFull, nicTx, missed, nombuf, portBuffer, rxPhy, txPhy];
   const empty = totalDrops(drops) === 0;
   const data = useMemo(
     () =>
@@ -157,13 +170,13 @@ export default function LossDonut({ drops }: { drops: DropCounts }) {
           legend: { display: false },
           tooltip: {
             callbacks: {
-              label: (ctx: { label: string; parsed: number; dataset: { data: number[] } }) =>
+              label: (ctx: { label: string; raw: number | null; dataset: { data: (number | null)[] } }) =>
                 empty
                   ? PLACEHOLDER.label
                   : hoverText(
                       ctx.label,
-                      ctx.parsed,
-                      ctx.dataset.data.reduce((a, b) => a + b, 0),
+                      ctx.raw,
+                      ctx.dataset.data.reduce<number>((a, b) => a + (b ?? 0), 0),
                     ),
             },
           },
@@ -181,11 +194,16 @@ export default function LossDonut({ drops }: { drops: DropCounts }) {
         {empty && <p className="text-center text-body-secondary mb-0">{PLACEHOLDER.label}</p>}
       </div>
       <ul className="list-unstyled mb-0" data-testid="donut-legend">
-        {CAUSES.map((c) => (
+        {CAUSES.map((c, i) => (
           <li key={c.label} className="d-flex align-items-center gap-2">
             <span className="legend-swatch" data-testid="legend-swatch" style={{ backgroundColor: c.color }} />
             <span>{c.label}</span>
             <CauseInfo label={c.label} help={c.help} />
+            {counts[i] === null && (
+              <span className="text-body-secondary" title={NOT_MEASURABLE}>
+                n/a
+              </span>
+            )}
           </li>
         ))}
       </ul>

@@ -622,6 +622,55 @@ async fn the_samples_carry_the_cumulative_drop_counters_of_the_link() {
     }
 }
 
+/// A port that is an SR-IOV virtual function has no physical-port counters: the fields are JSON
+/// null in the samples, the totals and `/api/stats`, while the counters valid on a VF and the
+/// other port's stay numbers. Link 0 is NIC0 (a VF, device 0x101e) -> NIC1 (a PF), link 1 the
+/// reverse; the fake `dpds` counts every loss xstat on both ports.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_vf_port_has_null_physical_counters_in_samples_totals_and_stats() {
+    let mut r = rig();
+    r._host.add_nic(&Nic {
+        device: "0x101e".into(),
+        ..Nic::mlx5(NIC0, "ens1f0", Some(0))
+    });
+    let links = vec![link("a", NIC0, NIC1), link("b", NIC1, NIC0)];
+    r.start_run_links(4242, 1_700_000_000, links).await;
+    let v = r
+        .wait_history("a sample at 2 s", 15, |v| newest_t(v) >= 2.0)
+        .await;
+    let rx_side = ["nic_rx_port_buffer_discards", "nic_rx_phy_discards"];
+    let tx_side = ["nic_tx_phy_discards"];
+    let stats = r.stats().await;
+    // (link, the fields that are null, the ones that stay numbers)
+    for (i, null, number) in [
+        ("0", rx_side.to_vec(), tx_side.to_vec()),
+        ("1", tx_side.to_vec(), rx_side.to_vec()),
+    ] {
+        let check = |what: &str, s: &Value| {
+            for k in &null {
+                assert!(s[*k].is_null(), "link {i} {what}.{k} is null: {s}");
+            }
+            for k in number.iter().chain(&["nic_rx_missed", "nic_rx_nombuf"]) {
+                assert!(s[*k].is_u64(), "link {i} {what}.{k} is a number: {s}");
+            }
+        };
+        let all = samples(&v, i);
+        assert!(all.len() >= 2, "link {i}: {v}");
+        for s in &all {
+            check("sample", s);
+        }
+        check("totals", &v["totals"][i]);
+        let d = i.parse::<usize>().unwrap();
+        check("stats", &stats["directions"][d]["counters"]);
+        assert!(
+            number
+                .iter()
+                .all(|k| all.last().unwrap()[*k].as_u64() > Some(0)),
+            "the numbers are real counts: {v}"
+        );
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn recording_the_series_asks_dpds_for_nothing_extra() {
     let mut r = rig();
@@ -2229,10 +2278,12 @@ async fn openapi_documents_the_totals() {
     assert_eq!(names, all_totals_fields(), "{item}");
     for (name, schema) in item_props {
         let schema = resolve(&doc, schema);
-        let want = if name == "frame_sizes" {
-            "array"
-        } else {
-            "integer"
+        let want = match name.as_str() {
+            "frame_sizes" => json!("array"),
+            "nic_rx_port_buffer_discards" | "nic_rx_phy_discards" | "nic_tx_phy_discards" => {
+                json!(["integer", "null"])
+            }
+            _ => json!("integer"),
         };
         assert_eq!(schema["type"], want, "{name}: {schema}");
     }
@@ -2263,6 +2314,11 @@ async fn openapi_documents_the_port_counters_of_a_direction() {
         "nic_rx_length_errors",
     ] {
         let p = resolve(&doc, &counters["properties"][name]);
-        assert_eq!(p["type"], "integer", "{name} is documented: {counters}");
+        let want = if name == "nic_rx_missed" || name == "nic_rx_nombuf" {
+            json!("integer")
+        } else {
+            json!(["integer", "null"])
+        };
+        assert_eq!(p["type"], want, "{name} is documented: {counters}");
     }
 }

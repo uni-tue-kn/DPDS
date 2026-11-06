@@ -146,16 +146,19 @@ export interface Counters {
   tx_pkts: number;
   tx_sent: number;
   tx_drops: number;
-  /** Cumulative NIC losses of the ingress port (RX side) and of the egress port (TX side); a hairpin reports one port for both. */
+  /**
+   * Cumulative NIC losses of the ingress port (RX side) and of the egress port (TX side); a hairpin reports one port for both.
+   * The physical-port ones are null when the port is an SR-IOV virtual function.
+   */
   nic_rx_missed: number;
   nic_rx_nombuf: number;
-  nic_rx_port_buffer_discards: number;
-  nic_rx_phy_discards: number;
-  nic_tx_phy_discards: number;
+  nic_rx_port_buffer_discards: number | null;
+  nic_rx_phy_discards: number | null;
+  nic_tx_phy_discards: number | null;
   /** Diagnostics, in no loss total. */
-  nic_rx_crc_errors: number;
-  nic_rx_symbol_errors: number;
-  nic_rx_length_errors: number;
+  nic_rx_crc_errors: number | null;
+  nic_rx_symbol_errors: number | null;
+  nic_rx_length_errors: number | null;
   /** Frames received per size bucket (0-63, 64, 65-127, 128-255, 256-511, 512-1023, 1024-1518, 1519 and up). */
   frame_sizes: number[];
   /** Departures that overtook an earlier arrival. */
@@ -216,9 +219,9 @@ export interface HistorySample {
   nic_tx_drops: number;
   nic_rx_missed: number;
   nic_rx_nombuf: number;
-  nic_rx_port_buffer_discards: number;
-  nic_rx_phy_discards: number;
-  nic_tx_phy_discards: number;
+  nic_rx_port_buffer_discards: number | null;
+  nic_rx_phy_discards: number | null;
+  nic_tx_phy_discards: number | null;
 }
 
 /** A link of the run, as the controller ran it. */
@@ -237,9 +240,9 @@ export interface HistoryTotals {
   nic_tx_drops: number;
   nic_rx_missed: number;
   nic_rx_nombuf: number;
-  nic_rx_port_buffer_discards: number;
-  nic_rx_phy_discards: number;
-  nic_tx_phy_discards: number;
+  nic_rx_port_buffer_discards: number | null;
+  nic_rx_phy_discards: number | null;
+  nic_tx_phy_discards: number | null;
   /** Frames the link forwarded (the Frame Loss Ratio's denominator). */
   tx_sent: number;
   frame_sizes: number[];

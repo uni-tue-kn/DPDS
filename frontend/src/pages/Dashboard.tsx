@@ -259,7 +259,9 @@ export default function Dashboard() {
     const s = live?.find((d) => d.dir === dir);
     return s ? statsOfLive(s) : NO_STATS;
   };
-  const summaryStats = shown.map(statsOf).reduce(addStats, NO_STATS);
+  // no zero start: a count that is null on every link stays null
+  const perLink = shown.map(statsOf);
+  const summaryStats = perLink.length > 0 ? perLink.reduce(addStats) : NO_STATS;
   const lost = totalDrops(summaryStats.drops);
   // A run with series is titled by the links of its own history, a live one by its stats or the plan, no run by the stored links.
   const titleOf = (dir: number) => {

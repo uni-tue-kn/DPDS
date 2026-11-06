@@ -20,14 +20,12 @@ function members(name: string): string {
 describe('types.ts (spec 35)', () => {
   it("Counters (the `counters` of a direction in /api/stats) has the ports' cumulative NIC loss counts, nic_rx_missed renamed from nic_rx_imissed (spec 47)", () => {
     const m = members('Counters');
-    for (const k of [
-      'nic_rx_missed',
-      'nic_rx_nombuf',
-      'nic_rx_port_buffer_discards',
-      'nic_rx_phy_discards',
-      'nic_tx_phy_discards',
-    ]) {
+    for (const k of ['nic_rx_missed', 'nic_rx_nombuf']) {
       expect(m, k).toMatch(new RegExp(`\\b${k}:\\s*number\\s*;`));
+    }
+    // null on an SR-IOV virtual function
+    for (const k of ['nic_rx_port_buffer_discards', 'nic_rx_phy_discards', 'nic_tx_phy_discards']) {
+      expect(m, k).toMatch(new RegExp(`\\b${k}:\\s*number \\| null\\s*;`));
     }
     expect(m).not.toMatch(/nic_rx_imissed/);
   });
@@ -35,7 +33,7 @@ describe('types.ts (spec 35)', () => {
   it('Counters has the three NIC diagnostics, which no loss total contains (spec 47 C4)', () => {
     const m = members('Counters');
     for (const k of ['nic_rx_crc_errors', 'nic_rx_symbol_errors', 'nic_rx_length_errors']) {
-      expect(m, k).toMatch(new RegExp(`\\b${k}:\\s*number\\s*;`));
+      expect(m, k).toMatch(new RegExp(`\\b${k}:\\s*number \\| null\\s*;`));
     }
   });
 
@@ -45,7 +43,7 @@ describe('types.ts (spec 35)', () => {
     }
   });
 
-  it('HistoryTotals is exported with exactly the rx_pkts and the nine cumulative drop counters (spec 35 C1, spec 47 C4), all numbers', () => {
+  it('HistoryTotals is exported with exactly the rx_pkts and the nine cumulative drop counters (spec 35 C1, spec 47 C4), all numbers except the three physical-port counters (null on an SR-IOV VF)', () => {
     const m = members('HistoryTotals');
     const keys = Array.from(m.matchAll(/^\s*(\w+)(\??):\s*([^;]+);/gm));
     expect(keys.map((k) => k[1]).sort()).toEqual(
@@ -67,7 +65,10 @@ describe('types.ts (spec 35)', () => {
     );
     for (const k of keys) {
       expect(k[2], `${k[1]} is required`).toBe('');
-      expect(k[3].trim(), `${k[1]} type`).toBe(k[1] === 'frame_sizes' ? 'number[]' : 'number');
+      const nullable = ['nic_rx_port_buffer_discards', 'nic_rx_phy_discards', 'nic_tx_phy_discards'].includes(k[1]);
+      expect(k[3].trim(), `${k[1]} type`).toBe(
+        k[1] === 'frame_sizes' ? 'number[]' : nullable ? 'number | null' : 'number',
+      );
     }
   });
 

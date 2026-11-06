@@ -1,7 +1,7 @@
 //! DPDK telemetry client: a blocking SOCK_SEQPACKET connection, and a
 //! poll thread that caches the latest snapshots for the REST endpoints.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -110,8 +110,9 @@ pub trait TelemetrySource: Send + Sync + 'static {
         None
     }
 
-    /// The links of the run being started; the next run the source sees carries them.
-    fn set_run_links(&self, _links: Vec<HistoryLink>) {}
+    /// The links of the run being started and the names of its ports that are SR-IOV virtual
+    /// functions; the next run the source sees carries them.
+    fn set_run_links(&self, _links: Vec<HistoryLink>, _vfs: HashSet<String>) {}
 
     /// Test hook that speeds up a polling source; the controller never calls it.
     fn set_poll_interval(&self, _ms: u64) {}
@@ -292,6 +293,8 @@ pub struct Poller {
     last_run_id: AtomicU64,
     /// The links of the run being started, taken by the next run the poller sees.
     next_links: Mutex<Vec<HistoryLink>>,
+    /// The ports of the newest run that are SR-IOV virtual functions.
+    vf_ports: Mutex<HashSet<String>>,
     max_samples: usize,
 }
 
@@ -316,6 +319,7 @@ impl Poller {
             run: Mutex::new(None),
             last_run_id: AtomicU64::new(0),
             next_links: Mutex::new(Vec::new()),
+            vf_ports: Mutex::new(HashSet::new()),
             max_samples,
         });
         let p = poller.clone();
@@ -411,7 +415,8 @@ impl Poller {
         let (view, has_window) = {
             let cell = self.cell();
             let prev = cell.as_ref().map(|c| &c.polled.cur);
-            (compute_stats(prev, &cur), prev.is_some())
+            let vfs = self.vf_ports.lock().unwrap_or_else(|e| e.into_inner());
+            (compute_stats(prev, &cur, &vfs), prev.is_some())
         };
         self.record(pid, &view, has_window);
         let mut cell = self.cell();
@@ -515,8 +520,9 @@ impl TelemetrySource for Poller {
         self.interval_ms.store(ms.max(1), Ordering::Relaxed);
     }
 
-    fn set_run_links(&self, links: Vec<HistoryLink>) {
+    fn set_run_links(&self, links: Vec<HistoryLink>, vfs: HashSet<String>) {
         *self.next_links.lock().unwrap_or_else(|e| e.into_inner()) = links;
+        *self.vf_ports.lock().unwrap_or_else(|e| e.into_inner()) = vfs;
     }
 
     fn run_history(&self, since_ms: Option<u64>) -> HistoryView {

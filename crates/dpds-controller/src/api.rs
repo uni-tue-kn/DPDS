@@ -23,7 +23,7 @@ use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use utoipa::{OpenApi, ToSchema};
 use utoipa_swagger_ui::SwaggerUi;
 
-use crate::discovery::{discover, find, Interface};
+use crate::discovery::{discover, find, is_vf, Interface};
 use crate::dto::{
     ConfigDto, DelayerDto, DistributionDto, HistogramDto, LimiterDto, LimiterModeDto, LossModelDto,
 };
@@ -66,6 +66,8 @@ struct Run {
     config: RunConfig,
     main_lcore: u32,
     directions: Vec<DirectionPlan>,
+    /// The ports of the run that are SR-IOV virtual functions.
+    vf_ports: HashSet<String>,
 }
 
 struct App {
@@ -396,11 +398,15 @@ impl App {
     }
 
     /// Validates the body and plans the launch (what start and validate share).
-    fn launch_plan(&self, req: StartRequest) -> Result<(LaunchPlan, RunConfig), ApiError> {
+    fn launch_plan(
+        &self,
+        req: StartRequest,
+    ) -> Result<(LaunchPlan, RunConfig, HashSet<String>), ApiError> {
         let config = req.into_run_config();
         validate_config(&config)?;
         let interfaces = discover(&self.deps.roots);
         let mut ports: Vec<EalPort> = Vec::new();
+        let mut vf_ports = HashSet::new();
         for (link, port) in config
             .links
             .iter()
@@ -413,6 +419,9 @@ impl App {
                     link.name,
                     i.reason.as_deref().unwrap_or("it is a host uplink")
                 )));
+            }
+            if found.is_some_and(|i| is_vf(&self.deps.roots, i)) {
+                vf_ports.insert(port.clone());
             }
             if !ports.iter().any(|p| p.name == *port) {
                 ports.push(EalPort {
@@ -449,7 +458,7 @@ impl App {
             main_lcore: assignment.main_lcore,
             drain_timeout: drain_timeout(&configs),
         };
-        Ok((plan, config))
+        Ok((plan, config, vf_ports))
     }
 }
 
@@ -666,7 +675,7 @@ async fn start(
         )));
     }
     let a = app.clone();
-    let (plan, config) = blocking(move || {
+    let (plan, config, vf_ports) = blocking(move || {
         let planned = a.launch_plan(req)?;
         check_hugepages(&a.deps.roots, &planned.1)?;
         Ok::<_, ApiError>(planned)
@@ -684,11 +693,13 @@ async fn start(
                 egress: l.egress.clone(),
             })
             .collect(),
+        vf_ports.clone(),
     );
     *lock(&app.run) = Some(Run {
         config,
         main_lcore: plan.main_lcore,
         directions: plan.directions.clone(),
+        vf_ports,
     });
     app.deps.supervisor.start(plan);
     Ok((
@@ -716,7 +727,7 @@ async fn validate_start(
     State(app): Shared,
     ApiJson(req): ApiJson<StartRequest>,
 ) -> Result<Json<PlanView>, ApiError> {
-    let (plan, _) = blocking(move || app.launch_plan(req)).await??;
+    let (plan, ..) = blocking(move || app.launch_plan(req)).await??;
     Ok(Json(PlanView {
         main_lcore: plan.main_lcore,
         directions: plan.directions,
@@ -762,12 +773,16 @@ async fn stop(
 #[utoipa::path(get, path = "/api/stats", responses((status = 200, body = StatsView)))]
 async fn stats(State(app): Shared) -> Json<StatsView> {
     let elapsed_ms = app.deps.telemetry.elapsed_ms();
+    let vfs = lock(&app.run)
+        .as_ref()
+        .map(|r| r.vf_ports.clone())
+        .unwrap_or_default();
     Json(match app.deps.telemetry.latest() {
         Some(p) => StatsView {
             elapsed_ms,
             age_ms: Some(p.age_ms),
             stale: p.stale,
-            ..compute_stats(p.prev.as_ref(), &p.cur)
+            ..compute_stats(p.prev.as_ref(), &p.cur, &vfs)
         },
         // no data (never polled, not running, or cleared after failed polls)
         None => StatsView {

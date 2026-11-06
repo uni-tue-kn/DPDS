@@ -262,3 +262,19 @@ pub fn discover(roots: &HostRoots) -> Vec<Interface> {
 pub fn find<'a>(interfaces: &'a [Interface], port: &str) -> Option<&'a Interface> {
     interfaces.iter().find(|i| i.pci.eq_ignore_ascii_case(port))
 }
+
+/// Device IDs of the mlx5 SR-IOV virtual functions (`mlx5_dev_is_vf_pci` in DPDK). A VF passed
+/// into a guest has no sysfs `physfn` link, so the ID is the only sign.
+const MLX5_VF_DEVICE_IDS: [&str; 7] = [
+    "0x1014", "0x1016", "0x1018", "0x101a", "0xa2d3", "0x101c", "0x101e",
+];
+
+/// Whether the NIC is an SR-IOV virtual function: a Mellanox VF device ID, or a `physfn` link.
+pub fn is_vf(roots: &HostRoots, nic: &Interface) -> bool {
+    let mlx5_vf = nic.vendor_id.as_deref() == Some("0x15b3")
+        && nic
+            .device_id
+            .as_deref()
+            .is_some_and(|d| MLX5_VF_DEVICE_IDS.contains(&d));
+    mlx5_vf || fs::symlink_metadata(roots.pci_dir(&nic.pci).join("physfn")).is_ok()
+}

@@ -1,4 +1,4 @@
-//! Rate / percentage maths of `compute_stats(prev, cur)` from two telemetry snapshots (JSON of
+//! Rate / percentage maths of `compute_stats(prev, cur, vfs)` from two telemetry snapshots (JSON of
 //! `StatsView`).
 //!
 //! A direction is a directed link (ingress -> egress); the stats of link `d` use the ports
@@ -17,6 +17,7 @@
 use crate::common::*;
 use dpds_controller::stats::{compute_stats, delay_histogram};
 use serde_json::{json, Value};
+use std::collections::HashSet;
 
 fn d(uptime_ns: u64, rx: u64, tx: u64, loss: u64, lim: u64, full: u64, txd: u64) -> DirSample {
     DirSample {
@@ -91,7 +92,7 @@ fn view(
     prev: Option<&dpds_controller::stats::Snapshot>,
     cur: &dpds_controller::stats::Snapshot,
 ) -> Value {
-    serde_json::to_value(compute_stats(prev, cur)).unwrap()
+    serde_json::to_value(compute_stats(prev, cur, &HashSet::new())).unwrap()
 }
 
 #[test]

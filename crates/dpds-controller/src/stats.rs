@@ -1,6 +1,6 @@
 //! Rates, drop shares and histogram edges from raw telemetry replies.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use serde::Serialize;
 use serde_json::Value;
@@ -63,19 +63,21 @@ pub struct Counters {
     pub nic_rx_missed: u64,
     /// Cumulative `rx_mbuf_allocation_errors` (= `rx_nombuf`) of the ingress port.
     pub nic_rx_nombuf: u64,
-    /// Cumulative sum of the ingress port's `rx_prio[0-7]_(buf|cong)_discard_packets`.
-    pub nic_rx_port_buffer_discards: u64,
-    /// Cumulative `rx_phy_discard_packets` of the ingress port.
-    pub nic_rx_phy_discards: u64,
+    /// Cumulative sum of the ingress port's `rx_prio[0-7]_(buf|cong)_discard_packets`;
+    /// null when the port is an SR-IOV virtual function, whose physical-port counters do not count; read them on the physical function on the hypervisor.
+    pub nic_rx_port_buffer_discards: Option<u64>,
+    /// Cumulative `rx_phy_discard_packets` of the ingress port; null when the port is an SR-IOV virtual function, whose physical-port counters do not count; read them on the physical function on the hypervisor.
+    pub nic_rx_phy_discards: Option<u64>,
     /// Cumulative `tx_phy_discard_packets` of the egress port: frames the NIC took from
-    /// `tx_burst` and dropped before the wire.
-    pub nic_tx_phy_discards: u64,
-    /// Diagnostics of the ingress port, counted in no loss total: `rx_phy_crc_errors`.
-    pub nic_rx_crc_errors: u64,
-    /// `rx_phy_symbol_errors` of the ingress port (a diagnostic).
-    pub nic_rx_symbol_errors: u64,
-    /// `rx_phy_in_range_len_errors` of the ingress port (a diagnostic).
-    pub nic_rx_length_errors: u64,
+    /// `tx_burst` and dropped before the wire; null when the port is an SR-IOV virtual function, whose physical-port counters do not count; read them on the physical function on the hypervisor.
+    pub nic_tx_phy_discards: Option<u64>,
+    /// Diagnostics of the ingress port, counted in no loss total: `rx_phy_crc_errors`;
+    /// null when the port is an SR-IOV virtual function, whose physical-port counters do not count; read them on the physical function on the hypervisor.
+    pub nic_rx_crc_errors: Option<u64>,
+    /// `rx_phy_symbol_errors` of the ingress port (a diagnostic); null when the port is an SR-IOV virtual function, whose physical-port counters do not count; read them on the physical function on the hypervisor.
+    pub nic_rx_symbol_errors: Option<u64>,
+    /// `rx_phy_in_range_len_errors` of the ingress port (a diagnostic); null when the port is an SR-IOV virtual function, whose physical-port counters do not count; read them on the physical function on the hypervisor.
+    pub nic_rx_length_errors: Option<u64>,
 }
 
 /// `^rx_prio[0-7]_(buf|cong)_discard_packets$`
@@ -86,9 +88,12 @@ fn is_port_buffer_discard(name: &str) -> bool {
         .is_some_and(|r| r == "_buf" || r == "_cong")
 }
 
-/// The loss xstats of one port; a name the NIC does not report is 0.
+/// The loss xstats of one port; a name the NIC does not report is 0. The `*_phy_*` and port
+/// buffer values of a virtual function never count, so they are 0 in the sums and null in the
+/// counters.
 #[derive(Debug, Clone, Copy, Default)]
 struct NicXstats {
+    vf: bool,
     missed: u64,
     nombuf: u64,
     port_buffer: u64,
@@ -100,23 +105,30 @@ struct NicXstats {
 }
 
 impl NicXstats {
-    fn read(e: &Value) -> NicXstats {
+    fn read(e: &Value, vf: bool) -> NicXstats {
         let port_buffer = e.as_object().map_or(0, |o| {
             o.iter()
                 .filter(|(k, _)| is_port_buffer_discard(k))
                 .filter_map(|(_, v)| v.as_u64())
                 .sum()
         });
+        let phy = |key: &str| if vf { 0 } else { u(e, key) };
         NicXstats {
+            vf,
             missed: u(e, "rx_missed_errors"),
             nombuf: u(e, "rx_mbuf_allocation_errors"),
-            port_buffer,
-            rx_phy: u(e, "rx_phy_discard_packets"),
-            tx_phy: u(e, "tx_phy_discard_packets"),
-            crc: u(e, "rx_phy_crc_errors"),
-            symbol: u(e, "rx_phy_symbol_errors"),
-            length: u(e, "rx_phy_in_range_len_errors"),
+            port_buffer: if vf { 0 } else { port_buffer },
+            rx_phy: phy("rx_phy_discard_packets"),
+            tx_phy: phy("tx_phy_discard_packets"),
+            crc: phy("rx_phy_crc_errors"),
+            symbol: phy("rx_phy_symbol_errors"),
+            length: phy("rx_phy_in_range_len_errors"),
         }
+    }
+
+    /// A counter that only a physical port has.
+    fn phy(&self, value: u64) -> Option<u64> {
+        (!self.vf).then_some(value)
     }
 
     /// The RX-side NIC losses (not the diagnostics).
@@ -193,9 +205,12 @@ pub struct HistorySample {
     pub nic_tx_drops: u64,
     pub nic_rx_missed: u64,
     pub nic_rx_nombuf: u64,
-    pub nic_rx_port_buffer_discards: u64,
-    pub nic_rx_phy_discards: u64,
-    pub nic_tx_phy_discards: u64,
+    /// null when the port is an SR-IOV virtual function, whose physical-port counters do not count; read them on the physical function on the hypervisor.
+    pub nic_rx_port_buffer_discards: Option<u64>,
+    /// null when the port is an SR-IOV virtual function, whose physical-port counters do not count; read them on the physical function on the hypervisor.
+    pub nic_rx_phy_discards: Option<u64>,
+    /// null when the port is an SR-IOV virtual function, whose physical-port counters do not count; read them on the physical function on the hypervisor.
+    pub nic_tx_phy_discards: Option<u64>,
 }
 
 impl HistorySample {
@@ -237,9 +252,12 @@ pub struct HistoryTotals {
     pub nic_tx_drops: u64,
     pub nic_rx_missed: u64,
     pub nic_rx_nombuf: u64,
-    pub nic_rx_port_buffer_discards: u64,
-    pub nic_rx_phy_discards: u64,
-    pub nic_tx_phy_discards: u64,
+    /// null when the port is an SR-IOV virtual function, whose physical-port counters do not count; read them on the physical function on the hypervisor.
+    pub nic_rx_port_buffer_discards: Option<u64>,
+    /// null when the port is an SR-IOV virtual function, whose physical-port counters do not count; read them on the physical function on the hypervisor.
+    pub nic_rx_phy_discards: Option<u64>,
+    /// null when the port is an SR-IOV virtual function, whose physical-port counters do not count; read them on the physical function on the hypervisor.
+    pub nic_tx_phy_discards: Option<u64>,
 }
 
 impl From<&Counters> for HistoryTotals {
@@ -492,8 +510,9 @@ pub fn delay_stats_on(ports: &Value, d: usize) -> bool {
 }
 
 /// Rates and shares are 0.0 without `prev`, without time between the snapshots
-/// or when a counter went backwards.
-pub fn compute_stats(prev: Option<&Snapshot>, cur: &Snapshot) -> StatsView {
+/// or when a counter went backwards. The ports named in `vfs` are SR-IOV virtual
+/// functions, whose physical-port counters are null.
+pub fn compute_stats(prev: Option<&Snapshot>, cur: &Snapshot, vfs: &HashSet<String>) -> StatsView {
     let n_dirs = uint(&cur.ports, "num_directions").unwrap_or(0) as usize;
 
     let directions = (0..n_dirs.min(cur.dirs.len()))
@@ -502,9 +521,14 @@ pub fn compute_stats(prev: Option<&Snapshot>, cur: &Snapshot) -> StatsView {
             let rx_port = uint(&cur.ports, &format!("dir{d}_rx_port")).unwrap_or(0) as usize;
             let tx_port = uint(&cur.ports, &format!("dir{d}_tx_port")).unwrap_or(0) as usize;
             let delay_stats = delay_stats_on(&cur.ports, d);
-            let nic_of = |snap: &Snapshot, i: usize| snap.eth.get(i).map(NicXstats::read);
-            let rx_nic = nic_of(cur, rx_port).unwrap_or_default();
-            let tx_nic = nic_of(cur, tx_port).unwrap_or_default();
+            let name = |role: &str| text(&cur.ports, &format!("dir{d}_{role}_name"));
+            let is_vf = |role: &str| name(role).is_some_and(|n| vfs.contains(&n));
+            let (rx_vf, tx_vf) = (is_vf("rx"), is_vf("tx"));
+            let nic_of = |snap: &Snapshot, i: usize, vf: bool| {
+                NicXstats::read(snap.eth.get(i).unwrap_or(&Value::Null), vf)
+            };
+            let rx_nic = nic_of(cur, rx_port, rx_vf);
+            let tx_nic = nic_of(cur, tx_port, tx_vf);
             let delay = |key: &str| if delay_stats { num(c, key) } else { None };
             let mut s = DirectionStats {
                 dir: d as u32,
@@ -545,12 +569,12 @@ pub fn compute_stats(prev: Option<&Snapshot>, cur: &Snapshot) -> StatsView {
                     out_of_order: u(c, "out_of_order"),
                     nic_rx_missed: rx_nic.missed,
                     nic_rx_nombuf: rx_nic.nombuf,
-                    nic_rx_port_buffer_discards: rx_nic.port_buffer,
-                    nic_rx_phy_discards: rx_nic.rx_phy,
-                    nic_tx_phy_discards: tx_nic.tx_phy,
-                    nic_rx_crc_errors: rx_nic.crc,
-                    nic_rx_symbol_errors: rx_nic.symbol,
-                    nic_rx_length_errors: rx_nic.length,
+                    nic_rx_port_buffer_discards: rx_nic.phy(rx_nic.port_buffer),
+                    nic_rx_phy_discards: rx_nic.phy(rx_nic.rx_phy),
+                    nic_tx_phy_discards: tx_nic.phy(tx_nic.tx_phy),
+                    nic_rx_crc_errors: rx_nic.phy(rx_nic.crc),
+                    nic_rx_symbol_errors: rx_nic.phy(rx_nic.symbol),
+                    nic_rx_length_errors: rx_nic.phy(rx_nic.length),
                 },
             };
             let Some(p) = prev else { return s };
@@ -577,8 +601,8 @@ pub fn compute_stats(prev: Option<&Snapshot>, cur: &Snapshot) -> StatsView {
             s.tx_bps = nic(&tc, &tp, "tx_good_bytes") as f64 * 8.0 / secs;
             // a loss counter that went backwards (restart) adds 0
             let grown = |c: u64, p: u64| c.saturating_sub(p);
-            let (rc, rp) = (NicXstats::read(&rc), NicXstats::read(&rp));
-            let (tc, tp) = (NicXstats::read(&tc), NicXstats::read(&tp));
+            let (rc, rp) = (NicXstats::read(&rc, rx_vf), NicXstats::read(&rp, rx_vf));
+            let (tc, tp) = (NicXstats::read(&tc, tx_vf), NicXstats::read(&tp, tx_vf));
             s.nic_tx_pct = pct(d_or_0("tx_drops") + grown(tc.tx_phy, tp.tx_phy), rx);
             s.nic_rx_pct = pct(grown(rc.rx_losses(), rp.rx_losses()), rx);
             s

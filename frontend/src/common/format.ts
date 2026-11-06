@@ -102,3 +102,7 @@ export const l1Bps = (bps: number, pps: number) => bps + pps * L1_OVERHEAD_BITS;
 
 /** The L1 rate in Gbit/s of a chart sample's L2 `gbps` at `mpps` million frames per second. */
 export const l1Gbps = (gbps: number, mpps: number) => gbps + (mpps * 1e6 * L1_OVERHEAD_BITS) / 1e9;
+
+/** The sum of two counts that may be null (not measurable); null only when both are. */
+export const addNullable = (a: number | null, b: number | null): number | null =>
+  a === null ? b : b === null ? a : a + b;
