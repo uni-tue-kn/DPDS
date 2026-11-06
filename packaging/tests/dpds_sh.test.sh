@@ -168,12 +168,7 @@
 # uninstall
 #          `systemctl disable --now dpds-controller` (failure tolerated),
 #          removes $DPDS_PREFIX/bin/{dpds,dpds-controller}, the unit and the stamp, `systemctl daemon-reload`.
-#          KEEPS $DPDS_ETC_DIR/controller.env untouched. Removes a LEFTOVER `/var/lib/dpds-controller`
-#          when it exists, through the privileged helper (sudo), and says so in an info line that
-#          names the directory; with no leftover it says nothing about it. Nothing installed => still exit 0.
-#          The harness runs a COPY of the script in which that literal is replaced by $LEGACY_STATE_DIR
-#          (a path in the sandbox), so no test can touch the real directory: the script must name the
-#          directory exactly as that literal (not assemble it from parts).
+#          KEEPS $DPDS_ETC_DIR/controller.env untouched. Nothing installed => still exit 0.
 #
 # Stamp file $DPDS_ETC_DIR/installed-commit (default /etc/dpds/installed-commit; its name has no "state"): one line, the full
 #   `git rev-parse HEAD` of the installed tree. install_flow removes any existing stamp right before it copies the binaries
@@ -259,13 +254,12 @@ assert_file()    { [[ -f "$1" ]] || fail "missing file $1"; }
 assert_no_file() { [[ ! -e "$1" ]] || fail "unexpected $1"; }
 assert_exec()    { [[ -x "$1" ]] || fail "not executable: $1"; }
 assert_file_has() { grep -Eq -- "$2" "$1" 2>/dev/null || fail "$1 lacks /$2/"; }
-# No state directory was created or named by a privileged call, in the sandbox or at the old path.
+# No state directory was created or named by a privileged call.
 assert_no_state_dir_anywhere() {
-  assert_no_file "$LEGACY_STATE_DIR"
   [[ -z "$(find "$T" -iname '*state*' -not -path "$T/stubs/*" 2>/dev/null)" ]] \
     || fail "a state directory or file was created: $(find "$T" -iname '*state*' -not -path "$T/stubs/*" | tr '\n' ' ')"
-  ! grep -qiE 'state|var/lib|oldvar' "$STUB_LOG.sudo" 2>/dev/null \
-    || fail "a privileged call mentions a state directory: $(grep -iE 'state|var/lib|oldvar' "$STUB_LOG.sudo" | tr '\n' '|')"
+  ! grep -qiE 'state|var/lib' "$STUB_LOG.sudo" 2>/dev/null \
+    || fail "a privileged call mentions a state directory: $(grep -iE 'state|var/lib' "$STUB_LOG.sudo" | tr '\n' '|')"
 }
 # assert_before REGEX_A REGEX_B: first match of A is on an earlier line than the first match of B.
 assert_before() {
@@ -334,8 +328,6 @@ setup_sandbox() {
   mkdir -p "$T/tmp"
   unset DPDS_STATE_DIR DPDS_CONTROLLER_STATE_DIR
   export DPDS_PREFIX="$T/prefix" DPDS_ETC_DIR="$T/etc" DPDS_SYSTEMD_DIR="$T/systemd"
-  # where the script's `/var/lib/dpds-controller` points in the sandbox (does not exist unless a test makes it)
-  LEGACY_STATE_DIR="$T/oldvar/dpds-controller-state"
   export CARGO_TARGET_DIR="$T/target"
   export HOME="$T/home"
   mkdir -p "$DPDS_PREFIX/bin" "$DPDS_SYSTEMD_DIR"
@@ -343,9 +335,6 @@ setup_sandbox() {
   # The sandbox repository: a copy of the script and of the few files it reads.
   mkdir -p "$T/repo/packaging" "$T/repo/frontend" "$T/repo/crates/dpds-core"
   cp "$SRC_ROOT/dpds.sh" "$T/repo/dpds.sh"
-  # the script's state directory is a sandbox path, never the real one
-  sed -i "s|/var/lib/dpds-controller|$LEGACY_STATE_DIR|g" "$T/repo/dpds.sh"
-  ! grep -q '/var/lib/dpds-controller' "$T/repo/dpds.sh" || fail "the sandbox copy still names the real state directory"
   cp "$SRC_ROOT/packaging/dpds-controller.service" "$T/repo/packaging/"
   cp "$SRC_ROOT/frontend/package.json" "$T/repo/frontend/"
   cp "$SRC_ROOT/Cargo.toml" "$T/repo/Cargo.toml"
@@ -599,13 +588,6 @@ fake_install() {
   mkdir -p "$DPDS_ETC_DIR"
   printf 'DPDS_CONTROLLER_BIND=0.0.0.0:8100\n' >"$DPDS_ETC_DIR/controller.env"
   printf '[Service]\nExecStart=%s/bin/dpds-controller serve\n' "$DPDS_PREFIX" >"$DPDS_SYSTEMD_DIR/dpds-controller.service"
-}
-
-# A leftover state directory (the script's `/var/lib/dpds-controller`, see the header).
-fake_legacy_state() {
-  mkdir -p "$LEGACY_STATE_DIR"
-  echo '{"links":[],"settings":{},"next_id":1}' >"$LEGACY_STATE_DIR/state.json"
-  echo keep >"$LEGACY_STATE_DIR/marker"
 }
 
 # Only the unit file of a finished install: start, restart and status refuse to run without it.
@@ -2687,47 +2669,12 @@ test_uninstall_removes_binaries_and_unit_keeps_env() {
   assert_eq "$(cat "$DPDS_ETC_DIR/controller.env")" "$env_before" "env file kept"
 }
 
-# uninstall cleans up a leftover /var/lib/dpds-controller through the privileged helper, with an info line that names the directory.
-test_uninstall_removes_a_leftover_state_dir_and_says_so() {
-  fake_install
-  fake_legacy_state
-  run_dpds --yes uninstall
-  assert_rc 0 "$ERR"
-  assert_no_file "$LEGACY_STATE_DIR"
-  assert_all_has "$LEGACY_STATE_DIR"
-  grep -Eiq 'remov|delet' <<<"$OUT$ERR" || fail "no line says the leftover was removed: $OUT$ERR"
-  assert_file "$DPDS_ETC_DIR/controller.env"
-  grep -Fq "$LEGACY_STATE_DIR" "$STUB_LOG.sudo" || fail "the removal did not go through the privileged helper: $(cat "$STUB_LOG.sudo")"
-  grep -E '^sudo .*rm ' "$STUB_LOG.sudo" | grep -Fq "$LEGACY_STATE_DIR" || fail "no sudo rm of the leftover: $(cat "$STUB_LOG.sudo")"
-}
-
-test_uninstall_without_a_leftover_state_dir_says_nothing_about_one() {
+test_uninstall_touches_no_state_dir() {
   fake_install
   run_dpds --yes uninstall
   assert_rc 0 "$ERR"
-  ! grep -Fq "$LEGACY_STATE_DIR" <<<"$OUT$ERR" || fail "mentions the state directory without one: $OUT$ERR"
-  ! grep -qi 'state' <<<"$OUT$ERR" || fail "talks about state without a leftover: $OUT$ERR"
-  ! grep -Fq "$LEGACY_STATE_DIR" "$STUB_LOG.sudo" || fail "touched a state directory that is not there"
+  ! grep -qi 'state' <<<"$OUT$ERR" || fail "talks about state: $OUT$ERR"
   assert_no_state_dir_anywhere
-}
-
-test_uninstall_removes_only_the_leftover_dir_not_its_parents_or_the_env() {
-  fake_install
-  fake_legacy_state
-  mkdir -p "$(dirname "$LEGACY_STATE_DIR")"
-  echo sibling >"$(dirname "$LEGACY_STATE_DIR")/other-service-file"
-  run_dpds --yes uninstall
-  assert_rc 0 "$ERR"
-  assert_no_file "$LEGACY_STATE_DIR"
-  assert_file "$(dirname "$LEGACY_STATE_DIR")/other-service-file"
-  assert_file "$DPDS_ETC_DIR/controller.env"
-}
-
-test_uninstall_removes_a_leftover_state_dir_even_when_the_service_was_not_installed() {
-  fake_legacy_state
-  run_dpds --yes uninstall
-  assert_rc 0 "$ERR"
-  assert_no_file "$LEGACY_STATE_DIR"
 }
 
 test_uninstall_ignores_a_state_dir_variable() {
@@ -3204,8 +3151,7 @@ test_the_script_has_no_state_dir_setting_or_state_step() {
   local code; code="$(grep -v '^[[:space:]]*#' "$SRC_ROOT/dpds.sh")"
   ! grep -Eq 'DPDS_STATE_DIR|DPDS_CONTROLLER_STATE_DIR|STATE_DIR' <<<"$code" || fail "dpds.sh still has a state dir setting: $(grep -En 'STATE_DIR' <<<"$code" | head -3)"
   ! grep -Eiq 'state file|not a valid state|rc == 2|exit code 2' <<<"$code" || fail "dpds.sh still has the unloadable-state-file branch"
-  # the one place the directory is named: the uninstall cleanup of a leftover
-  [[ "$(grep -c '/var/lib/dpds-controller' <<<"$code")" -ge 1 ]] || fail "uninstall must name /var/lib/dpds-controller (literally) to clean it up"
+  ! grep -q '/var/lib' <<<"$code" || fail "dpds.sh names a directory below /var/lib: $(grep -n '/var/lib' <<<"$code")"
 }
 
 test_a_state_dir_variable_in_the_environment_changes_nothing() {
@@ -3231,15 +3177,6 @@ test_the_unit_file_has_no_state_directory() {
   run_dpds --yes install
   assert_rc 0 "$ERR"
   ! grep -Eiq 'StateDirectory|/var/lib|STATE_DIR|state dir|legacy' "$(installed_unit)" || fail "the installed unit names a state directory"
-}
-
-test_install_leaves_an_existing_leftover_state_dir_alone() {
-  # only uninstall cleans it up; an install or update must not delete data it did not create
-  fake_legacy_state
-  run_dpds --yes install
-  assert_rc 0 "$ERR"
-  assert_file "$LEGACY_STATE_DIR/marker"
-  assert_file "$LEGACY_STATE_DIR/state.json"
 }
 
 # ------------------------------------------------------------------ tests: update is a no-op when up to date

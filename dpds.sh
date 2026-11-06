@@ -604,11 +604,6 @@ cmd_uninstall() {
   info "Removing binaries, unit and $STAMP_FILE"
   run_privileged rm -f "$BIN_DIR/dpds" "$BIN_DIR/dpds-controller" "$UNIT_DEST" "$STAMP_FILE"
   run_privileged systemctl daemon-reload || warn "systemctl daemon-reload failed."
-  local leftover=/var/lib/dpds-controller
-  if [[ -e "$leftover" ]]; then
-    info "Removing $leftover, left behind by an older version"
-    run_privileged rm -rf -- "$leftover"
-  fi
   info "Kept $ENV_FILE; remove it by hand if you do not need it."
 }
 
