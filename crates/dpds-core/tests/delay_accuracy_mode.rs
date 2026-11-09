@@ -1,6 +1,7 @@
-//! `Buffer::try_new` rejects `reordering` combined with correlation and `reordering` combined
-//! with an active Spacer limiter, with an error whose message names the combination; every other
-//! combination builds. An inactive limiter never counts, whatever its mode.
+//! `Buffer::try_new` rejects `reordering` combined with correlation, with an error whose message
+//! names the combination; every other combination builds, including `reordering` with an active
+//! Spacer (the two-stage mode of `tests/reordering_spacer.rs`). An inactive limiter never counts,
+//! whatever its mode.
 //!
 //! The tests look at the Display text only.
 
@@ -11,7 +12,6 @@ use dpds_core::limiter::LimiterMode;
 use dpds_core::{Config, DelayerConfig, LimiterConfig};
 
 const CORRELATION_MSG: &str = "reordering cannot be combined with correlation";
-const SPACER_MSG: &str = "reordering works only with the TokenBucketFilter limiter, not Spacer";
 
 /// `limiter`: `None` is an inactive limiter in the Spacer mode (what the DTO builds without a stage).
 fn config(
@@ -57,25 +57,25 @@ fn reordering_with_correlation_is_rejected_naming_the_combination() {
 }
 
 #[test]
-fn reordering_with_an_active_spacer_is_rejected_naming_the_combination() {
+fn reordering_with_correlation_and_an_active_spacer_is_rejected_for_the_correlation() {
     let e = err_of(config(
         true,
-        false,
+        true,
         Some(LimiterMode::Spacer),
         LimiterMode::Spacer,
     ));
-    assert!(e.contains(SPACER_MSG), "{e}");
+    assert!(e.contains(CORRELATION_MSG), "{e}");
 }
 
 #[test]
-fn reordering_with_correlation_and_an_active_spacer_is_rejected() {
-    let e = err_of(config(
+fn reordering_with_an_active_spacer_is_accepted() {
+    assert!(Buffer::try_new(config(
         true,
-        true,
+        false,
         Some(LimiterMode::Spacer),
-        LimiterMode::Spacer,
-    ));
-    assert!(e.contains(CORRELATION_MSG) || e.contains(SPACER_MSG), "{e}");
+        LimiterMode::Spacer
+    ))
+    .is_ok());
 }
 
 #[test]
@@ -123,7 +123,4 @@ fn the_check_does_not_depend_on_the_capacity() {
     let mut c = config(true, true, None, LimiterMode::Spacer);
     c.buffer_capacity = 0;
     assert!(err_of(c).contains(CORRELATION_MSG));
-    let mut c = config(true, false, Some(LimiterMode::Spacer), LimiterMode::Spacer);
-    c.buffer_capacity = 0;
-    assert!(err_of(c).contains(SPACER_MSG));
 }

@@ -105,6 +105,12 @@
 //! can sort between them (at most about 0.5 ns for the 32-packet burst of
 //! `dpds`).
 //!
+//! Reordering with an active `Spacer` works in two stages: packets first wait
+//! in the reorder heap until their send time, then pass the Spacer in that order
+//! into a FIFO. The Spacer has no limit there, so an accepted packet is never
+//! dropped later. The two stages share `buffer_capacity` but each is allocated
+//! with that many entries (double allocation).
+//!
 //! ## Features
 //!
 //! - `serde`: `Serialize`/`Deserialize` for [`Config`] and the types in it.
@@ -206,8 +212,6 @@ pub enum BuildError {
     BufferCapacity { capacity: usize, reason: String },
     /// `reordering` is combined with `activate_correlation`.
     ReorderingWithCorrelation,
-    /// `reordering` is combined with an active limiter in the Spacer mode.
-    ReorderingWithSpacer,
 }
 
 impl fmt::Display for BuildError {
@@ -241,10 +245,6 @@ impl fmt::Display for BuildError {
             BuildError::ReorderingWithCorrelation => {
                 write!(f, "reordering cannot be combined with correlation")
             }
-            BuildError::ReorderingWithSpacer => write!(
-                f,
-                "reordering works only with the TokenBucketFilter limiter, not Spacer"
-            ),
         }
     }
 }

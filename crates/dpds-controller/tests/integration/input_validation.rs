@@ -351,25 +351,6 @@ async fn reordering_with_correlation_is_a_400_naming_the_combination_on_start_an
 }
 
 #[tokio::test]
-async fn reordering_with_the_spacer_limiter_is_a_400_naming_the_combination_on_start_and_validate()
-{
-    let a = app();
-    let s = setup(vec![accuracy_link(true, false, Some("Spacer"))]);
-    for (route, r) in [
-        ("start", a.start(&s).await),
-        ("validate", a.validate(&s).await),
-    ] {
-        assert_eq!(r.status, 400, "{route}: {}", r.text());
-        let m = r.message();
-        assert!(
-            m.contains("reordering") && m.contains("TokenBucketFilter") && m.contains("Spacer"),
-            "{route}: {m}"
-        );
-    }
-    assert!(a.supervisor.plans().is_empty());
-}
-
-#[tokio::test]
 async fn the_allowed_delay_accuracy_combinations_validate_and_start() {
     for (reordering, correlation, limiter) in [
         (false, false, None),
@@ -378,6 +359,7 @@ async fn the_allowed_delay_accuracy_combinations_validate_and_start() {
         (false, true, Some("Spacer")),
         (false, true, Some("TokenBucketFilter")),
         (true, false, None),
+        (true, false, Some("Spacer")),
         (true, false, Some("TokenBucketFilter")),
     ] {
         let a = app();
@@ -392,7 +374,7 @@ async fn the_allowed_delay_accuracy_combinations_validate_and_start() {
 }
 
 #[test]
-fn the_dto_rejects_the_two_reordering_combinations_naming_them() {
+fn the_dto_rejects_reordering_with_correlation_naming_it_and_accepts_it_with_the_spacer() {
     let mut c = cfg_json(1.0e6, 0.0);
     c["reordering"] = json!(true);
     c["delayer"]["activate_correlation"] = json!(true);
@@ -401,6 +383,5 @@ fn the_dto_rejects_the_two_reordering_combinations_naming_them() {
 
     let mut c = cfg_full(1.0e6, 0.0, 1.0e9); // Spacer
     c["reordering"] = json!(true);
-    let e = dto_from(c).to_core().unwrap_err().to_string();
-    assert!(e.contains("reordering") && e.contains("Spacer"), "{e}");
+    assert!(dto_from(c).to_core().is_ok());
 }

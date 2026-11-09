@@ -68,6 +68,17 @@ impl Limiter {
         }
     }
 
+    /// What [`Limiter::limiter_calculate_offset_ns`] would return, leaving the
+    /// limiter unchanged (it runs the same code on a copy).
+    pub fn limiter_peek_offset_ns(
+        &self,
+        time_to_sent_ns: f64,
+        packet_length_byte: u32,
+    ) -> Option<f64> {
+        let mut probe = *self;
+        probe.limiter_calculate_offset_ns(time_to_sent_ns, packet_length_byte)
+    }
+
     /// Spacer: schedules packets by calculating a send offset based on the fill state.
     fn spacer_calculate_offset_ns(
         &mut self,
@@ -140,6 +151,15 @@ mod tests {
         // A tiny bucket cannot hold a single packet -> dropped.
         let mut small = Limiter::new(LimiterMode::TokenBucketFilter, true, 1e9, 100.);
         assert_eq!(small.limiter_calculate_offset_ns(0., 100), None);
+    }
+
+    #[test]
+    fn peek_matches_calculate_and_leaves_the_limiter_unchanged() {
+        let mut l = Limiter::new(LimiterMode::Spacer, true, 1e9, 1_000_000.);
+        l.limiter_calculate_offset_ns(0., 100);
+        let peeked = l.limiter_peek_offset_ns(10., 100);
+        assert_eq!(l.last_update_ns, 0.);
+        assert_eq!(l.limiter_calculate_offset_ns(10., 100), peeked);
     }
 
     #[test]

@@ -509,16 +509,16 @@ describe('formToDto: delay accuracy', () => {
     expect([back.reordering, back.activate_correlation]).toEqual([false, false]);
   });
 
-  it('picking Reordering replaces the Spacer by the token bucket and keeps the rate; the other options leave the mode alone', () => {
+  it('picking an accuracy option leaves the limiter mode and rate alone', () => {
     const r = withAccuracy(form({ limiter_mode: 'Spacer', rate_bps: uv('5', GBIT) }), 'Reordering');
-    expect(r.limiter_mode).toBe('TokenBucketFilter');
+    expect(r.limiter_mode).toBe('Spacer');
     expect(r.rate_bps).toEqual(uv('5', GBIT));
     expect(withAccuracy(form({ limiter_mode: 'Spacer' }), 'Correlation').limiter_mode).toBe('Spacer');
     expect(withAccuracy(form({ limiter_mode: 'TokenBucketFilter' }), 'Basic').limiter_mode).toBe('TokenBucketFilter');
   });
 
-  it('Reordering with the Spacer limiter is refused; with the token bucket, or without a limiter, it is sent', () => {
-    expect(refusal(full({ reordering: true, limiter_mode: 'Spacer' }))).toMatch(/Reordering.*Spacer/);
+  it('Reordering is sent with the Spacer, with the token bucket and without a limiter', () => {
+    expect(cfgOf(full({ reordering: true, limiter_mode: 'Spacer' })).limiter?.mode).toBe('Spacer');
     expect(cfgOf(full({ reordering: true, limiter_mode: 'TokenBucketFilter' })).reordering).toBe(true);
     const noLimiter = cfgOf(full({ reordering: true, limiter_added: false }));
     expect([noLimiter.reordering, noLimiter.limiter]).toEqual([true, null]);
@@ -719,7 +719,11 @@ describe('link rules: ports and what the form accepts unchanged', () => {
   it('a stored link that breaks only the delay accuracy rule stays valid, so it can be opened and fixed', () => {
     const broken = {
       ...fx.link(),
-      config: { ...fx.config(), reordering: true, limiter: { mode: 'Spacer' as const, rate_bps: 1e9 } },
+      config: {
+        ...fx.config(),
+        reordering: true,
+        delayer: { ...must(fx.config().delayer), activate_correlation: true, half_life_period_ns: 1e6 },
+      },
     };
     expect(linkProblem(broken)).toBeNull();
     expect(() => formToDto(configToForm(broken.config))).toThrow(/Reordering/);

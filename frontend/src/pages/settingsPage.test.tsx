@@ -73,11 +73,11 @@ async function page(links: Link[] = [fx.link()]) {
 const pairs = (links: Link[]) => links.map((l) => [l.ingress, l.egress]);
 const configWith = (delayer: Partial<NonNullable<ConfigDto['delayer']>>): ConfigDto =>
   fx.config({ delayer: { ...must(fx.config().delayer), ...delayer } });
-/** A stored a-b whose config the form refuses on Save (reordering with the Spacer limiter): loads fine, fails `formToDto`. */
+/** A stored a-b whose config the form refuses on Save (reordering with correlation): loads fine, fails `formToDto`. */
 const brokenConfig = (): ConfigDto => ({
   ...fx.config(),
   reordering: true,
-  limiter: { mode: 'Spacer', rate_bps: 1e9 },
+  delayer: { ...must(fx.config().delayer), activate_correlation: true, half_life_period_ns: 1e6 },
 });
 /** A new row with both ports chosen and the Link settings modal open, the three stages on (a valid initialization rate typed). */
 async function newFullLink(): Promise<UserEvent> {
@@ -318,11 +318,11 @@ describe('Save validates the draft link by link; the first problem blocks it wit
     await expectBlocked(/Link 2: .*TX port of more than one link/i, writes);
   });
 
-  it('a config that the form refuses (reordering with the Spacer) names its link position and the problem', async () => {
+  it('a config that the form refuses (reordering with correlation) names its link position and the problem', async () => {
     const user = await page([fx.link({ config: brokenConfig() })]);
     const writes = watchStoreWrites();
     await clickSave(user);
-    await expectBlocked(/Link 1: .*(Reordering|Spacer)/i, writes);
+    await expectBlocked(/Link 1: .*(Reordering|correlation)/i, writes);
   });
 
   it('the first problem in table order is the one reported, even when later rows have problems too', async () => {
@@ -340,7 +340,7 @@ describe('Save validates the draft link by link; the first problem blocks it wit
     await addLink(user);
     const writes = watchStoreWrites();
     await clickSave(user);
-    await expectBlocked(/Link 1: .*(Reordering|Spacer)/i, writes);
+    await expectBlocked(/Link 1: .*(Reordering|correlation)/i, writes);
     expect(linkRows()).toHaveLength(2);
     await openSettings(user, 1);
     await user.click(screen.getByRole('radio', { name: 'Basic' }));
@@ -583,17 +583,16 @@ describe('the fields of the Link settings modal', () => {
     expect(must(modalAlert())).toHaveTextContent(/Average frame size/);
   });
 
-  it('Delay accuracy: Reordering switches the limiter to the token bucket and disables the Spacer; the half-life is only for Correlation', async () => {
+  it('Delay accuracy: Reordering keeps the limiter mode (the Spacer stays selectable); the half-life is only for Correlation', async () => {
     const user = await newFullLink();
     const mode = screen.getByLabelText('Limiter mode') as HTMLSelectElement;
     expect(mode).toHaveValue('Spacer');
     expect(screen.getByLabelText('Half-life period')).toBeDisabled();
     await user.click(screen.getByRole('radio', { name: 'Reordering' }));
-    expect(mode).toHaveValue('TokenBucketFilter');
-    expect(within(mode).getByRole('option', { name: 'Spacer' })).toBeDisabled();
+    expect(mode).toHaveValue('Spacer');
+    expect(within(mode).getByRole('option', { name: 'Spacer' })).toBeEnabled();
     expect(screen.getByLabelText('Half-life period')).toBeDisabled();
     await user.click(screen.getByRole('radio', { name: 'Basic' }));
-    expect(within(mode).getByRole('option', { name: 'Spacer' })).toBeEnabled();
     await user.click(screen.getByRole('radio', { name: 'Correlation' }));
     expect(screen.getByLabelText('Half-life period')).toBeEnabled();
   });
@@ -638,7 +637,7 @@ describe('the Histogram modal: Close discards, Confirm commits', () => {
     expect(histogramDialog()).toBeNull();
     await openSettings(user, 1);
     await confirmModal(user);
-    expect(must(modalAlert())).toHaveTextContent(/Reordering|Spacer/);
+    expect(must(modalAlert())).toHaveTextContent(/Reordering|correlation/i);
   });
 
   it('"Use suggestion" sets lo to 0 and hi to the suggested value in its own unit, and is what gets saved', async () => {

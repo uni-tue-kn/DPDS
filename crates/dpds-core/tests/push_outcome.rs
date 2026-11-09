@@ -166,7 +166,7 @@ fn lost_is_reported_by_the_loss_model_and_nothing_is_queued() {
 
 #[test]
 fn limiter_drop_of_the_spacer_and_its_recovery_by_draining() {
-    // FIFO only: reordering works only with the token bucket, not the Spacer.
+    // FIFO only: the reordering Spacer has no limit and reports the heap time (reordering_spacer.rs).
     // capacity 2: derived limit 2 * 12336 = exactly two len-1518 packets
     let mut b = Cfg::new(2, false).spacer().build();
     assert_eq!(b.push_outcome(pkt(1), LEN_FULL, 0.0), accepted(0)); // fill 12336
@@ -245,7 +245,7 @@ fn precedence_buffer_full_before_loss_before_limiter() {
     for reordering in MODES {
         for tbf in [false, true] {
             if reordering && !tbf {
-                continue; // reordering works only with the token bucket
+                continue; // reordering + Spacer is the two-stage mode (reordering_spacer.rs): no limit, send time known only at pop
             }
             let with_limiter = |c: Cfg| if tbf { c.tbf() } else { c.spacer() };
 
@@ -286,7 +286,7 @@ fn precedence_buffer_full_before_loss_before_limiter() {
         // h=0): Good keeps, Bad drops.
         let ge = LossModel::GilbertElliot(1.0, 1.0, 1.0, 0.0, true);
         let limited = if reordering {
-            Cfg::new(1, reordering).tbf() // reordering works only with the token bucket
+            Cfg::new(1, reordering).tbf() // reordering + Spacer is the two-stage mode (reordering_spacer.rs): no limit, send time known only at pop
         } else {
             Cfg::new(1, reordering).spacer()
         };
@@ -309,7 +309,7 @@ fn a_lost_packet_still_consumes_limiter_budget() {
     // drops (u > k = 0), moves to Bad for good (p = 1, r = 0), where nothing is
     // dropped (u > h = 1 is impossible): exactly the first packet is lost.
     let ge = LossModel::GilbertElliot(1.0, 0.0, 0.0, 1.0, true);
-    // FIFO only: reordering works only with the token bucket, not the Spacer.
+    // FIFO only: the reordering Spacer has no limit and reports the heap time (reordering_spacer.rs).
     let mut b = Cfg::new(8, false).spacer().loss(ge).build();
     assert_eq!(b.push_outcome(pkt(1), LEN, 0.0), PushOutcome::Lost);
     // the lost packet was accounted by the limiter (fill 992): the next one
@@ -321,7 +321,7 @@ fn a_lost_packet_still_consumes_limiter_budget() {
 
 #[test]
 fn a_buffer_full_packet_does_not_consume_limiter_budget() {
-    // FIFO only: reordering works only with the token bucket, not the Spacer.
+    // FIFO only: the reordering Spacer has no limit and reports the heap time (reordering_spacer.rs).
     let mut b = Cfg::new(1, false).spacer().build();
     assert_eq!(b.push_outcome(pkt(1), LEN, 0.0), accepted(0)); // fill 992
     assert_eq!(b.push_outcome(pkt(2), LEN, 0.0), PushOutcome::BufferFull); // fill stays 992
@@ -414,7 +414,7 @@ fn push_is_bit_identical_to_push_outcome_accepted() {
     for mode in [LimiterMode::Spacer, LimiterMode::TokenBucketFilter] {
         for reordering in MODES {
             if reordering && matches!(mode, LimiterMode::Spacer) {
-                continue; // reordering works only with the token bucket
+                continue; // reordering + Spacer is the two-stage mode (reordering_spacer.rs): no limit, send time known only at pop
             }
             for seed in [1u64, 2, 3] {
                 let cfg = busy(mode, reordering, seed);
@@ -470,7 +470,7 @@ fn accepted_send_time_is_what_pop_due_with_time_and_front_time_report() {
     for mode in [LimiterMode::Spacer, LimiterMode::TokenBucketFilter] {
         for reordering in MODES {
             if reordering && matches!(mode, LimiterMode::Spacer) {
-                continue; // reordering works only with the token bucket
+                continue; // reordering + Spacer is the two-stage mode (reordering_spacer.rs): no limit, send time known only at pop
             }
             let cfg = busy(mode, reordering, 99);
             let mut buf = Buffer::new(cfg);
@@ -538,7 +538,7 @@ fn pop_due_with_time_pops_exactly_at_the_send_time_and_returns_it() {
 
 #[test]
 fn pop_due_with_time_returns_the_limiter_shifted_time() {
-    // FIFO only: reordering works only with the token bucket, not the Spacer.
+    // FIFO only: the reordering Spacer has no limit and reports the heap time (reordering_spacer.rs).
     let mut b = Cfg::new(8, false).spacer().build();
     for i in 0..3 {
         assert!(b.push(pkt(i + 1), LEN, 0.0)); // send times 0, 992, 1984
@@ -554,7 +554,7 @@ fn pop_due_with_time_pops_the_same_pointers_in_the_same_order_as_pop_due() {
     for mode in [LimiterMode::Spacer, LimiterMode::TokenBucketFilter] {
         for reordering in MODES {
             if reordering && matches!(mode, LimiterMode::Spacer) {
-                continue; // reordering works only with the token bucket
+                continue; // reordering + Spacer is the two-stage mode (reordering_spacer.rs): no limit, send time known only at pop
             }
             let cfg = busy(mode, reordering, 5);
             let (mut a, mut b) = (Buffer::new(cfg), Buffer::new(cfg));

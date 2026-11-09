@@ -23,7 +23,7 @@
 //! Each of the three states is isolated in one scenario (only the delayer is
 //! stochastic, only the limiter is active, only the dropper is stochastic), and
 //! one scenario switches everything on. All run in FIFO and reordering mode,
-//! except those with the correlated delayer or the Spacer (FIFO only).
+//! except those with the correlated delayer (FIFO only) or the Spacer (FIFO only here; see reordering_spacer.rs).
 
 use std::ffi::c_void;
 
@@ -246,7 +246,7 @@ fn a_full_buffer_push_does_not_account_bits_in_the_spacer() {
     // The extra pushes (12336 bit each) sit at the same instants as the tail;
     // accounting them would push the tail's spacing offsets up and its limit
     // drops earlier.
-    // FIFO only: reordering works only with the token bucket.
+    // FIFO only: with reordering the Spacer has no limit and never drops (reordering_spacer.rs).
     let s = Scenario {
         limiter: Some(LimiterMode::Spacer),
         ..Scenario::base(false)
@@ -322,7 +322,7 @@ fn a_buffer_full_push_reports_buffer_full_whatever_the_stages_would_say() {
     for reordering in MODES {
         for mode in [LimiterMode::Spacer, LimiterMode::TokenBucketFilter] {
             if reordering && matches!(mode, LimiterMode::Spacer) {
-                continue; // reordering works only with the token bucket
+                continue; // reordering + Spacer is the two-stage mode (reordering_spacer.rs): no limit, send time known only at pop
             }
             let mut cfg = Scenario {
                 limiter: Some(mode),

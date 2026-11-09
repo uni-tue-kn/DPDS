@@ -96,13 +96,12 @@ export const accuracyOf = (f: ConfigForm): Accuracy =>
 /** Without the Delayer stage the config is sent with Basic, so reordering counts only with it. */
 export const reorderingActive = (f: ConfigForm) => f.delayer_added && f.reordering;
 
-/** The form after picking a delay accuracy option; Reordering needs the token bucket, so it replaces the Spacer. */
+/** The form after picking a delay accuracy option. */
 export function withAccuracy(f: ConfigForm, a: Accuracy): ConfigForm {
   return {
     ...f,
     reordering: a === 'Reordering',
     activate_correlation: a === 'Correlation',
-    limiter_mode: a === 'Reordering' ? 'TokenBucketFilter' : f.limiter_mode,
   };
 }
 
@@ -339,13 +338,10 @@ function bufferCapacity(v: UnitValue): number {
   return n;
 }
 
-/** Reordering excludes correlation and the Spacer (the dpds buffer refuses both); only with the Delayer stage does it count. */
+/** Reordering excludes correlation (the dpds buffer refuses it); only with the Delayer stage does it count. */
 function checkAccuracy(f: ConfigForm) {
   if (!reorderingActive(f)) return;
   if (f.activate_correlation) throw new Error('Reordering cannot be combined with correlation');
-  if (f.limiter_added && f.limiter_mode === 'Spacer') {
-    throw new Error('Reordering works only with the TokenBucketFilter limiter, not Spacer');
-  }
 }
 
 const binsOrDefault = (s: string, dflt: number) => (s.trim() === '' ? String(dflt) : s);

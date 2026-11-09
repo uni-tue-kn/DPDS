@@ -51,7 +51,7 @@ fn config(capacity: usize, mode: LimiterMode, rate_bps: f64, reordering: bool) -
     }
 }
 
-/// Reordering works only with the token bucket: the Spacer runs in FIFO mode only.
+/// Reordering + Spacer is a different mode (no limit, see reordering_spacer.rs); these limit tests skip it.
 fn allowed(mode: LimiterMode, reordering: bool) -> bool {
     !(reordering && matches!(mode, LimiterMode::Spacer))
 }
@@ -229,7 +229,7 @@ fn the_limit_does_not_depend_on_the_current_buffer_content() {
     }
 }
 
-/// FIFO only: reordering does not work with the Spacer.
+/// FIFO only: with reordering the Spacer has no limit (reordering_spacer.rs).
 #[test]
 fn spacer_offsets_grow_by_one_slot_up_to_the_derived_limit() {
     let mut b = Buffer::new(config(3, LimiterMode::Spacer, 1e9, false));
