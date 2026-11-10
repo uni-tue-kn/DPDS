@@ -55,7 +55,10 @@ travels with every start request.
 - **Rust** (stable) and **clang and lld with the same LLVM major version as `rustc`**
 - **Node 22.22 or newer and npm**; the frontend is built on the host, which needs the npm registry
 - One **isolated core per link** (kernel parameter `isolcpus`, see the host hints) besides the main
-  lcore: a start without them is refused with a message that says so
+  lcore: a start without them is refused with a message that says so. A link uses exactly this one
+  core (one RX and one TX queue), which bounds its packet rate: 100 Gb/s is reachable with large
+  frames (8.1 Mpps at 1518 B), not with small ones (see
+  [Performance tuning](docs/DEVELOPMENT.md#performance-tuning))
 
 ## Installation
 

@@ -188,6 +188,13 @@ are documented in `crates/dpds/src/counters.rs`, `stats.rs` and `first_loss.rs`.
 
 ## Performance tuning
 
+**Throughput ceiling: one core per link.** A link (one direction) is served by one worker lcore
+with one RX queue and one TX queue; there is no RSS and no multi-queue. Its packet rate is
+therefore bounded by what a single core forwards. 100 Gb/s of 1518 B frames is 8.1 Mpps and fits
+one core; 100 Gb/s of 64 B frames is 148.8 Mpps and does not, whatever the tuning. The delay
+buffer, the limiter and the loss model of a link are single-threaded state, so more cores per link
+would mean splitting that state per flow or feeding one emulation core from several RX cores.
+
 For line rate, isolate DPDS's cores from the OS and tune the NIC. These settings come from preof,
 the sibling project whose DPDK code DPDS reuses, not from DPDS measurements. They are runtime-only
 unless noted, and applying them is up to whoever sets up the host.
