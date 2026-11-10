@@ -1,8 +1,15 @@
 //! Microbenchmark of the per-packet cost of `dpds::forward::run`, driven by
-//! mocks (no NIC, no EAL): the RX mock hands out a full burst of 32 fake mbufs
-//! per call, the TX mock accepts everything, the free mock does nothing and the
+//! mocks (no NIC, no EAL): the RX mock hands out a burst of fake mbufs per
+//! call, the TX mock accepts everything, the free mock does nothing and the
 //! clock advances by a fixed step per iteration. The mbufs are only read for
-//! their `pkt_len` and header prefetch.
+//! their `pkt_len` and header prefetch (and written for the arrival stamp).
+//!
+//! The first four cases are the original ones: a pool of 32 mbufs (always
+//! L1-hot), full bursts of 32, ~hundreds of packets queued. The `10 ms` cases
+//! are the realistic-load ones: 8.1 Mpps and 10 ms delay keep ~80 000 packets
+//! queued, handed out from a pool of 131 072 mbufs spaced like the elements of a
+//! real mempool, so every header line is cache-cold when the packet pops. The
+//! `4 per RX call` case receives partial bursts.
 //!
 //! Run it without and with the `telemetry` feature to see what the delay
 //! statistics cost:
@@ -36,13 +43,63 @@ use dpds_core::limiter::LimiterMode;
 use dpds_core::{Config, DelayerConfig, LimiterConfig};
 
 const REPEATS: usize = 15;
-/// Loop iterations (= RX bursts of 32 packets) of one repetition.
-const ITERATIONS: usize = 200_000;
-/// Clock step per iteration.
-const STEP_NS: f64 = 1_000.0;
+/// Distance between two mbufs in a real mempool element (mbuf, headroom and a
+/// 2 KiB data room): consecutive packets never share a cache line or a page.
+const MBUF_STRIDE: usize = 2_304;
+/// Buffer capacity of the large-occupancy cases (the default is 100 000).
+const LARGE_CAPACITY: usize = 1 << 18;
+
+/// One fake mbuf with the padding of a mempool element.
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct Slot {
+    mbuf: dpdk_sys::rte_mbuf,
+    _data: [u8; MBUF_STRIDE - std::mem::size_of::<dpdk_sys::rte_mbuf>()],
+}
+
+/// How the RX mock feeds the loop.
+#[derive(Clone, Copy)]
+struct Load {
+    /// Distinct mbufs handed out in a cycle; a multiple of `per_call`, and larger
+    /// than the number of packets queued.
+    pool: usize,
+    /// Packets per `rx_burst` call (at most `BURST_SIZE`).
+    per_call: usize,
+    /// Clock step per iteration.
+    step_ns: f64,
+    /// Loop iterations (= `rx_burst` calls) of one repetition.
+    iterations: usize,
+}
+
+/// The original cases: 32 mbufs, full bursts, 32 packets per 1 us (~32 Mpps).
+const FULL: Load = Load {
+    pool: BURST_SIZE,
+    per_call: BURST_SIZE,
+    step_ns: 1_000.0,
+    iterations: 200_000,
+};
+
+/// Full bursts at 8.1 Mpps from 131 072 cache-cold mbufs.
+const COLD: Load = Load {
+    pool: 131_072,
+    per_call: BURST_SIZE,
+    step_ns: 3_950.0,
+    iterations: 100_000,
+};
+
+/// 4 packets per call at 8.1 Mpps.
+const PARTIAL: Load = Load {
+    pool: 4_096,
+    per_call: 4,
+    step_ns: 494.0,
+    iterations: 800_000,
+};
 
 struct Rx {
-    burst: [RawMbuf; BURST_SIZE],
+    /// Pointers into the mbuf pool, in the order they are handed out.
+    ptrs: Vec<RawMbuf>,
+    per_call: usize,
+    next: usize,
     calls: usize,
     stop_after: usize,
     quit: &'static Quit,
@@ -54,8 +111,10 @@ impl RxBurst for Rx {
         if self.calls >= self.stop_after {
             self.quit.request();
         }
-        bufs[..BURST_SIZE].copy_from_slice(&self.burst);
-        BURST_SIZE as u16
+        let end = self.next + self.per_call;
+        bufs[..self.per_call].copy_from_slice(&self.ptrs[self.next..end]);
+        self.next = if end == self.ptrs.len() { 0 } else { end };
+        self.per_call as u16
     }
 }
 
@@ -95,31 +154,32 @@ fn config(distribution: RVDistribution, mean_ns: f64, std_ns: f64, loss: f64) ->
     }
 }
 
-/// Runs the loop for `iterations` RX bursts (plus the drain); returns the elapsed seconds.
-fn once(config: Config, delay_stats: bool, iterations: usize) -> f64 {
-    let mut mbufs: Vec<dpdk_sys::rte_mbuf> = (0..BURST_SIZE)
-        .map(|_| {
-            let mut m: dpdk_sys::rte_mbuf = unsafe { std::mem::zeroed() };
-            m.__bindgen_anon_2.__bindgen_anon_1.pkt_len = 64;
-            m
-        })
-        .collect();
-    let burst: [RawMbuf; BURST_SIZE] = std::array::from_fn(|i| &mut mbufs[i] as *mut _);
+/// Runs the loop for `load.iterations` RX calls (plus the drain); returns the elapsed seconds.
+fn once(load: &Load, config: Config, delay_stats: bool) -> f64 {
+    assert_eq!(load.pool % load.per_call, 0);
+    assert!(load.per_call <= BURST_SIZE);
+    let mut slot: Slot = unsafe { std::mem::zeroed() };
+    slot.mbuf.__bindgen_anon_2.__bindgen_anon_1.pkt_len = 64;
+    let mut mbufs = vec![slot; load.pool];
+    let ptrs = mbufs.iter_mut().map(|s| &mut s.mbuf as RawMbuf).collect();
     let quit: &'static Quit = Box::leak(Box::new(Quit::new()));
     let stats: &'static Stats = Box::leak(Box::new(Stats::with_delay_stats(
         HistRange::default(),
         delay_stats,
     )));
     let mut rx = Rx {
-        burst,
+        ptrs,
+        per_call: load.per_call,
+        next: 0,
         calls: 0,
-        stop_after: iterations,
+        stop_after: load.iterations,
         quit,
     };
     let mut t = Telemetry::new(stats, 0.0);
     let mut clock = 0.0;
+    let step_ns = load.step_ns;
     let now = move || {
-        clock += STEP_NS;
+        clock += step_ns;
         clock
     };
     let worker = Worker::new(Buffer::new(config), 0, 0);
@@ -134,49 +194,78 @@ fn once(config: Config, delay_stats: bool, iterations: usize) -> f64 {
 
 fn main() {
     let bench = std::env::args().any(|a| a == "--bench");
-    let (repeats, iterations) = if bench {
-        (REPEATS, ITERATIONS)
-    } else {
-        (1, 100)
+    let repeats = if bench { REPEATS } else { 1 };
+    let large = |config| Config {
+        buffer_capacity: LARGE_CAPACITY,
+        ..config
     };
+    let ten_ms = || config(RVDistribution::NormalDistribution, 10e6, 1e6, 0.0);
     let cases = [
         (
             "no delay, no loss",
+            FULL,
             config(RVDistribution::DeterministicDistribution, 0.0, 0.0, 0.0),
         ),
         (
             "deterministic 5 us",
+            FULL,
             config(RVDistribution::DeterministicDistribution, 5_000.0, 0.0, 0.0),
         ),
         (
             "normal 5 us +- 0.5 us",
+            FULL,
             config(RVDistribution::NormalDistribution, 5_000.0, 500.0, 0.0),
         ),
         (
             "normal 5 us +- 0.5 us, 1 % loss",
+            FULL,
             config(RVDistribution::NormalDistribution, 5_000.0, 500.0, 0.01),
+        ),
+        ("normal 10 ms +- 1 ms, cold", COLD, large(ten_ms())),
+        (
+            "reordering 10 ms +- 1 ms, cold",
+            COLD,
+            Config {
+                reordering: true,
+                ..large(ten_ms())
+            },
+        ),
+        (
+            "normal 5 us +- 0.5 us, 4 per RX call",
+            PARTIAL,
+            config(RVDistribution::NormalDistribution, 5_000.0, 500.0, 0.0),
         ),
     ];
     println!(
-        "forward::run, telemetry {}, {} bursts of {BURST_SIZE} per repetition",
+        "forward::run, telemetry {}, median of {repeats} repetitions",
         if cfg!(feature = "telemetry") {
             "on"
         } else {
             "off"
         },
-        iterations
     );
-    println!("  {:34} {:>14} {:>14}", "", "stats on", "stats off");
-    let packets = (iterations * BURST_SIZE) as f64;
-    for (name, config) in cases {
+    println!("  {:38} {:>14} {:>14}", "", "stats on", "stats off");
+    for (name, load, config) in cases {
+        // Smoke pass: few iterations, a pool small enough to be quick but
+        // larger than what ends up queued (no mbuf queued twice).
+        let load = if bench {
+            load
+        } else {
+            Load {
+                pool: load.pool.min(4_096),
+                iterations: 100,
+                ..load
+            }
+        };
+        let packets = (load.iterations * load.per_call) as f64;
         let ns_per_packet = |delay_stats| {
             let mut times: Vec<f64> = (0..repeats)
-                .map(|_| once(config, delay_stats, iterations))
+                .map(|_| once(&load, config, delay_stats))
                 .collect();
             times.sort_by(f64::total_cmp);
             times[times.len() / 2] / packets * 1e9
         };
         let (on, off) = (ns_per_packet(true), ns_per_packet(false));
-        println!("  {name:34} {on:9.2} ns/p {off:9.2} ns/p");
+        println!("  {name:38} {on:9.2} ns/p {off:9.2} ns/p");
     }
 }

@@ -7,6 +7,11 @@
 //! `pop_due(now)` is called until nothing is due or the pop budget of 32 is
 //! used up. This is the loop of the `dpds` worker.
 //!
+//! Two load levels: the `SMALL` cases (50 us delay, ~400 packets queued, 16 Ki
+//! capacity) and the `LARGE` ones (10 ms delay at ~8.1 Mpps, ~80 000 queued,
+//! 256 Ki capacity; `VERY_LARGE`: ~1 000 000 queued, 2 Mi capacity) that show
+//! what a real queue costs in cache misses and heap depth.
+//!
 //! Every case (FIFO and reordering, deterministic and normal delay, Spacer,
 //! random and Gilbert-Elliot loss) runs a verification pass first (every
 //! accepted pointer is popped exactly once, FIFO pops in push order,
@@ -53,19 +58,64 @@ use dpds_core::{Config, DelayerConfig, LimiterConfig};
 
 /// Packets per burst and the pop budget per iteration (`BURST_SIZE` of `dpds`).
 const BURST: usize = 32;
-/// Time between two bursts: 32 x 1500 B at ~100 Gb/s.
-const BURST_SPACING_NS: f64 = 3_900.0;
 const PACKET_BYTES: u32 = 1500;
-const DELAY_MEAN_NS: f64 = 50_000.0;
-const DELAY_STD_NS: f64 = 5_000.0;
 /// Bursts per timed repetition / per verification pass / in a smoke pass.
 const TIMED_BURSTS: usize = 100_000;
 const VERIFY_BURSTS: usize = 5_000;
 const SMOKE_BURSTS: usize = 200;
 const REPEATS: usize = 7;
 
+/// Queue size of a case: how long packets are delayed, how fast they arrive and
+/// how much room the buffer has. Queued packets = `mean_ns / spacing_ns * BURST`.
+#[derive(Clone, Copy)]
+struct Load {
+    /// Time between two bursts: 32 x 1500 B at ~100 Gb/s.
+    spacing_ns: f64,
+    mean_ns: f64,
+    std_ns: f64,
+    capacity: usize,
+    /// Spacer rate (only used by cases with the limiter).
+    limiter_bps: f64,
+}
+
+impl Load {
+    /// Bursts until the queue is full (steady state); the timed and verified
+    /// runs cover several of these.
+    fn fill_bursts(&self) -> usize {
+        (self.mean_ns / self.spacing_ns).ceil() as usize
+    }
+}
+
+/// ~100 Gb/s, 50 us: ~400 packets queued.
+const SMALL: Load = Load {
+    spacing_ns: 3_900.0,
+    mean_ns: 50_000.0,
+    std_ns: 5_000.0,
+    capacity: 1 << 14,
+    // 200 Gb/s: keeps up with the ~100 Gb/s offered load, so the limiter
+    // computes offsets but never fills up and drops.
+    limiter_bps: 200e9,
+};
+
+/// 8.1 Mpps of 1500 B (~97 Gb/s), 10 +- 1 ms: ~80 000 queued.
+const LARGE: Load = Load {
+    spacing_ns: 3_950.0,
+    mean_ns: 10_000_000.0,
+    std_ns: 1_000_000.0,
+    capacity: 1 << 18,
+    limiter_bps: 100e9,
+};
+
+/// Same rate, 123.5 +- 1 ms: ~1 000 000 queued.
+const VERY_LARGE: Load = Load {
+    mean_ns: 123_500_000.0,
+    capacity: 1 << 21,
+    ..LARGE
+};
+
 struct Case {
     name: &'static str,
+    load: Load,
     reordering: bool,
     distribution: RVDistribution,
     limiter: bool,
@@ -74,9 +124,10 @@ struct Case {
 
 const NO_LOSS: LossModel = LossModel::Random(0.0);
 
-const CASES: [Case; 7] = [
+const CASES: [Case; 13] = [
     Case {
         name: "fifo / deterministic delay",
+        load: SMALL,
         reordering: false,
         distribution: RVDistribution::DeterministicDistribution,
         limiter: false,
@@ -84,6 +135,7 @@ const CASES: [Case; 7] = [
     },
     Case {
         name: "fifo / normal delay",
+        load: SMALL,
         reordering: false,
         distribution: RVDistribution::NormalDistribution,
         limiter: false,
@@ -91,6 +143,7 @@ const CASES: [Case; 7] = [
     },
     Case {
         name: "fifo / spacer limiter",
+        load: SMALL,
         reordering: false,
         distribution: RVDistribution::DeterministicDistribution,
         limiter: true,
@@ -98,6 +151,7 @@ const CASES: [Case; 7] = [
     },
     Case {
         name: "fifo / random loss 1%",
+        load: SMALL,
         reordering: false,
         distribution: RVDistribution::DeterministicDistribution,
         limiter: false,
@@ -105,6 +159,7 @@ const CASES: [Case; 7] = [
     },
     Case {
         name: "fifo / gilbert-elliot loss",
+        load: SMALL,
         reordering: false,
         distribution: RVDistribution::DeterministicDistribution,
         limiter: false,
@@ -112,6 +167,7 @@ const CASES: [Case; 7] = [
     },
     Case {
         name: "reordering / deterministic delay",
+        load: SMALL,
         reordering: true,
         distribution: RVDistribution::DeterministicDistribution,
         limiter: false,
@@ -119,32 +175,78 @@ const CASES: [Case; 7] = [
     },
     Case {
         name: "reordering / normal delay",
+        load: SMALL,
+        reordering: true,
+        distribution: RVDistribution::NormalDistribution,
+        limiter: false,
+        loss: NO_LOSS,
+    },
+    Case {
+        name: "large: fifo / deterministic delay",
+        load: LARGE,
+        reordering: false,
+        distribution: RVDistribution::DeterministicDistribution,
+        limiter: false,
+        loss: NO_LOSS,
+    },
+    Case {
+        name: "large: fifo / normal delay",
+        load: LARGE,
+        reordering: false,
+        distribution: RVDistribution::NormalDistribution,
+        limiter: false,
+        loss: NO_LOSS,
+    },
+    Case {
+        name: "large: reordering / deterministic delay",
+        load: LARGE,
+        reordering: true,
+        distribution: RVDistribution::DeterministicDistribution,
+        limiter: false,
+        loss: NO_LOSS,
+    },
+    Case {
+        name: "large: reordering / normal delay",
+        load: LARGE,
+        reordering: true,
+        distribution: RVDistribution::NormalDistribution,
+        limiter: false,
+        loss: NO_LOSS,
+    },
+    Case {
+        name: "large: reordering / normal / spacer",
+        load: LARGE,
+        reordering: true,
+        distribution: RVDistribution::NormalDistribution,
+        limiter: true,
+        loss: NO_LOSS,
+    },
+    Case {
+        name: "very large: reordering / normal delay",
+        load: VERY_LARGE,
         reordering: true,
         distribution: RVDistribution::NormalDistribution,
         limiter: false,
         loss: NO_LOSS,
     },
 ];
-
 impl Case {
     fn config(&self) -> Config {
         Config {
-            buffer_capacity: 1 << 14,
+            buffer_capacity: self.load.capacity,
             reordering: self.reordering,
             delayer: DelayerConfig {
                 distribution: self.distribution,
-                mean_ns: DELAY_MEAN_NS,
-                std_ns: DELAY_STD_NS,
+                mean_ns: self.load.mean_ns,
+                std_ns: self.load.std_ns,
                 activate_correlation: false,
                 half_life_period_ns: 50_000_000.0,
                 initialization_rate_pps: 8_200_000.0,
             },
-            // 200 Gb/s: keeps up with the ~100 Gb/s offered load, so the
-            // limiter computes offsets but never fills up and drops.
             limiter: LimiterConfig {
                 mode: LimiterMode::Spacer,
                 activate: self.limiter,
-                rate_bps: 200e9,
+                rate_bps: self.load.limiter_bps,
             },
             loss_model: self.loss,
             seed: Some(1),
@@ -226,11 +328,16 @@ fn pop_one(buf: &mut Buffer, now: f64, t: &mut Totals, tracker: &mut Option<&mut
 /// Replays `bursts` bursts into `buf`. With `tracker` every pop is checked
 /// individually (slow, only for the verification pass); without it only the
 /// totals are collected.
-fn replay(buf: &mut Buffer, bursts: usize, mut tracker: Option<&mut Tracker>) -> Totals {
+fn replay(
+    buf: &mut Buffer,
+    spacing_ns: f64,
+    bursts: usize,
+    mut tracker: Option<&mut Tracker>,
+) -> Totals {
     let mut t = Totals::default();
     let mut next_id = 0usize;
     for burst in 0..bursts {
-        let now = burst as f64 * BURST_SPACING_NS;
+        let now = burst as f64 * spacing_ns;
         for _ in 0..BURST {
             let id = next_id;
             next_id += 1;
@@ -269,7 +376,7 @@ fn verify(case: &Case, bursts: usize) {
         fifo: !case.reordering,
         front_sorted: case.front_time_sorted(),
     };
-    let totals = replay(&mut buf, bursts, Some(&mut tracker));
+    let totals = replay(&mut buf, case.load.spacing_ns, bursts, Some(&mut tracker));
     check_totals(case.name, &totals, &buf);
     assert!(
         !tracker.state.contains(&1),
@@ -284,7 +391,7 @@ fn time(case: &Case, bursts: usize, repeats: usize) -> f64 {
         .map(|_| {
             let mut buf = Buffer::new(case.config());
             let start = Instant::now();
-            let totals = replay(&mut buf, black_box(bursts), None);
+            let totals = replay(&mut buf, case.load.spacing_ns, black_box(bursts), None);
             let elapsed = start.elapsed();
             check_totals(case.name, &totals, &buf);
             elapsed.as_nanos() as f64 / (bursts * BURST) as f64
@@ -303,22 +410,31 @@ fn main() {
     let full = std::env::args().any(|a| a == "--bench");
     let only = std::env::var("HOT_PATH_CASE").ok();
     let timed_bursts = env_usize("HOT_PATH_BURSTS").unwrap_or(TIMED_BURSTS);
-    let (verify_bursts, bursts, repeats) = if full {
-        (VERIFY_BURSTS.min(timed_bursts), timed_bursts, REPEATS)
-    } else {
-        (SMOKE_BURSTS, SMOKE_BURSTS, 1)
-    };
+    let repeats = if full { REPEATS } else { 1 };
 
-    println!(
-        "dpds-core hot path: bursts of {BURST}, {bursts} bursts x {repeats} repeats, median ns per packet{}",
-        if full { "" } else { " (smoke pass)" }
-    );
+    if full {
+        println!(
+            "dpds-core hot path: bursts of {BURST}, {timed_bursts} bursts (large cases: at least 8 queue fills) x {repeats} repeats, median ns per packet"
+        );
+    } else {
+        println!("dpds-core hot path: bursts of {BURST}, smoke pass");
+    }
     for case in CASES
         .iter()
         .filter(|c| only.as_ref().is_none_or(|o| c.name.contains(o.as_str())))
     {
+        // The large cases need several queue fills to reach (and stay in) steady state.
+        let fill = case.load.fill_bursts();
+        let (verify_bursts, bursts) = if full {
+            (
+                VERIFY_BURSTS.min(timed_bursts).max(3 * fill),
+                timed_bursts.max(8 * fill),
+            )
+        } else {
+            (SMOKE_BURSTS, SMOKE_BURSTS)
+        };
         verify(case, verify_bursts);
         let ns = time(case, bursts, repeats);
-        println!("{:<36} {ns:>8.1} ns/pkt", case.name);
+        println!("{:<40} {ns:>8.1} ns/pkt", case.name);
     }
 }
