@@ -96,9 +96,9 @@
 #                                        libdpdk`); an older one is an error naming libdpdk, the
 #                                        required 26.07 and the found version.
 #   node, npm                            on PATH; node >= the minimum of frontend/package.json
-#                                        "engines.node" (">=22.22" today; compared numerically
-#                                        per component, "9" < "22" < "100"); an older node is an
-#                                        error naming node and the required version (22.22).
+#                                        "engines.node" (">=26.0" today; compared numerically
+#                                        per component, "9" < "26" < "100"); an older node is an
+#                                        error naming node and the required version (26.0).
 #   curl, sha256sum, tar                 NOT prerequisites of anything but (curl) `status`.
 #   install and update run all of this before any git call, cargo build, npm call or systemctl call.
 #
@@ -202,7 +202,7 @@
 #   `docker` is a tripwire: it fails and logs to $STUB_LOG.docker, and every run_dpds checks that
 #   log, so no test can pass if a command calls docker. The cargo stub logs the frontend dist it was
 #   given to $STUB_LOG.dist (with the content of its index.html).
-#   node: `node --version` prints v$STUB_NODE_VERSION (default 22.22.1). npm: `npm --version`, and
+#   node: `node --version` prints v$STUB_NODE_VERSION (default 26.13.0). npm: `npm --version`, and
 #   `npm ci` / `npm run build`; STUB_NPM_FAIL_SUB=ci|run makes that subcommand fail (exit 1);
 #   `npm run build` writes dist/index.html (<html>BUILT-FRONTEND</html>) and dist/assets/app.js in its
 #   working directory (after emptying dist/, like vite), except with STUB_NPM_NO_INDEX=1 (dist/ without
@@ -497,7 +497,7 @@ EOF
   # node: only version queries matter
   make_stub node <<'EOF'
 echo "node $*" >> "$LOG"
-v="${STUB_NODE_VERSION:-22.22.1}"
+v="${STUB_NODE_VERSION:-26.13.0}"
 case "$*" in
   *process.versions.node*) echo "$v";;
   *process.version*) echo "v$v";;

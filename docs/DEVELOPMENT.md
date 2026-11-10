@@ -10,7 +10,7 @@ see the [README](../README.md).
 - **DPDK 26.07 or newer** (`pkg-config libdpdk`); for real traffic a DPDK-capable NIC (tested on
   Mellanox ConnectX) and hugepages
 - **Rust** (stable) and **clang and lld with the same LLVM major version as `rustc`**
-- **Node 22.22 or newer and npm** for the web frontend (controller only); Linux
+- **Node 26 or newer and npm** for the web frontend (controller only); Linux
 
 ## Building
 

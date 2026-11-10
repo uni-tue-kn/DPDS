@@ -15,4 +15,4 @@ npm run build      # tsc --noEmit && vite build -> dist/
 The dev server proxies `/api` to a running controller at `http://127.0.0.1:8100`.
 Set `DPDS_CONTROLLER=http://host:port` to use another one. A host name other than
 an IP, `localhost` or the machine's name must be allowed on the controller with
-`--allowed-host`. Node >= 22.22 is required.
+`--allowed-host`. Node >= 26 is required.
