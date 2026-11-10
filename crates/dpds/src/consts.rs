@@ -1,6 +1,6 @@
 //! Static settings (C `common/config.h`).
 
-/// RX burst size and per-iteration pop budget of every worker.
+/// RX burst size of every worker.
 pub const BURST_SIZE: usize = 32;
 
 /// Capacity of the TX staging array: due packets go out in one `tx_burst` of up

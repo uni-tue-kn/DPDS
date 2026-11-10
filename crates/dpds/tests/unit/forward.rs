@@ -25,8 +25,8 @@
 //!  9. stop if quit was read as requested, the buffer is empty AND nothing is staged
 //!     (the last partial batch leaves when its wait ran out, no flush on quit).
 //!
-//! `TX_BURST_SIZE` (64) is twice `BURST_SIZE` (32): a full batch takes at least two
-//! iterations to fill.
+//! `TX_BURST_SIZE` (64) is twice `BURST_SIZE` (32): RX delivers at most 32 per iteration,
+//! but a backlog of due packets fills the whole staging array in one iteration.
 //!
 //! Consequences: once quit was observed nothing is received any more, what was received
 //! is emitted at its send time plus at most the staging wait (drain) or freed, and the
@@ -331,7 +331,7 @@ fn the_staging_constants_are_the_documented_ones() {
     let _: usize = TX_BURST_SIZE;
     let _: f64 = TX_MAX_WAIT_NS;
     assert_eq!(TX_BURST_SIZE, 64);
-    assert_eq!(BURST_SIZE, 32, "the pop budget per iteration is unchanged");
+    assert_eq!(BURST_SIZE, 32, "the RX burst size is unchanged");
     assert_eq!(TX_MAX_WAIT_NS, 10_000.0);
 }
 
@@ -671,17 +671,15 @@ fn push_and_pop_use_the_same_now_so_a_zero_delay_packet_is_staged_in_its_own_ite
 // ── pop budget ───────────────────────────────────────────────────────
 
 #[test]
-fn at_most_32_packets_are_popped_per_iteration_and_sent_in_batches_of_64() {
+fn due_packets_are_popped_until_the_staging_array_is_full_in_one_iteration() {
     // 70 packets ingested at t = 0 over three iterations (delay 1000), then everything is due
-    // (t = 2000): it4 pops 32 (staged 32, not full, age 1000: no tx), it5 pops 32 (staged 64:
-    // tx at once), it6 pops 6 (no tx), it7 (t = 11000, age 10000) sends the 6.
+    // (t = 2000): it4 pops 64 (staging array full: tx at once), it5 pops the other 6 (age 1000:
+    // no tx), it6 (t = 11000, age 10000) sends the 6.
     let mut m = FakeMbufs::new(70, 0, 64);
     let p = m.ptrs();
     let o = Play::new(config(100, 1000.0, 0.0), batches(&p, &[32, 32, 6]))
         .quit_at(3)
-        .clock(Clk::Script(vec![
-            0.0, 0.0, 0.0, 2000.0, 2000.0, 2000.0, 11_000.0,
-        ]))
+        .clock(Clk::Script(vec![0.0, 0.0, 0.0, 2000.0, 2000.0, 11_000.0]))
         .run();
     assert_eq!(
         o.events(),
@@ -694,14 +692,37 @@ fn at_most_32_packets_are_popped_per_iteration_and_sent_in_batches_of_64() {
             rx_ev(0),
             Q,
             C,
-            C,
             tx_ev(0, 64),
             C,
             C,
             tx_ev(0, 6),
         ]
     );
-    assert_eq!(o.tx.offered(), p, "FIFO order across the budget splits");
+    assert_eq!(o.tx.offered(), p, "FIFO order across the splits");
+}
+
+#[test]
+fn a_backlog_drains_while_rx_keeps_delivering_full_bursts() {
+    // delay 1000, 32 packets per iteration. it1-4 (t = 0) build a backlog of 128 (due at 1000).
+    // From it5 on the clock advances by 1000 per iteration, so each burst is due one iteration
+    // later. Every iteration pops 64 while 64 are due: it5 (128 due), it6 (96 due), it7 (64 due)
+    // each send 64. it8 has only 32 due (staged, no tx); it9 (quit seen, t = 6000) pops the last
+    // 32 and fills the array. The old 32-per-iteration budget kept the backlog at 128 instead.
+    let mut m = FakeMbufs::new(8 * BURST_SIZE, 0, 64);
+    let p = m.ptrs();
+    let o = Play::new(config(1000, 1000.0, 0.0), batches(&p, &[32; 8]))
+        .quit_at(8)
+        .clock(Clk::Script(vec![
+            0.0, 0.0, 0.0, 0.0, 2000.0, 3000.0, 4000.0, 5000.0, 6000.0, 1e9,
+        ]))
+        .run();
+    let mut expect = vec![C, rx_ev(0), C, rx_ev(0), C, rx_ev(0), C, rx_ev(0)];
+    for _ in 0..3 {
+        expect.extend([C, rx_ev(0), tx_ev(0, TX_BURST_SIZE)]);
+    }
+    expect.extend([C, rx_ev(0), Q, C, tx_ev(0, TX_BURST_SIZE)]);
+    assert_eq!(o.events(), expect);
+    assert_eq!(o.tx.offered(), p, "FIFO order");
 }
 
 #[test]

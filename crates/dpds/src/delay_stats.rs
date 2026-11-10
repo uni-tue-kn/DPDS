@@ -475,7 +475,13 @@ impl DelayStats {
         let delay_of = |a: f64| (tx_ns - a).max(0.0);
         let shift = delay_of(first);
         let (mut s1, mut s2, mut min, mut max) = (0.0, 0.0, shift, shift);
-        for &a in arrivals {
+        let (mut late_sum, mut late_max) = (0.0, 0.0);
+        for (&a, &t) in arrivals.iter().zip(sends) {
+            let late = (tx_ns - t as f64).max(0.0);
+            late_sum += late;
+            if late > late_max {
+                late_max = late;
+            }
             let delay = delay_of(a);
             let d = delay - shift;
             s1 += d;
@@ -490,14 +496,6 @@ impl DelayStats {
                 Bin::Underflow => bump(&l.underflow),
                 Bin::Overflow => bump(&l.overflow),
                 Bin::Index(i) => bump(&l.bins[i]),
-            }
-        }
-        let (mut late_sum, mut late_max) = (0.0, 0.0);
-        for &t in sends {
-            let late = (tx_ns - t as f64).max(0.0);
-            late_sum += late;
-            if late > late_max {
-                late_max = late;
             }
         }
         store_f64(&l.late_sum, load_f64(&l.late_sum) + late_sum);

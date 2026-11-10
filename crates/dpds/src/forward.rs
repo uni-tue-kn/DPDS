@@ -53,8 +53,9 @@ fn record_descriptor_full(t: &mut Telemetry<'_>, now: f64) {
 ///    loss and freed in one bulk free; with the delay statistics the accepted
 ///    ones get `now` (their arrival) written into the mbuf;
 /// 4. pop the packets due at `now` into the free slots of the staging array
-///    (`TX_BURST_SIZE` slots, kept across iterations): at most
-///    `TX_BURST_SIZE - staged` and `BURST_SIZE`;
+///    (`TX_BURST_SIZE` slots, kept across iterations) until it is full or
+///    nothing more is due: at most `TX_BURST_SIZE - staged`, so a backlog drains
+///    even while RX keeps delivering full bursts;
 /// 5. prefetch the header line of every popped mbuf and of the next queued ones
 ///    (see [`Buffer::peek_nth`](dpds_core::buffer::Buffer::peek_nth));
 /// 6. if the array is full or its oldest packet (`staged[0]`, pops come out in
@@ -196,8 +197,7 @@ unsafe fn run_loop<const DELAY: bool>(
         }
 
         let first_popped = staged_len;
-        let limit = (staged_len + BURST_SIZE).min(TX_BURST_SIZE);
-        while staged_len < limit {
+        while staged_len < TX_BURST_SIZE {
             let Some((m, send_time_ns)) = buffer.pop_due_with_time(now) else {
                 break;
             };
