@@ -57,7 +57,9 @@ fn record_descriptor_full(t: &mut Telemetry<'_>, now: f64) {
 ///    nothing more is due: at most `TX_BURST_SIZE - staged`, so a backlog drains
 ///    even while RX keeps delivering full bursts;
 /// 5. prefetch the header line of every popped mbuf and of the next queued ones
-///    (see [`Buffer::peek_nth`](dpds_core::buffer::Buffer::peek_nth));
+///    that [`Buffer::peek_nth`](dpds_core::buffer::Buffer::peek_nth) knows, as
+///    many as were popped (in reordering mode it knows only the sorted head
+///    slot);
 /// 6. if the array is full or its oldest packet (`staged[0]`, pops come out in
 ///    send-time order) has waited `TX_MAX_WAIT_NS`, one `tx_burst` of
 ///    everything staged, also in an iteration that popped nothing; the unsent

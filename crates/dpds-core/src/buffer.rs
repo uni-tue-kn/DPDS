@@ -221,7 +221,7 @@ impl ReorderThenQueue {
 /// [`PushOutcome::Accepted::send_time_ns`] is its queue time. An entry due at its
 /// queue time `t` goes through the Spacer *at `t`* (not when it is popped) into a
 /// FIFO with send time `t + offset`. The Spacer has no limit: an accepted packet
-/// is never dropped later. [`Buffer::peek_nth`] looks into the FIFO only.
+/// is never dropped later.
 pub struct Buffer {
     inner: InnerBuffer,
     capacity: usize,
@@ -534,26 +534,27 @@ impl Buffer {
     }
 
     /// Returns the packet that would be popped `n`-th from now (`n == 0`: the
-    /// head) without removing it, or `None` if there is none.
+    /// head) without removing it, or `None`. Never changes the buffer. Send
+    /// times are ignored: the packet need not be due.
     ///
-    /// In FIFO mode this is the `n`-th queued entry. In reordering mode only
-    /// `n == 0` (the head) is answered; for `n > 0` this returns `None`,
-    /// because only the FIFO order is cheap to look ahead in. With reordering
-    /// and a Spacer it is the `n`-th entry of the Spacer FIFO (entries still in
-    /// the reorder queue are not seen). Send times are ignored: the packet need
-    /// not be due.
+    /// In FIFO mode this is the `n`-th queued entry. In reordering mode it is
+    /// best effort: `n == 0` is exact, and for `n > 0` a `Some` is exactly what
+    /// the `(n + 1)`-th pop from now returns, provided nothing is pushed in
+    /// between. The answer comes from the part of the reorder queue that is
+    /// already sorted (the entries of the head's 4.096 us slot and earlier
+    /// ones), so it is `None` as soon as `n` reaches past that part, even if
+    /// more packets are queued. With reordering and a Spacer, the Spacer FIFO
+    /// entries come first, then the sorted part of the reorder queue: the FIFO
+    /// leaves before the reorder queue, which leaves in key order.
     #[inline]
     pub fn peek_nth(&self, n: usize) -> Option<*mut c_void> {
         match &self.inner {
             InnerBuffer::Queue(q) => q.get(n).map(|t| t.packet_ptr),
-            InnerBuffer::Reorder(w) => {
-                if n == 0 {
-                    w.peek().map(|e| e.packet_ptr)
-                } else {
-                    None
-                }
-            }
-            InnerBuffer::ReorderThenQueue(s) => s.queue.get(n).map(|p| p.packet_ptr),
+            InnerBuffer::Reorder(w) => w.peek_nth(n).map(|e| e.packet_ptr),
+            InnerBuffer::ReorderThenQueue(s) => match s.queue.get(n) {
+                Some(p) => Some(p.packet_ptr),
+                None => s.reorder.peek_nth(n - s.queue.len()).map(|e| e.packet_ptr),
+            },
         }
     }
 

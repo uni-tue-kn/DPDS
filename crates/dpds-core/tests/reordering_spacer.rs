@@ -130,13 +130,15 @@ fn out_of_order_counts_the_overtaken_packet_at_the_final_pop() {
 }
 
 #[test]
-fn peek_nth_answers_from_the_fifo() {
+fn peek_nth_answers_from_the_fifo_then_from_the_reorder_stage() {
     let mut b = overtaking();
-    // At 150 the heap entries of packets 2 (100) and 3 (150) are due: 2 leaves,
-    // 3 waits in the FIFO behind the Spacer backlog; 1 (1100) is still in the heap.
+    // At 150 the reorder entries of packets 2 (100) and 3 (150) are due: 2 leaves,
+    // 3 waits in the FIFO behind the Spacer backlog; 1 (1100) is still in the
+    // reorder stage and leaves after the FIFO.
     assert_eq!(b.pop_due(150.0), Some(pkt(2)));
     assert_eq!(b.peek_nth(0), Some(pkt(3)));
-    assert_eq!(b.peek_nth(1), None);
+    assert_eq!(b.peek_nth(1), Some(pkt(1)));
+    assert_eq!(b.peek_nth(2), None);
     assert_eq!(b.len(), 2);
 }
 

@@ -4,7 +4,8 @@
 //! `pop_due` pops the head iff its send time *as `front_time` reports it* is
 //! `<= now_ns` (boundary `==` pops). `peek_nth(n)` is the packet that would be
 //! popped n-th from now: FIFO mode the n-th queued entry; reordering mode
-//! `n == 0` is the heap head and `n > 0` is `None`.
+//! `n == 0` is exact and `n > 0` is a best-effort look-ahead (`Some` must be
+//! right, `None` may just mean "not known cheaply").
 //!
 //! Everything is deterministic: no seeding needed.
 
@@ -201,28 +202,127 @@ fn fifo_peek_nth_counts_entries_that_are_not_yet_due() {
 }
 
 #[test]
-fn reordering_peek_nth_zero_is_the_heap_head_and_larger_n_is_none() {
+fn reordering_peek_nth_is_exact_at_zero_and_sound_beyond() {
     let mut b = Buffer::new(config(8, true, 100.0));
     assert!(b.push(pkt(1), 100, 1000.0)); // due 1100
     assert!(b.push(pkt(2), 100, 0.0)); // due 100 (head)
     assert!(b.push(pkt(3), 100, 500.0)); // due 600
-    assert_eq!(b.peek_nth(0), Some(pkt(2)));
-    assert_eq!(
-        b.peek_nth(1),
-        None,
-        "only FIFO order is cheap to look ahead"
-    );
-    assert_eq!(b.peek_nth(2), None);
-    assert_eq!(b.peek_nth(100), None);
-    assert_eq!(b.len(), 3);
-
-    assert_eq!(b.pop(), Some(pkt(2)));
-    assert_eq!(b.peek_nth(0), Some(pkt(3)));
-    assert_eq!(b.peek_nth(1), None);
-    assert_eq!(b.pop(), Some(pkt(3)));
-    assert_eq!(b.peek_nth(0), Some(pkt(1)));
-    assert_eq!(b.pop(), Some(pkt(1)));
+    let order = [pkt(2), pkt(3), pkt(1)];
+    while !b.is_empty() {
+        let left = b.len();
+        assert_eq!(b.peek_nth(0), Some(order[3 - left]), "n == 0 is exact");
+        // n > 0 may be None (best effort), but a Some must be right.
+        for n in 1..left {
+            if let Some(p) = b.peek_nth(n) {
+                assert_eq!(p, order[3 - left + n], "n = {n}, len = {left}");
+            }
+        }
+        assert_eq!(b.peek_nth(left), None, "past the end");
+        assert_eq!(b.peek_nth(100), None);
+        assert_eq!(b.len(), left, "peeking must not remove anything");
+        assert_eq!(b.pop(), Some(order[3 - left]));
+    }
     assert_eq!(b.peek_nth(0), None);
+}
+
+/// Soundness, no side effects and (via `peeking == false`) the baseline for the
+/// no-side-effects comparison. Scrambling delays make the pop order differ from
+/// the push order. Returns the pop sequence.
+fn drive_and_check_peeks(spacer: bool, peeking: bool) -> Vec<usize> {
+    let mut cfg = config(64, true, 20_000.0);
+    cfg.delayer.distribution = RVDistribution::NormalDistribution;
+    cfg.delayer.std_ns = 8_000.0;
+    cfg.limiter.activate = spacer;
+    cfg.seed = Some(7);
+    let mut b = Buffer::new(cfg);
+    let mut state = 12345u64;
+    let mut rnd = |m: u64| {
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (state >> 33) % m
+    };
+    let (mut now, mut next_id, mut popped) = (0.0f64, 1usize, Vec::new());
+    for _ in 0..300 {
+        now += rnd(3000) as f64;
+        for _ in 0..=rnd(20) {
+            if b.push(pkt(next_id), 1000, now) {
+                next_id += 1;
+            }
+        }
+        // Predictions made during one drain; no push happens in between.
+        let mut predicted: Vec<Option<usize>> = Vec::new();
+        for _ in 0..=rnd(b.len() as u64) {
+            if b.is_empty() {
+                break;
+            }
+            if peeking {
+                let (len, front) = (b.len(), b.front_time());
+                let step = popped.len();
+                predicted.resize(step + 8, None);
+                assert!(b.peek_nth(0).is_some(), "n == 0 is exact, spacer={spacer}");
+                for n in 0..8 {
+                    match b.peek_nth(n) {
+                        Some(p) => {
+                            assert!(n < len, "Some past the end");
+                            let slot = &mut predicted[step + n];
+                            assert!(slot.is_none_or(|q| q == p as usize), "inconsistent");
+                            *slot = Some(p as usize);
+                        }
+                        None => assert!(n > 0 && n < len || n >= len),
+                    }
+                }
+                assert_eq!(
+                    (b.len(), b.front_time()),
+                    (len, front),
+                    "peek changed state"
+                );
+            }
+            let got = b.pop().expect("not empty") as usize;
+            if let Some(Some(want)) = predicted.get(popped.len()) {
+                assert_eq!(got, *want, "spacer={spacer}, pop {}", popped.len());
+            }
+            popped.push(got);
+        }
+    }
+    popped
+}
+
+#[test]
+fn reordering_peek_nth_some_matches_later_pops_and_changes_nothing() {
+    for spacer in [false, true] {
+        let with = drive_and_check_peeks(spacer, true);
+        assert!(with.len() > 500, "the scenario must pop plenty");
+        assert_eq!(
+            with,
+            drive_and_check_peeks(spacer, false),
+            "spacer={spacer}"
+        );
+    }
+}
+
+#[test]
+fn reordering_peek_nth_looks_ahead_within_a_tight_burst() {
+    // 64 packets at one instant: send times within 1 ns of each other.
+    let mut b = Buffer::new(config(64, true, 1000.0));
+    for i in 1..=64 {
+        assert!(b.push(pkt(i), 100, 0.0));
+    }
+    let (mut with_next, mut with_successor) = (0, 0);
+    while b.len() > 1 {
+        with_successor += 1;
+        let next = b.peek_nth(1);
+        let head = b.pop();
+        if next.is_some() {
+            with_next += 1;
+            assert_eq!(next, b.peek_nth(0), "look-ahead must be exact");
+        }
+        assert!(head.is_some());
+    }
+    assert!(
+        with_next * 4 > with_successor * 3,
+        "peek_nth(1) known for only {with_next} of {with_successor} pops"
+    );
 }
 
 #[test]

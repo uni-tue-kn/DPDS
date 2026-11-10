@@ -62,7 +62,7 @@ in code.
 | `Buffer::try_new(config)`                    | Build a buffer; invalid parameters are a `BuildError` naming the parameter. `Buffer::new` panics instead. |
 | `Buffer::push(pkt, len_byte, now_ns) -> bool` | Offer a packet; `false` if it was rejected. `push_outcome` says why (`Accepted { send_time_ns }`, `Lost`, `LimiterDrop`, `BufferFull`). |
 | `Buffer::pop_due(now_ns)`                    | Pop the head packet if its send time is `<= now_ns`. `pop_due_with_time` also returns that time. |
-| `Buffer::front_time()`, `peek_nth(n)`        | Send time of the head, or the n-th packet to pop (FIFO only for `n > 0`).        |
+| `Buffer::front_time()`, `peek_nth(n)`        | Send time of the head, or the n-th packet to pop (exact in FIFO mode; with reordering best effort for `n > 0`, `None` past the sorted head slot). |
 | `Buffer::len()`, `capacity()`, `is_empty()`  | Occupancy.                                                                      |
 
 A host reads the clock once per iteration, pushes the arrivals, then forwards what is due:

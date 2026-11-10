@@ -178,6 +178,15 @@ impl<X: Copy> Wheel<X> {
         self.current.get(self.head)
     }
 
+    /// The entry the `n`-th pop from now returns (`n == 0`: [`Wheel::peek`]) if
+    /// nothing is pushed in between, or `None` if it is not in `current`: only
+    /// that sorted array is looked into, so the ring and the overflow, which
+    /// are not in order yet, are never seen.
+    #[inline]
+    pub fn peek_nth(&self, n: usize) -> Option<&Entry<X>> {
+        self.current.get(self.head.checked_add(n)?)
+    }
+
     /// Removes and returns the entry with the smallest key.
     #[inline]
     pub fn pop(&mut self) -> Option<Entry<X>> {
