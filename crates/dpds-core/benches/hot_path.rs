@@ -120,11 +120,13 @@ struct Case {
     distribution: RVDistribution,
     limiter: bool,
     loss: LossModel,
+    /// Correlated delay (half-life 21 ms).
+    correlation: bool,
 }
 
 const NO_LOSS: LossModel = LossModel::Random(0.0);
 
-const CASES: [Case; 13] = [
+const CASES: [Case; 15] = [
     Case {
         name: "fifo / deterministic delay",
         load: SMALL,
@@ -132,6 +134,7 @@ const CASES: [Case; 13] = [
         distribution: RVDistribution::DeterministicDistribution,
         limiter: false,
         loss: NO_LOSS,
+        correlation: false,
     },
     Case {
         name: "fifo / normal delay",
@@ -140,6 +143,7 @@ const CASES: [Case; 13] = [
         distribution: RVDistribution::NormalDistribution,
         limiter: false,
         loss: NO_LOSS,
+        correlation: false,
     },
     Case {
         name: "fifo / spacer limiter",
@@ -148,6 +152,7 @@ const CASES: [Case; 13] = [
         distribution: RVDistribution::DeterministicDistribution,
         limiter: true,
         loss: NO_LOSS,
+        correlation: false,
     },
     Case {
         name: "fifo / random loss 1%",
@@ -156,6 +161,7 @@ const CASES: [Case; 13] = [
         distribution: RVDistribution::DeterministicDistribution,
         limiter: false,
         loss: LossModel::Random(0.01),
+        correlation: false,
     },
     Case {
         name: "fifo / gilbert-elliot loss",
@@ -164,6 +170,7 @@ const CASES: [Case; 13] = [
         distribution: RVDistribution::DeterministicDistribution,
         limiter: false,
         loss: LossModel::GilbertElliot(0.01, 0.3, 1.0, 0.5, true),
+        correlation: false,
     },
     Case {
         name: "reordering / deterministic delay",
@@ -172,6 +179,7 @@ const CASES: [Case; 13] = [
         distribution: RVDistribution::DeterministicDistribution,
         limiter: false,
         loss: NO_LOSS,
+        correlation: false,
     },
     Case {
         name: "reordering / normal delay",
@@ -180,6 +188,7 @@ const CASES: [Case; 13] = [
         distribution: RVDistribution::NormalDistribution,
         limiter: false,
         loss: NO_LOSS,
+        correlation: false,
     },
     Case {
         name: "large: fifo / deterministic delay",
@@ -188,6 +197,7 @@ const CASES: [Case; 13] = [
         distribution: RVDistribution::DeterministicDistribution,
         limiter: false,
         loss: NO_LOSS,
+        correlation: false,
     },
     Case {
         name: "large: fifo / normal delay",
@@ -196,6 +206,7 @@ const CASES: [Case; 13] = [
         distribution: RVDistribution::NormalDistribution,
         limiter: false,
         loss: NO_LOSS,
+        correlation: false,
     },
     Case {
         name: "large: reordering / deterministic delay",
@@ -204,6 +215,7 @@ const CASES: [Case; 13] = [
         distribution: RVDistribution::DeterministicDistribution,
         limiter: false,
         loss: NO_LOSS,
+        correlation: false,
     },
     Case {
         name: "large: reordering / normal delay",
@@ -212,6 +224,7 @@ const CASES: [Case; 13] = [
         distribution: RVDistribution::NormalDistribution,
         limiter: false,
         loss: NO_LOSS,
+        correlation: false,
     },
     Case {
         name: "large: reordering / normal / spacer",
@@ -220,6 +233,7 @@ const CASES: [Case; 13] = [
         distribution: RVDistribution::NormalDistribution,
         limiter: true,
         loss: NO_LOSS,
+        correlation: false,
     },
     Case {
         name: "very large: reordering / normal delay",
@@ -228,6 +242,25 @@ const CASES: [Case; 13] = [
         distribution: RVDistribution::NormalDistribution,
         limiter: false,
         loss: NO_LOSS,
+        correlation: false,
+    },
+    Case {
+        name: "large: fifo / normal / correlated",
+        load: LARGE,
+        reordering: false,
+        distribution: RVDistribution::NormalDistribution,
+        limiter: false,
+        loss: NO_LOSS,
+        correlation: true,
+    },
+    Case {
+        name: "large: fifo / normal / correlated / spacer",
+        load: LARGE,
+        reordering: false,
+        distribution: RVDistribution::NormalDistribution,
+        limiter: true,
+        loss: NO_LOSS,
+        correlation: true,
     },
 ];
 impl Case {
@@ -239,8 +272,8 @@ impl Case {
                 distribution: self.distribution,
                 mean_ns: self.load.mean_ns,
                 std_ns: self.load.std_ns,
-                activate_correlation: false,
-                half_life_period_ns: 50_000_000.0,
+                activate_correlation: self.correlation,
+                half_life_period_ns: 21_000_000.0,
                 initialization_rate_pps: 8_200_000.0,
             },
             limiter: LimiterConfig {
