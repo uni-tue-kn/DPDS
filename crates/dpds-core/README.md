@@ -21,11 +21,12 @@ Each packet pushed into a `Buffer` passes through three stages:
 
 The `Buffer` (`src/buffer.rs`) keeps the admitted packets ordered by send time.
 With `reordering = false` it is a FIFO, so a packet with a late send time blocks
-the ones behind it. With `reordering = true` it is a min-heap on the send time and
-packets leave in send-time order (packets pushed at the same instant keep their
-entry order). Reordering is a way to reproduce the configured delay more
-accurately, not a model of network reordering. With an active `Spacer` the heap
-is followed by a Spacer FIFO (shared capacity, double allocation).
+the ones behind it. With `reordering = true` it is a priority queue on the send
+time (a timing wheel with a heap for far-future entries) and packets leave in
+send-time order (packets pushed at the same instant keep their entry order).
+Reordering is a way to reproduce the configured delay more accurately, not a
+model of network reordering. With an active `Spacer` the queue is followed by a
+Spacer FIFO (shared capacity, double reservation).
 
 A push is evaluated in this order: capacity check first (a full buffer rejects the
 packet and touches nothing else), then delay, limiter accounting, loss model and
@@ -119,7 +120,7 @@ A JSON file per link (full example: [`config.example.json`](config.example.json)
 | Field             | Meaning                                                                                  |
 | ----------------- | ---------------------------------------------------------------------------------------- |
 | `buffer_capacity` | Maximum number of packets held at once; further pushes are rejected. |
-| `reordering`      | `false` = FIFO, `true` = send-time order. Not with `activate_correlation` (`try_new` rejects it). With an active `Spacer` it works in two stages: reorder heap, then Spacer FIFO; the capacity is shared, both are allocated with `buffer_capacity` entries, and the Spacer never drops there. |
+| `reordering`      | `false` = FIFO, `true` = send-time order. Not with `activate_correlation` (`try_new` rejects it). With an active `Spacer` it works in two stages: reorder queue, then Spacer FIFO; the capacity is shared, both reserve `buffer_capacity` entries, and the Spacer never drops there. |
 | `seed`            | Optional integer. Seeds the delay and loss generators, so the same seed and the same pushes give the same decisions (same `rand` version and word size). Absent: OS entropy. |
 
 The limiter's limit is not configured. Both modes derive it from the capacity:

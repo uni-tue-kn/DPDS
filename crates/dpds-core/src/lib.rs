@@ -106,10 +106,10 @@
 //! `dpds`).
 //!
 //! Reordering with an active `Spacer` works in two stages: packets first wait
-//! in the reorder heap until their send time, then pass the Spacer in that order
-//! into a FIFO. The Spacer has no limit there, so an accepted packet is never
-//! dropped later. The two stages share `buffer_capacity` but each is allocated
-//! with that many entries (double allocation).
+//! in the reorder queue until their send time, then pass the Spacer in that
+//! order into a FIFO. The Spacer has no limit there, so an accepted packet is
+//! never dropped later. The two stages share `buffer_capacity` but each reserves
+//! that many entries (double reservation).
 //!
 //! ## Features
 //!
@@ -134,6 +134,7 @@ pub mod buffer;
 pub mod delayer;
 pub mod dropper;
 pub mod limiter;
+mod wheel;
 
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

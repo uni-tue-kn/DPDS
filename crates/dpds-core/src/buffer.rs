@@ -1,18 +1,15 @@
-use std::{
-    cmp::{Ordering, Reverse},
-    collections::{binary_heap::PeekMut, BinaryHeap, VecDeque},
-    ffi::c_void,
-};
+use std::{cmp::Ordering, collections::VecDeque, ffi::c_void};
 
 use crate::{
     delayer::Delayer,
     derived_limit_bit,
     dropper::Dropper,
     limiter::{Limiter, LimiterMode},
+    wheel::{Entry, Wheel},
     BuildError, Config,
 };
 
-/// Fractional bits of the reordering heap key: send times are kept in 1/64 ns.
+/// Fractional bits of the reorder queue key: send times are kept in 1/64 ns.
 const TIE_FRAC_BITS: u32 = 6;
 const TIE_SCALE: f64 = (1u64 << TIE_FRAC_BITS) as f64;
 /// XOR-ed into the seed for the dropper so that it differs from the delayer's.
@@ -43,9 +40,9 @@ pub enum PushOutcome {
 
 enum InnerBuffer {
     Queue(VecDeque<TimeToPacket>),
-    Heap(BinaryHeap<Reverse<HeapEntry>>),
+    Reorder(Wheel<()>),
     /// Reordering with an active Spacer: see [`Buffer`].
-    HeapThenQueue(HeapThenQueue),
+    ReorderThenQueue(ReorderThenQueue),
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -74,36 +71,6 @@ impl Ord for TimeToPacket {
     }
 }
 
-/// Entry of the reordering heap: the send time in 1/64 ns plus the tie offset
-/// (see [`Buffer`]), ordered by `key` only.
-#[derive(Copy, Clone)]
-struct HeapEntry {
-    key: u64,
-    /// Arrival sequence number (per buffer, assigned at push).
-    seq: u64,
-    packet_ptr: *mut c_void,
-}
-
-impl PartialEq for HeapEntry {
-    fn eq(&self, other: &Self) -> bool {
-        self.key == other.key
-    }
-}
-
-impl Eq for HeapEntry {}
-
-impl PartialOrd for HeapEntry {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for HeapEntry {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.key.cmp(&other.key)
-    }
-}
-
 /// Tie offset and arrival sequence state of the reordering pushes.
 struct Tie {
     /// `current_time_ns` of the last accepted push (NaN: none yet).
@@ -115,13 +82,14 @@ struct Tie {
 }
 
 impl Tie {
-    /// The heap entry of a packet accepted now with the given send time.
-    fn entry(
+    /// The queue entry of a packet accepted now with the given send time.
+    fn entry<X>(
         &mut self,
         current_time_ns: f64,
         send_time_ns: f64,
         packet_ptr: *mut c_void,
-    ) -> HeapEntry {
+        extra: X,
+    ) -> Entry<X> {
         if current_time_ns != self.instant_ns {
             self.instant_ns = current_time_ns;
             self.count = 0;
@@ -131,23 +99,23 @@ impl Tie {
         self.count = self.count.saturating_add(1);
         let seq = self.next_seq;
         self.next_seq += 1;
-        HeapEntry {
+        Entry {
             key,
             seq,
             packet_ptr,
+            extra,
         }
     }
 }
 
-impl HeapEntry {
-    /// The send time in whole ns, as reported by [`Buffer::front_time`].
-    #[inline]
-    fn time_ns(&self) -> f64 {
-        (self.key >> TIE_FRAC_BITS) as f64
-    }
+/// The send time of a queue entry in whole ns, as reported by
+/// [`Buffer::front_time`].
+#[inline]
+fn time_ns<X>(entry: &Entry<X>) -> f64 {
+    (entry.key >> TIE_FRAC_BITS) as f64
 }
 
-/// A packet in the FIFO of [`HeapThenQueue`].
+/// A packet in the FIFO of [`ReorderThenQueue`].
 #[derive(Copy, Clone)]
 struct SpacedPacket {
     time_to_send_ns: u64,
@@ -155,30 +123,31 @@ struct SpacedPacket {
     packet_ptr: *mut c_void,
 }
 
-/// Reordering with an active Spacer in two stages: the reorder heap, then a
-/// FIFO behind the Spacer. A heap entry carries the packet length (with the FEC
-/// bytes) next to the entry; the length is not part of the order.
-struct HeapThenQueue {
-    heap: BinaryHeap<Reverse<(HeapEntry, u32)>>,
+/// Reordering with an active Spacer in two stages: the reorder queue, then a
+/// FIFO behind the Spacer. A reorder entry carries the packet length (with the
+/// FEC bytes); the length is not part of the order.
+struct ReorderThenQueue {
+    reorder: Wheel<u32>,
     queue: VecDeque<SpacedPacket>,
     /// Stage 2: unlimited, so it only delays and never drops.
     spacer: Limiter,
 }
 
-impl HeapThenQueue {
+impl ReorderThenQueue {
     fn held(&self) -> usize {
-        self.heap.len() + self.queue.len()
+        self.reorder.len() + self.queue.len()
     }
 
-    /// Moves the heap head through the Spacer, at its heap time, into the FIFO.
+    /// Moves the reorder queue head through the Spacer, at its queue time, into
+    /// the FIFO.
     fn move_head(&mut self) {
-        let Some(Reverse((entry, length_byte))) = self.heap.pop() else {
+        let Some(entry) = self.reorder.pop() else {
             return;
         };
-        let time_ns = entry.time_ns();
+        let time_ns = time_ns(&entry);
         let offset_ns = self
             .spacer
-            .limiter_calculate_offset_ns(time_ns, length_byte)
+            .limiter_calculate_offset_ns(time_ns, entry.extra)
             .unwrap_or(0.); // no limit: never `None`
         self.queue.push_back(SpacedPacket {
             time_to_send_ns: (time_ns + offset_ns) as u64,
@@ -195,9 +164,9 @@ impl HeapThenQueue {
         self.queue.pop_front()
     }
 
-    /// Moves every heap entry due at `now_ns`, then pops the FIFO head if due.
+    /// Moves every reorder entry due at `now_ns`, then pops the FIFO head if due.
     fn pop_ready(&mut self, now_ns: f64) -> Option<SpacedPacket> {
-        while self.heap.peek().is_some_and(|h| h.0 .0.time_ns() <= now_ns) {
+        while self.reorder.peek().is_some_and(|e| time_ns(e) <= now_ns) {
             self.move_head();
         }
         if self.queue.front()?.time_to_send_ns as f64 <= now_ns {
@@ -207,15 +176,15 @@ impl HeapThenQueue {
         }
     }
 
-    /// Send time of the next packet: the FIFO head's, else the heap head's after
-    /// the Spacer, which is looked at without changing it.
+    /// Send time of the next packet: the FIFO head's, else the reorder queue
+    /// head's after the Spacer, which is looked at without changing it.
     fn head_time(&self) -> Option<f64> {
         if let Some(head) = self.queue.front() {
             return Some(head.time_to_send_ns as f64);
         }
-        let Reverse((entry, length_byte)) = self.heap.peek()?;
-        let time_ns = entry.time_ns();
-        let offset_ns = self.spacer.limiter_peek_offset_ns(time_ns, *length_byte)?;
+        let entry = self.reorder.peek()?;
+        let time_ns = time_ns(entry);
+        let offset_ns = self.spacer.limiter_peek_offset_ns(time_ns, entry.extra)?;
         Some((time_ns + offset_ns) as u64 as f64)
     }
 }
@@ -246,11 +215,11 @@ impl HeapThenQueue {
 /// burst of `dpds`).
 ///
 /// With `reordering: true` and an active Spacer limiter the buffer has two
-/// stages and holds two allocations of `buffer_capacity` entries each, but the
-/// capacity is shared (`len()` counts both). A push applies only the delayer and
-/// the loss model and enters the reorder heap above;
-/// [`PushOutcome::Accepted::send_time_ns`] is its heap time. An entry due at its
-/// heap time `t` goes through the Spacer *at `t`* (not when it is popped) into a
+/// stages and reserves `buffer_capacity` entries for each, but the capacity is
+/// shared (`len()` counts both). A push applies only the delayer and the loss
+/// model and enters the reorder queue above;
+/// [`PushOutcome::Accepted::send_time_ns`] is its queue time. An entry due at its
+/// queue time `t` goes through the Spacer *at `t`* (not when it is popped) into a
 /// FIFO with send time `t + offset`. The Spacer has no limit: an accepted packet
 /// is never dropped later. [`Buffer::peek_nth`] looks into the FIFO only.
 pub struct Buffer {
@@ -299,23 +268,18 @@ impl Buffer {
                 reason: reason.to_string(),
             };
         let inner = if two_stage {
-            let mut heap = BinaryHeap::new();
-            heap.try_reserve_exact(config.buffer_capacity)
-                .map_err(capacity_error)?;
+            let reorder = Wheel::try_new(config.buffer_capacity).map_err(capacity_error)?;
             let mut queue = VecDeque::new();
             queue
                 .try_reserve_exact(config.buffer_capacity)
                 .map_err(capacity_error)?;
-            InnerBuffer::HeapThenQueue(HeapThenQueue {
-                heap,
+            InnerBuffer::ReorderThenQueue(ReorderThenQueue {
+                reorder,
                 queue,
                 spacer: Limiter::new(LimiterMode::Spacer, true, config.limiter.rate_bps, f64::MAX),
             })
         } else if config.reordering {
-            let mut heap = BinaryHeap::new();
-            heap.try_reserve_exact(config.buffer_capacity)
-                .map_err(capacity_error)?;
-            InnerBuffer::Heap(heap)
+            InnerBuffer::Reorder(Wheel::try_new(config.buffer_capacity).map_err(capacity_error)?)
         } else {
             let mut queue = VecDeque::new();
             queue
@@ -347,7 +311,7 @@ impl Buffer {
         let limit_bit = derived_limit_bit(config.buffer_capacity);
         let limiter = Limiter::new(
             config.limiter.mode,
-            // The two-stage mode applies its Spacer when leaving the heap instead.
+            // The two-stage mode applies its Spacer when leaving the reorder queue instead.
             config.limiter.activate && !two_stage,
             config.limiter.rate_bps,
             limit_bit,
@@ -437,16 +401,23 @@ impl Buffer {
                     send_time_ns: time_to_send_ns,
                 }
             }
-            InnerBuffer::Heap(h) => {
-                let entry = self.tie.entry(current_time_ns, send_time_ns, packet_ptr);
-                h.push(Reverse(entry));
+            InnerBuffer::Reorder(w) => {
+                let entry = self
+                    .tie
+                    .entry(current_time_ns, send_time_ns, packet_ptr, ());
+                w.push(entry);
                 PushOutcome::Accepted {
                     send_time_ns: entry.key >> TIE_FRAC_BITS,
                 }
             }
-            InnerBuffer::HeapThenQueue(s) => {
-                let entry = self.tie.entry(current_time_ns, send_time_ns, packet_ptr);
-                s.heap.push(Reverse((entry, packet_length_byte)));
+            InnerBuffer::ReorderThenQueue(s) => {
+                let entry = self.tie.entry(
+                    current_time_ns,
+                    send_time_ns,
+                    packet_ptr,
+                    packet_length_byte,
+                );
+                s.reorder.push(entry);
                 PushOutcome::Accepted {
                     send_time_ns: entry.key >> TIE_FRAC_BITS,
                 }
@@ -459,12 +430,12 @@ impl Buffer {
     pub fn pop(&mut self) -> Option<*mut c_void> {
         match &mut self.inner {
             InnerBuffer::Queue(q) => q.pop_front().map(|t| t.packet_ptr),
-            InnerBuffer::Heap(h) => {
-                let entry = h.pop()?.0;
+            InnerBuffer::Reorder(w) => {
+                let entry = w.pop()?;
                 self.count_departure(entry.seq);
                 Some(entry.packet_ptr)
             }
-            InnerBuffer::HeapThenQueue(s) => {
+            InnerBuffer::ReorderThenQueue(s) => {
                 let p = s.pop_next()?;
                 self.count_departure(p.seq);
                 Some(p.packet_ptr)
@@ -485,17 +456,16 @@ impl Buffer {
                     None
                 }
             }
-            InnerBuffer::Heap(h) => {
-                let head = h.peek_mut()?;
-                if head.0.time_ns() <= now_ns {
-                    let entry = PeekMut::pop(head).0;
+            InnerBuffer::Reorder(w) => {
+                if time_ns(w.peek()?) <= now_ns {
+                    let entry = w.pop()?;
                     self.count_departure(entry.seq);
                     Some(entry.packet_ptr)
                 } else {
                     None
                 }
             }
-            InnerBuffer::HeapThenQueue(s) => {
+            InnerBuffer::ReorderThenQueue(s) => {
                 let p = s.pop_ready(now_ns)?;
                 self.count_departure(p.seq);
                 Some(p.packet_ptr)
@@ -516,17 +486,16 @@ impl Buffer {
                     None
                 }
             }
-            InnerBuffer::Heap(h) => {
-                let head = h.peek_mut()?;
-                if head.0.time_ns() <= now_ns {
-                    let entry = PeekMut::pop(head).0;
+            InnerBuffer::Reorder(w) => {
+                if time_ns(w.peek()?) <= now_ns {
+                    let entry = w.pop()?;
                     self.count_departure(entry.seq);
                     Some((entry.packet_ptr, entry.key >> TIE_FRAC_BITS))
                 } else {
                     None
                 }
             }
-            InnerBuffer::HeapThenQueue(s) => {
+            InnerBuffer::ReorderThenQueue(s) => {
                 let p = s.pop_ready(now_ns)?;
                 self.count_departure(p.seq);
                 Some((p.packet_ptr, p.time_to_send_ns))
@@ -534,7 +503,7 @@ impl Buffer {
         }
     }
 
-    /// Counts a departing reordering-heap packet: out of order when its arrival
+    /// Counts a departing reordering packet: out of order when its arrival
     /// sequence number is below the highest one popped before it.
     #[inline]
     fn count_departure(&mut self, seq: u64) {
@@ -559,8 +528,8 @@ impl Buffer {
     pub fn front_time(&self) -> Option<f64> {
         match &self.inner {
             InnerBuffer::Queue(q) => Some(q.front()?.time_to_send_ns as f64),
-            InnerBuffer::Heap(h) => Some(h.peek()?.0.time_ns()),
-            InnerBuffer::HeapThenQueue(s) => s.head_time(),
+            InnerBuffer::Reorder(w) => Some(time_ns(w.peek()?)),
+            InnerBuffer::ReorderThenQueue(s) => s.head_time(),
         }
     }
 
@@ -568,23 +537,23 @@ impl Buffer {
     /// head) without removing it, or `None` if there is none.
     ///
     /// In FIFO mode this is the `n`-th queued entry. In reordering mode only
-    /// `n == 0` (the heap head) is answered; for `n > 0` this returns `None`,
+    /// `n == 0` (the head) is answered; for `n > 0` this returns `None`,
     /// because only the FIFO order is cheap to look ahead in. With reordering
     /// and a Spacer it is the `n`-th entry of the Spacer FIFO (entries still in
-    /// the reorder heap are not seen). Send times are ignored: the packet need
+    /// the reorder queue are not seen). Send times are ignored: the packet need
     /// not be due.
     #[inline]
     pub fn peek_nth(&self, n: usize) -> Option<*mut c_void> {
         match &self.inner {
             InnerBuffer::Queue(q) => q.get(n).map(|t| t.packet_ptr),
-            InnerBuffer::Heap(h) => {
+            InnerBuffer::Reorder(w) => {
                 if n == 0 {
-                    h.peek().map(|t| t.0.packet_ptr)
+                    w.peek().map(|e| e.packet_ptr)
                 } else {
                     None
                 }
             }
-            InnerBuffer::HeapThenQueue(s) => s.queue.get(n).map(|p| p.packet_ptr),
+            InnerBuffer::ReorderThenQueue(s) => s.queue.get(n).map(|p| p.packet_ptr),
         }
     }
 
@@ -599,8 +568,8 @@ impl Buffer {
     pub fn len(&self) -> usize {
         match &self.inner {
             InnerBuffer::Queue(q) => q.len(),
-            InnerBuffer::Heap(h) => h.len(),
-            InnerBuffer::HeapThenQueue(s) => s.held(),
+            InnerBuffer::Reorder(w) => w.len(),
+            InnerBuffer::ReorderThenQueue(s) => s.held(),
         }
     }
 
