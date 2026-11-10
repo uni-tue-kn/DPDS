@@ -27,6 +27,10 @@ send-time order (packets pushed at the same instant keep their entry order).
 Reordering is a way to reproduce the configured delay more accurately, not a
 model of network reordering. With an active `Spacer` the queue is followed by a
 Spacer FIFO (shared capacity, double reservation).
+All of a buffer's memory is reserved in `Buffer::try_new`; afterwards no push or
+pop allocates, reallocates or frees. The reorder queue takes 80 bytes per packet
+of capacity (96 with an active `Spacer`) plus 16.5 KiB to 1.03 MiB of fixed ring
+slots.
 
 A push is evaluated in this order: capacity check first (a full buffer rejects the
 packet and touches nothing else), then delay, limiter accounting, loss model and
