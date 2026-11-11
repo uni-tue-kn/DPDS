@@ -41,7 +41,7 @@ use dpds_controller::host::{parse_cpulist, Exec, SystemExec};
 use dpds_controller::supervisor::State;
 use serde_json::{json, Value};
 
-const NEED_PER_MBUF: u64 = 1920;
+const NEED_PER_MBUF: u64 = 2432;
 const PAGE: u64 = 2 * 1024 * 1024;
 const T30: Duration = Duration::from_secs(30);
 

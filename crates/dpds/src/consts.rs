@@ -18,6 +18,10 @@ pub const NIC_DESCRIPTORS: u16 = 4096;
 /// Per-lcore mbuf cache size of each mempool.
 pub const MBUF_CACHE_SIZE: u32 = 512;
 
+/// Data room of every mbuf: headroom plus 2048 B (DPDK's default). It fits the largest frame and
+/// net_af_packet's default frame size of 2048 B without RX scatter.
+pub const MBUF_DATA_ROOM: u16 = dpdk::Mempool::DEFAULT_BUF_SIZE;
+
 /// MTU requested from every port.
 pub const MTU: u32 = 1500;
 

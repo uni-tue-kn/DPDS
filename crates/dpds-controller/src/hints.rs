@@ -21,9 +21,10 @@ use crate::lcores::{assign_lcores, Assignment, LcoreError};
 use crate::model::RunConfig;
 use crate::nic_hints::{blocked, nic_hints, FirmwareCache};
 
-/// Mbuf size in hugepage memory (about 1.9 KB per mbuf: 1664 B data room, 128 B header, mempool
-/// object header; measured 1920 B).
-const BYTES_PER_MBUF: u64 = 1920;
+/// Mbuf size in hugepage memory: a mempool object is a 128 B object header (cache-line aligned;
+/// 128-B lines on arm64), the 128 B `rte_mbuf` and the 2176 B data room, 2432 B in all. With 64-B
+/// lines (x86) it is 2368 B; the constant uses the larger arm64 figure.
+const BYTES_PER_MBUF: u64 = 2432;
 /// Descriptors per ring `dpds` asks for, plus the pool's cache and burst slack
 /// (pool size = buffer_capacity + rx + tx + 768 + 64, see `crates/dpds/src/consts.rs`).
 const POOL_EXTRA: u64 = 4096 + 4096 + 768 + 64;

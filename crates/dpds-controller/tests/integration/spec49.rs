@@ -6,7 +6,7 @@
 //! Need equal to free fits. A host without any hugepage information is not refused (dpds reports
 //! it). `POST /api/emulation/validate` never does this check.
 //!
-//! The need of one link is `(buffer_capacity + 9024) * 1920` bytes (the estimator of the
+//! The need of one link is `(buffer_capacity + 9024) * 2432` bytes (the estimator of the
 //! hugepage hint); the numbers below are worked out from it.
 //!
 //! When dpds exits with a non-zero status the error is `dpds exited with <exit status N |
@@ -47,11 +47,11 @@ fn app_with_pages(total: u64, free: u64) -> TestApp {
     TestApp::new(host)
 }
 
-// need of a 10 M packet buffer: (10_000_000 + 9024) * 1920 = 19_217_326_080 B = 18327 MiB
+// need of a 10 M packet buffer: (10_000_000 + 9024) * 2432 = 24_341_946_368 B = 23214 MiB
 const BIG: u64 = 10_000_000;
-const BIG_MIB: &str = "18327 MiB";
-// need of 1_629_376 packets: (1_629_376 + 9024) * 1920 = 3_145_728_000 B = exactly 3000 MiB
-const EXACT: u64 = 1_629_376;
+const BIG_MIB: &str = "23214 MiB";
+// need of 1_301_696 packets: (1_301_696 + 9024) * 2432 = 3_187_671_040 B = exactly 3040 MiB
+const EXACT: u64 = 1_301_696;
 
 #[tokio::test]
 async fn a_start_that_needs_more_hugepages_than_are_free_is_a_400_naming_the_numbers() {
@@ -76,8 +76,8 @@ async fn the_message_has_the_wording_of_the_spec() {
     let m = a.start_links(vec![sized("net_null0", BIG)]).await.message();
     assert_eq!(
         m,
-        "the links need about 18327 MiB of hugepage memory for their mbuf pools, but only 2000 MiB are free; \
-         link net_null0 -> net_null0 needs about 18327 MiB (buffer capacity 10000000 packets). \
+        "the links need about 23214 MiB of hugepage memory for their mbuf pools, but only 2000 MiB are free; \
+         link net_null0 -> net_null0 needs about 23214 MiB (buffer capacity 10000000 packets). \
          Lower its buffer capacity or reserve more hugepages."
     );
 }
@@ -98,7 +98,7 @@ async fn a_refused_start_does_not_launch_dpds_and_leaves_the_emulation_stopped()
 
 #[tokio::test]
 async fn the_need_of_all_links_is_summed_and_the_largest_link_is_named() {
-    // 3 M packets: 5509 MiB, 5 M packets: 9171 MiB, together 14681 MiB; 12000 MiB are free:
+    // 3 M packets: 6978 MiB, 5 M packets: 11617 MiB, together 18596 MiB; 12000 MiB are free:
     // each link fits alone, both together do not
     let a = app_with_pages(8192, 6000);
     let alone = a.start_links(vec![sized("net_null0", 3_000_000)]).await;
@@ -113,9 +113,9 @@ async fn the_need_of_all_links_is_summed_and_the_largest_link_is_named() {
     assert_eq!(r.status, 400, "{}", r.text());
     let m = r.message();
     for needle in [
-        "about 14681 MiB of hugepage",
+        "about 18596 MiB of hugepage",
         "only 12000 MiB are free",
-        "link net_null1 -> net_null1 needs about 9171 MiB (buffer capacity 5000000 packets)",
+        "link net_null1 -> net_null1 needs about 11617 MiB (buffer capacity 5000000 packets)",
     ] {
         assert!(m.contains(needle), "{needle:?} missing from {m:?}");
     }
@@ -126,7 +126,7 @@ async fn the_need_of_all_links_is_summed_and_the_largest_link_is_named() {
 async fn a_start_that_fits_is_accepted() {
     let a = app_with_pages(4096, 4096); // 8192 MiB free
     let r = a
-        .start_links(vec![sized("net_null0", 1_000_000)]) // 1_009_024 * 1920 = 1847 MiB
+        .start_links(vec![sized("net_null0", 1_000_000)]) // 1_009_024 * 2432 = 2340 MiB
         .await;
     assert_eq!(r.status, 202, "{}", r.text());
     assert_eq!(a.supervisor.plans().len(), 1);
@@ -134,17 +134,17 @@ async fn a_start_that_fits_is_accepted() {
 
 #[tokio::test]
 async fn need_equal_to_free_fits_and_one_page_less_is_refused() {
-    // EXACT needs 3000 MiB = 1500 pages of 2 MiB
-    let a = app_with_pages(1500, 1500);
+    // EXACT needs 3040 MiB = 1520 pages of 2 MiB
+    let a = app_with_pages(1520, 1520);
     let r = a.start_links(vec![sized("net_null0", EXACT)]).await;
     assert_eq!(r.status, 202, "{}", r.text());
 
-    let a = app_with_pages(1500, 1499);
+    let a = app_with_pages(1520, 1519);
     let r = a.start_links(vec![sized("net_null0", EXACT)]).await;
     assert_eq!(r.status, 400, "{}", r.text());
     let m = r.message();
     assert!(
-        m.contains("3000 MiB") && m.contains("only 2998 MiB are free"),
+        m.contains("3040 MiB") && m.contains("only 3038 MiB are free"),
         "{m}"
     );
 }

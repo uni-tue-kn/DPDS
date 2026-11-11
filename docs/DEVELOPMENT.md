@@ -157,7 +157,7 @@ is no default config. Example:
 | `loss_model`      | `{ "Random": p }` or `{ "GilbertElliot": [p, r, k, h, state_is_good] }`.                                                                                                                                                                                                                                                                   |
 
 The limiter's limit and each link's mbuf pool are derived from `buffer_capacity`. A buffer of
-1,000,000 packets needs about 1.8 GiB of hugepages per link; shrink it if that is too much. All
+1,000,000 packets needs about 2.3 GiB of hugepages per link; shrink it if that is too much. All
 fields are described in [`crates/dpds-core/README.md`](../crates/dpds-core/README.md#configuration).
 
 ---

@@ -125,6 +125,15 @@ fn constants_match_the_spec() {
 }
 
 #[test]
+fn the_mbuf_data_room_fits_af_packet_default_frames_and_the_mtu() {
+    // DPDK net_af_packet (default framesz 2048) needs framesz - TPACKET2_HDRLEN (32, incl.
+    // sockaddr_ll) <= data_room - RTE_PKTMBUF_HEADROOM, else the vdev refuses to start.
+    let payload_room = u32::from(MBUF_DATA_ROOM) - dpdk_sys::RTE_PKTMBUF_HEADROOM;
+    assert!(payload_room >= 2048 - 32, "payload room {payload_room}");
+    assert!(payload_room >= MTU + 14 + 4, "payload room {payload_room}");
+}
+
+#[test]
 fn hardware_counters_are_polled_every_250_ms_like_preof() {
     assert_eq!(HW_STATS_POLL_INTERVAL_MS, 250);
 }

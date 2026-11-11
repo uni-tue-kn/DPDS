@@ -13,7 +13,7 @@ use serde_json::json;
 
 #[tokio::test]
 async fn an_absurd_buffer_capacity_makes_the_hugepage_need_saturate_not_wrap() {
-    // u64::MAX buffers: (capacity + pool slack) * 1920 B overflows u64. A wrapped
+    // u64::MAX buffers: (capacity + pool slack) * 2432 B overflows u64. A wrapped
     // (small) need would turn this "ok"; a saturated one cannot fit. The hints of a body are
     // advice, not a start: either they answer 200 with an error-level hugepage hint, or the
     // body's capacity is refused (400 naming `buffer_capacity`, the cap is 2^31); a wrapped

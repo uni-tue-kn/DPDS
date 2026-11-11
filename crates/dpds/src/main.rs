@@ -14,11 +14,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use dpdk::eal::{self, foreach_worker, lcore_count, main_lcore};
-use dpdk::mempool::{mbuf_buf_size_for_frame, MbufFreer};
+use dpdk::mempool::MbufFreer;
 use dpdk::port::{self, adjust_nb_rx_tx_desc, foreach_dev, shutdown_port};
 use dpdk::{now_ns, Clock, Eal, Mempool, Port, PortDiscardXstats, RxQueue, TxQueue};
 use dpds::cli::parse_args;
-use dpds::consts::{HW_STATS_POLL_INTERVAL_MS, MBUF_CACHE_SIZE, MTU, NIC_DESCRIPTORS};
+use dpds::consts::{
+    HW_STATS_POLL_INTERVAL_MS, MBUF_CACHE_SIZE, MBUF_DATA_ROOM, MTU, NIC_DESCRIPTORS,
+};
 use dpds::delay_stats::HistRange;
 use dpds::forward;
 use dpds::io::{NicRx, NicTx, PktmbufFree, RawFree};
@@ -165,9 +167,6 @@ fn install_signal_handlers() -> Result<()> {
 }
 
 // ── Setup ────────────────────────────────────────────────────────────────────
-
-/// Data room of every mbuf: the largest frame (MTU + Ethernet header + FCS) plus headroom.
-const MBUF_DATA_ROOM: u16 = mbuf_buf_size_for_frame((MTU + 14 + 4) as u16);
 
 /// A direction as set up before its worker starts.
 struct Direction {

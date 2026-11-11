@@ -118,17 +118,6 @@ impl Drop for Mempool {
 // ownership on the Rust side through the non-Copy Mempool struct.
 unsafe impl Send for Mempool {}
 
-/// Mbuf data-room size for a largest real frame of `max_frame_len` bytes:
-/// `RTE_PKTMBUF_HEADROOM` (128 B) plus `max_frame_len` rounded up to a multiple
-/// of 64 (cache-line friendly, not required by DPDK). Smaller than
-/// [`Mempool::DEFAULT_BUF_SIZE`] (2176 -> 1664 B for a 1518-byte frame), which
-/// matters at multi-million-mbuf pool sizes.
-pub const fn mbuf_buf_size_for_frame(max_frame_len: u16) -> u16 {
-    const STRIDE: u16 = 64;
-    let rounded = max_frame_len.div_ceil(STRIDE) * STRIDE;
-    dpdk_sys::RTE_PKTMBUF_HEADROOM as u16 + rounded
-}
-
 // The real free needs a live EAL and mempool, so it is not tested here; on the
 // testbed `rx_nombuf` staying 0 over a long run shows no mbuf leaks. An empty
 // slice must not call into DPDK (`rte_mbuf_raw_free_bulk` requires count >= 1
