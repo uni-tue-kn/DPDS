@@ -156,13 +156,13 @@ export function fieldKit(value: ConfigForm, onChange: (next: ConfigForm) => void
     key: 'distribution' | 'limiter_mode' | 'loss_type',
     label: HelpKey,
     options: readonly string[],
-    opts: { disabled?: readonly string[]; hint?: string } = {},
+    opts: { disabled?: readonly string[]; hint?: string; labels?: Readonly<Record<string, string>> } = {},
   ) => (
     <Field key={key} id={fieldId(key)} help={label} hint={opts.hint}>
       <Form.Select value={value[key]} onChange={(e) => set(key, e.target.value as never)}>
         {options.map((o) => (
           <option key={o} value={o} disabled={opts.disabled?.includes(o)}>
-            {o}
+            {opts.labels?.[o] ?? o}
           </option>
         ))}
       </Form.Select>

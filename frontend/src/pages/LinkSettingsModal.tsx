@@ -9,6 +9,7 @@ import {
   halfLifeRequired,
   INIT_RATE_UNITS,
   LIMITER_MODES,
+  LIMITER_MODE_LABELS,
   LIMITER_RATE_UNITS,
   accuracyOf,
   stageProblem,
@@ -88,7 +89,7 @@ function LinkSettingsBody({ value, onChange }: { value: ConfigForm; onChange: (n
             'limiter_added',
             'limiter',
             <>
-              {select('limiter_mode', 'Limiter mode', LIMITER_MODES)}
+              {select('limiter_mode', 'Limiter mode', LIMITER_MODES, { labels: LIMITER_MODE_LABELS })}
               {unitField('rate_bps', 'Rate', LIMITER_RATE_UNITS, { required: true })}
               <Form.Text className="d-block text-muted">{derivedLimitText(packets)}</Form.Text>
             </>,

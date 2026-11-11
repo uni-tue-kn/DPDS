@@ -35,7 +35,7 @@ export const HELP = {
     'Required, with or without correlation, but it only matters with correlation on: the packet rate (packets/s) the correlation assumes at start-up until the first measured rate (updated every 1 ms) replaces it. Use the expected packet rate of this link. Stored in pps; finite and at least 1.',
   // dpds-core/src/limiter.rs:25-26 (Spacer starts empty, TBF starts full), 78-107 (Spacer), 110-127 (TBF), dpds-core/src/lib.rs:159-173 (derived limit)
   'Limiter mode':
-    'Spacer: delays packets so the link never exceeds the rate (a queue that starts empty); a packet that would overflow the derived limit shown below is dropped (with Reordering the Spacer follows the reorder heap and drops nothing). TokenBucketFilter: packets within the token budget pass undelayed (a bucket that starts full), the rest are dropped.',
+    'Spacer: delays packets so the link never exceeds the rate (a queue that starts empty); a packet that would overflow the derived limit shown below is dropped (with Reordering the Spacer follows the reorder heap and drops nothing). Policer (a token bucket filter): packets within the token budget pass undelayed (a bucket that starts full), the rest are dropped.',
   // dpds-controller/src/dto.rs:249-254 (finite, > 0); dpds-core/src/buffer.rs:266 (+4 B FCS) and limiter.rs:1, 63 (+20 B L1)
   Rate: 'Rate the limiter allows. Stored in bit/s; finite and greater than 0. Each packet counts as its Ethernet frame incl. FCS plus 20 B of preamble and inter-frame gap.',
   // dpds-core/src/dropper.rs:7-17 (parameters), 56-85 (decision and transition)

@@ -16,7 +16,7 @@ export const CAUSES = [
   {
     label: 'Rate limiter',
     color: '#f6b73c',
-    help: "Packets the limiter refused: the Spacer's backlog or the token bucket's budget was exceeded.",
+    help: "Packets the limiter refused: the Spacer's backlog or the Policer's token budget was exceeded.",
   },
   {
     label: 'Buffer full',

@@ -26,6 +26,8 @@ export const DISTRIBUTIONS: Distribution[] = [
   'UniformDistribution',
 ];
 export const LIMITER_MODES: LimiterMode[] = ['Spacer', 'TokenBucketFilter'];
+/** The UI name of each limiter mode; the API keeps `TokenBucketFilter`. */
+export const LIMITER_MODE_LABELS: Record<LimiterMode, string> = { Spacer: 'Spacer', TokenBucketFilter: 'Policer' };
 
 /** Index of each field's default unit (ms, Mpps, Gbit/s) and of Mbit for the derived limit: what a new form and a zero or empty value show. */
 export const MS = 2;
