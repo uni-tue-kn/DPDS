@@ -263,6 +263,15 @@ trap 'rm -rf "$ROOT_TMP"' EXIT
 # Inside a test (subshell) a failed assertion records the failure and the test continues.
 T_FAILED=0
 fail() { echo "    FAIL: $*${CTX:+ [$CTX]}"; T_FAILED=1; }
+# Skips a test whose environment lacks something; under CI (CI set, as GitHub Actions does) the
+# environment is meant to have it, so there a skip is a failure.
+skip() {
+  if [[ -n "${CI:-}" ]]; then
+    fail "this test must run in CI but would be skipped: $*"
+  else
+    echo "    SKIP: $*"
+  fi
+}
 assert_eq()  { [[ "$1" == "$2" ]] || fail "${3:-values differ}: expected '$2', got '$1'"; }
 assert_rc()  { [[ "$RC" == "$1" ]] || fail "exit code: expected $1, got $RC (${2:-})"; }
 assert_rc_nonzero() { [[ "$RC" != 0 ]] || fail "expected a non-zero exit code, got 0 (${1:-})"; }
@@ -2050,7 +2059,7 @@ test_update_restart_still_starts_when_the_stop_fails() {
 
 # ------------------------------------------------------------------ tests: prerequisites, host check
 test_install_runs_the_host_check_through_the_privileged_runner() {
-  if [[ "$(id -u)" == 0 ]]; then echo "    (skipped: running as root, sudo is not used)"; return; fi
+  if [[ "$(id -u)" == 0 ]]; then skip "running as root, sudo is not used"; return; fi
   run_dpds --yes install
   assert_rc 0 "$ERR"
   grep -Eq 'dpds-controller check' "$STUB_LOG.sudo" || fail "host check did not go through sudo: $(tr '\n' '|' <"$STUB_LOG.sudo")"
@@ -2059,7 +2068,7 @@ test_install_runs_the_host_check_through_the_privileged_runner() {
 
 test_the_standalone_check_command_keeps_running_as_the_caller() {
   # `check` is the quick read-only report; only the install-time check is privileged
-  if [[ "$(id -u)" == 0 ]]; then echo "    (skipped: running as root)"; return; fi
+  if [[ "$(id -u)" == 0 ]]; then skip "running as root"; return; fi
   write_controller_stub "$DPDS_PREFIX/bin/dpds-controller"
   run_dpds check
   assert_rc 0 "$ERR"
@@ -2891,7 +2900,7 @@ test_unit_has_no_tuning_commands() {
 }
 
 test_unit_passes_systemd_analyze_verify() {
-  command -v systemd-analyze >/dev/null || { echo "    (skipped: systemd-analyze not installed)"; return; }
+  command -v systemd-analyze >/dev/null || { skip "systemd-analyze not installed"; return; }
   # verify needs an existing, executable ExecStart target; point the copy at /bin/true.
   local copy="$T/dpds-controller.service" real_true; real_true="$(command -v true)"
   sed "s#^ExecStart=/usr/local/bin/dpds-controller#ExecStart=$real_true#" "$UNIT" >"$copy"
@@ -2944,7 +2953,7 @@ assert_refused_as_root() {
 }
 
 test_a_run_under_sudo_is_refused_for_every_command() {
-  can_become_root || { echo "    SKIP: no passwordless sudo, cannot run the script as root"; return; }
+  can_become_root || { skip "no passwordless sudo, cannot run the script as root"; return; }
   local c
   for c in check install update start stop restart status uninstall; do
     : >"$STUB_LOG"
@@ -2954,7 +2963,7 @@ test_a_run_under_sudo_is_refused_for_every_command() {
 }
 
 test_the_refusal_comes_before_every_flag_and_prompt() {
-  can_become_root || { echo "    SKIP: no passwordless sudo, cannot run the script as root"; return; }
+  can_become_root || { skip "no passwordless sudo, cannot run the script as root"; return; }
   local args
   for args in "--yes install" "--stable update" "--stable --yes install" "--nightly check"; do
     : >"$STUB_LOG"
@@ -2966,7 +2975,7 @@ test_the_refusal_comes_before_every_flag_and_prompt() {
 
 test_plain_root_without_sudo_variables_is_not_refused_and_needs_no_sudo() {
   # a container: EUID 0, no SUDO_USER. The privileged steps run directly (no sudo call at all).
-  can_become_root || { echo "    SKIP: no passwordless sudo, cannot run the script as root"; return; }
+  can_become_root || { skip "no passwordless sudo, cannot run the script as root"; return; }
   run_dpds_as_root --no-sudo-vars --yes install
   assert_rc 0 "$ERR"
   ! grep -qi 'as your user' <<<"$OUT$ERR" || fail "refused plain root: $ERR"
@@ -2981,7 +2990,7 @@ test_plain_root_without_sudo_variables_is_not_refused_and_needs_no_sudo() {
 }
 
 test_root_is_refused_although_everything_is_installed_and_running() {
-  can_become_root || { echo "    SKIP: no passwordless sudo, cannot run the script as root"; return; }
+  can_become_root || { skip "no passwordless sudo, cannot run the script as root"; return; }
   fake_install
   export STUB_ACTIVE=1
   local c
@@ -3000,7 +3009,7 @@ test_root_is_refused_although_everything_is_installed_and_running() {
 
 test_a_normal_user_with_a_leftover_sudo_user_variable_is_not_refused() {
   # the refusal is about running as root; SUDO_USER in the environment of a non-root user means nothing
-  if [[ "$(id -u)" == 0 ]]; then echo "    SKIP: the suite itself runs as root"; return; fi
+  if [[ "$(id -u)" == 0 ]]; then skip "the suite itself runs as root"; return; fi
   seed_unit
   SUDO_USER=root SUDO_UID=0 run_dpds start
   assert_rc 0 "$ERR"

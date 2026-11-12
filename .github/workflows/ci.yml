@@ -96,10 +96,18 @@ jobs:
       # --no-fail-fast reports every failing test binary, not just the first.
       # The dpds e2e tests start the real binary on net_null/net_pcap vdevs without root or
       # hugepages. They need up to 4 CPUs (`-l 0-3`) and serialise themselves with a lock.
+      # A test that would skip for lack of something in its environment fails instead when CI is
+      # set (GitHub sets it), so every step below must provide what its tests need. The dpds
+      # memlock tests need a hard RLIMIT_MEMLOCK they can raise a child to (unlimited); prlimit
+      # lifts it for this shell and so for cargo and the tests it starts.
       - name: Test
-        run: cargo test --workspace --release --no-fail-fast
+        run: |
+          sudo prlimit --pid $$ --memlock=unlimited:unlimited
+          cargo test --workspace --release --no-fail-fast
       - name: Test dpds with telemetry
-        run: cargo test -p dpds --release --features telemetry --no-fail-fast
+        run: |
+          sudo prlimit --pid $$ --memlock=unlimited:unlimited
+          cargo test -p dpds --release --features telemetry --no-fail-fast
       # The controller's end-to-end tests are #[ignore]d: they supervise a real `dpds` with
       # telemetry, so that binary is built first. They run one at a time.
       - name: Build dpds with telemetry
@@ -113,17 +121,18 @@ jobs:
           sudo sysctl -w vm.nr_hugepages=512
           test "$(cat /proc/sys/vm/nr_hugepages)" -ge 512
       - name: Test controller end-to-end
-        run: cargo test --release -p dpds-controller --test integration -- --ignored --test-threads=1
+        run: cargo test --release -p dpds-controller --test integration -- --ignored --test-threads=1 --skip e2e::virtual_network
       # The virtual network mode runs dpds on net_af_packet over veth pairs and network namespaces,
       # which need root (CAP_NET_ADMIN, CAP_NET_RAW, CAP_SYS_ADMIN) and no hugepages. The test
-      # binary is built as the user (nothing is rebuilt as root), then run under sudo with the
-      # environment kept; the physical e2e tests above ran as the user.
+      # binary is built as the user (nothing is rebuilt as root), then run under sudo, which resets
+      # the environment: PATH, LD_LIBRARY_PATH (DPDK) and CI (skips fail) are passed explicitly.
+      # The step above skips these tests, it runs as the user.
       - name: Test controller end-to-end in a virtual network
         run: |
           bin="$(cargo test --release -p dpds-controller --test integration --no-run --message-format=json \
             | jq -r 'select(.profile.test == true and .target.name == "integration") | .executable' | tail -n 1)"
           test -x "$bin"
-          sudo env "PATH=$PATH" "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" "$bin" e2e::virtual_network --ignored --test-threads=1
+          sudo env "PATH=$PATH" "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" "CI=$CI" "$bin" e2e::virtual_network --ignored --test-threads=1
 
   frontend:
     runs-on: ubuntu-24.04

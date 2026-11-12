@@ -2543,6 +2543,16 @@ fn the_readme_without_hardware_examples_start_cleanly_and_stop_with_sigint() {
 
 /// Is this process root (euid 0)? The "lock whatever the limit says" rule keys on the effective
 /// uid, not on the capability: root has `CAP_IPC_LOCK`, so the limit does not apply.
+/// Skips a test whose environment lacks something; under CI (`CI` set, as GitHub Actions does)
+/// the environment is meant to have it, so there a skip is a failure.
+fn skip(why: &str) {
+    assert!(
+        std::env::var_os("CI").is_none(),
+        "this test must run in CI but would be skipped: {why}"
+    );
+    eprintln!("SKIP: {why}");
+}
+
 fn is_root() -> bool {
     // SAFETY: geteuid(2) has no arguments and cannot fail.
     unsafe { libc::geteuid() == 0 }
@@ -2679,7 +2689,7 @@ fn a_finite_hard_limit_skips_mlockall_warns_and_dpds_forwards_unlocked() {
     require_cpus(2);
     let _g = serial();
     if is_root() {
-        eprintln!("skipped: root locks whatever the limit says (spec v24 case 1)");
+        skip("root locks whatever the limit says (spec v24 case 1)");
         return;
     }
     let cfg = config_json(0, 0.0);
@@ -2708,13 +2718,13 @@ fn a_finite_hard_limit_above_the_soft_limit_also_skips_mlockall() {
     require_cpus(2);
     let _g = serial();
     if is_root() {
-        eprintln!("skipped: root locks whatever the limit says (spec v24 case 1)");
+        skip("root locks whatever the limit says (spec v24 case 1)");
         return;
     }
     let soft = 4 * MIB;
     let hard = (1024 * MIB).min(current_memlock_hard_limit());
     if hard <= soft || !can_set_memlock_limits(soft, hard) {
-        eprintln!("skipped: this process cannot give a child a hard memlock limit above {soft} B");
+        skip("this process cannot give a child a hard memlock limit above {soft} B");
         return;
     }
     let mut env = Env::new(&config_json(0, 0.0));
@@ -2736,7 +2746,7 @@ fn a_finite_soft_limit_under_an_unlimited_hard_limit_is_raised_and_everything_is
     require_cpus(2);
     let _g = serial();
     if !can_set_memlock_limits(8 * MIB, libc::RLIM_INFINITY) {
-        eprintln!("skipped: this process cannot give a child an unlimited hard memlock limit");
+        skip("this process cannot give a child an unlimited hard memlock limit");
         return;
     }
     let mut env = Env::new(&config_json(0, 0.0));
@@ -2792,7 +2802,7 @@ fn with_the_limit_lifted_dpds_locks_its_whole_memory_without_a_warning() {
     require_cpus(2);
     let _g = serial();
     if !can_set_memlock_limits(libc::RLIM_INFINITY, libc::RLIM_INFINITY) && !is_root() {
-        eprintln!("skipped: this process cannot give a child an unlimited memlock limit");
+        skip("this process cannot give a child an unlimited memlock limit");
         return;
     }
     let mut env = Env::new(&config_json(0, 0.0));

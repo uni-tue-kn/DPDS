@@ -291,3 +291,8 @@ only `ip netns` is refused, the ping test skips and the memory test runs. CI run
 the backend job (its own step after the physical tests), on a DPDK built with `net/af_packet`
 (`.github/scripts/install-dpdk.sh`).
 
+With the environment variable `CI` set (GitHub Actions sets it), every test that would skip for
+lack of something in its environment fails instead: the virtual network tests, the `dpds` memlock
+tests (CI lifts the memlock limit with `prlimit`) and the root cases of
+`packaging/tests/dpds_sh.test.sh`. A green CI run therefore means they all ran.
+

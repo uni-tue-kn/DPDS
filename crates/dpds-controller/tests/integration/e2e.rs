@@ -19,7 +19,7 @@
 //! The `virtual_network_*` tests run the controller in virtual network mode over two veth pairs (see
 //! `VethLab`) and need root (`CAP_NET_ADMIN`, `CAP_NET_RAW`, and for the ping test `CAP_SYS_ADMIN` for
 //! network namespaces) and a `dpds` whose DPDK has
-//! `net/af_packet`; without permission to `ip link add` they print SKIP and pass. Build the test
+//! `net/af_packet`; without permission to `ip link add` they print SKIP and pass (fail under CI). Build the test
 //! binary as the normal user, then run it as root with the environment kept:
 //!
 //! ```text
@@ -628,6 +628,16 @@ fn ip(args: &[&str]) -> Result<String, String> {
 /// everything again, also after a panic.
 struct VethLab;
 
+/// Skips a test whose environment lacks something; under CI (`CI` set, as GitHub Actions does)
+/// the environment is meant to have it, so there a skip is a failure.
+fn skip(why: &str) {
+    assert!(
+        std::env::var_os("CI").is_none(),
+        "this test must run in CI but would be skipped: {why}"
+    );
+    eprintln!("SKIP: {why}");
+}
+
 impl VethLab {
     /// None (after printing SKIP) when this process may not create network interfaces or, with
     /// `hosts`, network namespaces (a container without `CAP_SYS_ADMIN` cannot).
@@ -645,7 +655,7 @@ impl VethLab {
             "vdpds-probe2",
         ]) {
             if permission(&e) {
-                eprintln!("SKIP: `ip link add` is not permitted ({}); run as root with CAP_NET_ADMIN and CAP_NET_RAW, e.g. under sudo", e.trim());
+                skip(&format!("`ip link add` is not permitted ({}); run as root with CAP_NET_ADMIN and CAP_NET_RAW, e.g. under sudo", e.trim()));
                 return None;
             }
             panic!("ip link add failed: {e}");
@@ -663,7 +673,7 @@ impl VethLab {
                 match ip(&["netns", "add", ns]) {
                     Ok(_) => {}
                     Err(e) if permission(&e) => {
-                        eprintln!("SKIP: network namespaces are not permitted ({}); this test needs CAP_SYS_ADMIN", e.trim());
+                        skip(&format!("network namespaces are not permitted ({}); this test needs CAP_SYS_ADMIN", e.trim()));
                         return None;
                     }
                     Err(e) => panic!("ip netns add {ns}: {e}"),
