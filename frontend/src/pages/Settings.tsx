@@ -31,13 +31,16 @@ const pad = (n: number) => String(n).padStart(2, '0');
 const localDate = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 
 /**
- * Downloads `{version: 1, links}` as `dpds-links-<local date>.json`: the links as stored, ids included, no settings.
- * An unreadable store is the rescue case: its stored text is downloaded unchanged.
+ * Downloads `{version: 1, network, links}` as `dpds-links-<local date>.json`: the links as stored, ids included, no
+ * settings, and the mode the controller runs in (informational; Import ignores it). An unreadable store is the rescue
+ * case: its stored text is downloaded unchanged.
  */
-function downloadLinks() {
+async function downloadLinks() {
   const raw = readRaw();
   const stored = parseStored(raw);
-  const text = stored.corrupt ? (raw ?? '') : JSON.stringify({ version: 1, links: stored.doc.links }, null, 2);
+  const text = stored.corrupt
+    ? (raw ?? '')
+    : JSON.stringify({ version: 1, network: (await api.getOnline()).network, links: stored.doc.links }, null, 2);
   const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
   const a = document.createElement('a');
   a.href = url;
@@ -55,7 +58,7 @@ const HEAD_HELP: Record<string, keyof typeof HELP> = { 'RX port': 'Ingress', 'TX
 const portName = (role: Role) => (role === 'ingress' ? 'RX port' : 'TX port');
 
 function optionLabel(i: Interface, used: boolean, role: Role): string {
-  const base = i.netdev ?? i.pci;
+  const base = i.netdev ?? i.port;
   const reasons: string[] = [];
   if (!i.dpds_usable || i.uplink) reasons.push(i.reason ?? (i.uplink ? 'uplink' : 'not usable'));
   if (used) reasons.push(`already used as ${portName(role)} by another link`);
@@ -79,14 +82,14 @@ function PortSelect({
   onChange: (v: string) => void;
 }) {
   // A stored port that is not a discovered interface (e.g. a vdev) stays selectable as its own option.
-  const unknown = value !== '' && !interfaces.some((i) => i.pci === value);
+  const unknown = value !== '' && !interfaces.some((i) => i.port === value);
   return (
     <Form.Select value={value} onChange={(e) => onChange(e.target.value)} aria-label={`${portName(role)} of link ${n}`}>
       <option value="">Select a port...</option>
       {unknown && <option value={value}>{value}</option>}
       {interfaces.map((i) => (
-        <option key={i.pci} value={i.pci} disabled={!i.dpds_usable || i.uplink || users.has(i.pci)}>
-          {optionLabel(i, users.has(i.pci), role)}
+        <option key={i.port} value={i.port} disabled={!i.dpds_usable || i.uplink || users.has(i.port)}>
+          {optionLabel(i, users.has(i.port), role)}
         </option>
       ))}
     </Form.Select>
@@ -157,9 +160,9 @@ export default function Settings() {
     showToast('Settings reset successfully.', 'success');
   };
 
-  const exportLinks = () => {
+  const exportLinks = async () => {
     try {
-      downloadLinks();
+      await downloadLinks();
     } catch (e) {
       showToast(errorMessage(e), 'danger');
     }

@@ -16,7 +16,7 @@ use utoipa::ToSchema;
 
 use crate::discovery::{discover, find, Interface};
 use crate::eal::drain_timeout;
-use crate::host::{fmt_cpus, parse_cpulist, read_trim, HostRoots};
+use crate::host::{fmt_cpus, parse_cpulist, read_trim, HostRoots, Network};
 use crate::lcores::{assign_lcores, Assignment, LcoreError};
 use crate::model::RunConfig;
 use crate::nic_hints::{blocked, nic_hints, FirmwareCache};
@@ -25,6 +25,10 @@ use crate::nic_hints::{blocked, nic_hints, FirmwareCache};
 /// 128-B lines on arm64), the 128 B `rte_mbuf` and the 2176 B data room, 2432 B in all. With 64-B
 /// lines (x86) it is 2368 B; the constant uses the larger arm64 figure.
 const BYTES_PER_MBUF: u64 = 2432;
+/// Memory page size under `--no-huge`, which one mbuf takes whole.
+const PAGE_BYTES: u64 = 4096;
+/// MiB `-m` adds to the pools of a virtual network start.
+const VIRTUAL_HEADROOM_MIB: u64 = 64;
 /// Descriptors per ring `dpds` asks for, plus the pool's cache and burst slack
 /// (pool size = buffer_capacity + rx + tx + 768 + 64, see `crates/dpds/src/consts.rs`).
 const POOL_EXTRA: u64 = 4096 + 4096 + 768 + 64;
@@ -111,7 +115,7 @@ impl Ctx<'_> {
             .flat_map(|l| [&l.ingress, &l.egress])
         {
             if let Some(i) = find(&self.interfaces, port) {
-                if !used.iter().any(|u| u.pci == i.pci) {
+                if !used.iter().any(|u| u.port == i.port) {
                     used.push(i);
                 }
             }
@@ -136,7 +140,7 @@ pub fn escape_control(s: &str) -> String {
 
 /// How a NIC is named in a hint: its netdev, else its PCI address, control characters escaped.
 pub(crate) fn nic_label(nic: &Interface) -> String {
-    escape_control(nic.netdev.as_deref().unwrap_or(&nic.pci))
+    escape_control(nic.netdev.as_deref().unwrap_or(&nic.port))
 }
 
 /// All hints, in a fixed order, one per check.
@@ -159,6 +163,9 @@ pub fn compute_hints_cached(
 /// Queries the firmware settings of every mlx5 NIC of the host into `cache`, as a link on each
 /// would (tools only when `run_tools`); with `recheck` the cached results are dropped first.
 pub fn warm_firmware(roots: &HostRoots, run_tools: bool, cache: &FirmwareCache, recheck: bool) {
+    if roots.network == Network::Virtual {
+        return;
+    }
     let config = RunConfig::default();
     let ctx = Ctx {
         roots,
@@ -180,6 +187,9 @@ fn compute(
     cache: Option<&FirmwareCache>,
     recheck: bool,
 ) -> Vec<Hint> {
+    if roots.network == Network::Virtual {
+        return virtual_hints(roots, config);
+    }
     let ctx = Ctx {
         roots,
         run_tools,
@@ -208,6 +218,45 @@ fn compute(
     hints.extend(nic_hints(&ctx));
     hints.extend(drain(&ctx));
     hints
+}
+
+// ---- virtual network -----------------------------------------------------------
+
+/// The hints of a virtual network installation: what it is for, and whether the online cores
+/// suffice (the main lcore and one worker per link). No NIC, hugepage or isolation checks.
+fn virtual_hints(roots: &HostRoots, config: &RunConfig) -> Vec<Hint> {
+    let online = roots.online_cpus().len();
+    let needed = 1 + config.links.len();
+    let cpus = if online >= needed {
+        hint(
+            "cpus",
+            Level::Ok,
+            "CPU cores",
+            format!("{online} online core(s), {needed} needed (the main core and one per link)"),
+            "",
+        )
+    } else {
+        hint(
+            "cpus",
+            Level::Error,
+            "CPU cores",
+            format!(
+                "{} link(s) need {needed} online cores but only {online} are online",
+                config.links.len()
+            ),
+            "Give the node more CPU cores or configure fewer links.",
+        )
+    };
+    vec![
+        hint(
+            "virtual-network",
+            Level::Info,
+            "Virtual network",
+            "this installation runs in a virtual network for functional testing; delays and rates are not measurements".into(),
+            "",
+        ),
+        cpus,
+    ]
 }
 
 // ---- drain vs systemd --------------------------------------------------------
@@ -251,7 +300,7 @@ fn uplink(ctx: &Ctx) -> Option<Hint> {
         .map(|i| {
             format!(
                 "{}: {}",
-                i.pci,
+                i.port,
                 i.reason.as_deref().unwrap_or("host uplink")
             )
         })
@@ -470,8 +519,27 @@ pub(crate) fn link_need(c: &crate::dto::ConfigDto) -> u64 {
         .saturating_mul(BYTES_PER_MBUF)
 }
 
+/// Memory the mbuf pools of one link need under `--no-huge`: every mbuf takes a whole 4 KiB page
+/// (a 2432 B mbuf does not pack into one, measured with the real `dpds`).
+pub(crate) fn virtual_link_need(c: &crate::dto::ConfigDto) -> u64 {
+    (c.buffer_capacity as u64)
+        .saturating_add(POOL_EXTRA)
+        .saturating_mul(PAGE_BYTES)
+}
+
+/// `-m` (MiB) of a virtual network start: the pools of all links rounded up to a MiB, plus
+/// `VIRTUAL_HEADROOM_MIB` for EAL, the rings and headroom.
+pub(crate) fn virtual_mem_mib(config: &RunConfig) -> u64 {
+    let need = config
+        .links
+        .iter()
+        .map(|l| virtual_link_need(&l.config))
+        .fold(0u64, u64::saturating_add);
+    need.div_ceil(1 << 20).saturating_add(VIRTUAL_HEADROOM_MIB)
+}
+
 /// `MemAvailable` of `/proc/meminfo` in bytes.
-fn mem_available(roots: &HostRoots) -> Option<u64> {
+pub(crate) fn mem_available(roots: &HostRoots) -> Option<u64> {
     read_trim(&roots.proc("meminfo"))?
         .lines()
         .find_map(|l| l.strip_prefix("MemAvailable:"))?
@@ -760,7 +828,7 @@ fn irq_affinity(ctx: &Ctx) -> Hint {
                 format!(
                     "{} ({}: {})",
                     nic_label(n),
-                    n.pci,
+                    n.port,
                     blocked(n).unwrap_or_default()
                 )
             })
@@ -807,7 +875,7 @@ fn irq_affinity(ctx: &Ctx) -> Hint {
         // the housekeeping cores of the NIC's node, else all of them
         let local: Vec<u32> = ctx
             .roots
-            .pci_numa_node(&nic.pci)
+            .pci_numa_node(&nic.port)
             .map(|n| ctx.roots.node_cpus(n))
             .unwrap_or_default()
             .into_iter()
@@ -818,7 +886,7 @@ fn irq_affinity(ctx: &Ctx) -> Hint {
         } else {
             &local
         };
-        for irq in msi_irqs(ctx.roots, &nic.pci) {
+        for irq in msi_irqs(ctx.roots, &nic.port) {
             let dir = ctx.roots.proc(&format!("irq/{irq}"));
             let Some(requested) = read_trim(&dir.join("smp_affinity_list")) else {
                 continue;
@@ -1025,7 +1093,7 @@ fn iommu(ctx: &Ctx) -> Hint {
         .used_nics()
         .into_iter()
         .filter(|i| i.driver.as_deref() == Some("vfio-pci"))
-        .map(|i| i.pci.as_str())
+        .map(|i| i.port.as_str())
         .collect();
     if vfio.is_empty() {
         return hint(

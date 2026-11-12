@@ -54,12 +54,13 @@
 #   - No command ever calls docker (the stub is a tripwire), and the script has no docker, compose
 #     or nginx code, no DPDS_FRONTEND_BIND/DPDS_FRONTEND_PORT and no DPDS_CONTROLLER setting
 #     (DPDS_CONTROLLER_BIND of the env file stays).
-#   - Root: every command, with any flags, refuses to run when EUID is 0 (through `sudo` with
-#     SUDO_USER set, or as plain root), at once, before any tool or sudo call and before anything
-#     is written: non-zero exit and a stderr message with "as your user", "not with sudo" and
-#     "PATH". A non-root user is not refused, even with SUDO_USER left in the environment. The
-#     tests become root through `sudo -n` (EUID cannot be faked) and print SKIP without it. Run the
-#     suite itself as a normal user.
+#   - Root: every command, with any flags, refuses to run when EUID is 0 AND SUDO_USER is set
+#     (`sudo ./dpds.sh ...`), at once, before any tool or sudo call and before anything is written:
+#     non-zero exit and a stderr message with "as your user", "not with sudo" and "PATH". Plain
+#     root (EUID 0, no SUDO_USER: a container) is not refused and `run_privileged` runs the command
+#     directly, without calling sudo. A non-root user is not refused, even with SUDO_USER left in
+#     the environment. The tests become root through `sudo -n` (EUID cannot be faked) and print SKIP
+#     without it. Run the suite itself as a normal user.
 #   - Not installed: `start`, `restart` and `status` check that the unit file of `install`
 #     ($DPDS_SYSTEMD_DIR/dpds-controller.service) exists. Without it they say "dpds-controller is
 #     not installed: run ./dpds.sh install first" (start and restart on stderr with a non-zero
@@ -68,10 +69,31 @@
 #     missing unit file, so tests of start/restart/status call `seed_unit` (or fake_install)
 #     first. `stop` and `uninstall` do not need the unit.
 #
+# Network mode (virtual network spec): `--network physical|virtual` (flag before the command, with a
+#   separate value), accepted only with install and update (any other command, a missing or another value: exit 1,
+#   error naming --network, nothing executed). The mode is stored in $DPDS_ETC_DIR/network, exactly one line
+#   `physical` or `virtual`. install/update without the flag keep the stored mode, with it they switch; without a
+#   stored mode (no file, or content other than physical/virtual) and without the flag they fail before any npm or
+#   cargo build ("No network mode is stored ... --network"). The file is written by install_flow (also via update)
+#   and only once the installation goes ahead: a declined confirmation leaves it alone. uninstall keeps it.
+#   The controller's host check (`dpds-controller check`, also the one of install) judges the mode being installed
+#   and gets `--etc-dir $DPDS_ETC_DIR` when DPDS_ETC_DIR is not /etc/dpds (and no --etc-dir otherwise). The stub
+#   controller logs the mode it finds in that etc dir to $STUB_LOG.network.
+#   `check` in a stored virtual mode additionally requires the af_packet driver of DPDK: a librte_net_af_packet.a or
+#   librte_net_af_packet.so* below `pkg-config --variable=libdir libdpdk` or its dpdk/pmds-*/ subdirectory
+#   (the stub answers STUB_DPDK_LIBDIR, a directory the sandbox creates), else non-zero with an error naming net_af_packet.
+# No systemd: systemd is detected by the directory $DPDS_SYSTEMD_RUN_DIR (default /run/systemd/system; the sandbox points
+#   it at an existing directory, the no-systemd tests remove it). Without it install does everything except installing the
+#   unit and `systemctl daemon-reload`, update does not query systemctl, start/stop/restart/status call no systemctl, and
+#   install, start, restart and status print how to start the controller by hand:
+#   `DPDS_CONTROLLER_BIND=<bind> DPDS_CONTROLLER_DPDS_BIN=<bindir>/dpds <bindir>/dpds-controller serve`. start and
+#   restart then require the installed binaries instead of the unit file.
+#
 # Environment overrides (so tests never touch the real system):
 #   DPDS_PREFIX       install prefix; binaries go to $DPDS_PREFIX/bin     (default /usr/local)
 #   DPDS_ETC_DIR      config dir; env file is $DPDS_ETC_DIR/controller.env (default /etc/dpds)
 #   DPDS_SYSTEMD_DIR  where the unit is installed                         (default /etc/systemd/system)
+#   DPDS_SYSTEMD_RUN_DIR  the directory whose existence means "systemd runs" (default /run/systemd/system)
 #   DPDS_BIND         bind address written into a NEW env file            (default 0.0.0.0:8100)
 #   CARGO_TARGET_DIR  standard cargo variable; built binaries are read from
 #                     $CARGO_TARGET_DIR/release/{dpds,dpds-controller}    (default <repo>/target)
@@ -300,6 +322,13 @@ write_controller_stub() { # write_controller_stub PATH  - behaves like dpds-cont
 #!/bin/bash
 echo "dpds-controller $*" >> "${STUB_LOG:?}"
 echo "$0" >> "${STUB_LOG}.ctlpaths"
+if [ "${1:-}" = check ] || [ "${1:-}" = serve ]; then
+  d=""; p=""
+  for a in "$@"; do case "$a" in --etc-dir=*) d=${a#*=};; esac; [ "$p" = --etc-dir ] && d=$a; p=$a; done
+  if [ -z "$d" ]; then echo NOETCDIR >> "${STUB_LOG}.network"
+  elif [ -f "$d/network" ]; then cat "$d/network" >> "${STUB_LOG}.network"
+  else echo MISSING >> "${STUB_LOG}.network"; fi
+fi
 if [ "${1:-}" = check ]; then
   echo "CHECK-OUTPUT-MARKER"
   [ -n "${STUB_CONTROLLER_HINT_TEXT:-}" ] && echo "$STUB_CONTROLLER_HINT_TEXT"
@@ -328,9 +357,17 @@ setup_sandbox() {
   mkdir -p "$T/tmp"
   unset DPDS_STATE_DIR DPDS_CONTROLLER_STATE_DIR
   export DPDS_PREFIX="$T/prefix" DPDS_ETC_DIR="$T/etc" DPDS_SYSTEMD_DIR="$T/systemd"
+  # systemd "runs" in the sandbox; the no-systemd tests remove this directory
+  export DPDS_SYSTEMD_RUN_DIR="$T/run-systemd"
+  mkdir -p "$DPDS_SYSTEMD_RUN_DIR"
+  # the libdir `pkg-config --variable=libdir libdpdk` answers
+  export STUB_DPDK_LIBDIR="$T/dpdk-lib"
+  mkdir -p "$STUB_DPDK_LIBDIR"
   export CARGO_TARGET_DIR="$T/target"
   export HOME="$T/home"
   mkdir -p "$DPDS_PREFIX/bin" "$DPDS_SYSTEMD_DIR"
+  # a mode is stored, as after an earlier install; tests of the first install remove it
+  seed_network physical
 
   # The sandbox repository: a copy of the script and of the few files it reads.
   mkdir -p "$T/repo/packaging" "$T/repo/frontend" "$T/repo/crates/dpds-core"
@@ -460,6 +497,7 @@ EOF
 echo "pkg-config $*" >> "$LOG"
 if [ -n "${STUB_NO_LIBDPDK:-}" ]; then echo "Package libdpdk was not found" >&2; exit 1; fi
 ver="${STUB_DPDK_VERSION:-26.07.0}"
+for a in "$@"; do case $a in --variable=libdir) echo "${STUB_DPDK_LIBDIR:?}"; exit 0;; esac; done
 req=""; prev=""
 for a in "$@"; do
   case $a in
@@ -554,6 +592,13 @@ for p in "${pkgs[@]}"; do
 #!/bin/bash
 echo "dpds-controller $*" >> "${STUB_LOG:?}"
 echo "$0" >> "${STUB_LOG}.ctlpaths"
+if [ "${1:-}" = check ] || [ "${1:-}" = serve ]; then
+  d=""; p=""
+  for a in "$@"; do case "$a" in --etc-dir=*) d=${a#*=};; esac; [ "$p" = --etc-dir ] && d=$a; p=$a; done
+  if [ -z "$d" ]; then echo NOETCDIR >> "${STUB_LOG}.network"
+  elif [ -f "$d/network" ]; then cat "$d/network" >> "${STUB_LOG}.network"
+  else echo MISSING >> "${STUB_LOG}.network"; fi
+fi
 if [ "${1:-}" = check ]; then echo "CHECK-OUTPUT-MARKER"; [ -n "${STUB_CONTROLLER_HINT_TEXT:-}" ] && echo "$STUB_CONTROLLER_HINT_TEXT"; [ -n "${STUB_CONTROLLER_ERR:-}" ] && echo "$STUB_CONTROLLER_ERR" >&2; exit "${STUB_CONTROLLER_RC:-0}"; fi
 exit 0
 CTL
@@ -589,6 +634,10 @@ fake_install() {
   printf 'DPDS_CONTROLLER_BIND=0.0.0.0:8100\n' >"$DPDS_ETC_DIR/controller.env"
   printf '[Service]\nExecStart=%s/bin/dpds-controller serve\n' "$DPDS_PREFIX" >"$DPDS_SYSTEMD_DIR/dpds-controller.service"
 }
+
+# The stored network mode of $DPDS_ETC_DIR/network (what the controller reads), and what is stored now.
+seed_network() { mkdir -p "$DPDS_ETC_DIR"; printf '%s\n' "$1" >"$DPDS_ETC_DIR/network"; }
+stored_network() { cat "$DPDS_ETC_DIR/network" 2>&1; }
 
 # Only the unit file of a finished install: start, restart and status refuse to run without it.
 seed_unit() {
@@ -937,7 +986,7 @@ test_install_warns_when_the_tree_is_not_on_the_channels_branch_and_still_install
   for case_ in "nightly|main|" "main|nightly|--nightly" "feature-x|main|--stable" "feature-x|nightly|--nightly"; do
     IFS='|' read -r cur target flag <<<"$case_"
     : >"$STUB_LOG"
-    rm -rf "$DPDS_PREFIX/bin/dpds-controller" "$DPDS_ETC_DIR" "$(installed_unit)"
+    rm -rf "$DPDS_PREFIX/bin/dpds-controller" "$DPDS_ETC_DIR" "$(installed_unit)"; seed_network physical
     STUB_GIT_BRANCH="$cur" run_dpds $flag --yes install
     CTX="on $cur, channel branch $target" assert_rc 0 "$ERR"
     CTX="on $cur, channel branch $target" assert_branch_warning "$cur" "$target"
@@ -1269,7 +1318,7 @@ test_install_warns_when_head_is_not_the_tags_commit_and_still_installs() {
   for case_ in "main|headcommit-0000" "HEAD|headcommit-0000" "HEAD|commit-of-v1.1.0" "feature-x|commit-of-v1.1.0"; do
     IFS='|' read -r cur head <<<"$case_"
     : >"$STUB_LOG"
-    rm -rf "$DPDS_PREFIX/bin/dpds-controller" "$DPDS_ETC_DIR" "$(installed_unit)"
+    rm -rf "$DPDS_PREFIX/bin/dpds-controller" "$DPDS_ETC_DIR" "$(installed_unit)"; seed_network physical
     STUB_GIT_BRANCH="$cur" STUB_GIT_HEAD_COMMIT="$head" DPDS_CHANNEL=v1.0.0 run_dpds --yes install
     CTX="on '$cur' at $head" assert_rc 0 "$ERR"
     CTX="on '$cur' at $head" assert_tag_warning v1.0.0
@@ -1625,7 +1674,8 @@ test_install_installs_binaries_unit_env() {
 test_install_unit_paths_follow_prefix_and_etc() {
   run_dpds --yes install
   assert_rc 0 "$ERR"
-  assert_file_has "$(installed_unit)" "^ExecStart=$DPDS_PREFIX/bin/dpds-controller serve\$"
+  # a non-default etc dir reaches the service, so it reads the mode stored there
+  assert_file_has "$(installed_unit)" "^ExecStart=$DPDS_PREFIX/bin/dpds-controller serve --etc-dir $DPDS_ETC_DIR\$"
   assert_file_has "$(installed_unit)" "^EnvironmentFile=-$DPDS_ETC_DIR/controller.env\$"
   assert_file_has "$(installed_unit)" '^KillSignal=SIGTERM$'
   assert_file_has "$(installed_unit)" '^Restart=on-failure$'
@@ -2888,7 +2938,8 @@ assert_refused_as_root() {
   [[ ! -s "$STUB_LOG.sudo" ]] || fail "the script went on to call sudo: $(tr '\n' '|' <"$STUB_LOG.sudo")"
   assert_no_file "$DPDS_PREFIX/bin/dpds"
   assert_no_file "$DPDS_PREFIX/bin/dpds-controller"
-  assert_no_file "$DPDS_ETC_DIR"
+  assert_no_file "$DPDS_ETC_DIR/controller.env"
+  assert_no_file "$DPDS_ETC_DIR/installed-commit"
   assert_no_state_dir_anywhere
 }
 
@@ -2913,14 +2964,20 @@ test_the_refusal_comes_before_every_flag_and_prompt() {
   done
 }
 
-test_plain_root_without_sudo_variables_is_refused_too() {
+test_plain_root_without_sudo_variables_is_not_refused_and_needs_no_sudo() {
+  # a container: EUID 0, no SUDO_USER. The privileged steps run directly (no sudo call at all).
   can_become_root || { echo "    SKIP: no passwordless sudo, cannot run the script as root"; return; }
-  local c
-  for c in check install start status; do
-    : >"$STUB_LOG"
-    run_dpds_as_root --no-sudo-vars "$c"
-    CTX="root $c" assert_refused_as_root "$c"
-  done
+  run_dpds_as_root --no-sudo-vars --yes install
+  assert_rc 0 "$ERR"
+  ! grep -qi 'as your user' <<<"$OUT$ERR" || fail "refused plain root: $ERR"
+  assert_exec "$DPDS_PREFIX/bin/dpds-controller"
+  assert_file "$(installed_unit)"
+  [[ ! -s "$STUB_LOG.sudo" ]] || fail "plain root went through sudo: $(tr '\n' '|' <"$STUB_LOG.sudo")"
+  : >"$STUB_LOG"
+  run_dpds_as_root --no-sudo-vars start
+  assert_rc 0 "$ERR"
+  assert_log_has '^systemctl enable --now dpds-controller$'
+  [[ ! -s "$STUB_LOG.sudo" ]] || fail "plain root went through sudo: $(tr '\n' '|' <"$STUB_LOG.sudo")"
 }
 
 test_root_is_refused_although_everything_is_installed_and_running() {
@@ -3085,7 +3142,7 @@ test_every_nonzero_exit_of_the_check_is_handled_the_same_way() {
   local rc
   for rc in 1 2 3 7; do
     : >"$STUB_LOG"
-    rm -rf "$DPDS_PREFIX/bin/dpds-controller" "$DPDS_ETC_DIR" "$(installed_unit)"
+    rm -rf "$DPDS_PREFIX/bin/dpds-controller" "$DPDS_ETC_DIR" "$(installed_unit)"; seed_network physical
     STUB_CONTROLLER_RC=$rc run_dpds --yes install
     CTX="check exit $rc" assert_rc 0 "$ERR"
     CTX="check exit $rc" assert_generic_host_check_warning "$rc"
@@ -3159,7 +3216,7 @@ test_a_state_dir_variable_in_the_environment_changes_nothing() {
   local bad
   for bad in "$T/ignored-state" "relative/state" "with space/state" ""; do
     : >"$STUB_LOG"
-    rm -rf "$DPDS_PREFIX/bin/dpds-controller" "$DPDS_ETC_DIR" "$(installed_unit)"
+    rm -rf "$DPDS_PREFIX/bin/dpds-controller" "$DPDS_ETC_DIR" "$(installed_unit)"; seed_network physical
     DPDS_STATE_DIR="$bad" run_dpds --yes install
     CTX="DPDS_STATE_DIR='$bad'" assert_rc 0 "$ERR"
     CTX="DPDS_STATE_DIR='$bad'" assert_exec "$DPDS_PREFIX/bin/dpds-controller"
@@ -3386,6 +3443,280 @@ test_update_after_an_uninstall_reinstalls() {
   run_dpds --yes update
   assert_update_was_a_full_update
   assert_eq "$(cat "$(stamp_file)")" "6666666666666666666666666666666666666666" "stamp"
+}
+
+# ------------------------------------------------------------------ tests: network mode (physical | virtual)
+# A first install has no stored mode: the tests that exercise it remove the file the sandbox seeds.
+no_stored_network() { rm -f "$DPDS_ETC_DIR/network"; }
+no_systemd() { rm -rf "$DPDS_SYSTEMD_RUN_DIR"; }
+# What the stub controller found in its --etc-dir at each `check`/`serve` call.
+controller_saw() { cat "$STUB_LOG.network" 2>/dev/null | tr '\n' ' '; }
+assert_refused_before_building() {
+  assert_log_lacks '^npm (ci|run)'
+  assert_log_lacks '^cargo build'
+  assert_no_file "$DPDS_PREFIX/bin/dpds"
+  assert_no_file "$DPDS_PREFIX/bin/dpds-controller"
+}
+
+test_network_option_is_accepted_before_the_command_in_any_order() {
+  local args
+  for args in "--network virtual --yes install" "--yes --network virtual install" "--yes --nightly --network virtual install"; do
+    setup_sandbox
+    no_stored_network
+    # shellcheck disable=SC2086
+    run_dpds $args
+    CTX="$args" assert_rc 0 "$ERR"
+    CTX="$args" assert_eq "$(stored_network)" "virtual" "stored mode"
+  done
+}
+
+test_network_option_only_belongs_to_install_and_update() {
+  local c
+  for c in check start stop restart status uninstall; do
+    : >"$STUB_LOG"
+    run_dpds --network virtual "$c"
+    CTX="$c" assert_rc_nonzero
+    CTX="$c" assert_err_has "--network"
+    CTX="$c" assert_log_empty
+    CTX="$c" assert_eq "$(stored_network)" "physical" "stored mode"
+  done
+}
+
+test_network_option_needs_physical_or_virtual() {
+  local args
+  for args in "--network bogus --yes install" "--network Virtual --yes install" "--network= --yes install"; do
+    : >"$STUB_LOG"
+    # shellcheck disable=SC2086
+    run_dpds $args
+    CTX="$args" assert_rc_nonzero
+    CTX="$args" assert_err_has "--network"
+    CTX="$args" assert_err_has "virtual"
+    CTX="$args" assert_log_empty
+  done
+  # a missing value must not swallow the command
+  : >"$STUB_LOG"
+  run_dpds --yes --network install
+  assert_rc_nonzero
+  assert_err_has "--network"
+  assert_log_empty
+}
+
+test_a_first_install_without_the_option_fails_before_building() {
+  no_stored_network
+  run_dpds --yes install
+  assert_rc_nonzero
+  assert_err_has "--network"
+  assert_err_has "physical"
+  assert_err_has "virtual"
+  assert_refused_before_building
+  assert_no_file "$DPDS_ETC_DIR/network"
+}
+
+test_stored_content_other_than_physical_or_virtual_counts_as_no_mode() {
+  local bad
+  for bad in "banana" "" "physical virtual" "Virtual"; do
+    : >"$STUB_LOG"
+    seed_network "$bad"
+    run_dpds --yes install
+    CTX="stored '$bad'" assert_rc_nonzero
+    CTX="stored '$bad'" assert_err_has "--network"
+    CTX="stored '$bad'" assert_refused_before_building
+  done
+}
+
+test_update_without_a_stored_mode_and_without_the_option_fails_before_building() {
+  fake_install
+  no_stored_network
+  run_dpds --yes update
+  assert_rc_nonzero
+  assert_err_has "--network"
+  assert_log_lacks '^npm (ci|run)'
+  assert_log_lacks '^cargo build'
+}
+
+test_the_option_stores_the_mode_as_one_line() {
+  no_stored_network
+  run_dpds --yes --network physical install
+  assert_rc 0 "$ERR"
+  assert_eq "$(stored_network)" "physical" "stored mode"
+  assert_eq "$(wc -l <"$DPDS_ETC_DIR/network" | tr -d ' ')" 1 "one line"
+  : >"$STUB_LOG"
+  run_dpds --yes --network virtual install
+  assert_rc 0 "$ERR"
+  assert_eq "$(cmp "$DPDS_ETC_DIR/network" <(printf 'virtual\n') && echo same)" "same" "exactly 'virtual' and a newline"
+}
+
+test_install_and_update_without_the_option_keep_the_stored_mode() {
+  local m
+  for m in virtual physical; do
+    setup_sandbox
+    seed_network "$m"
+    run_dpds --yes install
+    CTX="install, stored $m" assert_rc 0 "$ERR"
+    CTX="install, stored $m" assert_eq "$(stored_network)" "$m" "stored mode"
+    : >"$STUB_LOG"
+    rm -f "$(stamp_file)" # the installed commit is HEAD: without this update would have nothing to do
+    run_dpds --yes update
+    CTX="update, stored $m" assert_update_was_a_full_update
+    CTX="update, stored $m" assert_eq "$(stored_network)" "$m" "stored mode"
+  done
+}
+
+test_the_option_switches_the_stored_mode_on_install_and_on_update() {
+  seed_network physical
+  run_dpds --yes --network virtual install
+  assert_rc 0 "$ERR"
+  assert_eq "$(stored_network)" "virtual" "stored mode after install"
+  : >"$STUB_LOG"
+  rm -f "$(stamp_file)"
+  run_dpds --yes --network physical update
+  assert_update_was_a_full_update
+  assert_eq "$(stored_network)" "physical" "stored mode after update"
+}
+
+test_the_host_check_of_install_judges_the_mode_being_installed() {
+  # the controller reads the mode from its etc dir, so it must see the new one at the host check
+  no_stored_network
+  run_dpds --yes --network virtual install
+  assert_rc 0 "$ERR"
+  assert_log_has '^dpds-controller check( .*)?--etc-dir[ =]'"$DPDS_ETC_DIR"
+  assert_eq "$(controller_saw)" "virtual " "mode the host check saw"
+  : >"$STUB_LOG.network"
+  seed_network virtual
+  run_dpds --yes --network physical install
+  assert_rc 0 "$ERR"
+  assert_eq "$(controller_saw)" "physical " "mode the host check saw after a switch"
+}
+
+test_a_declined_install_leaves_the_stored_mode_alone() {
+  seed_network physical
+  feed $'n\n'
+  run_dpds --network virtual install
+  assert_rc 1
+  assert_eq "$(stored_network)" "physical" "stored mode"
+  no_stored_network
+  feed $'n\n'
+  run_dpds --network virtual install
+  assert_rc 1
+  assert_no_file "$DPDS_ETC_DIR/network"
+}
+
+test_uninstall_keeps_the_stored_mode() {
+  fake_install
+  seed_network virtual
+  run_dpds --yes uninstall
+  assert_rc 0 "$ERR"
+  assert_eq "$(stored_network)" "virtual" "stored mode"
+}
+
+test_the_controller_check_gets_the_etc_dir_only_when_it_is_not_the_default() {
+  write_controller_stub "$DPDS_PREFIX/bin/dpds-controller"
+  run_dpds check
+  assert_rc 0 "$ERR"
+  assert_log_has '^dpds-controller check( .*)?--etc-dir[ =]'"$DPDS_ETC_DIR"'( |$)'
+  : >"$STUB_LOG"
+  DPDS_ETC_DIR=/etc/dpds run_dpds check
+  assert_rc 0 "$ERR"
+  assert_log_has '^dpds-controller check'
+  assert_log_lacks '--etc-dir'
+}
+
+test_check_in_virtual_mode_needs_the_af_packet_driver_in_dpdk() {
+  write_controller_stub "$DPDS_PREFIX/bin/dpds-controller"
+  seed_network virtual
+  run_dpds check
+  assert_rc_nonzero
+  assert_err_has "net_af_packet"
+  # a static library, a shared library, a PMD in the plugin directory
+  touch "$STUB_DPDK_LIBDIR/librte_net_af_packet.a"
+  run_dpds check
+  assert_rc 0 "$ERR"
+  rm "$STUB_DPDK_LIBDIR/librte_net_af_packet.a"
+  touch "$STUB_DPDK_LIBDIR/librte_net_af_packet.so.26.0"
+  run_dpds check
+  assert_rc 0 "$ERR"
+  rm "$STUB_DPDK_LIBDIR/librte_net_af_packet.so.26.0"
+  run_dpds check
+  assert_rc_nonzero
+  mkdir -p "$STUB_DPDK_LIBDIR/dpdk/pmds-26.0"
+  touch "$STUB_DPDK_LIBDIR/dpdk/pmds-26.0/librte_net_af_packet.so.26.0"
+  run_dpds check
+  assert_rc 0 "$ERR"
+}
+
+test_check_in_physical_mode_does_not_look_for_the_af_packet_driver() {
+  write_controller_stub "$DPDS_PREFIX/bin/dpds-controller"
+  seed_network physical
+  run_dpds check
+  assert_rc 0 "$ERR"
+}
+
+# ------------------------------------------------------------------ tests: no systemd (a container)
+controller_command() {
+  echo "DPDS_CONTROLLER_BIND=${1:-0.0.0.0:8100} DPDS_CONTROLLER_DPDS_BIN=$DPDS_PREFIX/bin/dpds $DPDS_PREFIX/bin/dpds-controller serve"
+}
+
+test_install_without_systemd_installs_everything_but_the_unit_and_says_how_to_start() {
+  no_systemd
+  DPDS_BIND=127.0.0.1:9000 run_dpds --yes --network virtual install
+  assert_rc 0 "$ERR"
+  assert_exec "$DPDS_PREFIX/bin/dpds"
+  assert_exec "$DPDS_PREFIX/bin/dpds-controller"
+  assert_file_has "$DPDS_ETC_DIR/controller.env" '^DPDS_CONTROLLER_BIND="?127\.0\.0\.1:9000"?$'
+  assert_eq "$(stored_network)" "virtual" "stored mode"
+  assert_no_file "$(installed_unit)"
+  assert_log_lacks '^systemctl'
+  assert_all_has "$(controller_command 127.0.0.1:9000)"
+}
+
+test_install_with_systemd_still_installs_the_unit_and_reloads() {
+  run_dpds --yes --network virtual install
+  assert_rc 0 "$ERR"
+  assert_file "$(installed_unit)"
+  assert_log_has '^systemctl daemon-reload'
+}
+
+test_start_stop_restart_status_without_systemd_call_no_systemctl() {
+  fake_install
+  rm -f "$(installed_unit)"
+  no_systemd
+  local c
+  for c in start restart status; do
+    : >"$STUB_LOG"
+    run_dpds "$c"
+    CTX="$c" assert_rc 0 "$ERR"
+    CTX="$c" assert_log_lacks '^systemctl'
+    CTX="$c" assert_all_has "$(controller_command)"
+  done
+  : >"$STUB_LOG"
+  run_dpds stop
+  assert_rc 0 "$ERR"
+  assert_log_lacks '^systemctl'
+}
+
+test_start_and_restart_without_systemd_need_the_installed_binaries_not_the_unit() {
+  no_systemd
+  local c
+  for c in start restart; do
+    : >"$STUB_LOG"
+    run_dpds "$c"
+    CTX="$c" assert_rc_nonzero
+    CTX="$c" assert_all_has "not installed"
+    CTX="$c" assert_log_lacks '^systemctl'
+  done
+}
+
+test_update_without_systemd_does_not_ask_systemctl_and_does_not_restart() {
+  fake_install
+  rm -f "$(installed_unit)"
+  no_systemd
+  export STUB_ACTIVE=1
+  run_dpds --yes update
+  assert_rc 0 "$ERR"
+  assert_log_has '^npm ci( |$)'
+  assert_log_has '^cargo build .*(-p|--package|--bin)[ =]dpds-controller( |$)'
+  assert_log_lacks '^systemctl'
+  assert_file_has "$DPDS_PREFIX/bin/dpds-controller" 'STUB-BINARY-dpds-controller'
 }
 
 # ------------------------------------------------------------------ runner

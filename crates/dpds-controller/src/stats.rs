@@ -8,6 +8,7 @@ use utoipa::ToSchema;
 
 use crate::cdf::DelayModel;
 use crate::dto::{ConfigDto, DelayerDto};
+use crate::host::Network;
 
 /// One poll of the telemetry socket, kept as the raw replies.
 #[derive(Debug, Clone, Default)]
@@ -175,6 +176,8 @@ pub struct DirectionStats {
 
 #[derive(Debug, Clone, Default, Serialize, ToSchema)]
 pub struct StatsView {
+    /// The network mode of the installation.
+    pub network: Network,
     pub directions: Vec<DirectionStats>,
     /// Milliseconds since the last successful poll; absent without any data.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -289,6 +292,8 @@ pub struct HistoryLink {
 /// Answer of `GET /api/stats/history`.
 #[derive(Debug, Clone, Default, Serialize, ToSchema)]
 pub struct HistoryView {
+    /// The network mode of the installation.
+    pub network: Network,
     /// Identity of the run: one more with every new run the controller sees; null before any run.
     pub run_id: Option<u64>,
     /// The links of that run, in the order of the start body (the keys of `samples`); empty
@@ -607,6 +612,7 @@ pub fn compute_stats(prev: Option<&Snapshot>, cur: &Snapshot, vfs: &HashSet<Stri
         .collect();
 
     StatsView {
+        network: Network::default(), // the API fills in the mode
         directions,
         age_ms: None,
         stale: false,

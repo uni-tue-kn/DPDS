@@ -293,12 +293,17 @@ function seed(s: string): number | null {
 
 const PCI = /^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]$/;
 const VDEV = /^net_(null|ring)\d+$/;
+const NETDEV = /^[A-Za-z0-9_.-]{1,15}$/;
 
-/** The controller's port rule: a PCI address or a `net_null<N>` / `net_ring<N>` vdev, nothing else. */
+/**
+ * The controller's port rule without knowing its mode: a PCI address, a `net_null<N>` / `net_ring<N>` vdev, or a kernel
+ * interface name (virtual mode). The controller enforces the mode of the installation.
+ */
 export function portError(port: string): string | null {
-  return PCI.test(port) || VDEV.test(port)
+  const netdev = NETDEV.test(port) && port !== 'lo' && port !== '.' && port !== '..' && !port.startsWith('net_');
+  return PCI.test(port) || VDEV.test(port) || netdev
     ? null
-    : `"${port}" is neither a PCI address (0000:65:00.0) nor a vdev (net_null0, net_ring0)`;
+    : `"${port}" is neither a PCI address (0000:65:00.0), a vdev (net_null0, net_ring0) nor an interface name (eth1)`;
 }
 
 function delayerToDto(f: ConfigForm, frame: number | null): DelayerDto {

@@ -38,6 +38,7 @@ import {
   withAccuracy,
 } from './linkForm';
 import type { ConfigForm } from './linkForm';
+import { draftLinks, rowsOf } from './linkDraft';
 import { derivedLimitText } from './linkSummary';
 
 // Pure logic of the config form: unit conversion, `formToDto` validation and the stored-value round trip. Nothing is rendered.
@@ -682,11 +683,28 @@ describe('configToForm and formToDto round-trip a stored config exactly', () => 
 });
 
 describe('link rules: ports and what the form accepts unchanged', () => {
-  it.each(['0000:65:00.0', '0000:b3:00.7', 'net_null0', 'net_ring12'])('the port %s is valid', (p) => {
-    expect(portError(p)).toBeNull();
-  });
-  it.each(['', 'eth0', '0000:65:00.8', '65:00.0', 'net_null', 'net_tap0'])('the port %j is refused, naming it', (p) => {
+  // a virtual network's ports are kernel interface names; the controller checks their form against the stored mode
+  it.each(['0000:65:00.0', '0000:b3:00.7', 'net_null0', 'net_ring12', 'eth1', 'ens3.10', 'veth-a_1'])(
+    'the port %s is valid',
+    (p) => {
+      expect(portError(p)).toBeNull();
+    },
+  );
+  it.each(['', '0000:65:00.8', '65:00.0', 'net_null', 'net_tap0'])('the port %j is refused, naming it', (p) => {
     expect(portError(p)).toContain(`"${p}"`);
+  });
+
+  it('a draft of netdev-named ports (virtual mode) becomes links that carry the names', () => {
+    const rows = rowsOf([
+      fx.link({ ingress: 'eth1', egress: 'eth2' }),
+      fx.link({ id: 2, ingress: 'eth2', egress: 'eth1' }),
+    ]);
+    const draft = draftLinks(rows);
+    if (!('links' in draft)) throw new Error(draft.problem);
+    expect(draft.links.map((l) => [l.ingress, l.egress])).toEqual([
+      ['eth1', 'eth2'],
+      ['eth2', 'eth1'],
+    ]);
   });
 
   it('the fixtures are valid links', () => {

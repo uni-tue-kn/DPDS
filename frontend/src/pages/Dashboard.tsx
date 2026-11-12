@@ -283,6 +283,11 @@ export default function Dashboard() {
   return (
     <>
       <PageTitle className="mb-3" title="Dashboard" />
+      {emulation?.network === 'virtual' && (
+        <div className="alert alert-info">
+          Virtual network mode: for functional testing only, delays and rates are not measurements.
+        </div>
+      )}
       <Row className="align-items-center mb-3" data-testid="top-row">
         <Col className="col-8 text-start" data-testid="top-pills">
           <span style={STAT_STYLE} data-testid="pill-tx">

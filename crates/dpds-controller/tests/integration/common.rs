@@ -11,9 +11,16 @@
 //! and maps). `hints::compute_hints` and `lcores::assign_lcores` are reached through
 //! `POST /api/host/hints` and `POST /api/emulation/validate` ([`hints_json`], [`plan_for`]).
 //!
-//! `dpds-controller serve|check`: `check` takes `--sysfs-root --procfs-root --ifaddrs-file --json`
-//! only (the first three are test-only host flags shared with `serve`); `--state-dir` is a usage
-//! error (exit 2) for both. Text mode prints one line per hint with the upper-case level and the
+//! `dpds-controller serve|check`: `check` takes `--sysfs-root --procfs-root --ifaddrs-file --etc-dir
+//! --json` only (the host flags are test-only and shared with `serve`; `--etc-dir` names the
+//! directory with the stored mode file `network`); `--state-dir` is a usage error (exit 2) for both. Both read the stored
+//! network mode first and exit 2 without one: every test that starts the binary gets the physical
+//! one through [`controller_cmd`] / [`ControllerProcess`], or its own `--etc-dir`.
+//!
+//! The network mode (`host::Network`, `Physical` or `Virtual`) is `HostRoots::network`, built from
+//! the stored file by the binary and set by [`FakeHost`] (`FakeHost::virtual_net`).
+//!
+//! `check` text mode prints one line per hint with the upper-case level and the
 //! title; exit 1 iff any hint has level error.
 //!
 //! # HTTP contract
@@ -60,7 +67,7 @@ use tempfile::TempDir;
 
 use dpds_controller::api::{self, Deps};
 use dpds_controller::dto::ConfigDto;
-use dpds_controller::host::{CommandOutput, Exec, HostRoots, IfAddrs};
+use dpds_controller::host::{CommandOutput, Exec, HostRoots, IfAddrs, Network};
 use dpds_controller::model::Link;
 use dpds_controller::stats::{Polled, Snapshot};
 use dpds_controller::supervisor::{LaunchPlan, State, Supervisor, SupervisorStatus};
@@ -120,6 +127,8 @@ pub struct FakeHost {
     /// The fake command runner of this host's `roots()`. It runs no tool until a test
     /// registers one, and it only accepts read-only queries (see [`FakeExec`]).
     exec: Arc<FakeExec>,
+    /// The network mode of this host's `roots()`; also stored in `etc/network`.
+    network: Network,
 }
 
 impl FakeHost {
@@ -128,10 +137,58 @@ impl FakeHost {
             tmp: tempfile::tempdir().unwrap(),
             ifaddrs: Mutex::new(Vec::new()),
             exec: FakeExec::new(),
+            network: Network::Physical,
         };
         fs::create_dir_all(h.sysfs()).unwrap();
         fs::create_dir_all(h.procfs()).unwrap();
+        h.write("etc/network", "physical\n");
         h
+    }
+
+    /// A virtual network host (containerlab node): `ncpu` online CPUs, no isolation, no
+    /// hugepages, 4 GB `MemAvailable`, and these netdevs (see [`FakeHost::netdev`]), `lo` always
+    /// among them. The mode file `etc/network` says `virtual`.
+    pub fn virtual_net(ncpu: u32, netdevs: &[&str]) -> FakeHost {
+        let mut h = FakeHost::empty();
+        h.network = Network::Virtual;
+        h.write("etc/network", "virtual\n");
+        h.cpus(ncpu, Some(""), &[]);
+        h.cmdline("BOOT_IMAGE=/vmlinuz ro quiet");
+        h.write(
+            "proc/meminfo",
+            "MemTotal:        8000000 kB\nMemFree:         6000000 kB\nMemAvailable:    4000000 kB\n",
+        );
+        h.netdev("lo");
+        for n in netdevs {
+            h.netdev(n);
+        }
+        h
+    }
+
+    /// The directory of the stored mode file `network` (the controller's `--etc-dir`).
+    pub fn etc_dir(&self) -> PathBuf {
+        self.tmp.path().join("etc")
+    }
+
+    /// A kernel netdev without a PCI device (a veth end): `class/net/<name>` with a MAC derived
+    /// from the name, `operstate` up and MTU 1500; no speed, no driver.
+    pub fn netdev(&self, name: &str) {
+        let c = format!("sys/class/net/{name}");
+        let mac = format!(
+            "02:00:00:00:00:{:02x}",
+            name.bytes().map(u32::from).sum::<u32>() % 256
+        );
+        self.write(&format!("{c}/address"), &format!("{mac}\n"));
+        self.write(&format!("{c}/operstate"), "up\n");
+        self.write(&format!("{c}/mtu"), "1500\n");
+    }
+
+    /// The `device/driver` symlink of a netdev (a virtio NIC of a VM has one, a veth does not).
+    pub fn netdev_driver(&self, name: &str, driver: &str) {
+        self.symlink(
+            &format!("../../../../bus/virtio/drivers/{driver}"),
+            &format!("sys/class/net/{name}/device/driver"),
+        );
     }
 
     pub fn sysfs(&self) -> PathBuf {
@@ -148,6 +205,7 @@ impl FakeHost {
             procfs: self.procfs(),
             ifaddrs: IfAddrs::Fixed(self.ifaddrs.lock().unwrap().clone()),
             exec: self.exec.clone(),
+            network: self.network,
         }
     }
 
@@ -946,6 +1004,17 @@ pub fn plan_for(host: &FakeHost, setup: &Setup) -> Result<Assignment, String> {
         );
         Err(r.message())
     }
+}
+
+/// The `-m` (MiB) of a virtual network start whose links have these `buffer_capacity` values: a
+/// pool of `capacity + 4096 + 4096 + 768 + 64` mbufs per link, each taking a whole 4 KiB page
+/// (measured with the real `dpds` under `--no-huge`: a 2432 B mbuf does not pack into a page, so
+/// a pool needs `mbufs * 4096` bytes, not `mbufs * 2432`; 2^18 packets need 1059 MiB and fail
+/// below 1060), rounded up to a MiB, plus 64 MiB for EAL, the rings and headroom (a default
+/// 100000-packet buffer needs about 440-460 MiB; the formula gives 490).
+pub fn virtual_mem_mib(capacities: &[u64]) -> u64 {
+    let mbufs: u64 = capacities.iter().map(|c| c + 4096 + 4096 + 768 + 64).sum();
+    (mbufs * 4096).div_ceil(1 << 20) + 64
 }
 
 /// A router over fake host roots with a fresh fake supervisor and telemetry.
@@ -2007,6 +2076,19 @@ pub fn header_value(headers: &[String], name: &str) -> Option<String> {
         .map(|v| v.trim().to_string())
 }
 
+/// The etc dir with the stored mode `physical` that the binary tests use unless they bring their
+/// own `--etc-dir` (the command line beats the environment).
+pub fn etc_physical() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/etc-physical")
+}
+
+/// `dpds-controller` with the stored mode `physical` in its environment (`DPDS_CONTROLLER_ETC_DIR`).
+pub fn controller_cmd() -> std::process::Command {
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_dpds-controller"));
+    cmd.env("DPDS_CONTROLLER_ETC_DIR", etc_physical());
+    cmd
+}
+
 /// A running `dpds-controller` binary on a free loopback port, killed on drop.
 pub struct ControllerProcess {
     pub child: std::process::Child,
@@ -2018,7 +2100,7 @@ impl ControllerProcess {
     /// `{addr}` in `args` is replaced by the free loopback address the process must bind.
     pub fn start(args: &[&str], envs: &[(&str, &str)]) -> ControllerProcess {
         let addr = free_addr();
-        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_dpds-controller"));
+        let mut cmd = controller_cmd();
         for a in args {
             cmd.arg(a.replace("{addr}", &addr));
         }

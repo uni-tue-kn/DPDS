@@ -13,6 +13,8 @@
 
 use crate::common::*;
 use dpds_controller::dto::ConfigDto;
+use dpds_controller::host::Network;
+use dpds_controller::validate::port_name;
 use serde_json::{json, Value};
 
 fn app() -> TestApp {
@@ -384,4 +386,111 @@ fn the_dto_rejects_reordering_with_correlation_naming_it_and_accepts_it_with_the
     let mut c = cfg_full(1.0e6, 0.0, 1.0e9); // Spacer
     c["reordering"] = json!(true);
     assert!(dto_from(c).to_core().is_ok());
+}
+
+// ---- port names in a virtual network ---------------------------------------
+
+#[test]
+fn a_virtual_port_is_a_kernel_interface_name() {
+    for ok in [
+        "eth1",
+        "Eth1",
+        "veth-a.1",
+        "a_b",
+        "0",
+        "123456789012345", // 15 bytes
+    ] {
+        assert_eq!(port_name(ok, Network::Virtual), Ok(ok.to_string()), "{ok}");
+    }
+    for bad in [
+        "",
+        "1234567890123456", // 16 bytes
+        "lo",
+        "net_null0",
+        "net_af_packet0",
+        "net_af_packet0,iface=eth1",
+        "0000:17:00.0",
+        ".",
+        "..",
+        "a b",
+        "a/b",
+        "eth1,iface=x",
+        "eth1\n",
+        "eth:1",
+        "ethé",
+    ] {
+        assert!(port_name(bad, Network::Virtual).is_err(), "{bad:?}");
+    }
+}
+
+#[test]
+fn a_name_of_the_other_mode_is_refused_with_a_message_naming_the_mode() {
+    for physical_form in ["0000:17:00.0", "net_null0", "net_ring3"] {
+        let e = port_name(physical_form, Network::Virtual).unwrap_err();
+        assert!(e.to_lowercase().contains("virtual"), "{physical_form}: {e}");
+    }
+    let e = port_name("eth1", Network::Physical).unwrap_err();
+    assert!(e.to_lowercase().contains("physical"), "{e}");
+    // the physical rule is what it was
+    assert_eq!(
+        port_name("0000:17:00.0", Network::Physical),
+        Ok("0000:17:00.0".to_string())
+    );
+    assert_eq!(
+        port_name("0000:B3:00.1", Network::Physical),
+        Ok("0000:b3:00.1".to_string())
+    );
+    assert!(port_name("net_pcap0", Network::Physical).is_err());
+}
+
+#[tokio::test]
+async fn a_virtual_start_takes_interface_names_and_a_physical_one_does_not() {
+    let virt = TestApp::new(FakeHost::virtual_net(4, &["eth1", "eth2", "eth3"]));
+    for bad in [
+        one("0000:17:00.0", "eth2"),
+        one("eth1", "net_null0"),
+        one("eth1", "lo"),
+    ] {
+        let r = virt.start(&bad).await;
+        assert_eq!(r.status, 400, "{}", r.text());
+        assert!(
+            r.message().to_lowercase().contains("virtual"),
+            "{}",
+            r.message()
+        );
+        assert_eq!(virt.validate(&bad).await.status, 400);
+    }
+    let r = virt.start(&one("eth1", "eth1")).await;
+    assert_eq!(r.status, 202, "{}", r.text());
+
+    let phys = app();
+    let r = phys.start(&one("eth1", NIC0)).await;
+    assert_eq!(r.status, 400, "{}", r.text());
+    assert!(
+        r.message().to_lowercase().contains("physical"),
+        "{}",
+        r.message()
+    );
+}
+
+#[tokio::test]
+async fn a_virtual_interface_is_the_ingress_and_the_egress_of_at_most_one_link() {
+    let a = TestApp::new(FakeHost::virtual_net(4, &["eth1", "eth2", "eth3"]));
+    let r = a
+        .start_links(vec![link("eth1", "eth2"), link("eth1", "eth3")])
+        .await;
+    assert_eq!(r.status, 409, "{}", r.text());
+    let r = a
+        .start_links(vec![link("eth1", "eth3"), link("eth2", "eth3")])
+        .await;
+    assert_eq!(r.status, 409, "{}", r.text());
+    // in and out are different roles: a ring over three interfaces is fine
+    let r = a
+        .start_links(vec![
+            link("eth1", "eth2"),
+            link("eth2", "eth3"),
+            link("eth3", "eth1"),
+        ])
+        .await;
+    assert_eq!(r.status, 202, "{}", r.text());
 }

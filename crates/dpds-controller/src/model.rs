@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::dto::ConfigDto;
+use crate::host::Network;
 use crate::validate;
 
 /// One emulated link: one direction, packets received on `ingress` leave on `egress`
@@ -14,9 +15,10 @@ use crate::validate;
 pub struct Link {
     /// Position in the start body, from 1.
     pub id: u32,
-    /// DPDK device name the link receives on: a PCI address or a vdev name such as `net_null0`.
+    /// The port the link receives on: a PCI address or a vdev name such as `net_null0`, or in a
+    /// virtual network an interface name such as `eth1`.
     pub ingress: String,
-    /// DPDK device name the link sends on.
+    /// The port the link sends on.
     pub egress: String,
     pub config: ConfigDto,
 }
@@ -54,8 +56,8 @@ pub struct RunConfig {
 impl StartRequest {
     /// The links with ids (their position in the body, from 1) and PCI addresses in
     /// lower case. A port name that is not valid stays as sent, for validation to refuse.
-    pub fn into_run_config(self) -> RunConfig {
-        let normal = |port: String| validate::port_name(&port).unwrap_or(port);
+    pub fn into_run_config(self, network: Network) -> RunConfig {
+        let normal = |port: String| validate::port_name(&port, network).unwrap_or(port);
         let links = self
             .links
             .into_iter()

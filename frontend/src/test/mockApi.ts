@@ -90,6 +90,7 @@ export function serveHistory(server: HistoryServer): void {
   api.getStatsHistory.mockImplementation(async (sinceMs) => {
     const ran = server.startedAt !== null;
     return {
+      network: 'physical',
       run_id: server.runId === undefined ? (ran ? 1 : null) : server.runId,
       started_at: server.startedAt,
       links: server.links ?? (ran ? fx.historyLinks() : []),

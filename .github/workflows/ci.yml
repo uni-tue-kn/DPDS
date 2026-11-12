@@ -114,6 +114,16 @@ jobs:
           test "$(cat /proc/sys/vm/nr_hugepages)" -ge 512
       - name: Test controller end-to-end
         run: cargo test --release -p dpds-controller --test integration -- --ignored --test-threads=1
+      # The virtual network mode runs dpds on net_af_packet over veth pairs and network namespaces,
+      # which need root (CAP_NET_ADMIN, CAP_NET_RAW, CAP_SYS_ADMIN) and no hugepages. The test
+      # binary is built as the user (nothing is rebuilt as root), then run under sudo with the
+      # environment kept; the physical e2e tests above ran as the user.
+      - name: Test controller end-to-end in a virtual network
+        run: |
+          bin="$(cargo test --release -p dpds-controller --test integration --no-run --message-format=json \
+            | jq -r 'select(.profile.test == true and .target.name == "integration") | .executable' | tail -n 1)"
+          test -x "$bin"
+          sudo env "PATH=$PATH" "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" "$bin" e2e::virtual_network --ignored --test-threads=1
 
   frontend:
     runs-on: ubuntu-24.04

@@ -30,9 +30,10 @@ use crate::dto::{
 use crate::eal::{drain_timeout, eal_argv, links_file_json, EalInput, EalPort};
 use crate::frontend::Frontend;
 use crate::hints::{
-    compute_hints_cached, hugepage_bytes, link_need, mib, warm_firmware, Hint, Level,
+    compute_hints_cached, hugepage_bytes, link_need, mem_available, mib, virtual_link_need,
+    virtual_mem_mib, warm_firmware, Hint, Level,
 };
-use crate::host::HostRoots;
+use crate::host::{HostRoots, Network};
 use crate::lcores::{assign_lcores, DirectionPlan};
 use crate::model::{Link, RunConfig, StartLink, StartRequest};
 use crate::nic_hints::FirmwareCache;
@@ -214,6 +215,8 @@ pub struct OnlineView {
     /// The `dpds` binary has the `telemetry` feature (needed for start and stats).
     telemetry: bool,
     root: bool,
+    /// How the installation runs: on real NICs or in a virtual network.
+    network: Network,
     /// The number of OTHER GUI sessions that polled `/api/online` in the last 15 s.
     connected_clients: usize,
 }
@@ -228,11 +231,13 @@ pub struct VersionView {
 
 #[derive(Serialize, ToSchema)]
 pub struct EmulationView {
+    network: Network,
     state: RunState,
     pid: Option<u32>,
     /// Unix seconds.
     started_at: Option<u64>,
-    /// The planned lcores of the run; empty while stopped.
+    /// The planned lcores of the run; empty while stopped. In a virtual network `rx` and `tx` are
+    /// the DPDK devices (`net_af_packet0`, ...) the interfaces became.
     directions: Vec<DirectionPlan>,
     main_lcore: Option<u32>,
     /// The configuration the emulation was started with; null while stopped.
@@ -254,11 +259,9 @@ pub struct PlanView {
 /// `RTE_TEL_MAX_DICT_ENTRIES`).
 const MAX_TELEMETRY_DICT_ENTRIES: usize = 256;
 
-/// `dpds` publishes `3 + 5 * distinct ports + 9 * links` keys in one telemetry dict and
-/// refuses to start above 256: refuse such a setup here, before it is launched.
-fn check_dict_limit(links: &[Link]) -> Result<(), ApiError> {
+/// The ports of the links without repeats, in link order (ingress before egress).
+fn distinct_ports(links: &[Link]) -> Vec<&str> {
     let mut ports: Vec<&str> = Vec::new();
-    let count = links.len();
     for l in links {
         for p in [l.ingress.as_str(), l.egress.as_str()] {
             if !ports.contains(&p) {
@@ -266,6 +269,19 @@ fn check_dict_limit(links: &[Link]) -> Result<(), ApiError> {
             }
         }
     }
+    ports
+}
+
+/// The DPDK device the `i`-th distinct port of a virtual network start becomes.
+fn af_packet(i: usize) -> String {
+    format!("net_af_packet{i}")
+}
+
+/// `dpds` publishes `3 + 5 * distinct ports + 9 * links` keys in one telemetry dict and
+/// refuses to start above 256: refuse such a setup here, before it is launched.
+fn check_dict_limit(links: &[Link]) -> Result<(), ApiError> {
+    let ports = distinct_ports(links);
+    let count = links.len();
     let entries = 3 + 5 * ports.len() + 9 * count;
     if entries > MAX_TELEMETRY_DICT_ENTRIES {
         return Err(ApiError::bad(format!(
@@ -277,9 +293,9 @@ fn check_dict_limit(links: &[Link]) -> Result<(), ApiError> {
 }
 
 /// Validates a link of the configuration against the links before it.
-fn validate_link(l: &Link, before: &[Link]) -> Result<(), ApiError> {
-    validate::port_name(&l.ingress).map_err(ApiError::bad)?;
-    validate::port_name(&l.egress).map_err(ApiError::bad)?;
+fn validate_link(l: &Link, before: &[Link], network: Network) -> Result<(), ApiError> {
+    validate::port_name(&l.ingress, network).map_err(ApiError::bad)?;
+    validate::port_name(&l.egress, network).map_err(ApiError::bad)?;
     l.config
         .to_core()
         .map_err(|e| ApiError::bad(format!("config: {e}")))?;
@@ -332,17 +348,17 @@ fn parse_window(query: Option<&str>) -> Result<u32, ApiError> {
 }
 
 /// The validated configuration of a start body.
-fn validate_config(config: &RunConfig) -> Result<(), ApiError> {
+fn validate_config(config: &RunConfig, network: Network) -> Result<(), ApiError> {
     if config.links.is_empty() {
         return Err(ApiError::bad("nothing to start: the body has no links"));
     }
-    validate_body(config)
+    validate_body(config, network)
 }
 
 /// The checks of a start body that do not need a link: every link and the telemetry limit.
-fn validate_body(config: &RunConfig) -> Result<(), ApiError> {
+fn validate_body(config: &RunConfig, network: Network) -> Result<(), ApiError> {
     for (i, l) in config.links.iter().enumerate() {
-        validate_link(l, &config.links[..i])?;
+        validate_link(l, &config.links[..i], network)?;
     }
     check_dict_limit(&config.links)
 }
@@ -356,6 +372,7 @@ impl App {
             lock(&self.run).clone()
         };
         EmulationView {
+            network: self.deps.roots.network,
             state: st.state,
             pid: st.pid,
             started_at: st.started_at,
@@ -376,14 +393,18 @@ impl App {
         Some(run.as_ref()?.config.links.get(d)?.config.clone())
     }
 
-    /// Validates the body and plans the launch (what start and validate share).
+    /// Validates the body and plans the launch (what start and validate share). In a virtual
+    /// network the interfaces become `net_af_packet<i>` devices here, in order of first use; the
+    /// run config keeps the interface names.
     fn launch_plan(
         &self,
         req: StartRequest,
     ) -> Result<(LaunchPlan, RunConfig, HashSet<String>), ApiError> {
-        let config = req.into_run_config();
-        validate_config(&config)?;
-        let interfaces = discover(&self.deps.roots);
+        let roots = &self.deps.roots;
+        let virtual_net = roots.network == Network::Virtual;
+        let config = req.into_run_config(roots.network);
+        validate_config(&config, roots.network)?;
+        let interfaces = discover(roots);
         let mut ports: Vec<EalPort> = Vec::new();
         let mut vf_ports = HashSet::new();
         for (link, port) in config
@@ -399,7 +420,7 @@ impl App {
                     i.reason.as_deref().unwrap_or("it is a host uplink")
                 )));
             }
-            if found.is_some_and(|i| is_vf(&self.deps.roots, i)) {
+            if !virtual_net && found.is_some_and(|i| is_vf(roots, i)) {
                 vf_ports.insert(port.clone());
             }
             if !ports.iter().any(|p| p.name == *port) {
@@ -409,9 +430,31 @@ impl App {
                 });
             }
         }
-        let assignment = assign_lcores(&self.deps.roots, &config)
+        let mut assignment = assign_lcores(roots, &config)
             .map_err(|e| ApiError::bad(format!("cannot assign lcores: {e}")))?;
-        let links_json = links_file_json(&config.links, &assignment.directions)
+        // what dpds is told: the same links and directions under the names of its devices
+        let mut dpds_links = config.links.clone();
+        if virtual_net {
+            let names = distinct_ports(&config.links);
+            let device = |port: &str| af_packet(names.iter().position(|n| *n == port).unwrap_or(0));
+            for l in &mut dpds_links {
+                l.ingress = device(&l.ingress);
+                l.egress = device(&l.egress);
+            }
+            for d in &mut assignment.directions {
+                d.rx = device(&d.rx);
+                d.tx = device(&d.tx);
+            }
+            ports = names
+                .iter()
+                .enumerate()
+                .map(|(i, n)| EalPort {
+                    name: format!("{},iface={n}", af_packet(i)),
+                    driver: None,
+                })
+                .collect();
+        }
+        let links_json = links_file_json(&dpds_links, &assignment.directions)
             .map_err(|e| ApiError::bad(e.to_string()))?;
         let configs = config
             .links
@@ -426,6 +469,8 @@ impl App {
             worker_lcores: workers,
             ports,
             links_file: links_file.clone(),
+            network: roots.network,
+            memory_mib: virtual_mem_mib(&config),
         });
         let plan = LaunchPlan {
             dpds_bin: self.deps.dpds_bin.clone(),
@@ -439,6 +484,34 @@ impl App {
         };
         Ok((plan, config, vf_ports))
     }
+}
+
+/// Refuses a virtual network start whose `-m` is more than the host has available.
+fn check_memory(roots: &HostRoots, config: &RunConfig) -> Result<(), ApiError> {
+    let total = virtual_mem_mib(config).saturating_mul(1 << 20);
+    let Some(available) = mem_available(roots) else {
+        return Ok(());
+    };
+    if total <= available {
+        return Ok(());
+    }
+    let Some(link) = config
+        .links
+        .iter()
+        .max_by_key(|l| virtual_link_need(&l.config))
+    else {
+        return Ok(());
+    };
+    Err(ApiError::bad(format!(
+        "the links need about {} of memory for dpds (their mbuf pools and headroom), but MemAvailable is {}; \
+         {} needs about {} (buffer capacity {} packets). \
+         Lower its buffer capacity or give this node more memory.",
+        mib(total),
+        mib(available),
+        link.label(),
+        mib(virtual_link_need(&link.config)),
+        link.config.buffer_capacity
+    )))
 }
 
 /// Refuses a start whose mbuf pools need more hugepage memory than is free. A host that reports
@@ -486,6 +559,7 @@ async fn online(State(app): Shared, req: Request) -> Json<OnlineView> {
         dpds_bin: app.deps.dpds_bin.to_string_lossy().into_owned(),
         telemetry: app.deps.dpds_has_telemetry,
         root: app.deps.is_root,
+        network: app.deps.roots.network,
         connected_clients: app.sessions.track_and_count_others(&id),
     })
 }
@@ -568,13 +642,9 @@ async fn host_hints_for(
     ApiJson(req): ApiJson<StartRequest>,
 ) -> Result<Json<Vec<Hint>>, ApiError> {
     let recheck = parse_recheck(query.as_deref())?;
-    let mut config = req.into_run_config();
-    validate_body(&config)?;
-    // validation accepts upper-case PCI addresses; sysfs has them in lower case
-    for l in &mut config.links {
-        l.ingress.make_ascii_lowercase();
-        l.egress.make_ascii_lowercase();
-    }
+    let network = app.deps.roots.network;
+    let config = req.into_run_config(network);
+    validate_body(&config, network)?;
     hints_of(app, config, recheck).await
 }
 
@@ -656,7 +726,10 @@ async fn start(
     let a = app.clone();
     let (plan, config, vf_ports) = blocking(move || {
         let planned = a.launch_plan(req)?;
-        check_hugepages(&a.deps.roots, &planned.1)?;
+        match a.deps.roots.network {
+            Network::Physical => check_hugepages(&a.deps.roots, &planned.1)?,
+            Network::Virtual => check_memory(&a.deps.roots, &planned.1)?,
+        }
         Ok::<_, ApiError>(planned)
     })
     .await??;
@@ -751,11 +824,12 @@ async fn stop(
 #[utoipa::path(get, path = "/api/stats", responses((status = 200, body = StatsView)))]
 async fn stats(State(app): Shared) -> Json<StatsView> {
     let elapsed_ms = app.deps.telemetry.elapsed_ms();
-    let vfs = lock(&app.run)
+    let (vfs, links) = lock(&app.run)
         .as_ref()
-        .map(|r| r.vf_ports.clone())
+        .map(|r| (r.vf_ports.clone(), r.config.links.clone()))
         .unwrap_or_default();
-    Json(match app.deps.telemetry.latest() {
+    let network = app.deps.roots.network;
+    let mut view = match app.deps.telemetry.latest() {
         Some(p) => StatsView {
             elapsed_ms,
             age_ms: Some(p.age_ms),
@@ -768,7 +842,28 @@ async fn stats(State(app): Shared) -> Json<StatsView> {
             elapsed_ms,
             ..StatsView::default()
         },
-    })
+    };
+    view.network = network;
+    if network == Network::Virtual {
+        // dpds reports its devices; the user knows the interfaces
+        let names = distinct_ports(&links);
+        let interface = |device: &mut Option<String>| {
+            let named = device.as_deref().and_then(|d| {
+                names
+                    .iter()
+                    .enumerate()
+                    .find_map(|(i, n)| (af_packet(i) == d).then(|| (*n).to_string()))
+            });
+            if named.is_some() {
+                *device = named;
+            }
+        };
+        for d in &mut view.directions {
+            interface(&mut d.rx);
+            interface(&mut d.tx);
+        }
+    }
+    Json(view)
 }
 
 /// `since_ms` of the history query: absent, or digits only (a u64). Any other parameter is an error.
@@ -805,7 +900,10 @@ async fn stats_history(
     RawQuery(query): RawQuery,
 ) -> Result<Json<HistoryView>, ApiError> {
     let since_ms = parse_since_ms(query.as_deref())?;
-    Ok(Json(app.deps.telemetry.run_history(since_ms)))
+    Ok(Json(HistoryView {
+        network: app.deps.roots.network,
+        ..app.deps.telemetry.run_history(since_ms)
+    }))
 }
 
 #[utoipa::path(

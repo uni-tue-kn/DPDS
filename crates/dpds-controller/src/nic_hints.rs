@@ -126,7 +126,7 @@ pub(crate) fn nic_hints(ctx: &Ctx) -> Vec<Hint> {
     let mut hints = Vec::new();
     if let (Some(cache), true) = (ctx.cache, ctx.recheck && ctx.run_tools) {
         for nic in ctx.used_nics() {
-            cache.drop_card(&function_zero(&nic.pci));
+            cache.drop_card(&function_zero(&nic.port));
         }
     }
     for nic in ctx.used_nics() {
@@ -175,7 +175,7 @@ fn vf_hints(nic: &Interface, label: &str) -> Vec<Hint> {
         .into_iter()
         .map(|(id, title, what)| {
             hint(
-                &format!("{id}:{}", nic.pci),
+                &format!("{id}:{}", nic.port),
                 Level::Info,
                 &format!("{title} {label}"),
                 format!(
@@ -201,7 +201,7 @@ pub(crate) fn warm_firmware(ctx: &Ctx, nics: &[Interface]) {
         .collect();
     if let (Some(cache), true) = (ctx.cache, ctx.recheck && ctx.run_tools) {
         for nic in &mlx5 {
-            cache.drop_card(&function_zero(&nic.pci));
+            cache.drop_card(&function_zero(&nic.port));
         }
     }
     for nic in mlx5 {
@@ -335,7 +335,7 @@ fn pause_from_text(out: &str) -> Option<Pause> {
 }
 
 fn flow_control(nic: &Interface, label: &str, pause: Option<&Tool<Pause>>) -> Hint {
-    let id = format!("flow_control:{}", nic.pci);
+    let id = format!("flow_control:{}", nic.port);
     let title = format!("Flow control {label}");
     let pause = match pause {
         None => {
@@ -344,7 +344,7 @@ fn flow_control(nic: &Interface, label: &str, pause: Option<&Tool<Pause>>) -> Hi
             } else {
                 format!(
                     "{} has no network device (a userspace driver is bound)",
-                    nic.pci
+                    nic.port
                 )
             };
             return hint(
@@ -428,15 +428,15 @@ fn max_read_req(config: &[u8]) -> Option<u32> {
 
 fn maxreadreq(ctx: &Ctx, nic: &Interface, label: &str) -> Hint {
     let roots = ctx.roots;
-    let id = format!("pcie_maxreadreq:{}", nic.pci);
+    let id = format!("pcie_maxreadreq:{}", nic.port);
     let title = format!("PCIe MaxReadReq {label}");
-    let config: PathBuf = roots.pci_dir(&nic.pci).join("config");
+    let config: PathBuf = roots.pci_dir(&nic.port).join("config");
     let Some(bytes) = fs::read(&config).ok().as_deref().and_then(max_read_req) else {
         return hint(
             &id,
             Level::Info,
             &title,
-            format!("{}: not readable (needs root and a PCIe device)", nic.pci),
+            format!("{}: not readable (needs root and a PCIe device)", nic.port),
             "",
         );
     };
@@ -447,7 +447,7 @@ fn maxreadreq(ctx: &Ctx, nic: &Interface, label: &str) -> Hint {
     };
     let mut detail = format!(
         "{}: {bytes} B, the target is {MAX_READ_REQ_TARGET} B",
-        nic.pci
+        nic.port
     );
     if bytes >= MAX_READ_REQ_TARGET {
         return hint(&id, level, &title, detail, "");
@@ -459,8 +459,10 @@ fn maxreadreq(ctx: &Ctx, nic: &Interface, label: &str) -> Hint {
     }
     let suggestion =
         "Raise the PCIe maximum read request size to 4096 B; 1024 B and above is acceptable.";
-    hint(&id, level, &title, detail, suggestion)
-        .with_commands(vec![format!("setpci -s {} CAP_EXP+8.w=5000:7000", nic.pci)])
+    hint(&id, level, &title, detail, suggestion).with_commands(vec![format!(
+        "setpci -s {} CAP_EXP+8.w=5000:7000",
+        nic.port
+    )])
 }
 
 // ---- NIC port buffer (dcb) --------------------------------------------------------------------
@@ -491,11 +493,11 @@ fn read_port_buffer(ctx: &Ctx, netdev: &str) -> Tool<PortBuffer> {
 }
 
 fn port_buffer(ctx: &Ctx, nic: &Interface, label: &str, pause: Option<&Tool<Pause>>) -> Hint {
-    let id = format!("port_buffer:{}", nic.pci);
+    let id = format!("port_buffer:{}", nic.port);
     let title = format!("Port buffer {label}");
     let Some(netdev) = tool_netdev(nic) else {
         let why =
-            unsafe_netdev(nic).unwrap_or_else(|| format!("{} has no network device", nic.pci));
+            unsafe_netdev(nic).unwrap_or_else(|| format!("{} has no network device", nic.port));
         return hint(
             &id,
             Level::Info,
@@ -694,9 +696,9 @@ fn query_firmware(ctx: &Ctx, tool: &str, bdf: &str) -> Tool<Firmware> {
 }
 
 fn firmware(ctx: &Ctx, nic: &Interface, label: &str) -> Hint {
-    let id = format!("firmware:{}", nic.pci);
+    let id = format!("firmware:{}", nic.port);
     let title = format!("NIC firmware {label}");
-    let bdf = function_zero(&nic.pci);
+    let bdf = function_zero(&nic.port);
     // a cached result is checked before the budget: it needs no tool
     if let Some(c) = ctx.cache.and_then(|c| c.get(&bdf)) {
         let mut h = firmware_hint(ctx, nic, label, c.tool, &c.fw);
@@ -741,9 +743,9 @@ fn firmware(ctx: &Ctx, nic: &Interface, label: &str) -> Hint {
 
 /// The hint for firmware settings read with `tool`.
 fn firmware_hint(ctx: &Ctx, nic: &Interface, label: &str, tool: &str, fw: &Firmware) -> Hint {
-    let id = format!("firmware:{}", nic.pci);
+    let id = format!("firmware:{}", nic.port);
     let title = format!("NIC firmware {label}");
-    let bdf = function_zero(&nic.pci);
+    let bdf = function_zero(&nic.port);
     let targets = [
         ("ADVANCED_PCI_SETTINGS", &fw.advanced, 1),
         (
@@ -798,7 +800,7 @@ fn firmware_hint(ctx: &Ctx, nic: &Interface, label: &str, tool: &str, fw: &Firmw
         &title,
         format!(
             "next-boot firmware settings of {label}: ADVANCED_PCI_SETTINGS={}, MAX_ACC_OUT_READ={}, CQE_COMPRESSION={}; the targets are ADVANCED_PCI_SETTINGS=1, MAX_ACC_OUT_READ={FW_MAX_ACC_OUT_READ}, CQE_COMPRESSION={FW_CQE_COMPRESSION}. The commands write the NVRAM of the whole card of {}: the change persists across reboots and takes effect only after a firmware reset, which DPDS never runs{}",
-            fw.advanced.next_text, fw.max_acc_out_read.next_text, fw.cqe_compression.next_text, nic.pci, hypervisor_note(ctx)
+            fw.advanced.next_text, fw.max_acc_out_read.next_text, fw.cqe_compression.next_text, nic.port, hypervisor_note(ctx)
         ),
         "Set the firmware values with mstconfig; they take effect after a firmware reset.",
     )

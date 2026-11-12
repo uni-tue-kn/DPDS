@@ -55,7 +55,7 @@ import type { HelpKey } from './fieldHelp';
 import { HELP } from './fieldHelp';
 
 // The Settings page as flows (spec 63): the draft and Save, Add / Duplicate / Delete, the two modals (Close discards, Confirm commits,
-// an invalid Confirm shows an alert in the modal), the fields of the modals, Save validation, Reset, Import / Export, pending restart,
+// an invalid Confirm shows an alert in the modal), the fields of the modals, Save validation, Reset, Import / Export (Export adds the controller's network mode, Import ignores it), pending restart,
 // Load running configuration, the corrupt store and the InfoBox (spec 64: links have no names, rows are told by position and ports). Toasts are checked by their message only. The pure rules (units,
 // `formToDto`, import checks, pending-restart comparison) are in linkForm.test.ts and localStore.test.ts.
 
@@ -790,7 +790,30 @@ describe('Import and Export', () => {
     await user.click(exportButton());
     await waitFor(() => expect(blobs).toHaveLength(1));
     expect(files[0]).toMatch(/^dpds-links-\d{4}-\d{2}-\d{2}\.json$/);
-    expect(JSON.parse(await textOf(must(blobs[0])))).toEqual({ version: 1, links: [fx.link()] });
+    expect(JSON.parse(await textOf(must(blobs[0])))).toEqual({ version: 1, network: 'physical', links: [fx.link()] });
+  });
+
+  it('Export carries the network mode the controller reports', async () => {
+    const { blobs } = stubDownload();
+    api.getOnline.mockResolvedValue(fx.online({ network: 'virtual' }));
+    const user = await page([fx.link({ ingress: 'eth1', egress: 'eth2' })]);
+    await user.click(exportButton());
+    await waitFor(() => expect(blobs).toHaveLength(1));
+    expect(JSON.parse(await textOf(must(blobs[0])))).toEqual({
+      version: 1,
+      network: 'virtual',
+      links: [fx.link({ ingress: 'eth1', egress: 'eth2' })],
+    });
+  });
+
+  it('a file exported in a virtual network imports; its netdev ports are stored as they are, the mode is not stored', async () => {
+    const links = [fx.link({ ingress: 'eth1', egress: 'eth2' }), fx.link({ id: 2, ingress: 'eth2', egress: 'eth1' })];
+    const user = await page();
+    await upload(user, { version: 1, network: 'virtual', links });
+    await confirmImport(user);
+    await findToast('Settings imported successfully.');
+    expect(storedDoc()).toEqual({ version: 1, links });
+    expect(portsOfRows()).toEqual(pairs(links));
   });
 
   it('Export of a corrupt store downloads the stored text unchanged', async () => {

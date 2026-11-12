@@ -328,7 +328,7 @@ async fn hints_with_links_on_a_host_with_every_core_isolated_answer_200() {
 fn the_check_command_runs_on_a_host_with_every_core_isolated() {
     let h = FakeHost::bare_metal();
     h.cpus(4, Some("0-3"), &[(0, "0-3")]);
-    let o = std::process::Command::new(env!("CARGO_BIN_EXE_dpds-controller"))
+    let o = controller_cmd()
         .arg("check")
         .arg("--sysfs-root")
         .arg(h.sysfs())

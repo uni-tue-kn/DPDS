@@ -33,6 +33,7 @@ fn bare_metal_lists_only_network_devices_sorted_by_pci_address() {
 fn mlx5_nic_fields() {
     let v = list(&FakeHost::bare_metal());
     let n = by_pci(&v, NIC0);
+    assert_eq!(n["port"], NIC0, "a physical port is the PCI address");
     assert_eq!(n["vendor_id"], "0x15b3");
     assert_eq!(n["device_id"], "0x1017");
     assert!(n["vendor"].as_str().unwrap().contains("Mellanox"), "{n}");
@@ -211,4 +212,82 @@ fn down_interface_keeps_its_operstate() {
     h.write("sys/class/net/ens1f0/operstate", "down\n");
     let v = list(&h);
     assert_eq!(by_pci(&v, NIC0)["operstate"], "down");
+}
+
+// ---- virtual network: the interfaces are the kernel's netdevs ----------------------------------
+
+fn by_port<'a>(v: &'a [Value], port: &str) -> &'a Value {
+    v.iter()
+        .find(|i| i["port"] == port)
+        .unwrap_or_else(|| panic!("{port} not listed in {v:?}"))
+}
+
+#[test]
+fn virtual_discovery_lists_every_netdev_but_lo_by_name() {
+    let h = FakeHost::virtual_net(4, &["veth-a", "eth2", "eth1"]);
+    h.write("sys/class/net/eth1/speed", "10000\n");
+    h.write("sys/class/net/eth1/mtu", "9000\n");
+    h.write("sys/class/net/veth-a/operstate", "down\n");
+    h.netdev_driver("eth2", "virtio_net");
+    // a PCI NIC of the sysfs is listed once, as the netdev it is, without its PCI data
+    h.add_nic(&Nic::mlx5(NIC0, "ens1f0", Some(0)));
+    let v = list(&h);
+    let ports: Vec<&str> = v.iter().map(|i| i["port"].as_str().unwrap()).collect();
+    assert_eq!(
+        ports,
+        ["ens1f0", "eth1", "eth2", "veth-a"],
+        "sorted by name, no lo"
+    );
+    for i in &v {
+        for k in [
+            "pci",
+            "vendor",
+            "vendor_id",
+            "device_id",
+            "pcie_link",
+            "numa_node",
+        ] {
+            assert!(absent(i, k), "{k} of {i}");
+        }
+    }
+    let eth1 = by_port(&v, "eth1");
+    assert_eq!(eth1["netdev"], "eth1");
+    assert_eq!(eth1["mac"], h.read("sys/class/net/eth1/address").trim());
+    assert_eq!(eth1["operstate"], "up");
+    assert_eq!(eth1["speed_mbps"], 10000);
+    assert_eq!(eth1["mtu"], 9000);
+    assert!(absent(eth1, "driver"), "{eth1}");
+    assert_eq!(eth1["uplink"], false);
+    assert_eq!(eth1["dpds_usable"], true);
+    assert!(absent(eth1, "reason"), "{eth1}");
+    assert_eq!(by_port(&v, "eth2")["driver"], "virtio_net");
+    assert_eq!(by_port(&v, "veth-a")["operstate"], "down");
+}
+
+#[test]
+fn a_virtual_interface_with_a_route_an_address_or_a_bridge_is_an_uplink() {
+    let h = FakeHost::virtual_net(4, &["eth0", "eth1", "eth2", "eth3", "eth4"]);
+    h.routes(&[("eth0", "00000000", "0100A8C0", "00000000")]);
+    h.addr("eth1", "192.168.1.5");
+    h.master_link("eth2", "br0");
+    h.addr("br0", "10.1.1.1");
+    let v = list(&h);
+    for used in ["eth0", "eth1", "eth2", "br0"] {
+        let i = by_port(&v, used);
+        assert_eq!(i["uplink"], true, "{i}");
+        assert_eq!(i["dpds_usable"], false, "{i}");
+        assert!(i["reason"].as_str().is_some_and(|r| !r.is_empty()), "{i}");
+    }
+    assert!(by_port(&v, "eth1")["reason"]
+        .as_str()
+        .unwrap()
+        .contains("192.168.1.5"));
+    for free in ["eth3", "eth4"] {
+        let i = by_port(&v, free);
+        assert_eq!(
+            (i["uplink"].clone(), i["dpds_usable"].clone()),
+            (false.into(), true.into()),
+            "{i}"
+        );
+    }
 }

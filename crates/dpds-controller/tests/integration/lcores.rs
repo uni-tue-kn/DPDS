@@ -226,3 +226,43 @@ fn vm_without_numa_information_still_assigns_isolated_cores() {
     assert_eq!(a.main_lcore, 0);
     assert!([2, 3].contains(&a.directions[0].lcore));
 }
+
+// ---- virtual network: no isolation, no NUMA -----------------------------------------------------
+
+#[test]
+fn virtual_mode_takes_the_lowest_core_as_main_and_the_next_cores_as_workers() {
+    let h = FakeHost::virtual_net(6, &["eth1", "eth2", "eth3"]);
+    // isolation and NUMA nodes of the machine are of no concern in a virtual network
+    h.cpus(6, Some("4-5"), &[(0, "0-2"), (1, "3-5")]);
+    let a = ok(
+        &h,
+        &setup(vec![
+            link("eth1", "eth2"),
+            link("eth2", "eth3"),
+            link("eth3", "eth1"),
+        ]),
+    );
+    assert_eq!(a.main_lcore, 0);
+    let cores: Vec<(u32, u32)> = a.directions.iter().map(|d| (d.dir, d.lcore)).collect();
+    assert_eq!(cores, [(0, 1), (1, 2), (2, 3)]);
+}
+
+#[test]
+fn virtual_mode_only_uses_online_cores() {
+    let h = FakeHost::virtual_net(4, &["eth1", "eth2"]);
+    h.write("sys/devices/system/cpu/online", "1-3\n");
+    let a = ok(&h, &setup(vec![link("eth1", "eth2"), link("eth2", "eth1")]));
+    assert_eq!(a.main_lcore, 1);
+    let cores: Vec<u32> = a.directions.iter().map(|d| d.lcore).collect();
+    assert_eq!(cores, [2, 3]);
+}
+
+#[test]
+fn virtual_mode_needs_one_online_core_more_than_links() {
+    let h = FakeHost::virtual_net(3, &["eth1", "eth2"]);
+    let two = setup(vec![link("eth1", "eth1"), link("eth2", "eth2")]);
+    assert_eq!(ok(&h, &two).directions.len(), 2);
+    let h = FakeHost::virtual_net(2, &["eth1", "eth2"]);
+    let e = plan_for(&h, &two).expect_err("2 links need 3 cores");
+    assert!(e.contains("3 online") && e.contains("only 2"), "{e}");
+}

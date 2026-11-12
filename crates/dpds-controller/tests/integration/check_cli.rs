@@ -1,15 +1,13 @@
 //! `dpds-controller check`: text lines, exit code, `--json`. Flags: `--sysfs-root`, `--procfs-root`,
 //! `--json`. `check` has no state and prints the host-only hints (see `stateless.rs`).
 
-use std::process::{Command, Output};
+use std::process::Output;
 
 use crate::common::*;
 use serde_json::Value;
 
-const BIN: &str = env!("CARGO_BIN_EXE_dpds-controller");
-
 fn run(host: &FakeHost, json: bool) -> Output {
-    let mut c = Command::new(BIN);
+    let mut c = controller_cmd();
     c.arg("check")
         .arg("--sysfs-root")
         .arg(host.sysfs())
@@ -119,7 +117,7 @@ fn the_exit_code_is_never_two_because_of_a_state_file() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("state.json"), "{garbage").unwrap();
     for json in [false, true] {
-        let o = Command::new(BIN)
+        let o = controller_cmd()
             .arg("check")
             .arg("--sysfs-root")
             .arg(host.sysfs())
@@ -163,7 +161,7 @@ fn check_takes_the_test_only_ifaddrs_file_and_stays_host_only() {
     host.addr("ens1f0", "192.168.1.5");
     let file = host.ifaddrs_file();
     for json in [false, true] {
-        let mut c = Command::new(BIN);
+        let mut c = controller_cmd();
         c.arg("check")
             .arg("--sysfs-root")
             .arg(host.sysfs())
@@ -305,4 +303,37 @@ fn check_changes_nothing_on_the_host() {
         host.read("sys/devices/system/cpu/cpu2/cpufreq/scaling_governor"),
         "powersave"
     );
+}
+
+// ---- virtual network ------------------------------------------------------------------------
+
+fn run_virtual(host: &FakeHost, json: bool) -> Output {
+    let mut c = controller_cmd();
+    c.arg("check")
+        .arg("--sysfs-root")
+        .arg(host.sysfs())
+        .arg("--procfs-root")
+        .arg(host.procfs())
+        .arg("--etc-dir")
+        .arg(host.etc_dir());
+    if json {
+        c.arg("--json");
+    }
+    c.output().expect("cannot run dpds-controller")
+}
+
+#[test]
+fn the_virtual_check_has_only_the_virtual_network_and_cpus_hints() {
+    let host = FakeHost::virtual_net(4, &["eth1", "eth2"]);
+    let o = run_virtual(&host, true);
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let hints: Value = serde_json::from_slice(&o.stdout).unwrap();
+    let mut ids = hint_ids(&hints);
+    ids.sort();
+    assert_eq!(ids, ["cpus", "virtual-network"], "{hints}");
 }

@@ -21,7 +21,8 @@ SHA256=7141a8b5bad9d7d965483ac0d75317ac0c21dcee1d13d373693c655f9e3fabe6
 # - platform=generic: not tuned for the build host's CPU, so the cached install also runs on a
 #   runner with another CPU model (the default `native` would not).
 # - enable_drivers: only what the tests use. net_null and net_pcap are the vdevs of the e2e tests,
-#   net_ring is accepted by the controller, mempool/ring is the default mempool.
+#   net_af_packet is the driver of the virtual network mode (the veth e2e test), net_ring is
+#   accepted by the controller, mempool/ring is the default mempool.
 #   The bus/vdev driver is pulled in as a dependency.
 # - apps, tests and docs are not needed (the libraries and headers are all dpdk-sys links against).
 # - libdir=lib: the same path on every architecture (default is lib/<multiarch triplet>).
@@ -32,7 +33,7 @@ OPTIONS=(
   -Dtests=false
   -Denable_docs=false
   '-Ddisable_apps=*'
-  -Denable_drivers=net/null,net/pcap,net/ring,mempool/ring
+  -Denable_drivers=net/af_packet,net/null,net/pcap,net/ring,mempool/ring
 )
 
 # The workflow sets CFLAGS for the Rust build (-march=x86-64-v2); DPDK picks its own flags.

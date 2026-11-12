@@ -8,7 +8,7 @@ use dpds_core::Config;
 use serde_json::{json, Value};
 
 use crate::dto::DtoError;
-use crate::host::is_vdev;
+use crate::host::{is_vdev, Network};
 use crate::lcores::DirectionPlan;
 use crate::model::Link;
 
@@ -18,7 +18,8 @@ const DRAIN_MARGIN: Duration = Duration::from_secs(5);
 /// The mlx5 devargs of every `-a <pci>` on an mlx5_core port. Fixed, not configurable.
 pub const MLX5_DEVARGS: &str = "txq_mpw_en=1";
 
-/// A DPDK device of the links and the kernel driver of a PCI port, if known.
+/// A DPDK device of the links and the kernel driver of a PCI port, if known. In a virtual network
+/// the name is the whole vdev spec, `net_af_packet0,iface=eth1`.
 #[derive(Debug, Clone)]
 pub struct EalPort {
     pub name: String,
@@ -31,10 +32,15 @@ pub struct EalInput {
     pub worker_lcores: Vec<u32>,
     pub ports: Vec<EalPort>,
     pub links_file: PathBuf,
+    pub network: Network,
+    /// `-m` of a virtual network start (MiB); a physical start has none.
+    pub memory_mib: u64,
 }
 
 /// `dpds` arguments without the binary name. Vdev names (`net_*`) become
 /// `--vdev`; PCI ports bound to mlx5_core get [`MLX5_DEVARGS`]. Nothing else is ever appended.
+/// A virtual network start has no hugepages and no PCI (`--no-huge --no-pci -m <MiB>`) and every
+/// port is a `--vdev`.
 pub fn eal_argv(i: &EalInput) -> Vec<String> {
     let lcores: Vec<String> = std::iter::once(i.main_lcore)
         .chain(i.worker_lcores.iter().copied())
@@ -45,12 +51,15 @@ pub fn eal_argv(i: &EalInput) -> Vec<String> {
         lcores.join(","),
         "--main-lcore".into(),
         i.main_lcore.to_string(),
-        "--in-memory".into(),
-        "--file-prefix".into(),
-        "dpds-ctl".into(),
     ];
+    let virtual_net = i.network == Network::Virtual;
+    if virtual_net {
+        argv.extend(["--no-huge", "--no-pci", "-m"].map(String::from));
+        argv.push(i.memory_mib.to_string());
+    }
+    argv.extend(["--in-memory", "--file-prefix", "dpds-ctl"].map(String::from));
     for p in &i.ports {
-        if is_vdev(&p.name) {
+        if virtual_net || is_vdev(&p.name) {
             argv.push("--vdev".into());
             argv.push(p.name.clone());
         } else {

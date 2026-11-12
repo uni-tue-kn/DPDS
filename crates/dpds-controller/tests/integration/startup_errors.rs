@@ -3,20 +3,23 @@
 //! (101) nor an abort (signal / 134)), never a running server.
 //!
 //! - `--cors-origin` rejects `*` and any value with a path or a trailing slash;
+//! - without a stored network mode (`<etc-dir>/network` missing or not `physical`/`virtual`) both `serve`
+//!   and `check` exit 2 and say how to store one (`dpds.sh install --network ...`);
 //! - `--runtime-dir` is rejected when the resulting telemetry socket path
 //!   `<runtime-dir>/instance/dpdk/dpds-ctl/dpdk_telemetry.v2` (41 bytes more than the
 //!   directory) does not fit a unix socket address (107 bytes) or DPDK's runtime-dir limit.
 
 use std::io::Read;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use crate::common::*;
+use dpds_controller::host::Network;
 
 /// Runs `dpds-controller <args>` on a free loopback address and waits for it to exit.
 /// A process that keeps running (it accepted the options) is killed and fails the test.
 fn run_to_exit(args: &[&str], envs: &[(&str, &str)]) -> (Option<i32>, String) {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_dpds-controller"));
+    let mut cmd = controller_cmd();
     cmd.args(args)
         .arg("--bind")
         .arg(free_addr())
@@ -155,4 +158,83 @@ fn a_short_runtime_dir_starts() {
     let c = ControllerProcess::start(&["serve", "--bind", "{addr}", "--runtime-dir", &rt], &[]);
     let (st, _, _) = get_with_origin(&c.addr, "/api/online", "http://x.example");
     assert_eq!(st, 200);
+}
+
+// ---- the stored network mode --------------------------------------------------------------------
+
+/// An etc dir whose `network` file holds `content` (no file for None).
+fn etc_with(content: Option<&str>) -> tempfile::TempDir {
+    let d = tempfile::tempdir().unwrap();
+    if let Some(c) = content {
+        std::fs::write(d.path().join("network"), c).unwrap();
+    }
+    d
+}
+
+#[test]
+fn the_stored_mode_is_physical_or_virtual_and_nothing_else() {
+    assert_eq!(
+        Network::read(etc_with(Some("physical\n")).path()),
+        Ok(Network::Physical)
+    );
+    assert_eq!(
+        Network::read(etc_with(Some("virtual\n")).path()),
+        Ok(Network::Virtual)
+    );
+    let e = Network::read(etc_with(None).path()).unwrap_err();
+    assert!(e.contains("install --network"), "{e}");
+    for bad in ["", "\n", "Physical\n", "banana\n", "physical\nvirtual\n"] {
+        let e = Network::read(etc_with(Some(bad)).path()).unwrap_err();
+        assert!(e.contains("install --network"), "{bad:?}: {e}");
+    }
+    let e = Network::read(etc_with(Some("banana\n")).path()).unwrap_err();
+    assert!(e.contains("banana"), "the content is named: {e}");
+    assert_eq!(serde_json::to_value(Network::Virtual).unwrap(), "virtual");
+    assert_eq!(serde_json::to_value(Network::Physical).unwrap(), "physical");
+}
+
+#[test]
+fn without_a_stored_mode_serve_and_check_exit_2_and_say_how_to_store_one() {
+    for content in [None, Some(""), Some("banana\n")] {
+        let d = etc_with(content);
+        let etc = d.path().to_str().unwrap();
+        for envs in [&[][..], &[("DPDS_CONTROLLER_ETC_DIR", etc)][..]] {
+            // the option and the environment variable name the same directory
+            let args: &[&str] = if envs.is_empty() {
+                &["serve", "--etc-dir", etc]
+            } else {
+                &["serve"]
+            };
+            let (code, stderr) = run_to_exit(args, envs);
+            assert_eq!(code, Some(2), "{content:?} {args:?}: {stderr}");
+            assert!(
+                stderr.contains("install --network"),
+                "{content:?}: {stderr}"
+            );
+        }
+        let o = controller_cmd()
+            .args(["check", "--etc-dir", etc])
+            .output()
+            .unwrap();
+        assert_eq!(o.status.code(), Some(2), "{content:?}");
+        assert!(String::from_utf8_lossy(&o.stderr).contains("install --network"));
+    }
+}
+
+#[test]
+fn the_stored_mode_is_what_the_running_controller_reports() {
+    for mode in ["physical", "virtual"] {
+        let d = etc_with(Some(&format!("{mode}\n")));
+        let etc = d.path().to_str().unwrap();
+        let by_option =
+            ControllerProcess::start(&["serve", "--bind", "{addr}", "--etc-dir", etc], &[]);
+        let (st, v) = http(&by_option.addr, "GET", "/api/online", None).unwrap();
+        assert_eq!((st, v["network"].as_str()), (200, Some(mode)));
+        let by_env = ControllerProcess::start(
+            &["serve", "--bind", "{addr}"],
+            &[("DPDS_CONTROLLER_ETC_DIR", etc)],
+        );
+        let (_, v) = http(&by_env.addr, "GET", "/api/online", None).unwrap();
+        assert_eq!(v["network"], mode);
+    }
 }

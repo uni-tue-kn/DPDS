@@ -141,6 +141,11 @@ function Sidebar({
               </a>
             </OverlayTrigger>
           )}
+          {info && (
+            <span className={`badge rounded-pill ms-2 text-bg-${info.network === 'virtual' ? 'info' : 'secondary'}`}>
+              {info.network}
+            </span>
+          )}
           {info && !info.telemetry && <span className="badge rounded-pill text-bg-warning ms-2">no telemetry</span>}
         </div>
       </div>

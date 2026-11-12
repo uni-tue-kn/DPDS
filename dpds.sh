@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # dpds.sh - build, install and run the DPDS controller (a systemd service that also serves the web frontend).
 #
-# Usage: [DPDS_CHANNEL=latest|nightly|vX.Y.Z] ./dpds.sh [--nightly|--stable] [--yes] {check|install|update|start|stop|restart|status|uninstall}
+# Usage: [DPDS_CHANNEL=latest|nightly|vX.Y.Z] ./dpds.sh [--nightly|--stable] [--yes] [--network physical|virtual] {check|install|update|start|stop|restart|status|uninstall}
 #
 # The controller (dpds-controller) runs natively on the host as root and starts dpds as its child
 # process. It embeds the web frontend, built at install and update time from the checked-out tree
@@ -24,12 +24,23 @@
 # Environment overrides:
 #   DPDS_CHANNEL      release channel: latest, nightly or a tag (v1.0.0) (default latest)
 #   DPDS_PREFIX       install prefix, binaries go to $DPDS_PREFIX/bin   (default /usr/local)
-#   DPDS_ETC_DIR      config dir, holds controller.env, installed-commit (default /etc/dpds)
+#   DPDS_ETC_DIR      config dir, holds controller.env, installed-commit, network (default /etc/dpds)
 #   DPDS_SYSTEMD_DIR  where the unit file is installed                   (default /etc/systemd/system)
+#   DPDS_SYSTEMD_RUN_DIR  the directory whose existence means "systemd runs" (default /run/systemd/system; for tests)
 #   DPDS_BIND         bind address written into a NEW controller.env     (default 0.0.0.0:8100)
 #   CARGO_TARGET_DIR  cargo target dir the build output is read from     (default <repo>/target)
 #
-# Run it as your user, not with sudo or as root: it calls sudo itself for the privileged steps.
+# Network mode: DPDS runs either on real NICs (physical: hugepages, isolated cores) or in a virtual
+# network (virtual: containerlab nodes joined by veth interfaces, no hugepages). The mode is stored
+# in $DPDS_ETC_DIR/network, one line, `physical` or `virtual`, and the controller reads it at start.
+# The first install needs --network; install and update without it keep the stored mode, with it they
+# switch. uninstall keeps the file.
+#
+# Without systemd (a container: no /run/systemd/system) install does everything except installing the
+# unit, and start/stop/restart/status print how to run the controller by hand.
+#
+# Run it as your user, not with sudo: it calls sudo itself for the privileged steps. As plain root
+# (a container, no SUDO_USER) it runs the privileged steps directly.
 #
 # Exit codes: 0 success, 1 usage error / prerequisite missing / aborted / a step failed.
 
@@ -47,6 +58,7 @@ REPO_ROOT="$(cd -P -- "$(dirname -- "$SCRIPT_SOURCE")" && pwd)"
 PREFIX="${DPDS_PREFIX:-/usr/local}"
 ETC_DIR="${DPDS_ETC_DIR:-/etc/dpds}"
 SYSTEMD_DIR="${DPDS_SYSTEMD_DIR:-/etc/systemd/system}"
+SYSTEMD_RUN_DIR="${DPDS_SYSTEMD_RUN_DIR:-/run/systemd/system}"
 BIND="${DPDS_BIND:-0.0.0.0:8100}"
 # Never embed a frontend from the caller's environment.
 unset DPDS_FRONTEND_DIST
@@ -62,6 +74,8 @@ UNIT_DEST="$SYSTEMD_DIR/$SERVICE.service"
 ENV_FILE="$ETC_DIR/controller.env"
 # Holds the commit hash of the installed tree; update compares it with HEAD.
 STAMP_FILE="$ETC_DIR/installed-commit"
+# The stored network mode: one line, physical or virtual.
+NETWORK_FILE="$ETC_DIR/network"
 BIN_DIR="$PREFIX/bin"
 DEFAULT_PORT=8100
 
@@ -70,6 +84,9 @@ CHANNEL_OVERRIDE=""
 CHANNEL_BRANCH=""
 CHANNEL_TAG=""
 ASSUME_YES=0
+# --network of the command line, and the mode install or update goes ahead with.
+NETWORK_OPT=""
+NETWORK=""
 
 #################
 # Pretty output #
@@ -83,12 +100,71 @@ error() { echo "[ERROR] $(ts) $*" >&2; }
 # Helpers                              #
 ########################################
 run_privileged() {
-  if command -v sudo >/dev/null 2>&1; then
+  if (( EUID == 0 )); then
+    "$@"
+  elif command -v sudo >/dev/null 2>&1; then
     sudo "$@"
   else
     error "Root privileges are required to run: $*"
     return 1
   fi
+}
+
+# True when systemd runs here (a container has none).
+has_systemd() {
+  [[ -d "$SYSTEMD_RUN_DIR" ]]
+}
+
+# The stored network mode (physical or virtual); nothing when no valid mode is stored.
+stored_network() {
+  local mode=""
+  if [[ -r "$NETWORK_FILE" ]]; then
+    mode="$(<"$NETWORK_FILE")" || mode=""
+  fi
+  case "$mode" in
+    physical|virtual) echo "$mode" ;;
+  esac
+  return 0
+}
+
+# Sets NETWORK to the mode install or update goes ahead with: --network, else the stored one.
+resolve_network() {
+  NETWORK="${NETWORK_OPT:-$(stored_network)}"
+  if [[ -z "$NETWORK" ]]; then
+    error "No network mode is stored in $NETWORK_FILE and --network was not given: run ./dpds.sh install --network physical|virtual"
+    exit 1
+  fi
+}
+
+store_network() {
+  run_privileged install -d -m 0755 "$ETC_DIR"
+  printf '%s\n' "$NETWORK" | run_privileged tee "$NETWORK_FILE" >/dev/null
+}
+
+# True when the installed DPDK has the af_packet driver (a virtual network needs it): a static or
+# shared library, or a plugin in the dpdk/pmds-* directory, below the libdir of libdpdk.
+dpdk_has_af_packet() {
+  local libdir d f
+  libdir="$(pkg-config --variable=libdir libdpdk 2>/dev/null)" || return 1
+  [[ -n "$libdir" ]] || return 1
+  for d in "$libdir" "$libdir"/dpdk/pmds-*; do
+    for f in "$d"/librte_net_af_packet.a "$d"/librte_net_af_packet.so*; do
+      if [[ -e "$f" ]]; then
+        return 0
+      fi
+    done
+  done
+  return 1
+}
+
+# Prints how to run the controller without systemd.
+print_manual_start() {
+  info "Without systemd, run the controller yourself (as root), for example in the background or under a supervisor:"
+  local etc=""
+  if [[ "$ETC_DIR" != /etc/dpds ]]; then
+    etc=" --etc-dir $ETC_DIR"
+  fi
+  info "  DPDS_CONTROLLER_BIND=$(controller_bind) DPDS_CONTROLLER_DPDS_BIN=$BIN_DIR/dpds $BIN_DIR/dpds-controller serve$etc"
 }
 
 # Prints the major version of the first "N.N[.N]" found on stdin (empty if none).
@@ -353,17 +429,29 @@ build_controller() {
 }
 
 # Runs the controller's host check as root (some hints are only readable by root); its exit code
-# is returned to the caller.
+# is returned to the caller. The controller reads the network mode from its etc dir, and the
+# check must judge the mode being installed, so it gets a temporary etc dir next to the real one
+# that holds that mode: the stored mode changes only once the installation goes ahead.
 run_host_check() {
-  local ctl="$1" rc=0
+  local ctl="$1" rc=0 etc
   info "Host check ($ctl check)"
-  run_privileged "$ctl" check || rc=$?
+  etc="$(run_privileged mktemp -d "$ETC_DIR.XXXXXX")" || {
+    error "Cannot create a temporary directory next to $ETC_DIR for the host check."
+    exit 1
+  }
+  printf '%s\n' "$NETWORK" | run_privileged tee "$etc/network" >/dev/null
+  run_privileged "$ctl" check --etc-dir "$etc" || rc=$?
+  run_privileged rm -rf -- "$etc"
   return "$rc"
 }
 
 install_unit() {
   local exec_line env_line
-  exec_line="$(sed_escape "$BIN_DIR/dpds-controller serve")"
+  exec_line="$BIN_DIR/dpds-controller serve"
+  if [[ "$ETC_DIR" != /etc/dpds ]]; then
+    exec_line+=" --etc-dir $ETC_DIR"
+  fi
+  exec_line="$(sed_escape "$exec_line")"
   env_line="$(sed_escape "-$ENV_FILE")"
   run_privileged install -d -m 0755 "$SYSTEMD_DIR"
   sed -e "s|^ExecStart=.*|ExecStart=$exec_line|" \
@@ -403,19 +491,30 @@ install_flow() {
 
   # No stamp while the installation is half done.
   run_privileged rm -f "$STAMP_FILE"
+  info "Storing the network mode $NETWORK in $NETWORK_FILE"
+  store_network
   info "Installing binaries to $BIN_DIR"
   run_privileged install -d -m 0755 "$BIN_DIR"
   run_privileged install -m 0755 "$release_dir/dpds" "$BIN_DIR/dpds"
   run_privileged install -m 0755 "$release_dir/dpds-controller" "$BIN_DIR/dpds-controller"
-  info "Installing $UNIT_DEST"
-  install_unit
+  if has_systemd; then
+    info "Installing $UNIT_DEST"
+    install_unit
+  fi
   install_env_file
-  run_privileged systemctl daemon-reload
+  if has_systemd; then
+    run_privileged systemctl daemon-reload
+  fi
   local head
   if head="$(git rev-parse HEAD 2>/dev/null)"; then
     echo "$head" | run_privileged tee "$STAMP_FILE" >/dev/null
   fi
-  info "Installed. Start it with: $0 start"
+  if has_systemd; then
+    info "Installed. Start it with: $0 start"
+  else
+    info "Installed, without a systemd unit (systemd does not run here)."
+    print_manual_start
+  fi
 }
 
 # True when the installed commit (the stamp) is HEAD and the installed files are all there.
@@ -423,7 +522,8 @@ installed_is_current() {
   local head
   head="$(git rev-parse HEAD 2>/dev/null)" || return 1
   [[ -f "$STAMP_FILE" && "$(<"$STAMP_FILE")" == "$head" ]] || return 1
-  [[ -f "$BIN_DIR/dpds" && -f "$BIN_DIR/dpds-controller" && -f "$UNIT_DEST" ]]
+  [[ -f "$BIN_DIR/dpds" && -f "$BIN_DIR/dpds-controller" ]] || return 1
+  ! has_systemd || [[ -f "$UNIT_DEST" ]]
 }
 
 # The working tree must be clean before git moves HEAD: a checkout with local changes can fail
@@ -444,6 +544,10 @@ refuse_dirty_tree() {
 cmd_check() {
   validate_settings
   require_prerequisites
+  if [[ "$(stored_network)" == virtual ]] && ! dpdk_has_af_packet; then
+    error "The network mode is virtual but the installed DPDK has no net_af_packet driver (no librte_net_af_packet in the libdir of libdpdk or its dpdk/pmds-*): rebuild DPDK with net/af_packet enabled."
+    exit 1
+  fi
   local ctl="$BIN_DIR/dpds-controller"
   if [[ ! -x "$ctl" ]]; then
     ctl="$TARGET_DIR/release/dpds-controller"
@@ -451,10 +555,15 @@ cmd_check() {
       build_controller
     fi
   fi
-  "$ctl" check
+  if [[ "$ETC_DIR" != /etc/dpds ]]; then
+    "$ctl" check --etc-dir "$ETC_DIR"
+  else
+    "$ctl" check
+  fi
 }
 
 cmd_install() {
+  resolve_network
   require_prerequisites
   if [[ -n "$CHANNEL_TAG" ]]; then
     warn_tag_mismatch "Installing the tree as it is; run $0 update to switch."
@@ -464,10 +573,15 @@ cmd_install() {
   install_flow
 }
 
-# Fails with a hint to install first when the unit file of `install` is missing, instead of
-# passing on systemctl's "Unit ... does not exist".
+# Fails with a hint to install first when the unit file of `install` is missing (the binaries,
+# without systemd), instead of passing on systemctl's "Unit ... does not exist".
 require_installed() {
-  if [[ ! -f "$UNIT_DEST" ]]; then
+  if ! has_systemd; then
+    if [[ ! -x "$BIN_DIR/dpds-controller" || ! -x "$BIN_DIR/dpds" ]]; then
+      error "$SERVICE is not installed: run ./dpds.sh install first (no binaries in $BIN_DIR)."
+      return 1
+    fi
+  elif [[ ! -f "$UNIT_DEST" ]]; then
     error "$SERVICE is not installed: run ./dpds.sh install first (no $UNIT_DEST)."
     return 1
   fi
@@ -475,11 +589,19 @@ require_installed() {
 
 cmd_start() {
   require_installed || return 1
+  if ! has_systemd; then
+    print_manual_start
+    return 0
+  fi
   info "Enabling and starting $SERVICE"
   run_privileged systemctl enable --now "$SERVICE"
 }
 
 cmd_stop() {
+  if ! has_systemd; then
+    info "Without systemd nothing manages the controller: stop it by hand (SIGTERM or Ctrl-C drains the delay buffers and can take a while)."
+    return 0
+  fi
   info "Disabling and stopping $SERVICE (this drains the delay buffers and can take a while)"
   run_privileged systemctl disable --now "$SERVICE"
 }
@@ -488,6 +610,11 @@ cmd_stop() {
 # failure is reported through the exit code.
 cmd_restart() {
   require_installed || return 1
+  if ! has_systemd; then
+    info "Without systemd, stop the controller by hand, then start it again."
+    print_manual_start
+    return 0
+  fi
   local rc=0
   cmd_stop || rc=1
   if (( rc )); then
@@ -538,8 +665,12 @@ cmd_status() {
   else
     info "Channel: $CHANNEL (branch $CHANNEL_BRANCH), checkout: $checkout"
   fi
-  info "Service"
-  systemctl status --no-pager "$SERVICE" || true
+  if has_systemd; then
+    info "Service"
+    systemctl status --no-pager "$SERVICE" || true
+  else
+    print_manual_start
+  fi
   info "Controller API and web frontend (http://$addr/)"
   if command -v curl >/dev/null 2>&1; then
     local answer version
@@ -559,6 +690,7 @@ cmd_status() {
 }
 
 cmd_update() {
+  resolve_network
   require_prerequisites
 
   # Refuse before touching anything.
@@ -568,7 +700,7 @@ cmd_update() {
     warn_branch_mismatch "Switching to $CHANNEL_BRANCH."
   fi
 
-  if systemctl is-active --quiet "$SERVICE"; then
+  if has_systemd && systemctl is-active --quiet "$SERVICE"; then
     was_active=1
   fi
   if [[ -n "$CHANNEL_TAG" ]]; then
@@ -586,29 +718,40 @@ cmd_update() {
     git pull --ff-only
   fi
   if installed_is_current; then
-    info "Already up to date at commit $(git rev-parse --short HEAD); nothing to do. $0 install rebuilds and reinstalls anyway."
-    return 0
+    if [[ -z "$NETWORK_OPT" || "$NETWORK_OPT" == "$(stored_network)" ]]; then
+      info "Already up to date at commit $(git rev-parse --short HEAD); nothing to do. $0 install rebuilds and reinstalls anyway."
+      return 0
+    fi
+    info "Already up to date at commit $(git rev-parse --short HEAD); only switching the network mode to $NETWORK_OPT."
+    store_network
+  else
+    install_flow
   fi
-  install_flow
   if (( was_active )); then
     info "$SERVICE was running, restarting it"
     cmd_restart
-  else
+  elif has_systemd; then
     info "$SERVICE was not running, leaving it stopped"
   fi
 }
 
 cmd_uninstall() {
-  info "Stopping $SERVICE"
-  run_privileged systemctl disable --now "$SERVICE" || warn "Could not disable $SERVICE (not installed?)."
+  if has_systemd; then
+    info "Stopping $SERVICE"
+    run_privileged systemctl disable --now "$SERVICE" || warn "Could not disable $SERVICE (not installed?)."
+  else
+    info "Without systemd: stop a running dpds-controller by hand."
+  fi
   info "Removing binaries, unit and $STAMP_FILE"
   run_privileged rm -f "$BIN_DIR/dpds" "$BIN_DIR/dpds-controller" "$UNIT_DEST" "$STAMP_FILE"
-  run_privileged systemctl daemon-reload || warn "systemctl daemon-reload failed."
-  info "Kept $ENV_FILE; remove it by hand if you do not need it."
+  if has_systemd; then
+    run_privileged systemctl daemon-reload || warn "systemctl daemon-reload failed."
+  fi
+  info "Kept $ENV_FILE and $NETWORK_FILE; remove them by hand if you do not need them."
 }
 
 usage() {
-  echo "Usage: [DPDS_CHANNEL=latest|nightly|vX.Y.Z] $0 [--nightly|--stable] [--yes] {check|install|update|start|stop|restart|status|uninstall}"
+  echo "Usage: [DPDS_CHANNEL=latest|nightly|vX.Y.Z] $0 [--nightly|--stable] [--yes] [--network physical|virtual] {check|install|update|start|stop|restart|status|uninstall}"
   echo ""
   echo "Channel: DPDS_CHANNEL is latest (the default, branch main), nightly (branch nightly) or a release tag like v1.0.0."
   echo "  DPDS_CHANNEL=v1.0.0 $0 update installs exactly that release (git fetch --tags, checkout --detach, no pull);"
@@ -618,6 +761,8 @@ usage() {
   echo "  --nightly    Use the nightly channel (branch nightly), overriding DPDS_CHANNEL"
   echo "  --stable     Use the latest channel (branch main), overriding DPDS_CHANNEL"
   echo "  --yes        Do not ask for confirmation (install, update)"
+  echo "  --network M  Network mode physical (real NICs) or virtual (veth interfaces in a virtual network), stored in $NETWORK_FILE;"
+  echo "               required by the first install, later install and update keep the stored mode unless given (install, update only)"
   echo ""
   echo "Commands:"
   echo "  check        Check the prerequisites (Rust, clang/lld, DPDK $DPDK_MIN, Node/npm), then print the host hints (dpds-controller check)"
@@ -630,14 +775,33 @@ usage() {
   echo "  uninstall    Stop and remove binaries and unit (controller.env is kept)"
 }
 
+# set_network_option VALUE: records --network; only physical and virtual are modes.
+set_network_option() {
+  case "$1" in
+    physical|virtual) NETWORK_OPT="$1" ;;
+    *)
+      error "--network needs physical or virtual, got '$1'."
+      exit 1
+      ;;
+  esac
+}
+
 main() {
   local cmd="" arg flag=""
-  if (( EUID == 0 )); then
+  if (( EUID == 0 )) && [[ -n "${SUDO_USER:-}" ]]; then
     error "Run dpds.sh as your user, not with sudo: it calls sudo itself for the privileged steps; under sudo, root's PATH lacks cargo/rustc/clang."
     exit 1
   fi
+  local expect_network=0 network_flag_seen=0
   for arg in "$@"; do
+    if (( expect_network )); then
+      set_network_option "$arg"
+      expect_network=0
+      continue
+    fi
     case "$arg" in
+      --network) expect_network=1; network_flag_seen=1 ;;
+      --network=*) set_network_option "${arg#--network=}"; network_flag_seen=1 ;;
       --nightly|--stable)
         if [[ -n "$flag" && "$flag" != "$arg" ]]; then
           error "--nightly and --stable cannot be combined."
@@ -659,11 +823,20 @@ main() {
     esac
   done
 
+  if (( expect_network )); then
+    set_network_option ""
+  fi
+
   case "$cmd" in
     check|install|update|start|stop|restart|status|uninstall) ;;
     "") usage >&2; exit 1 ;;
     *) error "Unknown command: $cmd"; usage >&2; exit 1 ;;
   esac
+
+  if (( network_flag_seen )) && [[ "$cmd" != install && "$cmd" != update ]]; then
+    error "--network is only accepted with install and update, not with $cmd."
+    exit 1
+  fi
 
   case "$flag" in
     --nightly) CHANNEL_OVERRIDE="nightly" ;;

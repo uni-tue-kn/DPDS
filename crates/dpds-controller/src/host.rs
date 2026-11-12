@@ -12,6 +12,38 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use serde::Serialize;
+use utoipa::ToSchema;
+
+/// How this installation runs: on real NICs with hugepages and isolated cores, or in a virtual
+/// network (veth interfaces, no hugepages). Stored by `dpds.sh install --network` in
+/// `<etc-dir>/network`; nothing else sets it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Network {
+    #[default]
+    Physical,
+    Virtual,
+}
+
+impl Network {
+    /// The mode stored in `<etc_dir>/network`: one line, `physical` or `virtual`.
+    pub fn read(etc_dir: &Path) -> Result<Network, String> {
+        let path = etc_dir.join("network");
+        let fix = "run ./dpds.sh install --network physical|virtual";
+        let text = fs::read_to_string(&path)
+            .map_err(|_| format!("no network mode is stored in {}: {fix}", path.display()))?;
+        match text.trim() {
+            "physical" => Ok(Network::Physical),
+            "virtual" => Ok(Network::Virtual),
+            other => Err(format!(
+                "{} holds {other:?}, expected physical or virtual: {fix}",
+                path.display()
+            )),
+        }
+    }
+}
+
 /// Where the IP addresses of the host's interfaces come from.
 #[derive(Debug, Clone)]
 pub enum IfAddrs {
@@ -229,15 +261,18 @@ pub struct HostRoots {
     pub procfs: PathBuf,
     pub ifaddrs: IfAddrs,
     pub exec: Arc<dyn Exec>,
+    pub network: Network,
 }
 
 impl HostRoots {
+    /// The real host, in physical mode; the caller sets `network` from the stored mode.
     pub fn system() -> HostRoots {
         HostRoots {
             sysfs: PathBuf::from("/sys"),
             procfs: PathBuf::from("/proc"),
             ifaddrs: IfAddrs::System,
             exec: Arc::new(SystemExec),
+            network: Network::Physical,
         }
     }
 

@@ -264,7 +264,7 @@ fn bind_without_the_serve_subcommand_is_honoured() {
 #[test]
 fn the_bind_env_without_the_serve_subcommand_is_honoured_too() {
     let addr = free_addr();
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_dpds-controller"))
+    let mut child = controller_cmd()
         .env("DPDS_CONTROLLER_BIND", &addr)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

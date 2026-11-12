@@ -560,7 +560,7 @@ impl Logged {
         let dir = tempfile::tempdir().unwrap();
         let addr = free_addr();
         let stderr = dir.path().join("stderr.log");
-        let child = std::process::Command::new(env!("CARGO_BIN_EXE_dpds-controller"))
+        let child = controller_cmd()
             .args(["serve", "--bind", &addr])
             .stdout(std::process::Stdio::null())
             .stderr(std::fs::File::create(&stderr).unwrap())

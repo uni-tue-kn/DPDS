@@ -40,7 +40,8 @@
 //    which it is >= 1 with at most 3 decimals; 0 and empty show the field's default unit.
 //  - Required fields carry a `.required-marker` (aria-hidden, text "*") in the field's group plus `required` and `aria-required`;
 //    one "* required" note on the form.
-//  - Ports are shown by their netdev name; values, payloads and `<option value>` keep the device name.
+//  - Ports are shown by their netdev name; values, payloads and `<option value>` keep the port (`Interface.port`: the PCI address in
+//    physical mode, the netdev name in virtual mode).
 //  - The limiter limit is derived by dpds-core from the buffer capacity (capacity x 1542 B x 8 bit); the form shows it read-only.
 //
 // Toolchain: react-router 8, react-bootstrap + bootstrap 5, chart.js via react-chartjs-2 (mocked in tests), plain CSS. The API
@@ -244,7 +245,7 @@ export const rowOf = (n: number): HTMLElement => must(linkRows()[n - 1], `row ${
 
 export const portSelect = (role: 'RX' | 'TX', n = 1) =>
   screen.getByLabelText(`${role} port of link ${n}`) as HTMLSelectElement;
-/** The ports `[rx, tx]` (device names, '' = none) of every row, in table order. */
+/** The ports `[rx, tx]` (as stored: PCI addresses or netdev names, '' = none) of every row, in table order. */
 export const portsOfRows = (): [string, string][] =>
   linkRows().map((_, i) => [portSelect('RX', i + 1).value, portSelect('TX', i + 1).value]);
 export const importButton = () => screen.getByRole('button', { name: 'Import' });

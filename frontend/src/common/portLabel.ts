@@ -29,6 +29,6 @@ export function usePortLabeler(): PortLabeler {
 /** A labeler over an interface list that is already loaded (none yet: plain device names). */
 export function labelerOf(list?: Interface[]): PortLabeler {
   const names = new Map<string, string>();
-  for (const i of list ?? []) if (i.netdev) names.set(i.pci, i.netdev);
+  for (const i of list ?? []) if (i.netdev) names.set(i.port, i.netdev);
   return (port) => (port ? (names.get(port) ?? port) : (port ?? undefined));
 }

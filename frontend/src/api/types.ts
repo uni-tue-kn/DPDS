@@ -74,8 +74,14 @@ export interface PcieLink {
   max_width: number | null;
 }
 
+/** The mode the controller runs in; fixed at install time. */
+export type Network = 'physical' | 'virtual';
+
 export interface Interface {
-  pci: string;
+  /** What a link's ingress/egress takes: the PCI address in physical mode, the netdev name in virtual mode. */
+  port: string;
+  /** Null in virtual mode. */
+  pci: string | null;
   vendor_id: string | null;
   device_id: string | null;
   vendor: string | null;
@@ -110,6 +116,7 @@ export interface OnlineView {
   dpds_bin: string;
   telemetry: boolean;
   root: boolean;
+  network: Network;
   /** Other GUI sessions seen in the last 15 s. */
   connected_clients?: number;
 }
@@ -122,6 +129,7 @@ export interface DirectionPlan {
 }
 
 export interface EmulationView {
+  network: Network;
   state: EmulationState;
   pid?: number | null;
   /** Unix seconds. */
@@ -194,6 +202,7 @@ export interface DirectionStats {
 }
 
 export interface StatsView {
+  network: Network;
   directions: DirectionStats[];
   /** milliseconds since the last successful telemetry poll (null: never). */
   age_ms?: number | null;
@@ -251,6 +260,7 @@ export interface HistoryTotals {
  * `started_at` (unix seconds, display only) is null then too, and `links` are the run's links in link-index order.
  */
 export interface HistoryView {
+  network: Network;
   run_id: number | null;
   started_at: number | null;
   links: HistoryLink[];

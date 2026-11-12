@@ -586,3 +586,48 @@ async fn post_hints_know_the_uplink_and_the_drain_timeout_of_the_body() {
         "{h}"
     );
 }
+
+// ---- virtual network ------------------------------------------------------
+
+fn virtual_ids(h: &Value) -> Vec<String> {
+    let mut ids = hint_ids(h);
+    ids.sort();
+    ids
+}
+
+#[test]
+fn virtual_mode_has_the_virtual_network_and_cpus_hints_and_nothing_about_nics_or_hugepages() {
+    let host = FakeHost::virtual_net(4, &["eth1", "eth2"]);
+    for st in [setup(vec![]), setup(vec![link("eth1", "eth2")])] {
+        let h = hints_json(&host, &st);
+        assert_eq!(virtual_ids(&h), ["cpus", "virtual-network"], "{h}");
+        assert_eq!(hint(&h, "virtual-network")["level"], "info");
+        assert_no_commands(&h, "virtual-network");
+        assert_level(&h, "cpus", "ok", "ok");
+    }
+    // no tool was asked anything (no firmware, no ethtool)
+    assert!(host.exec().calls().is_empty(), "{:?}", host.exec().calls());
+}
+
+#[test]
+fn the_cpus_hint_is_an_error_when_the_links_need_more_cores_than_are_online() {
+    // a link needs a core of its own besides the main core
+    let ports = ["eth1", "eth2", "eth3", "eth4"];
+    let links = |n: usize| setup(ports[..n].iter().map(|p| link(p, p)).collect());
+    let host = FakeHost::virtual_net(3, &ports);
+    assert_level(&hints_json(&host, &links(2)), "cpus", "ok", "ok");
+    assert_level(&hints_json(&host, &links(3)), "cpus", "error", "error");
+    // alone, the main core is enough
+    let host = FakeHost::virtual_net(1, &ports);
+    assert_level(&hints_json(&host, &setup(vec![])), "cpus", "ok", "ok");
+}
+
+#[test]
+fn physical_mode_has_neither_the_virtual_network_hint_nor_the_cpus_hint() {
+    let h = hints_json(&FakeHost::bare_metal(), &one_link_nic0());
+    let ids = hint_ids(&h);
+    assert!(
+        !ids.iter().any(|i| i == "virtual-network" || i == "cpus"),
+        "{ids:?}"
+    );
+}

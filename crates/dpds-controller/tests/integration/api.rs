@@ -10,6 +10,7 @@ use crate::common::*;
 use dpds_controller::api::{self, Deps};
 use dpds_controller::dto::ConfigDto;
 use dpds_controller::eal::{drain_timeout, eal_argv, links_file_json, EalInput, EalPort};
+use dpds_controller::host::Network;
 use dpds_controller::supervisor::State;
 use serde_json::{json, Value};
 
@@ -37,6 +38,7 @@ async fn online_reports_version_binary_telemetry_and_root() {
     assert_eq!(v["dpds_bin"], a.dpds_bin.to_str().unwrap());
     assert_eq!(v["telemetry"], true);
     assert_eq!(v["root"], false);
+    assert_eq!(v["network"], "physical");
 }
 
 #[tokio::test]
@@ -487,6 +489,8 @@ async fn start_hands_the_supervisor_a_complete_launch_plan() {
             },
         ],
         links_file: a.runtime_dir.join("links.json"),
+        network: Network::Physical,
+        memory_mib: 0,
     });
     // `-l` is a set: the order of its members is not significant, everything else is exact
     let lset = |v: &[String]| {
@@ -897,4 +901,260 @@ async fn openapi_json_documents_every_path() {
             "schema {gone} is still documented"
         );
     }
+}
+
+// ---- virtual network mode ------------------------------------------------
+
+fn virtual_host() -> FakeHost {
+    FakeHost::virtual_net(4, &["eth1", "eth2", "eth3"])
+}
+
+fn virtual_app() -> TestApp {
+    TestApp::new(virtual_host())
+}
+
+fn link_with_capacity(ingress: &str, egress: &str, capacity: u64) -> Value {
+    let mut cfg = cfg_json(1.0e6, 1.0e5);
+    cfg["buffer_capacity"] = json!(capacity);
+    link_cfg(ingress, egress, cfg)
+}
+
+#[tokio::test]
+async fn every_view_reports_the_network_mode_of_the_installation() {
+    for (a, mode) in [(app(), "physical"), (virtual_app(), "virtual")] {
+        for path in [
+            "/api/online",
+            "/api/emulation",
+            "/api/stats",
+            "/api/stats/history",
+        ] {
+            let r = a.get(path).await;
+            assert_eq!(r.status, 200, "{path}");
+            assert_eq!(r.json()["network"], mode, "{path}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn virtual_interfaces_are_offered_by_name_and_those_with_an_address_or_route_are_not_usable()
+{
+    let h = virtual_host();
+    h.routes(&[("eth3", "0000A8C0", "00000000", "00FFFFFF")]);
+    h.addr("eth2", "10.0.0.5");
+    let a = TestApp::new(h);
+    let v = a.get("/api/interfaces").await.json();
+    let usable = |port: &str| {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["port"] == port)
+            .unwrap_or_else(|| panic!("{port} not listed in {v}"))["dpds_usable"]
+            .clone()
+    };
+    assert_eq!(usable("eth1"), true);
+    assert_eq!(usable("eth2"), false);
+    assert_eq!(usable("eth3"), false);
+    // and a start refuses them like a physical host uplink
+    for used in ["eth2", "eth3"] {
+        let r = a.start_links(vec![one("eth1", used)]).await;
+        assert_eq!(r.status, 409, "{used}: {}", r.text());
+        assert!(r.message().contains(used), "{}", r.message());
+    }
+    assert!(a.supervisor.plans().is_empty());
+    assert_eq!(a.start_links(vec![one("eth1", "eth1")]).await.status, 202);
+}
+
+#[tokio::test]
+async fn a_virtual_start_maps_each_interface_to_an_af_packet_vdev_once_in_link_order() {
+    let a = virtual_app();
+    // ports in link order: eth2 (0), eth1 (1), eth3 (2)
+    let r = a
+        .start_ok(vec![one("eth2", "eth1"), one("eth1", "eth3")])
+        .await;
+    let plan = a.supervisor.plans().remove(0);
+    // 4 online cores, no isolation: main 0, one worker core per link
+    let m = virtual_mem_mib(&[100_000, 100_000]).to_string();
+    let expect: Vec<String> = [
+        "-l",
+        "0,1,2",
+        "--main-lcore",
+        "0",
+        "--no-huge",
+        "--no-pci",
+        "-m",
+        &m,
+        "--in-memory",
+        "--file-prefix",
+        "dpds-ctl",
+        "--vdev",
+        "net_af_packet0,iface=eth2",
+        "--vdev",
+        "net_af_packet1,iface=eth1",
+        "--vdev",
+        "net_af_packet2,iface=eth3",
+        "--",
+        "--links",
+        a.runtime_dir.join("links.json").to_str().unwrap(),
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    assert_eq!(plan.argv, expect);
+    // dpds gets DPDK names everywhere ...
+    let links = &plan.links_json["links"];
+    assert_eq!(
+        (links[0]["ingress"].as_str(), links[0]["egress"].as_str()),
+        (Some("net_af_packet0"), Some("net_af_packet1"))
+    );
+    assert_eq!(
+        (links[1]["ingress"].as_str(), links[1]["egress"].as_str()),
+        (Some("net_af_packet1"), Some("net_af_packet2"))
+    );
+    let ends: Vec<(&str, &str)> = plan
+        .directions
+        .iter()
+        .map(|d| (d.rx.as_str(), d.tx.as_str()))
+        .collect();
+    assert_eq!(
+        ends,
+        [
+            ("net_af_packet0", "net_af_packet1"),
+            ("net_af_packet1", "net_af_packet2")
+        ]
+    );
+    // ... the user keeps the interface names
+    let cfg = &r["config"]["links"];
+    assert_eq!(cfg[0]["ingress"], "eth2");
+    assert_eq!(cfg[0]["egress"], "eth1");
+    assert_eq!(cfg[1]["egress"], "eth3");
+    assert_eq!(r["directions"][0]["rx"], "net_af_packet0");
+    let e = a.get("/api/emulation").await.json();
+    assert_eq!(e["config"]["links"][0]["ingress"], "eth2");
+    assert_eq!(e["directions"][1]["tx"], "net_af_packet2");
+}
+
+#[tokio::test]
+async fn a_virtual_hairpin_is_one_vdev() {
+    let a = virtual_app();
+    a.start_ok(vec![one("eth1", "eth1")]).await;
+    let argv = a.supervisor.plans().remove(0).argv;
+    let vdevs: Vec<&String> = argv
+        .windows(2)
+        .filter(|w| w[0] == "--vdev")
+        .map(|w| &w[1])
+        .collect();
+    assert_eq!(vdevs, ["net_af_packet0,iface=eth1"]);
+}
+
+#[tokio::test]
+async fn virtual_stats_show_the_interface_names_not_the_af_packet_devices() {
+    let a = virtual_app();
+    a.start_ok(vec![one("eth1", "eth2"), one("eth2", "eth1")])
+        .await;
+    let dir = |uptime_ns| DirSample {
+        uptime_ns,
+        rx_pkts: 10,
+        tx_sent: 10,
+        loss: 0,
+        limiter: 0,
+        full: 0,
+        tx_drops: 0,
+    };
+    let port = || PortSample {
+        ibytes: 1000,
+        obytes: 1000,
+        rx_missed_errors: 0,
+        rx_mbuf_allocation_errors: 0,
+    };
+    let mut snap = snapshot([dir(1), dir(1)], [port(), port()]);
+    for (k, v) in [
+        ("port0_name", "net_af_packet0"),
+        ("port1_name", "net_af_packet1"),
+        ("dir0_rx_name", "net_af_packet0"),
+        ("dir0_tx_name", "net_af_packet1"),
+        ("dir1_rx_name", "net_af_packet1"),
+        ("dir1_tx_name", "net_af_packet0"),
+    ] {
+        snap.ports[k] = json!(v);
+    }
+    a.telemetry.set(None, snap);
+    let v = a.get("/api/stats").await.json();
+    let ends: Vec<(&str, &str)> = (0..2)
+        .map(|d| {
+            (
+                v["directions"][d]["rx"].as_str().unwrap(),
+                v["directions"][d]["tx"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(ends, [("eth1", "eth2"), ("eth2", "eth1")]);
+}
+
+#[tokio::test]
+async fn a_virtual_start_needs_the_memory_of_its_pools_and_no_hugepages() {
+    for capacities in [vec![100_000u64], vec![50_000, 200_000]] {
+        let links = |caps: &[u64]| -> Vec<Value> {
+            caps.iter()
+                .zip(["eth1", "eth2"])
+                .map(|(c, p)| link_with_capacity(p, p, *c))
+                .collect()
+        };
+        let m = virtual_mem_mib(&capacities);
+        let host = |mem_kb: u64| {
+            let h = virtual_host();
+            // hugepages that would not fit are no concern in a virtual network
+            h.hugepages(&[0], 10, 0);
+            h.mem_available_kb(Some(mem_kb));
+            h
+        };
+        // exactly -m MiB available: starts, and -m is the formula
+        let a = TestApp::new(host(m * 1024));
+        a.start_ok(links(&capacities)).await;
+        let argv = a.supervisor.plans().remove(0).argv;
+        let at = argv.iter().position(|x| x == "-m").expect("-m");
+        assert_eq!(argv[at + 1], m.to_string(), "{capacities:?}");
+        // a kB less: refused, naming the largest link, nothing launched
+        let a = TestApp::new(host(m * 1024 - 1));
+        let r = a.start_links(links(&capacities)).await;
+        assert_eq!(r.status, 400, "{capacities:?}: {}", r.text());
+        let msg = r.message();
+        assert!(msg.to_lowercase().contains("available"), "{msg}");
+        let (largest, _) = capacities
+            .iter()
+            .zip(["eth1", "eth2"])
+            .max_by_key(|(c, _)| **c)
+            .unwrap();
+        let name = if *largest == capacities[0] {
+            "eth1"
+        } else {
+            "eth2"
+        };
+        assert!(msg.contains(&format!("{name} -> {name}")), "{msg}");
+        assert!(a.supervisor.plans().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn a_physical_start_does_not_look_at_mem_available() {
+    let host = FakeHost::bare_metal();
+    host.mem_available_kb(Some(1));
+    let a = TestApp::new(host);
+    a.start_ok(vec![one(NIC0, NIC1)]).await;
+}
+
+#[tokio::test]
+async fn interface_names_are_case_sensitive_in_a_virtual_network() {
+    // Linux has eth1 and ETH1 side by side; the one with an address is the only one in use
+    let h = FakeHost::virtual_net(4, &["eth1", "ETH1"]);
+    h.addr("ETH1", "10.0.0.9");
+    let a = TestApp::new(h);
+    let r = a.start_links(vec![one("ETH1", "ETH1")]).await;
+    assert_eq!(r.status, 409, "{}", r.text());
+    let r = a.start_links(vec![one("eth1", "eth1")]).await;
+    assert_eq!(r.status, 202, "{}", r.text());
+    let argv = a.supervisor.plans().remove(0).argv;
+    assert!(
+        argv.contains(&"net_af_packet0,iface=eth1".to_string()),
+        "{argv:?}"
+    );
 }

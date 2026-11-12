@@ -104,6 +104,33 @@ No root, hugepages or NIC needed. Run from the repository root. The config is a 
 distributed delay with correlation, no limit and no loss; the second command needs an `in.pcap`.
 Stop with `Ctrl-C`.
 
+### In a virtual network (`net_af_packet`)
+
+The controller's virtual network mode (`dpds.sh install --network virtual`, see the README) runs
+`dpds` on kernel interfaces such as the veth ends of containerlab nodes. By hand it is:
+
+```bash
+./target/release/dpds -l 0-2 --no-huge -m 80 --no-pci --in-memory --file-prefix dpds \
+    --vdev net_af_packet0,iface=eth1 --vdev net_af_packet1,iface=eth2 -- --links links.json
+```
+
+The controller maps the interfaces once, in `launch_plan`: the distinct ports of the links in link
+order become `net_af_packet0,iface=eth1`, `net_af_packet1,iface=eth2`, and so on, passed as
+`--vdev`. The `--links` file and the planned directions (`rx`, `tx` of `GET /api/emulation`) carry
+the DPDK names `net_af_packet<i>`, which are also what the `dir<d>_rx_name` telemetry reports; the
+run config, the history and `GET /api/stats` keep the interface names. The lcores are the lowest
+online core as main and the next `links` online cores as workers.
+
+`-m` is the memory of the mbuf pools. Without hugepages every mbuf takes a whole 4 KiB page (a
+2432 B mbuf does not pack into one), so
+
+```
+m_mib = ceil(sum over links of (buffer_capacity + 4096 + 4096 + 768 + 64) * 4096 / 2^20) + 64
+```
+
+where the sum is the pool of each link and 64 MiB covers EAL, the rings and headroom. A start is
+refused (400) when `m_mib` MiB are more than `MemAvailable`.
+
 ### The links file (`--links`)
 
 ```json
@@ -235,3 +262,32 @@ cargo test --release -p dpds --features telemetry
 
 Unit tests need no DPDK runtime; the end-to-end tests (`crates/dpds/tests/e2e.rs`) run the real
 binary on virtual devices without root or hugepages and need several CPUs.
+
+The controller's end-to-end tests (`crates/dpds-controller/tests/integration/e2e.rs`) are
+`#[ignore]`d. They run the real `dpds`, built first with `--features telemetry`, one at a time, and
+the physical ones need hugepages (`sudo sysctl -w vm.nr_hugepages=512`):
+
+```bash
+cargo build --release -p dpds --features telemetry
+cargo test --release -p dpds-controller --test integration e2e -- --ignored --test-threads=1
+```
+
+The two `virtual_network_*` tests run the controller in virtual mode over veth pairs and need root,
+so build the test binary as your user and run it with the environment kept:
+
+```bash
+cargo test --release -p dpds-controller --test integration --no-run   # prints the binary
+sudo env "PATH=$PATH" "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" target/release/deps/integration-<hash> e2e::virtual_network --ignored --test-threads=1
+```
+
+The lab has the veth ends `vdpds0` and `vdpds1` in the root namespace, their peers in the network
+namespaces `vdpds-a` (10.77.0.1/24) and `vdpds-b` (10.77.0.2/24). Two links `vdpds0` -> `vdpds1`
+and back, each with a 20 ms deterministic delay, carry `ip netns exec vdpds-a ping 10.77.0.2`, whose
+round trip must be at least 40 ms. A second test starts one link with `buffer_capacity` 2^18 to pin
+the `-m` formula. It needs the capabilities `CAP_NET_ADMIN` and `CAP_NET_RAW` (veth and
+`AF_PACKET` sockets), `CAP_SYS_ADMIN` for the network namespaces (`ip netns`), a DPDK built with
+`net/af_packet` and no hugepages. Without permission for `ip link add` the tests print SKIP; where
+only `ip netns` is refused, the ping test skips and the memory test runs. CI runs both as root in
+the backend job (its own step after the physical tests), on a DPDK built with `net/af_packet`
+(`.github/scripts/install-dpdk.sh`).
+

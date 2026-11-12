@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use crate::common::*;
 use dpds_controller::eal::{drain_timeout, eal_argv, links_file_json, EalInput, EalPort};
+use dpds_controller::host::Network;
 use dpds_controller::lcores::DirectionPlan;
 use dpds_core::delayer::RVDistribution;
 use dpds_core::dropper::LossModel;
@@ -34,6 +35,9 @@ fn input(ports: Vec<EalPort>) -> EalInput {
         worker_lcores: vec![2, 3],
         ports,
         links_file: PathBuf::from("/run/dpds-controller/links.json"),
+        network: Network::Physical,
+        // the memory of a virtual network start; a physical argv has no `-m`
+        memory_mib: 96,
     }
 }
 
@@ -141,6 +145,50 @@ fn links_file_path_is_the_last_argument() {
         argv[argv.len() - 2..],
         strs(&["--links", "/tmp/x/links.json"])[..]
     );
+}
+
+#[test]
+fn virtual_mode_argv_has_no_hugepages_no_pci_the_memory_and_one_vdev_per_port() {
+    // in virtual mode a port is already the DPDK device `launch_plan` made of an interface
+    let i = EalInput {
+        network: Network::Virtual,
+        ports: vec![
+            port("net_af_packet0,iface=eth1", None),
+            port("net_af_packet1,iface=eth2", None),
+        ],
+        ..input(vec![])
+    };
+    assert_eq!(
+        eal_argv(&i),
+        strs(&[
+            "-l",
+            "0,2,3",
+            "--main-lcore",
+            "0",
+            "--no-huge",
+            "--no-pci",
+            "-m",
+            "96",
+            "--in-memory",
+            "--file-prefix",
+            "dpds-ctl",
+            "--vdev",
+            "net_af_packet0,iface=eth1",
+            "--vdev",
+            "net_af_packet1,iface=eth2",
+            "--",
+            "--links",
+            "/run/dpds-controller/links.json",
+        ])
+    );
+}
+
+#[test]
+fn physical_mode_argv_never_gets_the_virtual_options() {
+    let argv = eal_argv(&input(vec![port(NIC0, Some("mlx5_core"))]));
+    for a in ["--no-huge", "--no-pci", "-m", "96"] {
+        assert!(!argv.contains(&a.to_string()), "{a} in {argv:?}");
+    }
 }
 
 /// The dpds_core::Config behind `cfg_json(2.0e6, 0.0)` with the Deterministic delay,

@@ -13,6 +13,7 @@ use serde_json::Value;
 use socket2::{Domain, SockAddr, Socket, Type};
 
 use crate::dto::MAX_HISTOGRAM_BINS;
+use crate::host::Network;
 pub use crate::stats::Polled;
 use crate::stats::{
     compute_stats, delay_stats_on, HistoryLink, HistorySample, HistoryTotals, HistoryView,
@@ -542,6 +543,7 @@ impl TelemetrySource for Poller {
             })
             .collect();
         HistoryView {
+            network: Network::default(), // the API fills in the mode
             run_id: Some(r.id),
             links: r.labels.clone(),
             started_at: r.started_at,

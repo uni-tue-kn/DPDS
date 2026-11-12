@@ -16,6 +16,17 @@
 //! parameters. Every start carries the whole configuration (`Controller::start_run`) and the
 //! running configuration is read back from `GET /api/emulation`.
 //!
+//! The `virtual_network_*` tests run the controller in virtual network mode over two veth pairs (see
+//! `VethLab`) and need root (`CAP_NET_ADMIN`, `CAP_NET_RAW`, and for the ping test `CAP_SYS_ADMIN` for
+//! network namespaces) and a `dpds` whose DPDK has
+//! `net/af_packet`; without permission to `ip link add` they print SKIP and pass. Build the test
+//! binary as the normal user, then run it as root with the environment kept:
+//!
+//! ```text
+//! cargo test --release -p dpds-controller --test integration --no-run      # prints the binary
+//! sudo env "PATH=$PATH" "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" target/release/deps/integration-<hash> e2e::virtual_network --ignored --test-threads=1
+//! ```
+//!
 //! The tests use `net_null` hairpin links and a three-link ring over three `net_null` vdevs
 //! (`net_null` receives an endless stream of packets and discards what it sends, so exact
 //! per-link counts are not available; the per-link deterministic delay, the link order, the ports
@@ -31,7 +42,6 @@ use std::time::{Duration, Instant};
 use crate::common::*;
 use serde_json::{json, Value};
 
-const CONTROLLER: &str = env!("CARGO_BIN_EXE_dpds-controller");
 const START_TIMEOUT: Duration = Duration::from_secs(60);
 const STOP_TIMEOUT: Duration = Duration::from_secs(40);
 
@@ -85,7 +95,6 @@ impl Controller {
     /// main lcore 0.
     fn start_with_workers(workers: usize) -> Controller {
         require_cpus(workers + 1);
-        let dpds = dpds_bin();
         let host = FakeHost::empty();
         let isolated = if workers == 1 {
             "1".to_string()
@@ -96,6 +105,26 @@ impl Controller {
         host.cmdline(&format!(
             "ro isolcpus={isolated} nohz_full={isolated} rcu_nocbs={isolated}"
         ));
+        let host_args = [
+            "--sysfs-root".into(),
+            host.sysfs().into_os_string(),
+            "--procfs-root".into(),
+            host.procfs().into_os_string(),
+        ];
+        Controller::launch(host, &host_args)
+    }
+
+    /// A controller in virtual network mode over the real `/sys` and `/proc` (the veth ends are
+    /// real interfaces): the stored mode comes from the etc dir of a throwaway fake host.
+    fn start_virtual() -> Controller {
+        require_cpus(3);
+        let host = FakeHost::virtual_net(1, &[]);
+        let host_args = ["--etc-dir".into(), host.etc_dir().into_os_string()];
+        Controller::launch(host, &host_args)
+    }
+
+    fn launch(host: FakeHost, host_args: &[std::ffi::OsString]) -> Controller {
+        let dpds = dpds_bin();
         // short path: the telemetry socket path must stay below 108 bytes
         let runtime_dir = PathBuf::from(format!("/tmp/dpdsc-{}", std::process::id()));
         let port = {
@@ -103,16 +132,13 @@ impl Controller {
             l.local_addr().unwrap().port()
         };
         let addr = format!("127.0.0.1:{port}");
-        let child = Command::new(CONTROLLER)
+        let child = controller_cmd()
             .args(["serve", "--bind", &addr])
             .arg("--dpds-bin")
             .arg(&dpds)
             .arg("--runtime-dir")
             .arg(&runtime_dir)
-            .arg("--sysfs-root")
-            .arg(host.sysfs())
-            .arg("--procfs-root")
-            .arg(host.procfs())
+            .args(host_args)
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
             .spawn()
@@ -572,6 +598,255 @@ fn a_link_without_any_stage_runs_with_zero_delay() {
         0,
         "{d0}"
     );
+    assert_eq!(
+        c.call("POST", "/api/emulation/stop", Some(json!({}))).0,
+        202
+    );
+    c.wait_state(&["stopped"], STOP_TIMEOUT);
+}
+
+// ---- virtual network mode over veth pairs ----------------------------------------------------
+
+/// `ip <args>`: stdout, or stderr of a failure.
+fn ip(args: &[&str]) -> Result<String, String> {
+    let o = Command::new("ip")
+        .args(args)
+        .output()
+        .map_err(|e| format!("cannot run ip: {e}"))?;
+    if o.status.success() {
+        Ok(String::from_utf8_lossy(&o.stdout).into_owned())
+    } else {
+        Err(String::from_utf8_lossy(&o.stderr).into_owned())
+    }
+}
+
+/// The veth pairs of a virtual network test: `vdpds0` and `vdpds1` in the root namespace carry no
+/// address and no route, so the controller offers them. With `hosts`, `vdpds0` is paired with
+/// `eth0` of the namespace `vdpds-a` (10.77.0.1/24) and `vdpds1` with `eth0` of `vdpds-b`
+/// (10.77.0.2/24), two hosts to ping each other through the links; without, the peers `vdpds0p`
+/// and `vdpds1p` stay in the root namespace (no network namespaces needed). Dropping removes
+/// everything again, also after a panic.
+struct VethLab;
+
+impl VethLab {
+    /// None (after printing SKIP) when this process may not create network interfaces or, with
+    /// `hosts`, network namespaces (a container without `CAP_SYS_ADMIN` cannot).
+    fn create(hosts: bool) -> Option<VethLab> {
+        VethLab::remove();
+        let permission = |e: &str| e.contains("not permitted") || e.contains("Permission denied");
+        if let Err(e) = ip(&[
+            "link",
+            "add",
+            "vdpds-probe",
+            "type",
+            "veth",
+            "peer",
+            "name",
+            "vdpds-probe2",
+        ]) {
+            if permission(&e) {
+                eprintln!("SKIP: `ip link add` is not permitted ({}); run as root with CAP_NET_ADMIN and CAP_NET_RAW, e.g. under sudo", e.trim());
+                return None;
+            }
+            panic!("ip link add failed: {e}");
+        }
+        let _ = ip(&["link", "del", "vdpds-probe"]);
+        let lab = VethLab;
+        for (ns, root_end, addr) in [
+            ("vdpds-a", "vdpds0", "10.77.0.1/24"),
+            ("vdpds-b", "vdpds1", "10.77.0.2/24"),
+        ] {
+            let step = |args: &[&str]| {
+                ip(args).unwrap_or_else(|e| panic!("ip {args:?}: {e}"));
+            };
+            if hosts {
+                match ip(&["netns", "add", ns]) {
+                    Ok(_) => {}
+                    Err(e) if permission(&e) => {
+                        eprintln!("SKIP: network namespaces are not permitted ({}); this test needs CAP_SYS_ADMIN", e.trim());
+                        return None;
+                    }
+                    Err(e) => panic!("ip netns add {ns}: {e}"),
+                }
+                step(&[
+                    "link", "add", root_end, "type", "veth", "peer", "name", "eth0", "netns", ns,
+                ]);
+                step(&[
+                    "netns", "exec", ns, "ip", "addr", "add", addr, "dev", "eth0",
+                ]);
+                step(&["netns", "exec", ns, "ip", "link", "set", "eth0", "up"]);
+                step(&["netns", "exec", ns, "ip", "link", "set", "lo", "up"]);
+            } else {
+                let peer = format!("{root_end}p");
+                step(&[
+                    "link", "add", root_end, "type", "veth", "peer", "name", &peer,
+                ]);
+                step(&["link", "set", &peer, "up"]);
+            }
+            step(&["link", "set", root_end, "up"]);
+            // no IPv6 noise on the root ends (best effort)
+            let _ = std::fs::write(
+                format!("/proc/sys/net/ipv6/conf/{root_end}/disable_ipv6"),
+                "1",
+            );
+        }
+        Some(lab)
+    }
+
+    fn remove() {
+        for ns in ["vdpds-a", "vdpds-b"] {
+            let _ = ip(&["netns", "del", ns]);
+        }
+        for dev in ["vdpds0", "vdpds1", "vdpds-probe"] {
+            let _ = ip(&["link", "del", dev]);
+        }
+    }
+}
+
+impl Drop for VethLab {
+    fn drop(&mut self) {
+        VethLab::remove();
+    }
+}
+
+/// The two links of the lab, `vdpds0` -> `vdpds1` and back, with a deterministic `ms` delay.
+fn lab_links(ms: f64, buffer_capacity: u64) -> Vec<Value> {
+    let mut cfg = delay_config(ms);
+    cfg["buffer_capacity"] = json!(buffer_capacity);
+    vec![
+        json!({"ingress": "vdpds0", "egress": "vdpds1", "config": cfg.clone()}),
+        json!({"ingress": "vdpds1", "egress": "vdpds0", "config": cfg}),
+    ]
+}
+
+/// The first number of the `rtt min/avg/max/mdev = a/b/c/d ms` line of ping, in ms.
+fn ping_min_rtt_ms(out: &str) -> f64 {
+    let line = out
+        .lines()
+        .find(|l| l.contains("min/avg/max"))
+        .unwrap_or_else(|| panic!("no rtt summary in the ping output: {out}"));
+    let after = line.split('=').nth(1).expect("rtt values");
+    after
+        .trim()
+        .split('/')
+        .next()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or_else(|| panic!("cannot parse the rtt line {line:?}"))
+}
+
+#[test]
+#[ignore = "needs root (CAP_NET_ADMIN, CAP_NET_RAW) and target/release/dpds built with --features telemetry and DPDK net/af_packet; see the header of this file"]
+fn virtual_network_ping_through_two_links_sees_the_deterministic_delay() {
+    let _g = serial();
+    let Some(_lab) = VethLab::create(true) else {
+        return;
+    };
+    let c = Controller::start_virtual();
+    let online = c.call("GET", "/api/online", None).1;
+    assert_eq!(online["network"], "virtual", "{online}");
+    // the veth ends are offered by name, the namespaces' ends are not even visible
+    let (s, ifaces) = c.call("GET", "/api/interfaces", None);
+    assert_eq!(s, 200);
+    for name in ["vdpds0", "vdpds1"] {
+        let i = ifaces
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["port"] == name)
+            .unwrap_or_else(|| panic!("{name} not offered: {ifaces}"));
+        assert_eq!(i["dpds_usable"], true, "{i}");
+    }
+
+    let (s, v) = c.start_run(lab_links(20.0, 4096));
+    assert_eq!(s, 202, "{v}");
+    let run = c.wait_state(&["running"], START_TIMEOUT);
+    // the user sees interface names in the configuration, DPDK devices in the plan
+    assert_eq!(run["config"]["links"][0]["ingress"], "vdpds0", "{run}");
+    assert_eq!(run["directions"][0]["rx"], "net_af_packet0", "{run}");
+    assert_eq!(run["directions"][0]["tx"], "net_af_packet1", "{run}");
+
+    let ping = Command::new("ip")
+        .args([
+            "netns",
+            "exec",
+            "vdpds-a",
+            "ping",
+            "-c",
+            "3",
+            "-W",
+            "2",
+            "10.77.0.2",
+        ])
+        .output()
+        .expect("cannot run ping");
+    let out = String::from_utf8_lossy(&ping.stdout).into_owned();
+    assert!(
+        ping.status.success(),
+        "ping failed: {out} {}",
+        String::from_utf8_lossy(&ping.stderr)
+    );
+    let rtt = ping_min_rtt_ms(&out);
+    assert!(
+        rtt >= 40.0,
+        "two 20 ms links must add at least 40 ms, got {rtt} ms: {out}"
+    );
+
+    let (s, stats) = c.call("GET", "/api/stats", None);
+    assert_eq!(s, 200);
+    for d in 0..2 {
+        let counters = &stats["directions"][d]["counters"];
+        assert!(
+            counters["rx_pkts"].as_u64().unwrap_or(0) > 0,
+            "link {d} saw no packet: {stats}"
+        );
+        assert!(
+            counters["tx_sent"].as_u64().unwrap_or(0) > 0,
+            "link {d} sent no packet: {stats}"
+        );
+    }
+    assert_eq!(
+        stats["directions"][0]["rx"], "vdpds0",
+        "stats name the interfaces: {stats}"
+    );
+    let (s, hist) = c.call("GET", "/api/stats/history", None);
+    assert_eq!(s, 200);
+    assert_eq!(hist["links"][0]["ingress"], "vdpds0", "{hist}");
+
+    assert_eq!(
+        c.call("POST", "/api/emulation/stop", Some(json!({}))).0,
+        202
+    );
+    c.wait_state(&["stopped"], STOP_TIMEOUT);
+}
+
+#[test]
+#[ignore = "needs root (CAP_NET_ADMIN, CAP_NET_RAW) and target/release/dpds built with --features telemetry and DPDK net/af_packet; see the header of this file"]
+fn virtual_network_memory_formula_fits_a_large_buffer() {
+    // 2^18 packets: with `--no-huge` the mbuf pool takes 1059 MiB (a 4 KiB page per mbuf), so a
+    // `-m` computed from the 2432 B mbuf size alone fails the start with a pool error. A hairpin:
+    // an egress-only port would add an RX ring of mbufs.
+    let _g = serial();
+    let Some(_lab) = VethLab::create(false) else {
+        return;
+    };
+    let c = Controller::start_virtual();
+    let capacity: u64 = 1 << 18;
+    let mut cfg = delay_config(1.0);
+    cfg["buffer_capacity"] = json!(capacity);
+    let (s, v) = c.start_run(vec![
+        json!({"ingress": "vdpds0", "egress": "vdpds0", "config": cfg}),
+    ]);
+    assert_eq!(s, 202, "{v}");
+    let run = c.wait_state(&["running"], START_TIMEOUT);
+    let pid = run["pid"].as_i64().expect("a running state has a pid");
+    let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).expect("cmdline of dpds");
+    let args: Vec<&[u8]> = cmdline.split(|b| *b == 0).collect();
+    let m = args
+        .windows(2)
+        .find(|w| w[0] == b"-m")
+        .map(|w| String::from_utf8_lossy(w[1]).into_owned())
+        .unwrap_or_else(|| panic!("no -m in the dpds command line"));
+    assert_eq!(m, virtual_mem_mib(&[capacity]).to_string());
     assert_eq!(
         c.call("POST", "/api/emulation/stop", Some(json!({}))).0,
         202

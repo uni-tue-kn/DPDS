@@ -5,7 +5,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::host::{fmt_cpus, is_vdev, HostRoots};
+use crate::host::{fmt_cpus, is_vdev, HostRoots, Network};
 use crate::model::RunConfig;
 
 /// A link as planned: traffic received on `rx` (the ingress), sent on `tx` (the
@@ -42,8 +42,36 @@ fn err<T>(m: String) -> Result<T, LcoreError> {
 /// Plans lcores for the links: the main lcore is the lowest online core that is not
 /// isolated; each link gets its own free isolated core, the lowest id first, preferring the NUMA
 /// node of the ingress NIC.
+///
+/// In a virtual network there is no isolation and no NUMA preference: the main lcore is the lowest
+/// online core and the links take the next online cores in id order.
 pub fn assign_lcores(roots: &HostRoots, config: &RunConfig) -> Result<Assignment, LcoreError> {
     let online = roots.online_cpus();
+    if roots.network == Network::Virtual {
+        let needed = config.links.len();
+        if online.len() < needed + 1 {
+            return err(format!(
+                "{needed} link(s) need {} online cores but only {} are online",
+                needed + 1,
+                online.len()
+            ));
+        }
+        return Ok(Assignment {
+            main_lcore: online[0],
+            directions: config
+                .links
+                .iter()
+                .zip(&online[1..])
+                .enumerate()
+                .map(|(i, (l, core))| DirectionPlan {
+                    dir: i as u32,
+                    rx: l.ingress.clone(),
+                    tx: l.egress.clone(),
+                    lcore: *core,
+                })
+                .collect(),
+        });
+    }
     let isolated = roots.isolated_cpus();
 
     let Some(main_lcore) = online.iter().copied().find(|c| !isolated.contains(c)) else {

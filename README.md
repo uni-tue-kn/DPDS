@@ -54,7 +54,7 @@ travels with every start request.
   (tested on Mellanox ConnectX) and hugepages
 - **Rust** (stable) and **clang and lld with the same LLVM major version as `rustc`**
 - **Node 26 or newer and npm**; the frontend is built on the host, which needs the npm registry
-- One **isolated core per link** (kernel parameter `isolcpus`, see the host hints) besides the main
+- In the physical mode, one **isolated core per link** (kernel parameter `isolcpus`, see the host hints) besides the main
   lcore: a start without them is refused with a message that says so. A link uses exactly this one
   core (one RX and one TX queue), which bounds its packet rate: 100 Gb/s is reachable with large
   frames (8.1 Mpps at 1518 B), not with small ones (see
@@ -81,6 +81,45 @@ The channel is set with `DPDS_CHANNEL` or a flag: `latest` (default, branch `mai
 `nightly` (branch `nightly`, flag `--nightly`) or a release tag such as `v1.0.0`. **`main` still
 holds the C version of DPDS, which has no controller and no `dpds.sh`, so use `--nightly` for now**
 (`./dpds.sh --nightly update`). The header of `dpds.sh` lists its other options and variables.
+
+### Network modes
+
+DPDS runs in one of two modes, and a run is always one or the other:
+
+- **physical** (real NICs): `dpds` takes the NICs by PCI address, with hugepages and isolated
+  cores. This is the mode for measurements.
+- **virtual** (a virtual network such as containerlab nodes joined by veth interfaces): `dpds` takes
+  kernel interfaces by name (`eth1`) through DPDK's `net_af_packet` driver and needs no hugepages
+  and no isolated cores. It is for functional testing: delays and rates are not measurements. The
+  installed DPDK needs the driver (`net/af_packet`), which `./dpds.sh check` verifies.
+
+The mode is chosen at install time and stored in `/etc/dpds/network` (one line, `physical` or
+`virtual`); the controller reads it at start, and nothing else sets it.
+
+```bash
+./dpds.sh install --network virtual    # required the first time, there is no default
+./dpds.sh update                       # keeps the stored mode
+./dpds.sh update --network physical    # switches it (the service is restarted if it was running)
+```
+
+`install` and `update` without `--network` keep the stored mode, and `uninstall` keeps the file.
+The web frontend shows the mode in the navigation bar, and the API reports it as `network`.
+
+In a container there is usually no systemd (no `/run/systemd/system`). `dpds.sh install` then does
+everything except installing the unit, and as plain root (no `sudo` needed) it runs the privileged
+steps directly. `start`, `stop`, `restart` and `status` call no `systemctl`; they print how to run
+the controller by hand:
+
+```bash
+DPDS_CONTROLLER_BIND=0.0.0.0:8100 DPDS_CONTROLLER_DPDS_BIN=/usr/local/bin/dpds /usr/local/bin/dpds-controller serve
+```
+
+In virtual mode a link's `ingress` and `egress` are interface names: 1 to 15 characters of letters,
+digits, `_`, `.` and `-`, not `lo`. The same interface safety applies as for NICs: an interface with
+an IP address or a route (or under a bridge or bond that has one) is not offered and a start with
+it is refused, so the interface that carries the management connection of the node cannot be taken
+away. A start needs `1 + links` online cores and enough free memory (`MemAvailable`) for the mbuf
+pools; the controller refuses a start that does not fit and names the largest link.
 
 ---
 

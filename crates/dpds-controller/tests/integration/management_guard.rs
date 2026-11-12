@@ -958,10 +958,7 @@ fn an_empty_ifaddrs_file_means_no_addresses() {
 #[test]
 fn the_help_documents_the_ifaddrs_file_as_test_only_like_the_roots() {
     for cmd in ["serve", "check"] {
-        let o = std::process::Command::new(env!("CARGO_BIN_EXE_dpds-controller"))
-            .args([cmd, "--help"])
-            .output()
-            .unwrap();
+        let o = controller_cmd().args([cmd, "--help"]).output().unwrap();
         let out = String::from_utf8_lossy(&o.stdout).to_lowercase();
         assert!(out.contains("--ifaddrs-file"), "{cmd}: {out}");
         assert!(out.contains("dpds_controller_ifaddrs_file"), "{cmd}: {out}");

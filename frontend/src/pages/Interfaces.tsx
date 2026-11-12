@@ -18,7 +18,7 @@ function Row({ i }: { i: Interface }) {
   const reason = i.reason ?? (i.uplink ? 'uplink' : '');
   return (
     <tr>
-      <td>{i.pci}</td>
+      <td>{i.pci ?? NA}</td>
       <td>{i.vendor ?? i.vendor_id ?? NA}</td>
       <td>{i.driver ?? NA}</td>
       <td>{i.netdev ?? NA}</td>
@@ -70,7 +70,7 @@ export default function Interfaces() {
           </thead>
           <tbody>
             {data.map((i) => (
-              <Row key={i.pci} i={i} />
+              <Row key={i.port} i={i} />
             ))}
           </tbody>
         </Table>

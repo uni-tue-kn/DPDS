@@ -5,7 +5,7 @@
 //! A controller starts empty, always (a leftover state file cannot stop it).
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use crate::common::*;
 use serde_json::{json, Value};
@@ -68,7 +68,7 @@ fn serving_and_a_start_attempt_write_no_file_into_the_working_directory_or_home(
     let home = tempfile::tempdir().unwrap();
     let rt = tempfile::tempdir().unwrap();
     let addr = free_addr();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_dpds-controller"))
+    let mut child = controller_cmd()
         .args(["serve", "--bind", &addr, "--runtime-dir"])
         .arg(rt.path().join("rt"))
         .current_dir(cwd.path())
@@ -124,7 +124,7 @@ fn a_state_dir_option_is_a_usage_error() {
         vec!["check", "--state-dir", "/tmp/x"],
         vec!["serve", "--state-dir=/tmp/x"],
     ] {
-        let o = Command::new(env!("CARGO_BIN_EXE_dpds-controller"))
+        let o = controller_cmd()
             .args(&args)
             .args(if args[0] == "check" {
                 vec![]
@@ -146,10 +146,7 @@ fn the_help_does_not_mention_a_state_dir() {
         vec!["serve", "--help"],
         vec!["check", "--help"],
     ] {
-        let o = Command::new(env!("CARGO_BIN_EXE_dpds-controller"))
-            .args(&args)
-            .output()
-            .unwrap();
+        let o = controller_cmd().args(&args).output().unwrap();
         let out = String::from_utf8_lossy(&o.stdout).to_lowercase();
         assert!(
             !out.contains("state-dir") && !out.contains("state_dir"),
@@ -162,7 +159,7 @@ fn the_help_does_not_mention_a_state_dir() {
 #[test]
 fn check_works_without_any_state() {
     let host = FakeHost::bare_metal();
-    let o = Command::new(env!("CARGO_BIN_EXE_dpds-controller"))
+    let o = controller_cmd()
         .arg("check")
         .arg("--sysfs-root")
         .arg(host.sysfs())

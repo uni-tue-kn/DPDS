@@ -10,7 +10,7 @@ use clap::{Args, Parser, Subcommand};
 use dpds_controller::api::{self, Deps};
 use dpds_controller::frontend::Frontend;
 use dpds_controller::hints::{compute_hints, escape_control, Level};
-use dpds_controller::host::{HostRoots, IfAddrs, SystemExec};
+use dpds_controller::host::{HostRoots, IfAddrs, Network, SystemExec};
 use dpds_controller::model::RunConfig;
 use dpds_controller::supervisor::ProcessSupervisor;
 use dpds_controller::telemetry::{socket_path, Poller};
@@ -46,6 +46,10 @@ struct HostArgs {
     sysfs_root: PathBuf,
     #[arg(long, env = "DPDS_CONTROLLER_PROCFS_ROOT", default_value = "/proc")]
     procfs_root: PathBuf,
+    /// The directory with the stored network mode (the file `network`, written by
+    /// `dpds.sh install --network`). Does not set the mode.
+    #[arg(long, env = "DPDS_CONTROLLER_ETC_DIR", default_value = "/etc/dpds")]
+    etc_dir: PathBuf,
     /// Test only: JSON `[{"netdev": "...", "addr": "..."}]` replacing `getifaddrs`
     /// (an empty list means no addresses).
     #[arg(long, env = "DPDS_CONTROLLER_IFADDRS_FILE")]
@@ -72,6 +76,7 @@ impl HostArgs {
             }
         };
         Ok(HostRoots {
+            network: Network::read(&self.etc_dir)?,
             sysfs: self.sysfs_root.clone(),
             procfs: self.procfs_root.clone(),
             ifaddrs,

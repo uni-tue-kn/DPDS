@@ -20,7 +20,14 @@ import type {
 } from '../api/types';
 
 export function online(over: Partial<OnlineView> = {}): OnlineView {
-  return { version: '1.0.0', dpds_bin: '/usr/local/bin/dpds', telemetry: true, root: true, ...over };
+  return {
+    version: '1.0.0',
+    dpds_bin: '/usr/local/bin/dpds',
+    telemetry: true,
+    root: true,
+    network: 'physical',
+    ...over,
+  };
 }
 
 export function config(over: Partial<ConfigDto> = {}): ConfigDto {
@@ -134,6 +141,8 @@ export function loopLink(over: Partial<Link> = {}): Link {
 export function iface(over: Partial<Interface> = {}): Interface {
   return {
     pci: '0000:65:00.0',
+    // the value a link takes: the PCI address in physical mode (an override of `pci` carries over), the netdev name in virtual mode
+    port: over.pci ?? '0000:65:00.0',
     vendor_id: '0x15b3',
     device_id: '0x1017',
     vendor: 'Mellanox',
@@ -180,6 +189,34 @@ export function interfaces(): Interface[] {
       uplink: true,
       dpds_usable: false,
       reason: 'eno1 carries a kernel route (host uplink); DPDK would take it away from the host',
+    }),
+  ];
+}
+
+/** The interfaces of a virtual network: no PCI address, the netdev name is the port. */
+export function virtualInterfaces(): Interface[] {
+  const veth = (name: string, mac: string, over: Partial<Interface> = {}) =>
+    iface({
+      pci: null,
+      port: name,
+      vendor_id: null,
+      device_id: null,
+      vendor: null,
+      driver: 'veth',
+      netdev: name,
+      mac,
+      speed_mbps: 10000,
+      numa_node: null,
+      pcie_link: null,
+      ...over,
+    });
+  return [
+    veth('eth1', '02:00:00:00:01:01'),
+    veth('eth2', '02:00:00:00:01:02'),
+    veth('eth0', '02:00:00:00:01:00', {
+      uplink: true,
+      dpds_usable: false,
+      reason: 'eth0 carries a kernel route (host uplink); DPDK would take it away from the host',
     }),
   ];
 }
@@ -250,6 +287,7 @@ export function plan(): DirectionPlan[] {
 export function emulation(state: EmulationState, over: Partial<EmulationView> = {}): EmulationView {
   return {
     state,
+    network: 'physical',
     pid: state === 'running' ? 4242 : null,
     started_at: state === 'running' ? 1762000000 : null,
     directions: plan(),
@@ -321,7 +359,7 @@ export function dirStats(dir: number, over: Partial<DirectionStats> = {}): Direc
 }
 
 export function stats(directions: DirectionStats[], over: Partial<StatsView> = {}): StatsView {
-  return { directions, age_ms: 120, stale: false, ...over };
+  return { network: 'physical', directions, age_ms: 120, stale: false, ...over };
 }
 
 /**
@@ -455,7 +493,15 @@ export function historyLinks(): HistoryView['links'] {
  * start (unix seconds, as `emulation('running')` has it), its links and the samples per link index.
  */
 export function history(samples: Record<string, HistorySample[]>, over: Partial<HistoryView> = {}): HistoryView {
-  return { run_id: 1, started_at: 1762000000, links: historyLinks(), totals: {}, samples, ...over };
+  return {
+    network: 'physical',
+    run_id: 1,
+    started_at: 1762000000,
+    links: historyLinks(),
+    totals: {},
+    samples,
+    ...over,
+  };
 }
 
 /**

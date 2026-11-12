@@ -31,7 +31,6 @@
 use std::fs;
 use std::io::ErrorKind;
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -2196,7 +2195,7 @@ fn check_prints_control_characters_escaped() {
         "sys/devices/system/cpu/cpu2/cpufreq/scaling_governor",
         "pow\u{1b}[31mer\n",
     );
-    let o = Command::new(env!("CARGO_BIN_EXE_dpds-controller"))
+    let o = controller_cmd()
         .arg("check")
         .arg("--sysfs-root")
         .arg(host.sysfs())
@@ -3611,9 +3610,8 @@ async fn cards_do_not_share_entries() {
 #[test]
 fn check_has_no_recheck_and_prints_no_cache_note() {
     let host = FakeHost::bare_metal();
-    let bin = env!("CARGO_BIN_EXE_dpds-controller");
     let run = |extra: &[&str]| {
-        Command::new(bin)
+        controller_cmd()
             .arg("check")
             .args(extra)
             .arg("--sysfs-root")

@@ -1,4 +1,5 @@
-//! Network interface discovery from sysfs: PCI class 0x02 devices.
+//! Network interface discovery from sysfs: PCI class 0x02 devices in the physical network mode,
+//! the kernel's netdevs in the virtual one.
 
 use std::collections::HashSet;
 use std::fs;
@@ -8,7 +9,7 @@ use std::path::Path;
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use crate::host::{read_trim, HostRoots};
+use crate::host::{read_trim, HostRoots, Network};
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct PcieLink {
@@ -20,7 +21,11 @@ pub struct PcieLink {
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct Interface {
-    pub pci: String,
+    /// What a link's `ingress`/`egress` takes: the PCI address (physical) or the netdev name
+    /// (virtual).
+    pub port: String,
+    /// The PCI address; `None` in the virtual network mode.
+    pub pci: Option<String>,
     pub vendor_id: Option<String>,
     pub device_id: Option<String>,
     pub vendor: Option<String>,
@@ -180,8 +185,65 @@ fn first_dir_entry(path: &Path) -> Option<String> {
     names.into_iter().next()
 }
 
-/// All PCI network devices, sorted by PCI address.
+/// The interfaces of the host in its network mode, sorted by port.
 pub fn discover(roots: &HostRoots) -> Vec<Interface> {
+    match roots.network {
+        Network::Physical => discover_pci(roots),
+        Network::Virtual => discover_netdevs(roots),
+    }
+}
+
+/// Every kernel netdev but `lo`, by name.
+fn discover_netdevs(roots: &HostRoots) -> Vec<Interface> {
+    let routed = routed_netdevs(roots);
+    let addrs = roots.ifaddrs.uplink_addresses();
+    let mut names: Vec<String> = fs::read_dir(roots.sys("class/net"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n != "lo")
+        .collect();
+    names.sort();
+    names
+        .into_iter()
+        .map(|name| {
+            let dir = roots.sys(&format!("class/net/{name}"));
+            let uplink = uplink_reason(roots, &name, &routed, &addrs);
+            Interface {
+                port: name.clone(),
+                pci: None,
+                vendor_id: None,
+                device_id: None,
+                vendor: None,
+                driver: fs::read_link(dir.join("device/driver"))
+                    .ok()
+                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())),
+                mac: read_trim(&dir.join("address")),
+                operstate: read_trim(&dir.join("operstate")),
+                speed_mbps: read_speed(&dir),
+                mtu: read_u32(&dir.join("mtu")),
+                numa_node: None,
+                pcie_link: None,
+                uplink: uplink.is_some(),
+                dpds_usable: uplink.is_none(),
+                reason: uplink,
+                netdev: Some(name),
+            }
+        })
+        .collect()
+}
+
+/// The link speed of a netdev in Mb/s; `None` when unknown (the kernel reports -1 or nothing).
+fn read_speed(netdev_dir: &Path) -> Option<u32> {
+    read_trim(&netdev_dir.join("speed"))
+        .and_then(|s| s.parse::<i64>().ok())
+        .and_then(|s| u32::try_from(s).ok())
+        .filter(|s| *s > 0)
+}
+
+/// All PCI network devices, sorted by PCI address.
+fn discover_pci(roots: &HostRoots) -> Vec<Interface> {
     let Ok(entries) = fs::read_dir(roots.sys("bus/pci/devices")) else {
         return Vec::new();
     };
@@ -240,27 +302,33 @@ pub fn discover(roots: &HostRoots) -> Vec<Interface> {
             uplink: uplink.is_some(),
             mac: net("address"),
             operstate: net("operstate"),
-            speed_mbps: net("speed")
-                .and_then(|s| s.parse::<i64>().ok())
-                .and_then(|s| u32::try_from(s).ok())
-                .filter(|s| *s > 0),
+            speed_mbps: netdev
+                .as_ref()
+                .and_then(|n| read_speed(&roots.sys(&format!("class/net/{n}")))),
             mtu: net("mtu").and_then(|s| s.parse().ok()),
             numa_node: roots.pci_numa_node(&pci),
             pcie_link: has_pcie.then_some(pcie),
             netdev,
             dpds_usable,
             reason,
-            pci,
+            port: pci.clone(),
+            pci: Some(pci),
         });
     }
-    out.sort_by(|a, b| a.pci.cmp(&b.pci));
+    out.sort_by(|a, b| a.port.cmp(&b.port));
     out
 }
 
-/// The discovered interface of a DPDK device name, if it is a PCI address of a
-/// network device.
+/// The discovered interface of a link's port, if there is one: a PCI address (case ignored) or,
+/// in the virtual network mode, an interface name (case kept).
 pub fn find<'a>(interfaces: &'a [Interface], port: &str) -> Option<&'a Interface> {
-    interfaces.iter().find(|i| i.pci.eq_ignore_ascii_case(port))
+    interfaces.iter().find(|i| {
+        if i.pci.is_some() {
+            i.port.eq_ignore_ascii_case(port)
+        } else {
+            i.port == port
+        }
+    })
 }
 
 /// Device IDs of the mlx5 SR-IOV virtual functions (`mlx5_dev_is_vf_pci` in DPDK). A VF passed
@@ -276,5 +344,9 @@ pub fn is_vf(roots: &HostRoots, nic: &Interface) -> bool {
             .device_id
             .as_deref()
             .is_some_and(|d| MLX5_VF_DEVICE_IDS.contains(&d));
-    mlx5_vf || fs::symlink_metadata(roots.pci_dir(&nic.pci).join("physfn")).is_ok()
+    mlx5_vf
+        || nic
+            .pci
+            .as_deref()
+            .is_some_and(|pci| fs::symlink_metadata(roots.pci_dir(pci).join("physfn")).is_ok())
 }
