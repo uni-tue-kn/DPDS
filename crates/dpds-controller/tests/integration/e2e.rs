@@ -832,7 +832,7 @@ fn virtual_network_ping_through_two_links_sees_the_deterministic_delay() {
 #[test]
 #[ignore = "needs root (CAP_NET_ADMIN, CAP_NET_RAW) and target/release/dpds built with --features telemetry and DPDK net/af_packet; see the header of this file"]
 fn virtual_network_memory_formula_fits_a_large_buffer() {
-    // 2^18 packets: with `--no-huge` the mbuf pool takes 1059 MiB (a 4 KiB page per mbuf), so a
+    // 2^18 packets: with `--no-huge` the mbuf pool takes about 1170 MiB (a 4 KiB page per mbuf), so a
     // `-m` computed from the 2432 B mbuf size alone fails the start with a pool error. A hairpin:
     // an egress-only port would add an RX ring of mbufs.
     let _g = serial();

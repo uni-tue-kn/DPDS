@@ -66,8 +66,8 @@ skips the hugepage file setup, so a crashed process leaves no state behind.
 ### Without hardware
 
 ```bash
-# A config with a small buffer: its derived pool of 4096 + 4096 + 4096 + 768 + 64
-# = 13,120 mbufs (about 25 MB) fits into -m 256.
+# A config with a small buffer: its derived pool of 4096 + 4096 + 32768 + 768 + 64
+# = 41,792 mbufs (about 163 MiB at one 4 KiB page per mbuf) fits into -m 256.
 cat > /tmp/dpds-demo.json <<'EOF'
 {
   "buffer_capacity": 4096,
@@ -125,7 +125,7 @@ online core as main and the next `links` online cores as workers.
 2432 B mbuf does not pack into one), so
 
 ```
-m_mib = ceil(sum over links of (buffer_capacity + 4096 + 4096 + 768 + 64) * 4096 / 2^20) + 64
+m_mib = ceil(sum over links of (buffer_capacity + 4096 + 32768 + 768 + 64) * 4096 / 2^20) + 64
 ```
 
 where the sum is the pool of each link and 64 MiB covers EAL, the rings and headroom. A start is

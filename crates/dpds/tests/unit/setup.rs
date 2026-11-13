@@ -119,7 +119,10 @@ fn the_stale_v1_helper_egress_port_is_gone() {
 #[test]
 fn constants_match_the_spec() {
     assert_eq!(BURST_SIZE, 32);
-    assert_eq!(NIC_DESCRIPTORS, 4096);
+    assert_eq!(NIC_RX_DESCRIPTORS, 4096);
+    // 32768, not 65535: the largest power of two in the u16 of the ethdev API (mlx5 rounds an odd
+    // count up to a power of two, which would wrap 65535 to 0)
+    assert_eq!(NIC_TX_DESCRIPTORS, 32768);
     assert_eq!(MBUF_CACHE_SIZE, 512);
     assert_eq!(MTU, 1500);
 }
@@ -182,6 +185,11 @@ fn the_derived_size_is_the_plain_sum_without_rounding() {
 fn rx_and_tx_descriptors_are_separate_terms() {
     // The caller passes the RX ring of port d and the TX ring of port e(d).
     assert_eq!(required_mbufs(10, 4096, 512), 10 + 4096 + 512 + 832);
+    // the requested rings differ, so a device without limits gets a bigger TX than RX term
+    assert_eq!(
+        required_mbufs(10, NIC_RX_DESCRIPTORS, NIC_TX_DESCRIPTORS),
+        10 + 4096 + 32768 + 832
+    );
     assert_eq!(required_mbufs(10, 512, 4096), 10 + 512 + 4096 + 832);
     assert_eq!(required_mbufs(10, 0, 0), 10 + 832);
 }
@@ -190,7 +198,9 @@ fn rx_and_tx_descriptors_are_separate_terms() {
 fn the_size_follows_the_applied_descriptor_counts_not_the_constant() {
     // A driver that clamped the rings to 512 / 256: that is what counts.
     assert_eq!(required_mbufs(100, 512, 256), 100 + 512 + 256 + 832);
-    assert!(required_mbufs(100, 512, 256) < required_mbufs(100, NIC_DESCRIPTORS, NIC_DESCRIPTORS));
+    assert!(
+        required_mbufs(100, 512, 256) < required_mbufs(100, NIC_RX_DESCRIPTORS, NIC_TX_DESCRIPTORS)
+    );
 }
 
 #[test]

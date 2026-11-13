@@ -1007,13 +1007,12 @@ pub fn plan_for(host: &FakeHost, setup: &Setup) -> Result<Assignment, String> {
 }
 
 /// The `-m` (MiB) of a virtual network start whose links have these `buffer_capacity` values: a
-/// pool of `capacity + 4096 + 4096 + 768 + 64` mbufs per link, each taking a whole 4 KiB page
+/// pool of `capacity + 4096 + 32768 + 768 + 64` mbufs per link, each taking a whole 4 KiB page
 /// (measured with the real `dpds` under `--no-huge`: a 2432 B mbuf does not pack into a page, so
-/// a pool needs `mbufs * 4096` bytes, not `mbufs * 2432`; 2^18 packets need 1059 MiB and fail
-/// below 1060), rounded up to a MiB, plus 64 MiB for EAL, the rings and headroom (a default
-/// 100000-packet buffer needs about 440-460 MiB; the formula gives 490).
+/// a pool needs `mbufs * 4096` bytes, not `mbufs * 2432`), rounded up to a MiB, plus 64 MiB for
+/// EAL, the rings and headroom (a default 100000-packet buffer: 602 MiB).
 pub fn virtual_mem_mib(capacities: &[u64]) -> u64 {
-    let mbufs: u64 = capacities.iter().map(|c| c + 4096 + 4096 + 768 + 64).sum();
+    let mbufs: u64 = capacities.iter().map(|c| c + 4096 + 32768 + 768 + 64).sum();
     (mbufs * 4096).div_ceil(1 << 20) + 64
 }
 

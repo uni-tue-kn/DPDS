@@ -1,6 +1,7 @@
 //! End-to-end tests: run the real `dpds` binary (one worker lcore per link: 1 port = `-l 0-1`,
 //! 2 ports = `-l 0-2`) against DPDK virtual devices (`net_pcap`, `net_null`; no root, no
-//! hugepages: `--no-huge -m 256 --no-pci --in-memory`).
+//! hugepages: `--no-huge -m 768 --no-pci --in-memory`; the TX ring of 32768 makes
+//! the two pools of a two-port test ~330 MiB, a 4 KiB page per mbuf).
 //!
 //! Exact packet counts are checked through two channels: the `tx_pcap` output files (frame by
 //! frame against the input) and, with `--features telemetry`, DPDK's telemetry socket
@@ -30,7 +31,8 @@
 //!
 //! Pool size: direction d's pool holds `buffer_capacity_d + rx_desc(port d) + tx_desc(port e(d))
 //! + 768 + 64` mbufs, derived at startup from the applied descriptor counts (rings are requested
-//! with 4096 descriptors; net_null applies them unchanged). Tests that need a small pool use a
+//! with `NIC_RX_DESCRIPTORS` = 4096 and `NIC_TX_DESCRIPTORS` = 32768; net_null applies them
+//! unchanged). Tests that need a small pool use a
 //! small `buffer_capacity`; the size is read back from `/dpds/ports` (`dir<d>_pool_size`).
 //!
 //! Tests are serialised with a global lock (each spawns a busy-polling lcore; EAL runtime
@@ -575,7 +577,7 @@ impl Env {
         let mut a: Vec<String> = [
             "--no-huge",
             "-m",
-            "256",
+            "768",
             "--no-pci",
             "--in-memory",
             "--file-prefix",
@@ -1247,6 +1249,11 @@ fn without_the_feature_nothing_is_registered() {
 mod with_telemetry {
     use super::*;
 
+    /// Descriptors `dpds` requests per RX / TX queue (`dpds::consts`); net_null and net_pcap apply
+    /// them unchanged.
+    const RX_DESC: u64 = dpds::consts::NIC_RX_DESCRIPTORS as u64;
+    const TX_DESC: u64 = dpds::consts::NIC_TX_DESCRIPTORS as u64;
+
     /// A query that must not produce a valid reply: no reply at all, or a
     /// reply without `key` (an empty dict), like `/nic/epochs,<bad port>`.
     fn assert_error_reply(run: &Run, command: &str, key: &str) {
@@ -1322,9 +1329,9 @@ mod with_telemetry {
             let tx = u(&p, &format!("port{i}_tx_ring"));
             assert!(rx >= 1 && tx >= 1, "applied sizes: {p}");
             assert_eq!(u(&p, &format!("port{i}_rx_ring_requested")), 4096, "{p}");
-            assert_eq!(u(&p, &format!("port{i}_tx_ring_requested")), 4096, "{p}");
+            assert_eq!(u(&p, &format!("port{i}_tx_ring_requested")), 32768, "{p}");
             assert!(
-                rx <= 4096 && tx <= 4096,
+                rx <= RX_DESC && tx <= TX_DESC,
                 "applied never exceeds requested: {p}"
             );
         }
@@ -1390,9 +1397,9 @@ mod with_telemetry {
         assert_eq!(pool1, expected_pool(&p, 1, 3000), "{p}");
         // different buffer_capacity, same rings: the pools differ by exactly 2000
         assert_eq!(pool1 - pool0, 2000, "{p}");
-        // net_null accepts the requested 4096 descriptors unchanged
-        assert_eq!(pool0, 1000 + 4096 + 4096 + 768 + 64, "{p}");
-        assert_eq!(pool1, 3000 + 4096 + 4096 + 768 + 64, "{p}");
+        // net_null accepts the requested descriptors unchanged
+        assert_eq!(pool0, 1000 + RX_DESC + TX_DESC + 768 + 64, "{p}");
+        assert_eq!(pool1, 3000 + RX_DESC + TX_DESC + 768 + 64, "{p}");
         run.signal(libc::SIGINT);
         assert_clean_exit(run.wait_exit(), &run);
     }
@@ -1724,14 +1731,14 @@ mod with_telemetry {
         let mut run = env.spawn();
 
         // The derived pool size of each direction (all configs here use a
-        // buffer_capacity of at most 4096, so a pool is at most ~13k mbufs).
+        // buffer_capacity of at most 4096, so a pool is at most 4096 + rings + slack).
         let ports_reply = run.query("/dpds/ports");
         let pools: Vec<u64> = (0..ports)
             .map(|d| u(&ports_reply, &format!("dir{d}_pool_size")))
             .collect();
         for (d, pool) in pools.iter().enumerate() {
             assert!(
-                (1..=20_000).contains(pool),
+                (1..=4096 + RX_DESC + TX_DESC + 768 + 64).contains(pool),
                 "dir {d}: the derived pool must be small, got {pool}: {ports_reply}"
             );
         }
@@ -1770,13 +1777,13 @@ mod with_telemetry {
 
     #[test]
     fn full_loss_on_a_small_pool_does_not_leak_mbufs() {
-        // capacity 4096: pool 4096 + 4096 + 4096 + 768 + 64 = 13120
+        // capacity 4096: pool 4096 + 4096 + 32768 + 768 + 64 = 41792
         no_leak(&[config_json(0, 1.0)], true);
     }
 
     #[test]
     fn delay_with_a_tiny_buffer_does_not_leak_mbufs() {
-        // buffer-full rejects are freed too (capacity 64: pool 9088)
+        // buffer-full rejects are freed too (capacity 64: pool 37760)
         no_leak(&[config_json_cap(1_000_000, 0.0, 64)], true);
     }
 
@@ -2162,8 +2169,8 @@ fn num_mbufs_is_an_unknown_flag_and_a_usage_error() {
 fn the_startup_log_shows_the_derived_pool_size_of_a_direction() {
     require_cpus(2);
     let _g = serial();
-    // net_null applies the requested 4096 descriptors:
-    // 1000 + 4096 + 4096 + 768 + 64 = 10024 mbufs
+    // net_null applies the requested descriptors:
+    // 1000 + 4096 + 32768 + 768 + 64 = 38696 mbufs
     let mut env = Env::new(&config_json_cap(0, 0.0, 1000));
     env.vdevs.push("net_null0".into());
     let mut run = env.spawn();
@@ -2172,7 +2179,7 @@ fn the_startup_log_shows_the_derived_pool_size_of_a_direction() {
     });
     let out = run.output();
     let line = out.lines().find(|l| l.contains("Direction 0")).unwrap();
-    assert!(line.contains("10024"), "derived size missing: {line}");
+    assert!(line.contains("38696"), "derived size missing: {line}");
     assert!(line.contains("dpds_pool_0"), "{line}");
     assert!(!out.contains("too small"), "{out}");
     run.signal(libc::SIGINT);
@@ -2200,8 +2207,8 @@ fn the_startup_log_shows_each_directions_own_pool_size() {
             .unwrap()
             .to_string()
     };
-    assert!(line(0).contains("10024"), "{}", line(0)); // 1000 + 8192 + 832
-    assert!(line(1).contains("12024"), "{}", line(1)); // 3000 + 8192 + 832
+    assert!(line(0).contains("38696"), "{}", line(0)); // 1000 + 4096 + 32768 + 832
+    assert!(line(1).contains("40696"), "{}", line(1)); // 3000 + 4096 + 32768 + 832
     assert!(line(0).contains("dpds_pool_0"), "{}", line(0));
     assert!(line(1).contains("dpds_pool_1"), "{}", line(1));
     run.signal(libc::SIGINT);
@@ -2210,7 +2217,7 @@ fn the_startup_log_shows_each_directions_own_pool_size() {
 
 #[test]
 fn a_small_buffer_capacity_gives_a_small_pool_that_starts_fine() {
-    // buffer_capacity 0 (everything is rejected) derives 0 + 4096 + 4096 + 768 + 64 = 9024.
+    // buffer_capacity 0 (everything is rejected) derives 0 + 4096 + 32768 + 768 + 64 = 37696.
     require_cpus(2);
     let _g = serial();
     let mut env = Env::new(&config_json_cap(0, 0.0, 0));
@@ -2221,13 +2228,13 @@ fn a_small_buffer_capacity_gives_a_small_pool_that_starts_fine() {
     });
     thread::sleep(Duration::from_millis(1500));
     assert!(run.poll_exit().is_none(), "{}", run.output());
-    assert!(run.output().contains("9024"), "{}", run.output());
+    assert!(run.output().contains("37696"), "{}", run.output());
     run.signal(libc::SIGINT);
     assert_clean_exit(run.wait_exit(), &run);
 }
 
-/// A pool that cannot be created (here: a buffer_capacity whose mbufs exceed the 256 MB of
-/// `-m 256`) is a clean error naming the direction and the size that was tried.
+/// A pool that cannot be created (here: a buffer_capacity whose mbufs exceed the 768 MB of
+/// `-m 768`) is a clean error naming the direction and the size that was tried.
 fn assert_pool_creation_error(out: &str, direction: usize, size: u64) {
     assert!(
         out.to_lowercase()
@@ -2246,11 +2253,11 @@ fn assert_pool_creation_error(out: &str, direction: usize, size: u64) {
 fn a_pool_that_cannot_be_created_names_the_direction_and_the_size_tried() {
     require_cpus(2);
     let _g = serial();
-    // 5_000_000 + 4096 + 4096 + 768 + 64 = 5_009_024 mbufs of ~2 KB each
+    // 5_000_000 + 4096 + 32768 + 768 + 64 = 5_037_696 mbufs of ~2 KB each
     let mut env = Env::new(&config_json_cap(0, 0.0, 5_000_000));
     env.vdevs.push("net_null0".into());
     let out = expect_failure(&env);
-    assert_pool_creation_error(&out, 0, 5_009_024);
+    assert_pool_creation_error(&out, 0, 5_037_696);
 }
 
 #[test]
@@ -2263,7 +2270,7 @@ fn the_failing_direction_is_named_when_only_direction_1_is_too_big() {
     let big = env.write_config("cfg1.json", &config_json_cap(0, 0.0, 5_000_000));
     env.extra_app_args = vec!["--config1".into(), big.display().to_string()];
     let out = expect_failure(&env);
-    assert_pool_creation_error(&out, 1, 5_009_024);
+    assert_pool_creation_error(&out, 1, 5_037_696);
 }
 
 #[test]
@@ -2767,7 +2774,7 @@ fn a_finite_soft_limit_under_an_unlimited_hard_limit_is_raised_and_everything_is
         "soft limit not raised\n{}",
         run.output()
     );
-    // MCL_FUTURE: the 256 MiB EAL heap (`-m 256`) is mapped after the call, so it is locked too
+    // MCL_FUTURE: the 768 MiB EAL heap (`-m 768`) is mapped after the call, so it is locked too
     let locked_kb = vm_lck_kb(run.child.id());
     assert!(
         locked_kb >= 128 * 1024,

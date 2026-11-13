@@ -29,9 +29,9 @@ const BYTES_PER_MBUF: u64 = 2432;
 const PAGE_BYTES: u64 = 4096;
 /// MiB `-m` adds to the pools of a virtual network start.
 const VIRTUAL_HEADROOM_MIB: u64 = 64;
-/// Descriptors per ring `dpds` asks for, plus the pool's cache and burst slack
+/// The RX and TX descriptors `dpds` asks for, plus the pool's cache and burst slack
 /// (pool size = buffer_capacity + rx + tx + 768 + 64, see `crates/dpds/src/consts.rs`).
-const POOL_EXTRA: u64 = 4096 + 4096 + 768 + 64;
+const POOL_EXTRA: u64 = 4096 + 32768 + 768 + 64;
 /// `TimeoutStopSec` of `packaging/dpds-controller.service`; systemd SIGKILLs the
 /// whole cgroup after it, in the middle of a drain.
 const SYSTEMD_STOP_LIMIT_S: u64 = 600;

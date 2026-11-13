@@ -6,8 +6,9 @@
 //! Need equal to free fits. A host without any hugepage information is not refused (dpds reports
 //! it). `POST /api/emulation/validate` never does this check.
 //!
-//! The need of one link is `(buffer_capacity + 9024) * 2432` bytes (the estimator of the
-//! hugepage hint); the numbers below are worked out from it.
+//! The need of one link is `(buffer_capacity + POOL_EXTRA) * 2432` bytes (the estimator of
+//! the hugepage hint; `POOL_EXTRA` = RX ring + TX ring + 768 + 64 below); the expected numbers are
+//! computed from it by `need_mib`.
 //!
 //! When dpds exits with a non-zero status the error is `dpds exited with <exit status N |
 //! signal S>: <reason>`, the reason being the last captured line that starts with `dpds: ` and
@@ -47,11 +48,23 @@ fn app_with_pages(total: u64, free: u64) -> TestApp {
     TestApp::new(host)
 }
 
-// need of a 10 M packet buffer: (10_000_000 + 9024) * 2432 = 24_341_946_368 B = 23214 MiB
+/// Mbufs of one pool besides the buffer: 4096 RX ring + 32768 TX ring + 768 cache + 64 burst.
+const POOL_EXTRA: u64 = 4096 + 32768 + 768 + 64;
+const BYTES_PER_MBUF: u64 = 2432;
+const MIB: u64 = 1 << 20;
+
+/// The need in whole MiB (rounded down) of links with these buffer capacities.
+fn need_mib(capacities: &[u64]) -> u64 {
+    capacities
+        .iter()
+        .map(|c| (c + POOL_EXTRA) * BYTES_PER_MBUF)
+        .sum::<u64>()
+        / MIB
+}
+
 const BIG: u64 = 10_000_000;
-const BIG_MIB: &str = "23214 MiB";
-// need of 1_301_696 packets: (1_301_696 + 9024) * 2432 = 3_187_671_040 B = exactly 3040 MiB
-const EXACT: u64 = 1_301_696;
+/// A buffer capacity whose need is exactly 3040 MiB = 1520 pages of 2 MiB.
+const EXACT: u64 = 3040 * MIB / BYTES_PER_MBUF - POOL_EXTRA;
 
 #[tokio::test]
 async fn a_start_that_needs_more_hugepages_than_are_free_is_a_400_naming_the_numbers() {
@@ -61,7 +74,7 @@ async fn a_start_that_needs_more_hugepages_than_are_free_is_a_400_naming_the_num
     let m = r.message();
     for needle in [
         "hugepage",
-        BIG_MIB,
+        &format!("{} MiB", need_mib(&[BIG])),
         "2000 MiB",
         "link net_null0 -> net_null0",
         "buffer capacity 10000000 packets",
@@ -74,11 +87,14 @@ async fn a_start_that_needs_more_hugepages_than_are_free_is_a_400_naming_the_num
 async fn the_message_has_the_wording_of_the_spec() {
     let a = app_with_pages(1024, 1000);
     let m = a.start_links(vec![sized("net_null0", BIG)]).await.message();
+    let big = need_mib(&[BIG]);
     assert_eq!(
         m,
-        "the links need about 23214 MiB of hugepage memory for their mbuf pools, but only 2000 MiB are free; \
-         link net_null0 -> net_null0 needs about 23214 MiB (buffer capacity 10000000 packets). \
-         Lower its buffer capacity or reserve more hugepages."
+        format!(
+            "the links need about {big} MiB of hugepage memory for their mbuf pools, but only 2000 MiB are free; \
+             link net_null0 -> net_null0 needs about {big} MiB (buffer capacity 10000000 packets). \
+             Lower its buffer capacity or reserve more hugepages."
+        )
     );
 }
 
@@ -98,8 +114,7 @@ async fn a_refused_start_does_not_launch_dpds_and_leaves_the_emulation_stopped()
 
 #[tokio::test]
 async fn the_need_of_all_links_is_summed_and_the_largest_link_is_named() {
-    // 3 M packets: 6978 MiB, 5 M packets: 11617 MiB, together 18596 MiB; 12000 MiB are free:
-    // each link fits alone, both together do not
+    // 3 M and 5 M packets: each fits into the 12000 MiB that are free, both together do not
     let a = app_with_pages(8192, 6000);
     let alone = a.start_links(vec![sized("net_null0", 3_000_000)]).await;
     assert_eq!(alone.status, 202, "{}", alone.text());
@@ -112,10 +127,17 @@ async fn the_need_of_all_links_is_summed_and_the_largest_link_is_named() {
         .await;
     assert_eq!(r.status, 400, "{}", r.text());
     let m = r.message();
+    let (small, large) = (need_mib(&[3_000_000]), need_mib(&[5_000_000]));
+    assert!(small < 12_000 && large < 12_000 && need_mib(&[3_000_000, 5_000_000]) > 12_000);
     for needle in [
-        "about 18596 MiB of hugepage",
+        &format!(
+            "about {} MiB of hugepage",
+            need_mib(&[3_000_000, 5_000_000])
+        ),
         "only 12000 MiB are free",
-        "link net_null1 -> net_null1 needs about 11617 MiB (buffer capacity 5000000 packets)",
+        &format!(
+            "link net_null1 -> net_null1 needs about {large} MiB (buffer capacity 5000000 packets)"
+        ),
     ] {
         assert!(m.contains(needle), "{needle:?} missing from {m:?}");
     }
@@ -126,7 +148,7 @@ async fn the_need_of_all_links_is_summed_and_the_largest_link_is_named() {
 async fn a_start_that_fits_is_accepted() {
     let a = app_with_pages(4096, 4096); // 8192 MiB free
     let r = a
-        .start_links(vec![sized("net_null0", 1_000_000)]) // 1_009_024 * 2432 = 2340 MiB
+        .start_links(vec![sized("net_null0", 1_000_000)]) // about 2400 MiB
         .await;
     assert_eq!(r.status, 202, "{}", r.text());
     assert_eq!(a.supervisor.plans().len(), 1);

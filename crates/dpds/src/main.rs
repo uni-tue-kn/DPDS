@@ -19,7 +19,8 @@ use dpdk::port::{self, adjust_nb_rx_tx_desc, foreach_dev, shutdown_port};
 use dpdk::{now_ns, Clock, Eal, Mempool, Port, PortDiscardXstats, RxQueue, TxQueue};
 use dpds::cli::parse_args;
 use dpds::consts::{
-    HW_STATS_POLL_INTERVAL_MS, MBUF_CACHE_SIZE, MBUF_DATA_ROOM, MTU, NIC_DESCRIPTORS,
+    HW_STATS_POLL_INTERVAL_MS, MBUF_CACHE_SIZE, MBUF_DATA_ROOM, MTU, NIC_RX_DESCRIPTORS,
+    NIC_TX_DESCRIPTORS,
 };
 use dpds::delay_stats::HistRange;
 use dpds::forward;
@@ -358,7 +359,7 @@ fn run() -> Result<()> {
     let applied: Vec<(u16, u16)> = port_ids
         .iter()
         .map(|&id| {
-            adjust_nb_rx_tx_desc(id, NIC_DESCRIPTORS, NIC_DESCRIPTORS)
+            adjust_nb_rx_tx_desc(id, NIC_RX_DESCRIPTORS, NIC_TX_DESCRIPTORS)
                 .map_err(|e| format!("cannot query the descriptor limits of port {id}: {e}"))
         })
         .collect::<std::result::Result<_, _>>()?;
@@ -391,8 +392,8 @@ fn run() -> Result<()> {
         let port = Port::init(
             id,
             pools[pool_of_port[id as usize].ok_or("a probed port belongs to no link")?].0,
-            NIC_DESCRIPTORS,
-            NIC_DESCRIPTORS,
+            NIC_RX_DESCRIPTORS,
+            NIC_TX_DESCRIPTORS,
             1,
             MTU,
         )

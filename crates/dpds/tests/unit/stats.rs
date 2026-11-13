@@ -671,7 +671,7 @@ mod with_feature {
     fn ports_reply_for_two_ports_and_two_directions() {
         let r = ports_reply(
             &[
-                port("0000:65:00.1", 8192, 4096, 4096, 4096),
+                port("0000:65:00.1", 8192, 4096, 4096, 32768),
                 port("net_pcap1", 1024, 512, 4096, 4095),
             ],
             &[
@@ -685,7 +685,7 @@ mod with_feature {
         assert_eq!(uint(&r, "port0_rx_ring"), 8192);
         assert_eq!(uint(&r, "port0_tx_ring"), 4096);
         assert_eq!(uint(&r, "port0_rx_ring_requested"), 4096);
-        assert_eq!(uint(&r, "port0_tx_ring_requested"), 4096);
+        assert_eq!(uint(&r, "port0_tx_ring_requested"), 32768);
         assert_eq!(string(&r, "port1_name"), "net_pcap1");
         assert_eq!(uint(&r, "port1_rx_ring"), 1024);
         assert_eq!(uint(&r, "port1_tx_ring"), 512);

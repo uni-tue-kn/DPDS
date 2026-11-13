@@ -11,9 +11,15 @@ pub const TX_BURST_SIZE: usize = 64;
 /// its oldest packet, however few packets it holds.
 pub const TX_MAX_WAIT_NS: f64 = 10_000.0;
 
-/// RX/TX descriptors requested per NIC queue; the driver clamps it
+/// RX descriptors requested per NIC queue; the driver clamps it
 /// (`rte_eth_dev_adjust_nb_rx_tx_desc`).
-pub const NIC_DESCRIPTORS: u16 = 4096;
+pub const NIC_RX_DESCRIPTORS: u16 = 4096;
+
+/// TX descriptors requested per NIC queue (clamped like the RX ones): a long ring, so that a burst
+/// of due packets finds room. 32768 is the largest count mlx5 can use: the ethdev API takes a u16
+/// and mlx5 rounds up to a power of two within it, so 65535 would wrap to 0 on a device that
+/// allows it (`mlx5_tx_queue_pre_setup`, DPDK 26.07).
+pub const NIC_TX_DESCRIPTORS: u16 = 32768;
 
 /// Per-lcore mbuf cache size of each mempool.
 pub const MBUF_CACHE_SIZE: u32 = 512;

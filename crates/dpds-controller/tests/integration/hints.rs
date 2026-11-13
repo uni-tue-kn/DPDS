@@ -9,9 +9,10 @@ use serde_json::Value;
 const NEED_PER_MBUF: u64 = 2432; // ~2.4 KB per mbuf
 const PAGE: u64 = 2 * 1024 * 1024;
 
-/// One link with the default 100000 packet buffer: pool = capacity + 2*4096 + 768 + 64.
+/// One link with the default 100000 packet buffer: pool = capacity + 4096 (RX ring) + 32768 (TX
+/// ring) + 768 + 64.
 fn pool_bytes_for(links: u64) -> u64 {
-    links * (100_000 + 4096 * 2 + 768 + 64) * NEED_PER_MBUF
+    links * (100_000 + 4096 + 32768 + 768 + 64) * NEED_PER_MBUF
 }
 
 fn one_link_nic0() -> Setup {

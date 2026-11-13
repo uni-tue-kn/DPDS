@@ -877,7 +877,7 @@ fn the_governor_commands_cover_the_isolated_cores_that_offer_performance() {
 // ---- hugepages -------------------------------------------------------------------------------
 
 fn need_bytes() -> u64 {
-    (100_000 + 4096 * 2 + 768 + 64) * NEED_PER_MBUF // the default link of `link()`
+    (100_000 + 4096 + 32768 + 768 + 64) * NEED_PER_MBUF // the default link of `link()`
 }
 
 fn node0_nr() -> &'static str {
