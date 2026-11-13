@@ -222,19 +222,66 @@ one core; 100 Gb/s of 64 B frames is 148.8 Mpps and does not, whatever the tunin
 buffer, the limiter and the loss model of a link are single-threaded state, so more cores per link
 would mean splitting that state per flow or feeding one emulation core from several RX cores.
 
-For line rate, isolate DPDS's cores from the OS and tune the NIC. These settings come from preof,
-the sibling project whose DPDK code DPDS reuses, not from DPDS measurements. They are runtime-only
-unless noted, and applying them is up to whoever sets up the host.
+For line rate, isolate DPDS's cores from the OS and tune the NIC, and in a VM also the hypervisor.
+With all of the settings below, DPDS forwards 100 Gb/s of 1518 B frames on one core in a KVM guest
+(Proxmox VE, AMD EPYC 7543, ConnectX-6 Dx passed through as a whole PCI device, Ubuntu 26.04).
+The set was built up in preof, the sibling project whose DPDK code DPDS reuses, and reached line
+rate as a whole: most settings were never measured one by one, so the list is what was applied,
+not what each item gains. Nothing here survives a reboot unless noted, DPDS applies none of it,
+and the host hints check only the machine DPDS runs on, not a hypervisor above it.
 
-- **Isolate the worker cores:** `isolcpus=<cores> nohz_full=<cores> rcu_nocbs=<cores> rcu_nocb_poll`
-  at boot, pin DPDS with `-l`, keep the main lcore off them. Without `nohz_full`/`rcu_nocbs` a
-  spinning worker can starve RCU and make the host unreachable.
-- **PCIe MaxReadReq 4096 B** (`setpci -s <PCI> CAP_EXP+8.w=5000:7000`) and **flow control off**
-  (`ethtool -A <netdev> rx off tx off`).
-- **NIC firmware** (mlx5, not changeable from a VM): `MAX_ACC_OUT_READ=256` (with
-  `ADVANCED_PCI_SETTINGS=1`), `CQE_COMPRESSION` aggressive.
-- **Memory and interrupts:** `vm.zone_reclaim_mode=0`, `vm.swappiness=0`, interrupts off the
-  isolated cores. With two ports use one port per physical card.
+### The machine DPDS runs on (bare metal or guest)
+
+- **Kernel command line**, for the worker cores `<w>` and the housekeeping cores `<h>`:
+  `isolcpus=managed_irq,domain,<w> nohz_full=<w> rcu_nocbs=<w> rcu_nocb_poll irqaffinity=<h>`
+  and `default_hugepagesz=1G hugepagesz=1G hugepages=<n>`. Pin DPDS with `-l` and keep the main
+  lcore off the worker cores. Without `nohz_full`/`rcu_nocbs` a spinning worker can starve RCU and
+  make the host unreachable; without `managed_irq` and `irqaffinity` the NIC's own kernel
+  interrupts can land on the worker cores.
+- **PCIe MaxReadReq 4096 B:** `setpci -s <PCI> CAP_EXP+8.w=5000:7000` (default 512 B).
+- **Flow control off:** `ethtool -A <netdev> rx off tx off`.
+- **The whole port receive buffer for the one priority in use** (mlx5): read the layout with
+  `dcb buffer show dev <netdev>`, then `dcb buffer set dev <netdev> buffer-size all:0 <idx>:<total>`,
+  where `<idx>` is the buffer priority 0 maps to and `<total>` the `total-size`. Read it live every
+  time: the layout differs between VM starts.
+- **Interrupts off the worker cores, once:** `IRQBALANCE_BANNED_CPULIST=<w> irqbalance --oneshot`,
+  with the irqbalance daemon disabled so that it cannot move them back.
+- **Memory:** `vm.zone_reclaim_mode=0`, `vm.swappiness=0`.
+- **With two ports,** use one port per physical card.
+
+MaxReadReq, flow control, the port buffer and the interrupt placement are lost at every reboot,
+and in a guest the port buffer is also reset by every VM start (the passthrough reset restores the
+default, ConnectX firmware issue 1895917). Apply them from a boot-time service.
+
+### NIC firmware (mlx5)
+
+Set with `mlxconfig`: `CQE_COMPRESSION=1` (aggressive), `ADVANCED_PCI_SETTINGS=1` and
+`MAX_ACC_OUT_READ=256` (the firmware clamps it: 44 on a ConnectX-5, 58 on a ConnectX-6 Dx). On a
+ConnectX-5, whose default is 0, the last one alone was worth 3 to 4 Gb/s of zero-loss throughput.
+The values only become active after a firmware reset, which a guest cannot do: reset on the
+hypervisor with the VM stopped (`mstfwreset -d <PCI> reset`), or reboot the hypervisor. Keep the
+firmware current (22.49.1014 on the ConnectX-6 Dx above).
+
+### The hypervisor (KVM / Proxmox VE), when DPDS runs in a VM
+
+The guest's isolation is worth little while the hypervisor still schedules, ticks and handles
+interrupts on the same physical cores.
+
+- **One physical core per vCPU, in whole L3 cache domains.** Pin vCPU thread n to its own core and
+  every other QEMU thread (emulator, I/O) to the housekeeping cores, after every VM start (on
+  Proxmox a hookscript in the `post-start` phase; QEMU names the vCPU threads `CPU n/KVM`).
+- **Isolate those cores and their SMT siblings on the hypervisor's kernel command line:**
+  `isolcpus=managed_irq,domain,<cores> nohz_full=<cores> rcu_nocbs=<cores> irqaffinity=<rest>`.
+  Runtime confinement (cgroups, IRQ masks) is not enough: the host tick and timers stay.
+- **Do not also set the VM's CPU `affinity` to the isolated cores.** `isolcpus` turns load
+  balancing off, so all vCPU threads can stay stacked on the first core.
+- **SMT siblings of the vCPU cores offline, CPU governor `performance`** on the vCPU cores.
+- **All VM memory in 1 GiB huge pages reserved at hypervisor boot, ballooning off, CPU type
+  `host`** (Proxmox: `hugepages: 1024`, `keephugepages: 1`, `numa: 1`, `balloon: 0`). The guest's
+  own huge pages for DPDK lie inside this memory; the two layers are separate.
+- **Unbind unused ports of a passed-through card** from the hypervisor's driver.
+- **Keep the DPDS workers off the first and last vCPU** if those run the guest OS, and keep the
+  workers of one link within one L3 domain.
 
 Don't:
 
