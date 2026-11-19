@@ -179,15 +179,15 @@ fn no_fallback_initialization_rate_constant_is_left_in_the_buffer() {
 }
 
 #[test]
-fn max_frame_bytes_is_a_public_constant_of_1542() {
+fn max_frame_bytes_is_a_public_constant_of_1538() {
     let src = ["lib.rs", "buffer.rs", "limiter.rs"]
         .iter()
         .map(|f| read(crate_dir().join("src").join(f)))
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
-        src.contains("pub const MAX_FRAME_WIRE_BYTES: u32 = 1542;"),
-        "src needs `pub const MAX_FRAME_WIRE_BYTES: u32 = 1542;`"
+        src.contains("pub const MAX_FRAME_WIRE_BYTES: u32 = 1538;"),
+        "src needs `pub const MAX_FRAME_WIRE_BYTES: u32 = 1538;` (1518 B frame incl. FCS + 20 B L1)"
     );
     assert!(
         !src.contains("MAX_FRAME_BYTES"),

@@ -191,7 +191,7 @@ impl HistRange {
     /// ```text
     /// lo = max(0, mean - 6 std)
     /// hi = mean + 6 std + extra + 2 * TX_MAX_WAIT_NS
-    ///                                 extra = capacity * 12336 / rate_bps * 1e9 for an
+    ///                                 extra = capacity * 12304 / rate_bps * 1e9 for an
     ///                                 active Spacer (its queueing allowance), else 0;
     ///                                 TX_MAX_WAIT_NS (10 us) is the staging wait of the
     ///                                 TX batch, twice that leaves room for loop latency

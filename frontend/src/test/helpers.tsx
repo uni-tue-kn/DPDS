@@ -42,7 +42,7 @@
 //    one "* required" note on the form.
 //  - Ports are shown by their netdev name; values, payloads and `<option value>` keep the port (`Interface.port`: the PCI address in
 //    physical mode, the netdev name in virtual mode).
-//  - The limiter limit is derived by dpds-core from the buffer capacity (capacity x 1542 B x 8 bit); the form shows it read-only.
+//  - The limiter limit is derived by dpds-core from the buffer capacity (capacity x 1538 B x 8 bit, 1538 B = 1518 B frame incl. FCS + 20 B L1); the form shows it read-only.
 //
 // Toolchain: react-router 8, react-bootstrap + bootstrap 5, chart.js via react-chartjs-2 (mocked in tests), plain CSS. The API
 // module `src/api/client.ts` is mocked globally; fixtures are in `fixtures.ts`.

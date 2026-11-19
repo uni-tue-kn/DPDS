@@ -4,12 +4,12 @@ import { MBIT } from './linkForm';
 
 const size = (bit: number) => formatUnit(bit, SIZE_UNITS, MBIT);
 
-/** dpds-core's frame size for the derived limiter limit: 1518 B frame + 4 B FEC + 20 B L1 overhead. */
-const MAX_FRAME_WIRE_BYTES = 1542;
+/** dpds-core's frame size for the derived limiter limit: 1518 B frame (FCS included) + 20 B L1 overhead. */
+const MAX_FRAME_WIRE_BYTES = 1538;
 
 /** The read-only limiter limit line of the form; the number is left out while the capacity is no valid count. */
 export function derivedLimitText(capacity: string): string {
-  const text = 'Limit: derived from buffer capacity × 1542 B';
+  const text = 'Limit: derived from buffer capacity × 1538 B';
   const n = Number(capacity);
   if (capacity.trim() === '' || !Number.isInteger(n) || n < 0) return text;
   return `${text} = ${size(n * MAX_FRAME_WIRE_BYTES * 8)}`;

@@ -4,13 +4,14 @@
 //! `now + delay` (1/64 ns tie rule as in plain reordering). The Spacer is not
 //! applied at push; `Accepted.send_time_ns` is the heap time (whole ns).
 //! When an entry is due at its heap time `t_h`, it moves into a FIFO; the
-//! Spacer (no limit, never drops) runs at `t_h` with the packet length + 4 FEC
+//! Spacer (no limit, never drops) runs at `t_h` with the packet length + 4 FCS
 //! bytes, and the send time is `(t_h + offset) as u64`. Entries leave the heap
 //! in heap order, so the Spacer sees non-decreasing times.
 //!
 //! Numbers used by the hand-derived cases: rate 1e9 bit/s = 1 bit/ns; a
 //! 1000-byte packet is `(1000 + 4 + 20) * 8 = 8192` bit = 8192 ns of Spacer
-//! time; a 1518-byte one is `(1518 + 4 + 20) * 8 = 12336` bit = 12336 ns.
+//! time; a 1514-byte one (a 1518-B maximum frame without its FCS) is
+//! `(1514 + 4 + 20) * 8 = 12304` bit = 12304 ns, one slot of the derived limit.
 
 use std::ffi::c_void;
 
@@ -157,15 +158,15 @@ fn a_lost_packet_takes_no_spacer_budget() {
 
 #[test]
 fn the_spacer_has_no_limit_and_never_drops_an_accepted_packet() {
-    // Capacity 2: the derived limit would be two 1518-byte slots, and in FIFO
+    // Capacity 2: the derived limit would be two len-1514 slots, and in FIFO
     // mode the third packet pushed at one instant is a LimiterDrop even though
     // each is popped at once. Here all are accepted and spaced one slot apart.
     let mut b = Buffer::new(fixed(2, 0.0));
     for k in 0..20u64 {
-        assert_eq!(accepted(&mut b, k as usize + 1, 1518, 0.0), 0);
+        assert_eq!(accepted(&mut b, k as usize + 1, 1514, 0.0), 0);
         assert_eq!(
             b.pop_due_with_time(1e12),
-            Some((pkt(k as usize + 1), k * 12_336)),
+            Some((pkt(k as usize + 1), k * 12_304)),
             "packet {k}"
         );
     }

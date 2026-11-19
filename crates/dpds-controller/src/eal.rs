@@ -111,7 +111,7 @@ pub fn links_file_json(links: &[Link], directions: &[DirectionPlan]) -> Result<V
 }
 
 /// How long `dpds` may need to drain: the longest `mean + 6 std` (plus
-/// `buffer_capacity * 12336 bit / rate` when the limiter is on) over all directions, plus a margin.
+/// `buffer_capacity * 12304 bit / rate` when the limiter is on) over all directions, plus a margin.
 pub fn drain_timeout(configs: &[Config]) -> Duration {
     let longest_ns = configs
         .iter()

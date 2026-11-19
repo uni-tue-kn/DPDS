@@ -1,7 +1,7 @@
-//! Exact arithmetic of `Buffer::push`: the +4 FEC byte rule, truncation of the
+//! Exact arithmetic of `Buffer::push`: the +4 FCS byte rule, truncation of the
 //! send time, fractional limiter offsets, FIFO send times, capacity limits.
 //!
-//! Wire size used by the limiters: `(len + 4 + 20) * 8` bit (4 = the FEC bytes
+//! Wire size used by the limiters: `(len + 4 + 20) * 8` bit (4 = the FCS bytes
 //! `Buffer` adds, 20 = L1 overhead the limiter adds).
 //! At 1 Gb/s (1 bit/ns) a Spacer therefore delays a second packet of the same
 //! instant by exactly that many ns.
@@ -36,7 +36,7 @@ fn config(capacity: usize, reordering: bool, delay_ns: f64) -> Config {
     }
 }
 
-/// Limiter active; the limit is derived: `capacity * 1542 * 8` bit.
+/// Limiter active; the limit is derived: `capacity * 1538 * 8` bit.
 fn limited_with_capacity(capacity: usize, mode: LimiterMode, rate_bps: f64) -> Config {
     let mut c = config(capacity, false, 0.0);
     c.limiter = LimiterConfig {
@@ -56,7 +56,7 @@ fn pkt(i: usize) -> *mut c_void {
 }
 
 #[test]
-fn four_fec_bytes_are_added_to_every_packet_before_the_spacer() {
+fn four_fcs_bytes_are_added_to_every_packet_before_the_spacer() {
     for len in [0u32, 1, 60, 100, 1496, 1500, 9000] {
         let mut b = Buffer::new(limited(LimiterMode::Spacer, 1e9));
         assert!(b.push(pkt(1), len, 0.0));
@@ -68,37 +68,37 @@ fn four_fec_bytes_are_added_to_every_packet_before_the_spacer() {
 }
 
 #[test]
-fn spacer_limit_check_includes_the_fec_bytes() {
-    // Capacity 1: derived limit 1542 * 8 = 12336 bit. len 1518 is
-    // (1518 + 4 + 20) * 8 = 12336 bit = exactly the limit; len 1519 is 8 bit
-    // more. (Without the 4 FEC bytes the boundary would be len 1502.)
+fn spacer_limit_check_includes_the_fcs_bytes() {
+    // Capacity 1: derived limit 1538 * 8 = 12304 bit. len 1514 (a 1518-B frame
+    // without its FCS) is (1514 + 4 + 20) * 8 = 12304 bit = exactly the limit;
+    // len 1515 is 8 bit more. (Without the 4 FCS bytes the boundary would be len 1518.)
     let mut at_limit = Buffer::new(limited_with_capacity(1, LimiterMode::Spacer, 1e9));
-    assert!(at_limit.push(pkt(1), 1518, 0.0));
+    assert!(at_limit.push(pkt(1), 1514, 0.0));
     let mut above = Buffer::new(limited_with_capacity(1, LimiterMode::Spacer, 1e9));
-    assert!(!above.push(pkt(1), 1519, 0.0));
+    assert!(!above.push(pkt(1), 1515, 0.0));
     assert!(above.is_empty());
 }
 
 #[test]
-fn tbf_budget_check_includes_the_fec_bytes() {
+fn tbf_budget_check_includes_the_fcs_bytes() {
     // Same boundary for the bucket depth, which starts full.
     let mut b = Buffer::new(limited_with_capacity(
         1,
         LimiterMode::TokenBucketFilter,
         1e9,
     ));
-    assert!(b.push(pkt(1), 1518, 0.0));
+    assert!(b.push(pkt(1), 1514, 0.0));
     let mut b = Buffer::new(limited_with_capacity(
         1,
         LimiterMode::TokenBucketFilter,
         1e9,
     ));
-    assert!(!b.push(pkt(1), 1519, 0.0));
+    assert!(!b.push(pkt(1), 1515, 0.0));
 }
 
 #[test]
 fn tbf_refills_with_time_and_drops_the_excess_instead_of_delaying_it() {
-    // Capacity 2: bucket 24672 bit (full), 1 bit/ns. len 1518 = 12336 bit, so
+    // Capacity 2: bucket 24608 bit (full), 1 bit/ns. len 1514 = 12304 bit, so
     // two packets empty the bucket. Popping keeps the buffer itself below its
     // capacity: only the limiter rejects.
     let mut b = Buffer::new(limited_with_capacity(
@@ -106,17 +106,17 @@ fn tbf_refills_with_time_and_drops_the_excess_instead_of_delaying_it() {
         LimiterMode::TokenBucketFilter,
         1e9,
     ));
-    assert!(b.push(pkt(1), 1518, 0.0)); // 24672 -> 12336
-    assert!(b.push(pkt(2), 1518, 0.0)); // 12336 -> 0
+    assert!(b.push(pkt(1), 1514, 0.0)); // 24608 -> 12304
+    assert!(b.push(pkt(2), 1514, 0.0)); // 12304 -> 0
     assert_eq!(b.pop(), Some(pkt(1)));
     assert_eq!(b.pop(), Some(pkt(2)));
-    assert!(!b.push(pkt(3), 1518, 0.0)); // 0 < 12336: dropped, not delayed
+    assert!(!b.push(pkt(3), 1514, 0.0)); // 0 < 12304: dropped, not delayed
     assert!(b.is_empty());
-    assert!(!b.push(pkt(4), 1518, 12_335.0)); // 12175 < 12336
-    assert!(b.push(pkt(5), 1518, 24_671.0)); // 12175 + 12336 = 24351 (below the 24672 cap) >= 12336
+    assert!(!b.push(pkt(4), 1514, 12_303.0)); // 12303 < 12304
+    assert!(b.push(pkt(5), 1514, 24_607.0)); // 12303 + 12304 = 24607 (below the 24608 cap) >= 12304
     assert_eq!(b.len(), 1);
     // TBF never shifts the send time: it carries now + 0.
-    assert_eq!(b.front_time(), Some(24_671.0));
+    assert_eq!(b.front_time(), Some(24_607.0));
 }
 
 #[test]
@@ -210,17 +210,17 @@ fn capacity_is_exact_in_both_modes_and_len_never_exceeds_it() {
 
 #[test]
 fn a_packet_rejected_by_the_limiter_does_not_occupy_capacity() {
-    // Capacity 2: bucket 24672 bit = two 1518-byte packets (12336 bit each).
+    // Capacity 2: bucket 24608 bit = two len-1514 packets (12304 bit each).
     let mut b = Buffer::new(limited_with_capacity(
         2,
         LimiterMode::TokenBucketFilter,
         1e9,
     ));
-    assert!(b.push(pkt(1), 1518, 0.0));
-    assert!(b.push(pkt(2), 1518, 0.0));
+    assert!(b.push(pkt(1), 1514, 0.0));
+    assert!(b.push(pkt(2), 1514, 0.0));
     assert_eq!(b.pop(), Some(pkt(1))); // one slot free again, bucket empty
     for i in 0..10 {
-        assert!(!b.push(pkt(10 + i), 1518, 0.0), "rejected by the limiter");
+        assert!(!b.push(pkt(10 + i), 1514, 0.0), "rejected by the limiter");
     }
     assert_eq!(b.len(), 1);
     assert_eq!(b.pop(), Some(pkt(2)));

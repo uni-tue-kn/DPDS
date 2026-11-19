@@ -146,7 +146,7 @@ fn trace(s: Scenario, extra: Extra) -> Vec<PushOutcome> {
     let push_extra = |b: &mut Buffer, next: &mut usize, expect_full: bool| {
         for j in 0..EXTRA {
             let t = fill_end + s.extra_gap_ns * (j as f64 + 1.0);
-            let o = b.push_outcome(pkt(*next), 1518, t);
+            let o = b.push_outcome(pkt(*next), 1514, t);
             *next += 1;
             if expect_full {
                 assert_eq!(
@@ -178,7 +178,7 @@ fn trace(s: Scenario, extra: Extra) -> Vec<PushOutcome> {
     let tail_start = fill_end + s.extra_gap_ns * (EXTRA as f64) + s.tail_pad_ns;
     for k in 0..TAIL {
         let t = tail_start + s.tail_step_ns * k as f64;
-        out.push(b.push_outcome(pkt(next), 1518, t));
+        out.push(b.push_outcome(pkt(next), 1514, t));
         next += 1;
         drain(&mut b);
     }
@@ -243,7 +243,7 @@ fn a_full_buffer_push_does_not_advance_the_correlated_delayer() {
 
 #[test]
 fn a_full_buffer_push_does_not_account_bits_in_the_spacer() {
-    // The extra pushes (12336 bit each) sit at the same instants as the tail;
+    // The extra pushes (len 1514, 12304 bit each) sit at the same instants as the tail;
     // accounting them would push the tail's spacing offsets up and its limit
     // drops earlier.
     // FIFO only: with reordering the Spacer has no limit and never drops (reordering_spacer.rs).

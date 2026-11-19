@@ -1,12 +1,12 @@
 //! The limiter's limit is derived, not configured: for both modes it is
-//! `buffer_capacity * MAX_FRAME_WIRE_BYTES * 8` bit with `MAX_FRAME_WIRE_BYTES = 1542`
-//! (1518 B maximum Ethernet frame + 4 FEC bytes + 20 B L1 overhead, as the limiter counts a
+//! `buffer_capacity * MAX_FRAME_WIRE_BYTES * 8` bit with `MAX_FRAME_WIRE_BYTES = 1538`
+//! (1518 B maximum Ethernet frame, FCS included, + 20 B L1 overhead, as the limiter counts a
 //! packet): exactly `buffer_capacity` maximum frames fit. It is the Spacer's
 //! fill-state limit and the Token Bucket Filter's bucket depth; the TBF starts full.
 //!
-//! Wire size of a pushed packet of `len` bytes: `(len + 4 + 20) * 8` bit, so
-//! `len = 1518` is exactly `1542 * 8 = 12336` bit (one "slot" of the limit) and
-//! `len = 1519` is 8 bit more. All tests use `rate_bps = 1e9` (1 bit/ns) at a
+//! Wire size of a pushed packet of `len` bytes (DPDK's `pkt_len`, without the 4-B FCS):
+//! `(len + 4 + 20) * 8` bit, so `len = 1514` (a 1518-B maximum frame) is exactly
+//! `1538 * 8 = 12304` bit (one "slot" of the limit) and `len = 1515` is 8 bit more. All tests use `rate_bps = 1e9` (1 bit/ns) at a
 //! single instant `t = 0` unless noted: nothing drains or refills.
 //!
 //! To observe the limiter alone, the buffer is popped after every push, so the
@@ -23,9 +23,10 @@ use dpds_core::dropper::LossModel;
 use dpds_core::limiter::LimiterMode;
 use dpds_core::{Config, DelayerConfig, LimiterConfig};
 
-/// `len` of a packet that is exactly one slot (12336 bit) on the wire.
-const SLOT_LEN: u32 = 1518;
-const SLOT_BITS: f64 = 12_336.0;
+/// `len` of a packet that is exactly one slot (12304 bit) on the wire: a 1518-B
+/// maximum frame, whose `pkt_len` excludes the 4-B FCS.
+const SLOT_LEN: u32 = 1514;
+const SLOT_BITS: f64 = 12_304.0;
 
 const MODES: [LimiterMode; 2] = [LimiterMode::Spacer, LimiterMode::TokenBucketFilter];
 
@@ -83,7 +84,7 @@ fn admitted_at_once(capacity: usize, mode: LimiterMode, reordering: bool, len: u
 }
 
 #[test]
-fn the_limit_is_capacity_times_1542_bytes_for_both_modes() {
+fn the_limit_is_capacity_times_1538_bytes_for_both_modes() {
     for mode in MODES {
         for reordering in [false, true] {
             if !allowed(mode, reordering) {
@@ -94,7 +95,7 @@ fn the_limit_is_capacity_times_1542_bytes_for_both_modes() {
                     admitted_at_once(capacity, mode, reordering, SLOT_LEN),
                     capacity,
                     "{mode:?} reordering={reordering} capacity={capacity}: \
-                     exactly `capacity` slots of 12336 bit fit"
+                     exactly `capacity` slots of 12304 bit fit"
                 );
             }
         }
@@ -104,7 +105,7 @@ fn the_limit_is_capacity_times_1542_bytes_for_both_modes() {
 #[test]
 fn exactly_capacity_maximum_frames_fit_and_the_next_one_finds_the_buffer_full() {
     // The limit is what the buffer can hold: `capacity` frames of the maximum
-    // size (1518 B + 4 FEC + 20 L1 = 1542 B = one slot) all pass the limiter
+    // size (1518 B incl. FCS + 20 L1 = 1538 B = one slot) all pass the limiter
     // without anything being popped, and the next one is refused by the buffer
     // (checked first), not by the limiter.
     for mode in MODES {
@@ -136,7 +137,7 @@ fn a_capacity_one_buffer_accepts_a_maximum_frame() {
     for mode in MODES {
         let mut b = Buffer::new(config(1, mode, 1e9, false));
         assert_eq!(
-            b.push_outcome(pkt(1), 1518, 0.0),
+            b.push_outcome(pkt(1), SLOT_LEN, 0.0),
             PushOutcome::Accepted { send_time_ns: 0 }
         );
     }
@@ -144,7 +145,7 @@ fn a_capacity_one_buffer_accepts_a_maximum_frame() {
 
 #[test]
 fn the_limit_scales_with_the_capacity_in_bits() {
-    // 992-bit packets (len 100): floor(capacity * 12336 / 992) of them fit
+    // 992-bit packets (len 100): floor(capacity * 12304 / 992) of them fit
     // (Spacer: fill + packet <= limit; TBF: bucket >= packet), for both modes.
     for mode in MODES {
         for (capacity, expected) in [(1usize, 12), (2, 24), (3, 37), (4, 49), (10, 124)] {
@@ -160,15 +161,15 @@ fn the_limit_scales_with_the_capacity_in_bits() {
 
 #[test]
 fn a_single_packet_is_judged_against_the_whole_derived_limit() {
-    // capacity c: the largest admitted packet is len + 24 = 1542 * c bytes
-    // (c * 12336 bit), one byte more is rejected, in both modes.
+    // capacity c: the largest admitted packet is len + 24 = 1538 * c bytes
+    // (c * 12304 bit), one byte more is rejected, in both modes.
     for mode in MODES {
         for reordering in [false, true] {
             if !allowed(mode, reordering) {
                 continue;
             }
             for capacity in [1usize, 2, 3, 10] {
-                let largest = (1542 * capacity - 24) as u32;
+                let largest = (1538 * capacity - 24) as u32;
                 let mut b = Buffer::new(config(capacity, mode, 1e9, reordering));
                 assert!(
                     is_accepted(b.push_outcome(pkt(1), largest, 0.0)),
@@ -193,12 +194,12 @@ fn the_limit_does_not_depend_on_the_rate() {
         for rate in [1e3, 1e6, 1e9, 100e9] {
             let mut b = Buffer::new(config(2, mode, rate, false));
             assert!(
-                is_accepted(b.push_outcome(pkt(1), 3060, 0.0)),
+                is_accepted(b.push_outcome(pkt(1), 3052, 0.0)),
                 "{mode:?} {rate}"
             );
             let mut b = Buffer::new(config(2, mode, rate, false));
             assert_eq!(
-                b.push_outcome(pkt(1), 3061, 0.0),
+                b.push_outcome(pkt(1), 3053, 0.0),
                 PushOutcome::LimiterDrop,
                 "{mode:?} {rate}"
             );
@@ -211,8 +212,8 @@ fn the_limit_does_not_depend_on_the_current_buffer_content() {
     // Derived from the capacity, not from the free room: with other packets
     // queued the Spacer still admits what the fill state allows.
     for mode in MODES {
-        let mut b = Buffer::new(config(4, mode, 1e9, false)); // limit 49344
-                                                              // two queued packets (24672 bit) stay in the buffer ...
+        let mut b = Buffer::new(config(4, mode, 1e9, false)); // limit 49216
+                                                              // two queued packets (24608 bit) stay in the buffer ...
         assert!(is_accepted(b.push_outcome(pkt(1), SLOT_LEN, 0.0)));
         assert!(is_accepted(b.push_outcome(pkt(2), SLOT_LEN, 0.0)));
         assert_eq!(b.len(), 2);
@@ -237,7 +238,7 @@ fn spacer_offsets_grow_by_one_slot_up_to_the_derived_limit() {
         assert_eq!(
             b.push_outcome(pkt(k as usize + 1), SLOT_LEN, 0.0),
             PushOutcome::Accepted {
-                send_time_ns: k * 12_336
+                send_time_ns: k * 12_304
             }
         );
         b.pop();
@@ -246,10 +247,10 @@ fn spacer_offsets_grow_by_one_slot_up_to_the_derived_limit() {
         b.push_outcome(pkt(4), SLOT_LEN, 0.0),
         PushOutcome::LimiterDrop
     );
-    // after one slot of time (12336 ns) exactly one slot is free again
-    assert!(is_accepted(b.push_outcome(pkt(5), SLOT_LEN, 12_336.0)));
+    // after one slot of time (12304 ns) exactly one slot is free again
+    assert!(is_accepted(b.push_outcome(pkt(5), SLOT_LEN, 12_304.0)));
     assert_eq!(
-        b.push_outcome(pkt(6), SLOT_LEN, 12_336.0),
+        b.push_outcome(pkt(6), SLOT_LEN, 12_304.0),
         PushOutcome::LimiterDrop
     );
 }
@@ -286,7 +287,7 @@ fn the_token_bucket_starts_full_at_the_derived_depth_and_refills_up_to_it() {
 
 #[test]
 fn a_burst_larger_than_the_derived_depth_is_dropped_by_the_token_bucket() {
-    // Capacity 3: depth 37008 bit = three slots. A burst of five slots at one
+    // Capacity 3: depth 36912 bit = three slots. A burst of five slots at one
     // instant: three pass, the rest is dropped (not delayed).
     let mut b = Buffer::new(config(3, LimiterMode::TokenBucketFilter, 1e9, false));
     let outcomes: Vec<PushOutcome> = (0..5)
@@ -310,7 +311,7 @@ fn a_burst_larger_than_the_derived_depth_is_dropped_by_the_token_bucket() {
 
 #[test]
 fn the_limit_is_computed_without_overflow_for_large_capacities() {
-    // 400_000 * 12336 = 4.87e9 bit does not fit a u32 (and 1e6, a capacity real
+    // 400_000 * 12304 = 4.92e9 bit does not fit a u32 (and 1e6, a capacity real
     // configs use, gives 1.2e10): a u32 computation panics in a debug build (as
     // the tests are) and must not wrap.
     for mode in MODES {

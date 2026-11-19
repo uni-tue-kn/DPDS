@@ -4,7 +4,7 @@
 //! running the code:
 //!
 //! - wire size of a packet of `len` bytes = `(len + 20) * 8` bit (20 = preamble
-//!   7 + SFD 1 + IPG 12; `Limiter` itself does NOT add the 4 FEC bytes, `Buffer`
+//!   7 + SFD 1 + IPG 12; `Limiter` itself does NOT add the 4 FCS bytes, `Buffer`
 //!   does), so `len = 100` is 960 bit and `len = 1500` is 12160 bit;
 //! - `rate_bpns = rate_bps / 1e9`; `rate_bps = 1e9` is exactly 1 bit/ns, so
 //!   every quantity in the 1 Gb/s sequences is an integer and compared exactly;

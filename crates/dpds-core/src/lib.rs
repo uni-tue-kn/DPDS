@@ -61,7 +61,7 @@
 //!
 //! The limiter's limit is derived for both modes as
 //! `buffer_capacity * MAX_FRAME_WIRE_BYTES * 8` bit, with
-//! [`MAX_FRAME_WIRE_BYTES`] `= 1542`: exactly `buffer_capacity` maximum-size
+//! [`MAX_FRAME_WIRE_BYTES`] `= 1538`: exactly `buffer_capacity` maximum-size
 //! frames fit.
 //!
 //! ## Why a packet was rejected
@@ -152,13 +152,13 @@ pub struct DelayerConfig {
 }
 
 /// Wire size, in bytes, of a maximum-size packet as the limiter counts it:
-/// 1518 B maximum Ethernet frame + 4 FEC bytes + 20 B L1 overhead (preamble,
+/// 1518 B maximum Ethernet frame (FCS included) + 20 B L1 overhead (preamble,
 /// SFD, inter-packet gap).
 ///
 /// The limiter's limit, for both modes (Spacer fill-state limit, Token Bucket
 /// Filter bucket depth), is `buffer_capacity * MAX_FRAME_WIRE_BYTES * 8` bit:
 /// exactly `buffer_capacity` maximum-size frames fit.
-pub const MAX_FRAME_WIRE_BYTES: u32 = 1542;
+pub const MAX_FRAME_WIRE_BYTES: u32 = 1538;
 
 /// The limiter's derived limit in bits for a buffer of `buffer_capacity`
 /// packets: `buffer_capacity * MAX_FRAME_WIRE_BYTES * 8`. Computed in `f64`, so

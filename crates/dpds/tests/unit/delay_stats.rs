@@ -12,7 +12,7 @@
 //!
 //! From `delayer.mean_ns`, `delayer.std_ns` (whatever the distribution) and, when the limiter is
 //! active, the Spacer queueing allowance `extra = limit / rate_bps * 1e9` ns with the derived
-//! limit `buffer_capacity * 1542 * 8` bit (a Spacer packet can wait up to a full limit's worth of
+//! limit `buffer_capacity * 1538 * 8` bit (a Spacer packet can wait up to a full limit's worth of
 //! bits; the realized delay includes that offset). `2 * TX_MAX_WAIT_NS` (20 us) is always added
 //! to `hi` (configured delay plus the staging wait):
 //!
@@ -82,7 +82,7 @@ use serde_json::json;
 
 use crate::support::*;
 
-/// Capacity 10 (derived limit 123_360 bit); `limiter` = the active Spacer's rate.
+/// Capacity 10 (derived limit 123_040 bit); `limiter` = the active Spacer's rate.
 fn cfg(mean: f64, std: f64, limiter: Option<f64>) -> dpds_core::Config {
     cfg_cap(10, mean, std, limiter.map(|r| ("Spacer", r)))
 }
@@ -230,7 +230,7 @@ fn mean_minus_six_std_below_zero_is_clamped_at_zero() {
     );
 }
 
-/// The allowance is a floating-point division (123360 / 1e9 * 1e9 is not exact), so the
+/// The allowance is a floating-point division (123040 / 1e9 * 1e9 is not exact), so the
 /// bin width is compared to 1e-9 relative; the lower edge stays exact.
 fn assert_range(got: (f64, f64), want: (f64, f64)) {
     assert_eq!(got.0, want.0, "lower edge");
@@ -244,29 +244,29 @@ fn assert_range(got: (f64, f64), want: (f64, f64)) {
 
 #[test]
 fn an_active_limiter_widens_the_range_by_its_queueing_allowance() {
-    // capacity 10: derived limit 123_360 bit at 1e9 bit/s = 123_360 ns of possible Spacer
-    // queueing: [0, 123_360 + 2 W]
+    // capacity 10: derived limit 123_040 bit at 1e9 bit/s = 123_040 ns of possible Spacer
+    // queueing: [0, 123_040 + 2 W]
     let w = WINDOW_MARGIN_NS;
-    assert_range(range(cfg(0.0, 0.0, Some(1e9))), window(0.0, 123_360.0 + w));
-    // [mean - 6 std, mean + 6 std + 123_360 + 2 W] = [4e5, 1_733_360]
+    assert_range(range(cfg(0.0, 0.0, Some(1e9))), window(0.0, 123_040.0 + w));
+    // [mean - 6 std, mean + 6 std + 123_040 + 2 W] = [4e5, 1_743_040]
     assert_range(
         range(cfg(1e6, 1e5, Some(1e9))),
-        window(4e5, 1.6e6 + 123_360.0 + w),
+        window(4e5, 1.6e6 + 123_040.0 + w),
     );
 }
 
 #[test]
 fn the_queueing_allowance_follows_the_capacity_and_the_rate() {
     let w = WINDOW_MARGIN_NS;
-    // twice the capacity: twice the derived limit: [0, 246_720 + 2 W]
+    // twice the capacity: twice the derived limit: [0, 246_080 + 2 W]
     assert_range(
         range(cfg_cap(20, 0.0, 0.0, Some(("Spacer", 1e9)))),
-        window(0.0, 246_720.0 + w),
+        window(0.0, 246_080.0 + w),
     );
-    // ten times the rate: a tenth of the allowance: [0, 12_336 + 2 W]
+    // ten times the rate: a tenth of the allowance: [0, 12_304 + 2 W]
     assert_range(
         range(cfg_cap(10, 0.0, 0.0, Some(("Spacer", 1e10)))),
-        window(0.0, 12_336.0 + w),
+        window(0.0, 12_304.0 + w),
     );
     // an inactive limiter adds nothing whatever the capacity: only the wait
     assert_eq!(range(cfg_cap(10_000, 0.0, 0.0, None)), window(0.0, w));
@@ -648,8 +648,8 @@ mod with_feature {
         )
     }
 
-    /// Capacity 4 (derived limit 49344 bit), Spacer 1 bit/ns, delay 1e6, loss
-    /// model that drops exactly the first packet. Used with 1519-byte packets.
+    /// Capacity 4 (derived limit 49216 bit), Spacer 1 bit/ns, delay 1e6, loss
+    /// model that drops exactly the first packet. Used with 1515-byte packets.
     fn mixed_limiter_cfg() -> Config {
         config_general(
             4,
@@ -752,21 +752,21 @@ mod with_feature {
 
     #[test]
     fn only_accepted_packets_enter_the_delay_statistics() {
-        // the "mixed" scenario of causes.rs, reduced: one burst at now = 0 of 5 packets of 1519
-        // bytes (12344 bit each), capacity 4: P1 lost (accounted), P2 (send time 1_012_344) and
-        // P3 (1_024_688) accepted, P4, P5 limiter drops. Popped at 5e6, tx 6e6: both packets have
-        // the delay 6e6; lateness 4_987_656 and 4_975_312 (mean 4_981_484 over the 2 packets).
+        // the "mixed" scenario of causes.rs, reduced: one burst at now = 0 of 5 packets of 1515
+        // bytes (12312 bit each), capacity 4: P1 lost (accounted), P2 (send time 1_012_312) and
+        // P3 (1_024_624) accepted, P4, P5 limiter drops. Popped at 5e6, tx 6e6: both packets have
+        // the delay 6e6; lateness 4_987_688 and 4_975_376 (mean 4_981_532 over the 2 packets).
         let cfg = mixed_limiter_cfg();
         let stats: &'static Stats = Box::leak(Box::default());
-        drive(cfg, &[1519; 5], &[0.0, 5_000_000.0, 6_000_000.0], stats);
+        drive(cfg, &[1515; 5], &[0.0, 5_000_000.0, 6_000_000.0], stats);
         let r = stats.stats_reply(0);
         assert_eq!(uint(&r, "dpds_rejects"), 3);
         assert_eq!(string(&r, "delay_mean_ns"), "6000000.00");
         assert_eq!(string(&r, "delay_std_ns"), "0.00");
         assert_eq!(uint(&r, "delay_min_ns"), 6_000_000);
         assert_eq!(uint(&r, "delay_max_ns"), 6_000_000);
-        assert_eq!(string(&r, "lateness_mean_ns"), "4981484.00");
-        assert_eq!(uint(&r, "lateness_max_ns"), 4_987_656);
+        assert_eq!(string(&r, "lateness_mean_ns"), "4981532.00");
+        assert_eq!(uint(&r, "lateness_max_ns"), 4_987_688);
         let h = stats.delay_hist_reply();
         let total: u64 =
             bins(&h).iter().sum::<u64>() + uint(&h, "underflow") + uint(&h, "overflow");
@@ -962,16 +962,16 @@ mod with_feature {
 
     #[test]
     fn the_limiter_shifted_packets_are_binned_by_the_realized_delay() {
-        // the mixed scenario: P2 (send 1_012_344) and P3 (1_024_688) arrive at 0; the range is
-        // [1e6, 1e6 + 49_344 + 2 * TX_MAX_WAIT_NS); now 1_030_000 (>= W after the oldest send
+        // the mixed scenario: P2 (send 1_012_312) and P3 (1_024_624) arrive at 0; the range is
+        // [1e6, 1e6 + 49_216 + 2 * TX_MAX_WAIT_NS); now 1_030_000 (>= W after the oldest send
         // time), tx 1_030_500: both have the delay 1_030_500, inside the window
         let cfg = mixed_limiter_cfg();
         let range = HistRange::from_config(&cfg);
         let stats: &'static Stats = Box::leak(Box::new(Stats::with_range(range)));
-        drive(cfg, &[1519; 5], &[0.0, 1_030_000.0, 1_030_500.0], stats);
+        drive(cfg, &[1515; 5], &[0.0, 1_030_000.0, 1_030_500.0], stats);
         let h = stats.delay_hist_reply();
         assert_eq!(num(&h, "lo_ns"), 1_000_000.0);
-        assert_eq!(range.hi_ns(), 1_000_000.0 + 49_344.0 + 2.0 * TX_MAX_WAIT_NS);
+        assert_eq!(range.hi_ns(), 1_000_000.0 + 49_216.0 + 2.0 * TX_MAX_WAIT_NS);
         assert!(matches!(range.bin(1_030_500.0), Bin::Index(_)));
         assert_all_in_bin(&h, range, 1_030_500.0, 2);
     }

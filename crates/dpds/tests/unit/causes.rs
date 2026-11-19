@@ -9,24 +9,24 @@
 //! finds the buffer full counts as buffer full whatever loss model and limiter would say (they
 //! are not consulted); a packet rejected by both loss and limiter counts as loss.
 //!
-//! The limiter's limit is derived: `buffer_capacity * 1542 * 8` bit. A
-//! 1519-byte packet is (1519 + 4 + 20) * 8 = 12344 bit on the wire, 8 bit more
-//! than one 12336-bit "slot" of the limit, so a Spacer limit drop happens while
+//! The limiter's limit is derived: `buffer_capacity * 1538 * 8` bit. A
+//! 1515-byte packet is (1515 + 4 + 20) * 8 = 12312 bit on the wire, 8 bit more
+//! than one 12304-bit "slot" of the limit, so a Spacer limit drop happens while
 //! the buffer still has room.
 //!
 //! Scenario "mixed" (deterministic delay 1_000_000 ns, Spacer 1 bit/ns, buffer
-//! capacity 4 = limit 49344 bit, all packets 1519 bytes = 12344 bit, loss model
+//! capacity 4 = limit 49216 bit, all packets 1515 bytes = 12312 bit, loss model
 //! GilbertElliot(p=1, r=0, k=0, h=1): exactly the FIRST packet is lost):
 //!
 //! Iteration 1 (now 0), packets P1..P5:
-//!   P1 lost (but accounted by the limiter: fill 12344)            -> loss
-//!   P2 fill 12344 + 12344 = 24688 <= 49344, send 1_012_344        -> accepted
-//!   P3 fill 24688 + 12344 = 37032 <= 49344, send 1_024_688        -> accepted
-//!   P4, P5: 37032 + 12344 = 49376 > 49344 (buffer holds 2 of 4)   -> limiter (x2)
-//! Iteration 2 (now 50_000), packets P6..P8: the limiter's fill (37032, rejected
+//!   P1 lost (but accounted by the limiter: fill 12312)            -> loss
+//!   P2 fill 12312 + 12312 = 24624 <= 49216, send 1_012_312        -> accepted
+//!   P3 fill 24624 + 12312 = 36936 <= 49216, send 1_024_624        -> accepted
+//!   P4, P5: 36936 + 12312 = 49248 > 49216 (buffer holds 2 of 4)   -> limiter (x2)
+//! Iteration 2 (now 50_000), packets P6..P8: the limiter's fill (36936, rejected
 //!   packets are not added) has drained to 0 by t = 1_050_000.
-//!   P6 fill 0 -> accepted (send 1_050_000), P7 fill 12344 -> accepted
-//!   (send 1_062_344), the buffer now holds 4 = capacity
+//!   P6 fill 0 -> accepted (send 1_050_000), P7 fill 12312 -> accepted
+//!   (send 1_062_312), the buffer now holds 4 = capacity
 //!   P8: buffer full (untouched: no limiter accounting, no loss draw)
 //! So loss 1, limiter 2, buffer_full 1, dpds_rejects 4, 4 packets sent
 //! (P2, P3, P6, P7 in this order).
@@ -105,8 +105,8 @@ fn mixed_config() -> Config {
 /// last (draining) read at 5 ms.
 const MIXED_CLOCK: [f64; 3] = [0.0, 50_000.0, 5_000_000.0];
 
-/// All packets of the mixed scenario are 1519 bytes.
-const MIXED_LEN: u32 = 1519;
+/// All packets of the mixed scenario are 1515 bytes.
+const MIXED_LEN: u32 = 1515;
 
 /// 5 packets in the first burst, 3 in the second.
 fn mixed_script(m: &mut FakeMbufs) -> Vec<Vec<dpdk::RawMbuf>> {
@@ -196,8 +196,8 @@ mod with_feature {
             .any(|(k, v)| k == "first_loss_detail"
                 && *v == Value::Str("from=dpds,cause=loss".into())));
 
-        // limiter only: capacity 3 = limit 37008 bit; of three 12344-bit
-        // packets the third does not fit (37032 > 37008) while the buffer
+        // limiter only: capacity 3 = limit 36912 bit; of three 12312-bit
+        // packets the third does not fit (36936 > 36912) while the buffer
         // holds only two
         let cfg = config_full(3, false, 0.0, 0.0, Some(1e9));
         let mut m = FakeMbufs::new(3, 0, MIXED_LEN);
@@ -236,7 +236,7 @@ mod with_feature {
     #[test]
     fn precedence_in_the_loop_buffer_full_before_loss_before_limiter() {
         // 20000-byte packets exceed the derived limit of a capacity-10 buffer
-        // (123_360 bit): the limiter would reject every one. Capacity 0 is
+        // (123_040 bit): the limiter would reject every one. Capacity 0 is
         // always full.
         let with = |capacity: usize, loss: f64, limiter: Option<f64>| {
             config_full(capacity, false, 0.0, loss, limiter)

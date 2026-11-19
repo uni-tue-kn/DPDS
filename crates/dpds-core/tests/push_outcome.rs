@@ -6,9 +6,10 @@
 //!   the loss model, the limiter verdict, the enqueue. The reported cause is
 //!   `BufferFull`, else `Lost`, else `LimiterDrop`. (`tests/push_order.rs` pins
 //!   that a full-buffer push leaves delayer, limiter and dropper state untouched.)
-//! - The limiter's limit is derived (`buffer_capacity * 1542 * 8` bit), see
-//!   `tests/derived_limit.rs`. A packet of `len = 1518` is exactly
-//!   `1542 * 8 = 12336` bit on the wire, `len = 1519` is 8 bit more.
+//! - The limiter's limit is derived (`buffer_capacity * 1538 * 8` bit), see
+//!   `tests/derived_limit.rs`. A packet of `len = 1514` (a 1518-B maximum frame
+//!   without its FCS) is exactly `1538 * 8 = 12304` bit on the wire, `len = 1515`
+//!   is 8 bit more.
 //! - `Accepted.send_time_ns` is the whole-ns send time that `front_time` reports
 //!   for that entry: FIFO mode `(now + delay + limiter offset) as u64`;
 //!   reordering mode `key >> 6`, i.e. including the 1/64 ns tie offsets (the
@@ -30,8 +31,8 @@ use dpds_core::limiter::LimiterMode;
 use dpds_core::{Config, DelayerConfig, LimiterConfig};
 
 const LEN: u32 = 100; // 992 bit on the wire
-/// (1518 + 4 + 20) * 8 = 12336 = 1542 * 8 bit on the wire
-const LEN_FULL: u32 = 1518;
+/// (1514 + 4 + 20) * 8 = 12304 = 1538 * 8 bit on the wire
+const LEN_FULL: u32 = 1514;
 
 #[derive(Clone, Copy)]
 struct Cfg {
@@ -167,15 +168,15 @@ fn lost_is_reported_by_the_loss_model_and_nothing_is_queued() {
 #[test]
 fn limiter_drop_of_the_spacer_and_its_recovery_by_draining() {
     // FIFO only: the reordering Spacer has no limit and reports the heap time (reordering_spacer.rs).
-    // capacity 2: derived limit 2 * 12336 = exactly two len-1518 packets
+    // capacity 2: derived limit 2 * 12304 = exactly two len-1514 packets
     let mut b = Cfg::new(2, false).spacer().build();
-    assert_eq!(b.push_outcome(pkt(1), LEN_FULL, 0.0), accepted(0)); // fill 12336
+    assert_eq!(b.push_outcome(pkt(1), LEN_FULL, 0.0), accepted(0)); // fill 12304
     assert_eq!(b.pop_due(0.0), Some(pkt(1))); // the buffer keeps room
-    assert_eq!(b.push_outcome(pkt(2), LEN_FULL, 0.0), accepted(12336)); // fill 24672 == limit: ok
+    assert_eq!(b.push_outcome(pkt(2), LEN_FULL, 0.0), accepted(12304)); // fill 24608 == limit: ok
     assert_eq!(
         b.push_outcome(pkt(3), LEN_FULL, 0.0),
         PushOutcome::LimiterDrop,
-        "24672 + 12336 > 24672"
+        "24608 + 12304 > 24608"
     );
     assert_eq!(
         b.push_outcome(pkt(4), LEN_FULL, 0.0),
@@ -183,28 +184,28 @@ fn limiter_drop_of_the_spacer_and_its_recovery_by_draining() {
         "a rejected packet is not added to the fill"
     );
     assert_eq!(b.len(), 1, "a limiter drop is not queued");
-    // 12336 ns later 12336 bit have drained: fill 12336, one packet fits
-    // again, offset = fill / rate = 12336 -> leaves at 12336 + 12336
-    assert_eq!(b.push_outcome(pkt(5), LEN_FULL, 12_336.0), accepted(24_672));
+    // 12304 ns later 12304 bit have drained: fill 12304, one packet fits
+    // again, offset = fill / rate = 12304 -> leaves at 12304 + 12304
+    assert_eq!(b.push_outcome(pkt(5), LEN_FULL, 12_304.0), accepted(24_608));
     assert_eq!(b.len(), 2);
 }
 
 #[test]
 fn limiter_drop_of_the_token_bucket_filter_and_its_refill() {
     for reordering in MODES {
-        // capacity 2: the TBF starts full with the derived 24672 bit = two len-1518 packets
+        // capacity 2: the TBF starts full with the derived 24608 bit = two len-1514 packets
         let mut b = Cfg::new(2, reordering).tbf().build();
-        assert_eq!(b.push_outcome(pkt(1), LEN_FULL, 0.0), accepted(0)); // 24672 >= 12336 -> 12336
+        assert_eq!(b.push_outcome(pkt(1), LEN_FULL, 0.0), accepted(0)); // 24608 >= 12304 -> 12304
         assert_eq!(b.pop_due(0.0), Some(pkt(1)));
-        assert_eq!(b.push_outcome(pkt(2), LEN_FULL, 0.0), accepted(0)); // 12336 >= 12336 -> 0
+        assert_eq!(b.push_outcome(pkt(2), LEN_FULL, 0.0), accepted(0)); // 12304 >= 12304 -> 0
         assert_eq!(
             b.push_outcome(pkt(3), LEN_FULL, 0.0),
             PushOutcome::LimiterDrop,
             "reordering={reordering}"
         );
         assert_eq!(b.len(), 1);
-        // +12336 ns refills 12336 bit: accepted again, TBF adds no offset
-        assert_eq!(b.push_outcome(pkt(4), LEN_FULL, 12_336.0), accepted(12_336));
+        // +12304 ns refills 12304 bit: accepted again, TBF adds no offset
+        assert_eq!(b.push_outcome(pkt(4), LEN_FULL, 12_304.0), accepted(12_304));
     }
 }
 
@@ -236,7 +237,7 @@ fn a_zero_capacity_buffer_is_always_full() {
 
 // ── precedence: capacity, then loss, then limiter ───────────────────
 
-/// Longer than the derived limit of a capacity-8 buffer (8 * 12336 = 98688 bit):
+/// Longer than the derived limit of a capacity-8 buffer (8 * 12304 = 98432 bit):
 /// (12400 + 4 + 20) * 8 = 99392 bit. The Spacer and the TBF both reject it.
 const LEN_OVER_LIMIT_CAP8: u32 = 12_400;
 
@@ -296,7 +297,7 @@ fn precedence_buffer_full_before_loss_before_limiter() {
             PushOutcome::Accepted { .. }
         ));
         assert_eq!(
-            b.push_outcome(pkt(2), 1519, 0.0),
+            b.push_outcome(pkt(2), 1515, 0.0),
             PushOutcome::BufferFull,
             "reordering={reordering}"
         );
@@ -454,7 +455,7 @@ fn push_is_bit_identical_to_push_outcome_accepted() {
                     "the sequence must exercise accepted/lost/limiter outcomes: {seen:?} ({mode:?})"
                 );
                 if matches!(mode, LimiterMode::Spacer) {
-                    // Large frames (up to 1518 B = one 12336 bit slot of the derived
+                    // Large frames (len 1400..=1518, about one 12304 bit slot of the derived
                     // limit): the Spacer's fill also counts lost packets, so the
                     // limit binds before the buffer (capacity 16) has filled, and
                     // the buffer fills at other moments.

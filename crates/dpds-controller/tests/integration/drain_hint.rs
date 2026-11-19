@@ -1,6 +1,6 @@
 //! The stop of `dpds` waits for the drain timeout (`eal::drain_timeout`: longest `mean + 6 std`,
 //! plus `limit / rate` with the limiter on, plus a 5 s margin; the limit is the derived
-//! `buffer_capacity * 1542 * 8` bit), but the systemd unit gives the controller only
+//! `buffer_capacity * 1538 * 8` bit), but the systemd unit gives the controller only
 //! `TimeoutStopSec=600`. A host hint with id `drain_timeout` and level `warn` names every link
 //! of the body whose drain timeout exceeds 590 s and the 600 s systemd limit. Links that drain
 //! faster produce no such hint. The limiter is an optional stage (present = on), so "limiter
@@ -32,7 +32,7 @@ fn with_config(port: &str, cfg: Value) -> Value {
 }
 
 /// Limiter stage at `rate_bps` (`on`; absent when not), , buffer of `capacity` packets: the drain takes
-/// `capacity * 1542 * 8 / rate_bps` seconds.
+/// `capacity * 1538 * 8 / rate_bps` seconds.
 fn limited(mean_ns: f64, rate_bps: f64, capacity: u64, on: bool) -> Value {
     let mut c = cfg_json(mean_ns, 0.0);
     c["buffer_capacity"] = json!(capacity);
@@ -45,7 +45,7 @@ fn limited(mean_ns: f64, rate_bps: f64, capacity: u64, on: bool) -> Value {
 
 #[test]
 fn a_slow_limiter_link_gets_a_warning_naming_the_link_and_the_systemd_limit() {
-    // capacity 1000: 12.336 Mbit at 1 kb/s = 12336 s
+    // capacity 1000: 12.304 Mbit at 1 kb/s = 12304 s
     let host = FakeHost::bare_metal();
     let state = setup(vec![
         with_config("net_null0", limited(1.0e6, 1.0e3, 1000, true)),
@@ -122,7 +122,7 @@ fn normal_links_and_an_inactive_limiter_give_no_hint() {
             "net_null0",
             limited(1.0e6, 1.0e3, 1000, false),
         )]),
-        // fast limiter, big buffer: 100_000 * 1542 * 8 = 1.2336 Gbit at 100 Gb/s = 12.3 ms
+        // fast limiter, big buffer: 100_000 * 1538 * 8 = 1.2304 Gbit at 100 Gb/s = 12.3 ms
         setup(vec![with_config(
             "net_null0",
             limited(1.0e6, 100.0e9, 100_000, true),
@@ -135,22 +135,23 @@ fn normal_links_and_an_inactive_limiter_give_no_hint() {
 
 #[test]
 fn the_limiter_part_of_the_estimate_is_the_derived_limit_over_the_rate() {
-    // drain_timeout = 0.001 s (mean) + capacity * 12336 bit / rate + 5 s margin.
-    // capacity 1000 at 21_080 b/s: 12_336_000 / 21_080 = 585.2 s -> 590.2 s: hint.
-    // At 21_200 b/s: 581.9 s -> 586.9 s: none. (With a limit of 1522 * 8, 1518 * 8 or
+    // drain_timeout = 0.001 s (mean) + capacity * 12304 bit / rate + 5 s margin.
+    // capacity 1000 at 21_020 b/s: 12_304_000 / 21_020 = 585.3 s -> 590.3 s: hint.
+    // At 21_060 b/s: 584.2 s -> 589.2 s: none. (With a limit of 1542 * 8 bit per slot,
+    // the FCS counted twice, the second would reach 590.8 s; with 1522 * 8, 1518 * 8 or
     // 1500 * 8 bit per slot the first would stay below 590 s.)
     let host = FakeHost::bare_metal();
     let over = setup(vec![with_config(
         "net_null0",
-        limited(1.0e6, 21_080.0, 1000, true),
+        limited(1.0e6, 21_020.0, 1000, true),
     )]);
     assert!(
         !drain_hints(&hints_json(&host, &over)).0.is_empty(),
-        "590.2 s reaches the threshold"
+        "590.3 s reaches the threshold"
     );
     let under = setup(vec![with_config(
         "net_null0",
-        limited(1.0e6, 21_200.0, 1000, true),
+        limited(1.0e6, 21_060.0, 1000, true),
     )]);
     assert!(drain_hints(&hints_json(&host, &under)).0.is_empty());
 }
@@ -162,11 +163,11 @@ fn the_estimate_grows_with_the_buffer_capacity() {
     let state = setup(vec![
         with_config(
             "net_null0",
-            limited(1.0e6, 1.0e3, 10, true), // 121.76 s
+            limited(1.0e6, 1.0e3, 10, true), // 123.04 s + 5 s margin
         ),
         with_config(
             "net_null1",
-            limited(1.0e6, 1.0e3, 1000, true), // 12336 s
+            limited(1.0e6, 1.0e3, 1000, true), // 12304 s
         ),
     ]);
     let (found, text) = drain_hints(&hints_json(&host, &state));
@@ -247,7 +248,7 @@ fn links_without_a_limiter_or_a_delayer_give_no_drain_hint() {
 
 #[test]
 fn a_slow_limiter_alone_is_named_even_without_a_delayer() {
-    // the limiter term does not depend on the delayer stage: capacity 1000 at 1 kb/s = 12336 s
+    // the limiter term does not depend on the delayer stage: capacity 1000 at 1 kb/s = 12304 s
     let host = FakeHost::bare_metal();
     let mut cfg = cfg_bare();
     cfg["buffer_capacity"] = json!(1000);

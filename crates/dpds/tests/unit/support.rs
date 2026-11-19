@@ -276,7 +276,7 @@ pub fn config(capacity: usize, delay_ns: f64, loss: f64) -> Config {
 
 /// As [`config`], with a `reordering` switch and an optional active Spacer
 /// limiter at `rate_bps`. The limiter's limit is derived from the capacity
-/// (`capacity * 1542 * 8` bit), there is nothing to configure.
+/// (`capacity * 1538 * 8` bit), there is nothing to configure.
 pub fn config_full(
     capacity: usize,
     reordering: bool,

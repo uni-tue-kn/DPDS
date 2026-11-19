@@ -188,8 +188,8 @@ fn zero_loss_never_drops() {
 
 #[test]
 fn token_bucket_filter_drops_packet_that_exceeds_budget() {
-    // Capacity 1 gives the bucket the derived depth 1 * 1542 * 8 = 12336 bit.
-    // A 1519-byte packet is (1519 + 4 + 20) * 8 = 12344 bit: larger than the
+    // Capacity 1 gives the bucket the derived depth 1 * 1538 * 8 = 12304 bit.
+    // A 1515-byte packet is (1515 + 4 + 20) * 8 = 12312 bit: larger than the
     // whole bucket, so it is dropped although the bucket starts full.
     let mut cfg = config(1, false, 0.0);
     cfg.limiter = LimiterConfig {
@@ -198,15 +198,15 @@ fn token_bucket_filter_drops_packet_that_exceeds_budget() {
         rate_bps: 1e9,
     };
     let mut b = Buffer::new(cfg);
-    assert!(!b.push(pkt(1), 1519, 0.0));
+    assert!(!b.push(pkt(1), 1515, 0.0));
     assert!(b.is_empty());
 }
 
 #[test]
 fn spacer_drops_packet_that_would_overflow_its_limit() {
-    // Capacity 2 gives the Spacer the derived limit 2 * 1542 * 8 = 24672 bit.
-    // One 1519-byte packet occupies (1519 + 4 FCS + 20 L1 overhead) * 8 =
-    // 12344 bit, so the second one (24688 bit) does not fit although the
+    // Capacity 2 gives the Spacer the derived limit 2 * 1538 * 8 = 24608 bit.
+    // One 1515-byte packet occupies (1515 + 4 FCS + 20 L1 overhead) * 8 =
+    // 12312 bit, so the second one (24624 bit) does not fit although the
     // buffer has room for it.
     let mut cfg = config(2, false, 0.0);
     cfg.limiter = LimiterConfig {
@@ -215,10 +215,10 @@ fn spacer_drops_packet_that_would_overflow_its_limit() {
         rate_bps: 1e9,
     };
     let mut b = Buffer::new(cfg);
-    assert!(b.push(pkt(1), 1519, 0.0));
+    assert!(b.push(pkt(1), 1515, 0.0));
     assert!(
-        !b.push(pkt(2), 1519, 0.0),
-        "12344 + 12344 bit > 24672 bit limit"
+        !b.push(pkt(2), 1515, 0.0),
+        "12312 + 12312 bit > 24608 bit limit"
     );
     assert_eq!(b.len(), 1);
 }

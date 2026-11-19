@@ -128,7 +128,7 @@ A JSON file per link (full example: [`config.example.json`](config.example.json)
 | `seed`            | Optional integer. Seeds the delay and loss generators, so the same seed and the same pushes give the same decisions (same `rand` version and word size). Absent: OS entropy. |
 
 The limiter's limit is not configured. Both modes derive it from the capacity:
-`buffer_capacity * 1542 * 8` bit (1542 B = a 1518 B frame, 4 FEC bytes and 20 B of
+`buffer_capacity * 1538 * 8` bit (1538 B = a 1518 B frame including its FCS and 20 B of
 line overhead, so `buffer_capacity` maximum-size frames fit). It is the Spacer's
 maximum backlog and the Token Bucket Filter's bucket depth (which starts full).
 

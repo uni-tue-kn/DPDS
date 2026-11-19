@@ -2896,10 +2896,11 @@ fn config_dist(distribution: &str, mean_ns: u64, std_ns: u64) -> String {
 }
 
 #[cfg(feature = "telemetry")]
-/// Length of the frames the limiter tests send: the maximum Ethernet frame. On the wire
-/// the limiter counts (1518 + 4 + 20) * 8 = 12336 bit = 1542 * 8, which is exactly one
-/// "slot" of the derived limit `buffer_capacity * 1542 * 8` bit.
-const MAX_FRAME_LEN: usize = 1518;
+/// Length of the frames the limiter tests send: the maximum Ethernet frame (1518 B)
+/// without its 4-B FCS, as pcap holds it and DPDK reports `pkt_len`. On the wire the
+/// limiter counts (1514 + 4 + 20) * 8 = 12304 bit = 1538 * 8, which is exactly one
+/// "slot" of the derived limit `buffer_capacity * 1538 * 8` bit.
+const MAX_FRAME_LEN: usize = 1514;
 
 #[cfg(feature = "telemetry")]
 /// `n` maximum-size frames (the header and sequence of `frames`).
@@ -2915,7 +2916,7 @@ fn max_frames(tag: u8, n: u32) -> Vec<Vec<u8>> {
 
 #[cfg(feature = "telemetry")]
 /// A config with an active limiter: the limit is derived, not configured
-/// (`capacity * 1542 * 8` bit), so only the mode, the rate, the delay and the buffer
+/// (`capacity * 1538 * 8` bit), so only the mode, the rate, the delay and the buffer
 /// capacity are chosen here.
 fn config_limited(mode: &str, rate_bps: f64, delay_ns: u64, capacity: usize) -> String {
     let base = config_json_cap(delay_ns, 0.0, capacity);
@@ -3535,8 +3536,8 @@ mod links_telemetry {
 
     #[test]
     fn a_token_bucket_burst_beyond_the_derived_depth_is_dropped_and_counted_as_limiter() {
-        // TBF, capacity 64: the bucket starts full with the derived 64 * 1542 * 8 =
-        // 789504 bit, exactly 64 maximum frames. Of 100 frames at one instant 64 pass
+        // TBF, capacity 64: the bucket starts full with the derived 64 * 1538 * 8 =
+        // 787456 bit, exactly 64 maximum frames. Of 100 frames at one instant 64 pass
         // (no delay, they leave at once, so the buffer never holds 64), the other 36
         // find an empty bucket (the refill at 1e4 bit/s is far below one frame in the
         // time the test takes: a frame needs 1.2 s).
@@ -3579,7 +3580,7 @@ mod links_telemetry {
     #[test]
     fn the_buffer_is_checked_first_and_the_spacer_histogram_covers_capacity_maximum_frames() {
         // Spacer, capacity 4, 2 s delay (nothing leaves while the test looks), 10 Gbit/s:
-        // the derived limit is 4 * 1542 * 8 = 49344 bit, exactly four maximum frames. Of
+        // the derived limit is 4 * 1538 * 8 = 49216 bit, exactly four maximum frames. Of
         // 100 frames at one instant 4 are accepted, the other 96 find the buffer full:
         // the buffer is checked first, so none of them is a limiter drop (and none is
         // accounted by the limiter).
@@ -3614,7 +3615,7 @@ mod links_telemetry {
         // nothing is enqueued yet, so nothing is recorded
         assert_eq!(u(&st, "tx_sent"), 0, "{st}");
         assert_eq!(hist_total(&run.query("/dpds/delay_hist,0")), 0);
-        // the four frames wait 2 s plus 0, 1.2336, 2.4672, 3.7008 us of spacing, then leave
+        // the four frames wait 2 s plus 0, 1.2304, 2.4608, 3.6912 us of spacing, then leave
         // in one burst one staging wait after the first send time
         run.wait_until("four frames sent", START_TIMEOUT, |r| {
             r.try_query("/dpds/stats,0")
@@ -3628,8 +3629,8 @@ mod links_telemetry {
                 .contains(&max),
             "{st}"
         );
-        // range [2 s, 2 s + 4934.4 ns + 2 * TX_MAX_WAIT_NS]: the queueing allowance of the
-        // derived limit (49344 bit at 1e10 bit/s) plus twice the staging wait; the realized
+        // range [2 s, 2 s + 4921.6 ns + 2 * TX_MAX_WAIT_NS]: the queueing allowance of the
+        // derived limit (49216 bit at 1e10 bit/s) plus twice the staging wait; the realized
         // delay (the frames leave about one wait after the first send time) is inside it
         let h = run.query("/dpds/delay_hist,0");
         assert_eq!(hist_total(&h), 4, "{h}");
@@ -3638,7 +3639,7 @@ mod links_telemetry {
         assert!((lo - 2.0e9).abs() < 2.0, "{h}");
         let hi = lo + 256.0 * num(&h, "bin_ns");
         assert!(
-            (hi - lo - (4934.4 + 2.0 * dpds::consts::TX_MAX_WAIT_NS)).abs() < 1.0,
+            (hi - lo - (4921.6 + 2.0 * dpds::consts::TX_MAX_WAIT_NS)).abs() < 1.0,
             "the range is the allowance plus twice the staging wait: {h}"
         );
 

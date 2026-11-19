@@ -484,7 +484,7 @@ fn the_buffer_seed_and_reordering_survive_without_stages() {
 
 // ---- drain timeout -------------------------------------------------------
 
-/// The limiter's limit is derived: `capacity * 1542 * 8` bit.
+/// The limiter's limit is derived: `capacity * 1538 * 8` bit.
 fn core(mean_ns: f64, std_ns: f64, limiter_on: bool, rate_bps: f64, capacity: u64) -> Config {
     let mut v = cfg_json(mean_ns, std_ns);
     v["buffer_capacity"] = json!(capacity);
@@ -506,9 +506,9 @@ fn drain_timeout_is_mean_plus_6_std_plus_5_s() {
 
 #[test]
 fn drain_timeout_adds_limit_over_rate_only_when_the_limiter_is_on() {
-    // capacity 1000: 1000 * 1542 * 8 = 12.336 Mbit at 1 Gb/s = 12.336 ms
+    // capacity 1000: 1000 * 1538 * 8 = 12.304 Mbit at 1 Gb/s = 12.304 ms
     let on = drain_timeout(&[core(10.0e6, 0.0, true, 1.0e9, 1000)]);
-    assert!((secs(on) - 5.022336).abs() < 1e-6, "{on:?}");
+    assert!((secs(on) - 5.022304).abs() < 1e-6, "{on:?}");
     let off = drain_timeout(&[core(10.0e6, 0.0, false, 1.0e9, 1_000_000_000)]);
     assert!((secs(off) - 5.010).abs() < 1e-6, "{off:?}");
 }
@@ -518,11 +518,11 @@ fn drain_timeout_uses_the_derived_limit_of_the_capacity_for_both_modes_of_the_li
     // twice the capacity, twice the limiter term
     let one = drain_timeout(&[core(0.0, 0.0, true, 1.0e9, 1000)]);
     let two = drain_timeout(&[core(0.0, 0.0, true, 1.0e9, 2000)]);
-    assert!((secs(one) - 5.012336).abs() < 1e-6, "{one:?}");
-    assert!((secs(two) - 5.024672).abs() < 1e-6, "{two:?}");
-    // the rate scales it inversely: 12.336 Mbit at 1 Mb/s = 12.336 s
+    assert!((secs(one) - 5.012304).abs() < 1e-6, "{one:?}");
+    assert!((secs(two) - 5.024608).abs() < 1e-6, "{two:?}");
+    // the rate scales it inversely: 12.304 Mbit at 1 Mb/s = 12.304 s
     let slow = drain_timeout(&[core(0.0, 0.0, true, 1.0e6, 1000)]);
-    assert!((secs(slow) - 17.336).abs() < 1e-6, "{slow:?}");
+    assert!((secs(slow) - 17.304).abs() < 1e-6, "{slow:?}");
 }
 
 #[test]
@@ -547,7 +547,7 @@ fn drain_timeout_of_configs_without_stages_is_the_margin_alone() {
     let none = dto_from(cfg_bare()).to_core().unwrap();
     let t = drain_timeout(&[none]);
     assert!((secs(t) - 5.0).abs() < 1e-9, "{t:?}");
-    // each stage alone still counts: a 2 s delay, a 12.336 s limiter drain
+    // each stage alone still counts: a 2 s delay, a 12.304 s limiter drain
     let mut dly = cfg_bare();
     dly["delayer"] = json!({"distribution": "DeterministicDistribution", "mean_ns": 2.0e9,
         "std_ns": 0.0, "activate_correlation": false, "half_life_period_ns": 0.0,
@@ -559,5 +559,5 @@ fn drain_timeout_of_configs_without_stages_is_the_margin_alone() {
         dto_from(dly).to_core().unwrap(),
         dto_from(lim).to_core().unwrap(),
     ]);
-    assert!((secs(t) - 17.336).abs() < 1e-6, "{t:?}");
+    assert!((secs(t) - 17.304).abs() < 1e-6, "{t:?}");
 }

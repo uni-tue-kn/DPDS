@@ -749,9 +749,9 @@ describe('link rules: ports and what the form accepts unchanged', () => {
 });
 
 describe('the derived limit', () => {
-  it('the derived limit is capacity x 1542 B x 8 bit; no number while the capacity is no valid count', () => {
-    expect(derivedLimitText('100000')).toContain('1233.6 Mbit');
-    expect(derivedLimitText('1000')).toContain('12.336 Mbit');
+  it('the derived limit is capacity x 1538 B x 8 bit; no number while the capacity is no valid count', () => {
+    expect(derivedLimitText('100000')).toContain('1230.4 Mbit');
+    expect(derivedLimitText('1000')).toContain('12.304 Mbit');
     for (const bad of ['', 'abc', '-1', '1.5']) {
       expect(derivedLimitText(bad)).not.toMatch(/=|NaN|\d+ [kMG]?bit/);
     }

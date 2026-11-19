@@ -192,8 +192,8 @@ fn packets_are_accounted_by_the_limiter_before_the_dropper_drops_them() {
 #[test]
 fn a_limiter_rejected_packet_still_steps_the_loss_chain() {
     // Alternating GE (keep, drop, keep, ...). Capacity 2 gives the Spacer the
-    // derived limit 2 * 1542 * 8 = 24672 bit; a 1519-byte packet is
-    // (1519 + 4 + 20) * 8 = 12344 bit, so only one fits. A is kept (chain ->
+    // derived limit 2 * 1538 * 8 = 24608 bit; a 1515-byte packet is
+    // (1515 + 4 + 20) * 8 = 12312 bit, so only one fits. A is kept (chain ->
     // Bad); B at the same instant is rejected (by the loss model in Bad and,
     // independently, by the limiter), and the dropper has been consulted
     // (Bad -> drop, chain -> Good). C, 20000 ns later when the limiter has
@@ -202,9 +202,9 @@ fn a_limiter_rejected_packet_still_steps_the_loss_chain() {
     let mut cfg = config(LossModel::GilbertElliot(1.0, 1.0, 1.0, 0.0, true), 2, 1);
     cfg.limiter.activate = true;
     let mut b = Buffer::new(cfg);
-    assert!(b.push(pkt(1), 1519, 0.0));
-    assert!(!b.push(pkt(2), 1519, 0.0));
-    assert!(b.push(pkt(3), 1519, 20_000.0));
+    assert!(b.push(pkt(1), 1515, 0.0));
+    assert!(!b.push(pkt(2), 1515, 0.0));
+    assert!(b.push(pkt(3), 1515, 20_000.0));
     assert_eq!(b.len(), 2);
 }
 

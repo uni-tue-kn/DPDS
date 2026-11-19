@@ -125,7 +125,7 @@ struct SpacedPacket {
 
 /// Reordering with an active Spacer in two stages: the reorder queue, then a
 /// FIFO behind the Spacer. A reorder entry carries the packet length (with the
-/// FEC bytes); the length is not part of the order.
+/// FCS bytes); the length is not part of the order.
 struct ReorderThenQueue {
     reorder: Wheel<u32>,
     queue: VecDeque<SpacedPacket>,
@@ -372,7 +372,7 @@ impl Buffer {
 
         let time_to_send_ns = current_time_ns + self.delayer.delayer_sample_ns(current_time_ns);
 
-        // Add the 4 L2 FEC bytes that were removed from the length.
+        // Add the 4 FCS bytes that DPDK removed from the length.
         let packet_length_byte = packet_length_byte.saturating_add(4);
 
         let limiter_result = self
