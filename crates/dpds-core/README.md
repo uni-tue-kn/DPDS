@@ -43,7 +43,7 @@ The crate is not on crates.io. Add it as a git dependency (Cargo finds the packa
 in the workspace by name), or by path inside this workspace:
 
 ```toml
-dpds-core = { git = "https://github.com/uni-tue-kn/DPDS", branch = "nightly" }
+dpds-core = { git = "https://github.com/uni-tue-kn/DPDS", branch = "main" }
 ```
 
 | Feature | Default | Enables                                                                  |
@@ -118,6 +118,9 @@ A JSON file per link (full example: [`config.example.json`](config.example.json)
   }
 }
 ```
+
+Every field is required except `seed`. The controller's REST API takes a slightly
+different form of this config (see [docs/DEVELOPMENT.md](../../docs/DEVELOPMENT.md#configuration)).
 
 **Top level**
 

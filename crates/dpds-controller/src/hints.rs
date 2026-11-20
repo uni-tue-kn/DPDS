@@ -3,10 +3,9 @@
 //! display strings only, never executed). The only tools run are read-only queries (see
 //! `nic_hints`). The kernel command line checks name the parameters to add and have no commands.
 //!
-//! Thresholds follow the "Performance tuning" section of docs/DEVELOPMENT.md: isolated
-//! cores with `nohz_full` and `rcu_nocbs`, hugepages for the mbuf pools,
-//! workers on the NIC's NUMA node, `performance` governor, interrupts off the
-//! isolated cores, MaxReadReq 4096 (1024 and 2048 are acceptable).
+//! Thresholds follow docs/PERFORMANCE.md: isolated cores with `nohz_full` and `rcu_nocbs`,
+//! hugepages for the mbuf pools, workers on the NIC's NUMA node, `performance` governor,
+//! interrupts off the isolated cores, MaxReadReq 4096 (1024 and 2048 are acceptable).
 
 use std::fs;
 use std::time::{Duration, Instant};
@@ -350,7 +349,7 @@ fn isolation(ctx: &Ctx) -> Hint {
             Level::Error,
             title,
             "none of isolcpus, nohz_full and rcu_nocbs is set; a busy-polling worker core can starve the kernel and make the host unreachable".into(),
-            "Boot with isolcpus=<cores> nohz_full=<cores> rcu_nocbs=<cores> for the worker cores (see Performance tuning in docs/DEVELOPMENT.md).",
+            "Boot with isolcpus=<cores> nohz_full=<cores> rcu_nocbs=<cores> for the worker cores (see docs/PERFORMANCE.md).",
         )
     } else {
         hint(

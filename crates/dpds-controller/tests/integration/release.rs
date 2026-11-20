@@ -171,7 +171,7 @@ const BADGE_BACKEND: &str =
     "![Backend](https://img.shields.io/badge/backend-Rust-b7410e?logo=rust)";
 const BADGE_FRONTEND: &str =
     "![Frontend](https://img.shields.io/badge/frontend-React-149eca?logo=react)";
-const BADGE_CI: &str = "[![CI](https://github.com/uni-tue-kn/DPDS/actions/workflows/ci.yml/badge.svg?branch=nightly)](https://github.com/uni-tue-kn/DPDS/actions/workflows/ci.yml)";
+const BADGE_CI: &str = "[![CI](https://github.com/uni-tue-kn/DPDS/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/uni-tue-kn/DPDS/actions/workflows/ci.yml)";
 const BADGE_DPDK: &str = "![DPDK](https://img.shields.io/badge/dataplane-DPDK%2026.07-1e5aa8)";
 
 /// The badge block at the top of the README: everything before the first `---` line.
@@ -192,7 +192,7 @@ fn the_readme_has_the_backend_and_frontend_badges_with_the_exact_urls() {
 }
 
 #[test]
-fn the_readme_has_the_ci_badge_for_nightly_linking_to_the_workflow() {
+fn the_readme_has_the_ci_badge_for_main_linking_to_the_workflow() {
     let top = readme_badge_block();
     assert!(top.contains(BADGE_CI), "CI badge missing or not exact");
     assert_eq!(

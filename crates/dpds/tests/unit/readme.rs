@@ -82,6 +82,7 @@ fn the_relative_links_of_the_readmes_point_at_existing_files() {
     for doc in [
         "README.md",
         "docs/DEVELOPMENT.md",
+        "docs/PERFORMANCE.md",
         "crates/dpds-core/README.md",
         "frontend/README.md",
     ] {
