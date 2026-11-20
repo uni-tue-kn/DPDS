@@ -1,0 +1,139 @@
+<mxfile host="Electron" agent="draw.io" pages="1">
+  <diagram id="dpds-overview" name="DPDS overview">
+    <mxGraphModel dx="1000" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="680" pageHeight="980" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- user and laptop -->
+        <mxCell id="user" value="" style="shape=mxgraph.office.users.user;fillColor=#2f3b4c;strokeColor=none;" vertex="1" parent="1">
+          <mxGeometry x="85" y="15" width="60" height="75" as="geometry" />
+        </mxCell>
+        <mxCell id="laptop" value="" style="shape=mxgraph.networks.laptop;fillColor=#4d4d4d;strokeColor=none;" vertex="1" parent="1">
+          <mxGeometry x="168" y="10" width="130" height="85" as="geometry" />
+        </mxCell>
+
+        <!-- host box -->
+        <mxCell id="host" value="DPDS host" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;strokeWidth=2;fontSize=22;fontStyle=2;align=left;verticalAlign=top;spacingLeft=10;spacingTop=2;" vertex="1" parent="1">
+          <mxGeometry x="10" y="190" width="640" height="590" as="geometry" />
+        </mxCell>
+
+        <!-- REST frame, frontend, controller -->
+        <mxCell id="rest" value="REST API /api, port 8100" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#000000;strokeWidth=2;fontSize=18;fontStyle=2;verticalAlign=top;spacingTop=8;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="40" y="235" width="380" height="145" as="geometry" />
+        </mxCell>
+        <mxCell id="frontend" value="Web frontend&lt;br&gt;(React)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;strokeWidth=2;fontSize=20;verticalAlign=top;spacingTop=8;arcSize=12;" vertex="1" parent="1">
+          <mxGeometry x="40" y="285" width="250" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="controller" value="Controller (Rust)&lt;br&gt;&lt;font style=&quot;font-size:17px&quot;&gt;dpds-controller, systemd service&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;strokeWidth=2;fontSize=20;arcSize=12;spacingTop=14;" vertex="1" parent="1">
+          <mxGeometry x="40" y="350" width="380" height="120" as="geometry" />
+        </mxCell>
+
+        <!-- host interfaces -->
+        <mxCell id="sys" value="Host interfaces&lt;br&gt;and settings&lt;br&gt;&lt;font style=&quot;font-size:16px&quot;&gt;(sysfs, procfs)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#000000;strokeWidth=2;fontSize=18;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="470" y="350" width="165" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="e_sys" style="endArrow=classic;html=1;strokeWidth=2;endSize=8;" edge="1" parent="1" source="controller" target="sys">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- controller <-> dpds -->
+        <mxCell id="e_start" style="endArrow=classic;html=1;strokeWidth=2;endSize=8;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="90" y="470" as="sourcePoint" />
+            <mxPoint x="90" y="560" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="l_start" value="start / stop&lt;br&gt;(EAL args,&lt;br&gt;links file)" style="text;html=1;align=left;verticalAlign=middle;fontSize=17;" vertex="1" parent="1">
+          <mxGeometry x="100" y="480" width="130" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="e_stats" style="endArrow=classic;html=1;strokeWidth=2;endSize=8;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="290" y="560" as="sourcePoint" />
+            <mxPoint x="290" y="470" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="l_stats" value="stats, histograms&lt;br&gt;(telemetry socket)" style="text;html=1;align=left;verticalAlign=middle;fontSize=17;" vertex="1" parent="1">
+          <mxGeometry x="300" y="485" width="170" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- data plane -->
+        <mxCell id="dpds" value="dpds (DPDK, Rust): data plane" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;strokeWidth=2;fontSize=20;verticalAlign=top;spacingTop=8;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="40" y="560" width="580" height="190" as="geometry" />
+        </mxCell>
+        <mxCell id="p0" value="Port 0&lt;br&gt;(NIC)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#b85450;strokeWidth=2;fontSize=18;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="65" y="605" width="90" height="125" as="geometry" />
+        </mxCell>
+        <mxCell id="p1" value="Port 1&lt;br&gt;(NIC)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#b85450;strokeWidth=2;fontSize=18;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="505" y="605" width="90" height="125" as="geometry" />
+        </mxCell>
+        <mxCell id="l_link1" value="Link 1: RX port 0 &amp;rarr; TX port 1&lt;br&gt;delay, rate limit, loss" style="text;html=1;align=center;verticalAlign=middle;fontSize=17;" vertex="1" parent="1">
+          <mxGeometry x="160" y="610" width="340" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="e_link1" style="endArrow=classic;html=1;strokeWidth=2;endSize=8;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="155" y="660" as="sourcePoint" />
+            <mxPoint x="505" y="660" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="l_link2" value="Link 2: RX port 1 &amp;rarr; TX port 0&lt;br&gt;delay, rate limit, loss" style="text;html=1;align=center;verticalAlign=middle;fontSize=17;" vertex="1" parent="1">
+          <mxGeometry x="160" y="672" width="340" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="e_link2" style="endArrow=classic;html=1;strokeWidth=2;endSize=8;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="505" y="720" as="sourcePoint" />
+            <mxPoint x="155" y="720" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+
+        <!-- traffic -->
+        <mxCell id="gen" value="Traffic generator&lt;br&gt;or network" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;strokeWidth=2;fontSize=18;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="20" y="860" width="180" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="dut" value="DuT&lt;br&gt;or network" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;strokeWidth=2;fontSize=18;arcSize=10;" vertex="1" parent="1">
+          <mxGeometry x="460" y="860" width="180" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="e_gen" style="endArrow=classic;startArrow=classic;html=1;strokeWidth=2;endSize=8;startSize=8;" edge="1" parent="1" source="p0" target="gen">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_dut" style="endArrow=classic;startArrow=classic;html=1;strokeWidth=2;endSize=8;startSize=8;" edge="1" parent="1" source="p1" target="dut">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="l_gen" value="traffic" style="text;html=1;align=left;verticalAlign=middle;fontSize=17;fontStyle=2;" vertex="1" parent="1">
+          <mxGeometry x="125" y="805" width="80" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="l_dut" value="traffic" style="text;html=1;align=left;verticalAlign=middle;fontSize=17;fontStyle=2;" vertex="1" parent="1">
+          <mxGeometry x="565" y="805" width="80" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- user arrows -->
+        <mxCell id="e_manual" style="endArrow=classic;html=1;strokeWidth=2;endSize=8;edgeStyle=none;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="200" y="95" as="sourcePoint" />
+            <mxPoint x="110" y="285" as="targetPoint" />
+            <Array as="points">
+              <mxPoint x="200" y="110" />
+              <mxPoint x="110" y="110" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e_auto" style="endArrow=classic;html=1;strokeWidth=2;endSize=8;edgeStyle=none;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="268" y="95" as="sourcePoint" />
+            <mxPoint x="355" y="350" as="targetPoint" />
+            <Array as="points">
+              <mxPoint x="268" y="110" />
+              <mxPoint x="355" y="110" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="l_manual" value="Manual testing" style="text;html=1;align=center;verticalAlign=middle;fontSize=19;fillColor=#ffffff;strokeColor=none;" vertex="1" parent="1">
+          <mxGeometry x="30" y="130" width="160" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="l_auto" value="Test automation" style="text;html=1;align=center;verticalAlign=middle;fontSize=19;fillColor=#ffffff;strokeColor=none;" vertex="1" parent="1">
+          <mxGeometry x="275" y="130" width="160" height="30" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

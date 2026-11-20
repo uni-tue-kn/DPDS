@@ -1,0 +1,312 @@
+//! # dpds-core
+//!
+//! The core of DPDS, a software network-link emulator: it models the three
+//! effects a link imposes on packets -- **delay**, **rate limiting** and
+//! **packet loss** -- without knowing anything about the packets themselves.
+//! The crate is DPDK-free; the host (a DPDK data plane, a simulator, a test)
+//! owns the packets and asks the [`Buffer`](buffer::Buffer) *when* and
+//! *whether* each one should leave.
+//!
+//! ## The loop
+//!
+//! Build a [`Buffer`](buffer::Buffer) from a [`Config`], then per iteration:
+//! read the clock once, `push` every arriving packet (a rejected packet was
+//! dropped by the loss model or the limiter, or the buffer is full: the caller
+//! still owns and must free it), and `pop_due` until nothing is due any more.
+//!
+//! ```
+//! use std::ffi::c_void;
+//! use dpds_core::{buffer::Buffer, Config, DelayerConfig, LimiterConfig};
+//! use dpds_core::delayer::RVDistribution;
+//! use dpds_core::dropper::LossModel;
+//! use dpds_core::limiter::LimiterMode;
+//!
+//! let config = Config {
+//!     buffer_capacity: 1024,
+//!     reordering: false,
+//!     delayer: DelayerConfig {
+//!         distribution: RVDistribution::DeterministicDistribution,
+//!         mean_ns: 1_000.0, // 1 us of delay
+//!         std_ns: 0.0,
+//!         activate_correlation: false,
+//!         half_life_period_ns: 1.0,
+//!         initialization_rate_pps: 1e6, // expected packet rate of the link
+//!     },
+//!     limiter: LimiterConfig {
+//!         mode: LimiterMode::Spacer,
+//!         activate: false,
+//!         rate_bps: 1e9,
+//!     },
+//!     loss_model: LossModel::Random(0.0),
+//!     seed: Some(42),
+//! };
+//! let mut buf = Buffer::try_new(config).expect("valid configuration");
+//!
+//! // A packet is an opaque pointer; `now` is any monotonic clock in ns.
+//! let packet = 1usize as *mut c_void;
+//! assert!(buf.push(packet, 1500, /* now_ns */ 0.0));
+//!
+//! assert_eq!(buf.pop_due(999.0), None); // not due yet
+//! assert_eq!(buf.pop_due(1_000.0), Some(packet)); // due at send time (`<=`)
+//! assert!(buf.is_empty());
+//! ```
+//!
+//! ## Push order and the limiter limit
+//!
+//! [`Buffer::push_outcome`](buffer::Buffer::push_outcome) first checks for
+//! room: a buffer already holding `buffer_capacity` packets answers
+//! `BufferFull` and touches no delayer, limiter or dropper state. Only then
+//! come the delay sample, the limiter accounting, the loss draw, the limiter
+//! verdict and the enqueue.
+//!
+//! The limiter's limit is derived for both modes as
+//! `buffer_capacity * MAX_FRAME_WIRE_BYTES * 8` bit, with
+//! [`MAX_FRAME_WIRE_BYTES`] `= 1538`: exactly `buffer_capacity` maximum-size
+//! frames fit.
+//!
+//! ## Why a packet was rejected
+//!
+//! `push_outcome` returns a [`PushOutcome`](buffer::PushOutcome):
+//! `Accepted { send_time_ns }`, `Lost` (loss model), `LimiterDrop` or
+//! `BufferFull`. `push` wraps it. A packet that both the loss model and the
+//! limiter reject is `Lost`. [`Buffer::pop_due_with_time`](buffer::Buffer::pop_due_with_time)
+//! also returns the send time of the popped packet.
+//!
+//! `DelayerConfig::initialization_rate_pps` is required. [`Delayer::try_new`](delayer::Delayer::try_new)
+//! and [`Buffer::try_new`](buffer::Buffer::try_new) reject a value that is not
+//! finite or below 1 with [`BuildError::InitializationRate`].
+//!
+//! ## Ownership and threads
+//!
+//! The buffer stores the packet pointers (`*mut c_void`) but never
+//! dereferences, copies or frees them: the caller keeps each pointer valid
+//! until it is popped. Because of the raw pointers `Buffer` is not `Send`; a
+//! host that moves one to another thread must vouch that it owns the packets.
+//!
+//! ## Seeding
+//!
+//! [`Config::seed`] `= None` seeds the delay and loss random number generators
+//! from the OS entropy source. `Some(s)` seeds both deterministically (and
+//! differently from each other), so the same seed and the same input sequence
+//! give identical push results and send times. Seeded streams are reproducible
+//! only for the same `rand` version and the same target word size.
+//!
+//! ## Ordering
+//!
+//! With `reordering = false` the buffer is a FIFO: packets leave in push order
+//! and a packet with a late send time blocks the ones behind it. With
+//! `reordering = true` packets leave in send-time order. Packets that enter at
+//! the same instant (same `now_ns`) and get the same send time keep their entry
+//! order: every packet's send time gets a tie offset of 1/64 ns per earlier
+//! packet of that instant. See [`buffer::Buffer`] for the exact rule.
+//!
+//! A burst of n packets pushed at one instant shifts its last keys by up to
+//! (n-1)/64 ns, so a packet from a later instant that is less than that apart
+//! can sort between them (at most about 0.5 ns for the 32-packet burst of
+//! `dpds`).
+//!
+//! Reordering with an active `Spacer` works in two stages: packets first wait
+//! in the reorder queue until their send time, then pass the Spacer in that
+//! order into a FIFO. The Spacer has no limit there, so an accepted packet is
+//! never dropped later. The two stages share `buffer_capacity` but each reserves
+//! that many entries (double reservation).
+//!
+//! ## Features
+//!
+//! - `serde`: `Serialize`/`Deserialize` for [`Config`] and the types in it.
+//! - `json` (default, implies `serde`): `Config::from_file` and
+//!   `ConfigError`. Build with `--no-default-features` to avoid serde and
+//!   serde_json entirely and construct [`Config`] in code.
+
+use std::fmt;
+#[cfg(feature = "json")]
+use std::{
+    fs::File,
+    io::BufReader,
+    path::{Path, PathBuf},
+};
+
+use crate::delayer::RVDistribution;
+use crate::dropper::LossModel;
+use crate::limiter::LimiterMode;
+
+pub mod buffer;
+pub mod delayer;
+pub mod dropper;
+pub mod limiter;
+mod wheel;
+
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct DelayerConfig {
+    pub distribution: RVDistribution,
+    pub mean_ns: f64,
+    pub std_ns: f64,
+    pub activate_correlation: bool,
+    pub half_life_period_ns: f64, // memory of the UTEMA
+    /// Required: the packet rate (packets per second) the correlated delay
+    /// starts with, until the first 1 ms rate estimate replaces it. Use the
+    /// expected packet rate of the link. Finite and at least 1, validated
+    /// whether or not `activate_correlation` is set.
+    pub initialization_rate_pps: f64,
+}
+
+/// Wire size, in bytes, of a maximum-size packet as the limiter counts it:
+/// 1518 B maximum Ethernet frame (FCS included) + 20 B L1 overhead (preamble,
+/// SFD, inter-packet gap).
+///
+/// The limiter's limit, for both modes (Spacer fill-state limit, Token Bucket
+/// Filter bucket depth), is `buffer_capacity * MAX_FRAME_WIRE_BYTES * 8` bit:
+/// exactly `buffer_capacity` maximum-size frames fit.
+pub const MAX_FRAME_WIRE_BYTES: u32 = 1538;
+
+/// The limiter's derived limit in bits for a buffer of `buffer_capacity`
+/// packets: `buffer_capacity * MAX_FRAME_WIRE_BYTES * 8`. Computed in `f64`, so
+/// a huge capacity cannot overflow.
+pub fn derived_limit_bit(buffer_capacity: usize) -> f64 {
+    buffer_capacity as f64 * f64::from(MAX_FRAME_WIRE_BYTES) * 8.0
+}
+
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
+pub struct LimiterConfig {
+    pub mode: LimiterMode,
+    pub activate: bool,
+    pub rate_bps: f64, // bits per second
+}
+
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Config {
+    pub buffer_capacity: usize, // max packets in the buffer
+    pub reordering: bool,
+    pub delayer: DelayerConfig,
+    pub limiter: LimiterConfig,
+    pub loss_model: LossModel,
+    /// `Some(s)` seeds the delayer and dropper random number generators
+    /// deterministically; `None` (also when absent from the JSON) seeds them
+    /// from the OS entropy source.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub seed: Option<u64>,
+}
+
+/// Why a [`Buffer`](buffer::Buffer) or [`Delayer`](delayer::Delayer) could not
+/// be built from its parameters (the cases in which `new` panics).
+#[derive(Debug, Clone)]
+pub enum BuildError {
+    /// The delay distribution rejects the configured `mean_ns` / `std_ns`.
+    Distribution {
+        distribution: RVDistribution,
+        mean_ns: f64,
+        std_ns: f64,
+        /// The reason given by the distribution.
+        reason: String,
+    },
+    /// `half_life_period_ns` is negative, NaN or infinite (0 is valid), or,
+    /// with `activate_correlation`, so long that the smoothing weight derived
+    /// from it and the initialisation rate is not below 1.
+    HalfLifePeriod { half_life_period_ns: f64 },
+    /// `initialization_rate_pps` is not finite or is below 1.
+    InitializationRate { initialization_rate_pps: f64 },
+    /// The buffer of `buffer_capacity` packets cannot be allocated.
+    BufferCapacity { capacity: usize, reason: String },
+    /// `reordering` is combined with `activate_correlation`.
+    ReorderingWithCorrelation,
+}
+
+impl fmt::Display for BuildError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BuildError::Distribution {
+                distribution,
+                mean_ns,
+                std_ns,
+                reason,
+            } => write!(
+                f,
+                "invalid delayer parameters for {distribution:?}: mean_ns = {mean_ns}, std_ns = {std_ns} ({reason})"
+            ),
+            BuildError::HalfLifePeriod {
+                half_life_period_ns,
+            } => write!(
+                f,
+                "invalid half_life_period_ns = {half_life_period_ns}: must be finite and not negative, and with correlation short enough for a smoothing weight below 1"
+            ),
+            BuildError::InitializationRate {
+                initialization_rate_pps,
+            } => write!(
+                f,
+                "invalid initialization_rate_pps = {initialization_rate_pps}: must be finite and at least 1 (the expected packet rate of the link)"
+            ),
+            BuildError::BufferCapacity { capacity, reason } => write!(
+                f,
+                "cannot allocate buffer_capacity = {capacity} packets ({reason})"
+            ),
+            BuildError::ReorderingWithCorrelation => {
+                write!(f, "reordering cannot be combined with correlation")
+            }
+        }
+    }
+}
+
+impl std::error::Error for BuildError {}
+
+/// Why a configuration file could not be loaded.
+#[cfg(feature = "json")]
+#[derive(Debug)]
+pub enum ConfigError {
+    /// The file could not be opened or read.
+    Io(std::io::Error, PathBuf),
+    /// The file is not valid JSON for a [`Config`].
+    Parse(serde_json::Error, PathBuf),
+}
+
+#[cfg(feature = "json")]
+impl fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ConfigError::Io(err, path) => {
+                write!(f, "failed to read config {}: {err}", path.display())
+            }
+            ConfigError::Parse(err, path) => {
+                write!(f, "failed to parse config {}: {err}", path.display())
+            }
+        }
+    }
+}
+
+#[cfg(feature = "json")]
+impl std::error::Error for ConfigError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            ConfigError::Io(err, _) => Some(err),
+            ConfigError::Parse(err, _) => Some(err),
+        }
+    }
+}
+
+#[cfg(feature = "json")]
+impl Config {
+    /// Reads and parses the JSON configuration file at `path`.
+    pub fn from_file(path: impl AsRef<Path>) -> Result<Config, ConfigError> {
+        let path = path.as_ref();
+        let file = File::open(path).map_err(|e| ConfigError::Io(e, path.to_path_buf()))?;
+        serde_json::from_reader(BufReader::new(file))
+            .map_err(|e| ConfigError::Parse(e, path.to_path_buf()))
+    }
+}
+
+#[cfg(all(test, feature = "json"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn example_config_deserializes() {
+        let json = include_str!("../config.example.json");
+        let config: Config = serde_json::from_str(json).expect("example config must parse");
+        assert_eq!(config.buffer_capacity, 100000);
+        assert!(config.delayer.activate_correlation);
+        assert!(config.limiter.activate);
+    }
+}

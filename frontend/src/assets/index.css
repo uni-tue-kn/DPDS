@@ -1,0 +1,583 @@
+/* DPDS frontend: left sidebar, primary #e74c3c, secondary #2c3e50, dark mode via [data-theme]. */
+:root {
+  --color-primary: #e74c3c;
+  --color-primary-light: #ff9e93;
+  --color-okay: #27ae60;
+  --color-okay-hover: #20864b;
+  --color-yellow: #ffc107;
+  --color-secondary: #2c3e50;
+  --color-secondary-light: #7a8c9e;
+  --color-background: #ffffff;
+  --color-sidebar-background: #ecf0f1;
+  --color-card-background: #ffffff;
+  --color-border: #dfe4ea;
+  --color-background-transparent: rgba(255, 255, 255, 0.8);
+  --color-text: #000000;
+  --bs-link-color: #000000;
+  --bs-link-hover-color: #e74c3c;
+}
+
+[data-theme="dark"] {
+  --color-secondary: #3c3c3c;
+  --color-secondary-light: #868686;
+  --color-background: rgb(30, 30, 30);
+  --color-sidebar-background: #2c2c2c;
+  --color-card-background: #262626;
+  --color-border: #3b3b3b;
+  --color-background-transparent: rgba(30, 30, 30, 0.8);
+  --color-text: #ffffff;
+  --bs-link-color: #ffffff;
+  --bs-link-hover-color: #e74c3c;
+}
+
+body {
+  background: var(--color-background);
+  color: var(--color-text);
+}
+
+.app-shell {
+  display: flex;
+  min-height: 100vh;
+}
+
+.sidebar {
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+  display: flex;
+  flex-direction: column;
+  width: 16.6667%;
+  height: 100vh;
+  flex-shrink: 0;
+  padding: 0.75rem 0;
+  background: var(--color-sidebar-background);
+  border-right: 1px solid var(--color-border);
+}
+
+.sidebar-brand {
+  padding: 0.5rem 0.25rem 1.25rem;
+  text-align: center;
+  line-height: 0;
+}
+
+.sidebar-brand img {
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+}
+
+@media (min-width: 1200px) {
+  .sidebar {
+    width: 8.3333%;
+  }
+}
+
+@media (max-width: 450px) {
+  .sidebar .nav-link {
+    font-size: 20px;
+  }
+}
+
+.sidebar .nav-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 0.5rem;
+  padding: 0.8rem 0;
+  border-radius: 0.375rem;
+  font-size: 25px;
+  color: var(--color-text);
+}
+
+.sidebar .nav-link:hover {
+  color: var(--color-primary);
+}
+
+.sidebar .nav-link.active {
+  background: var(--color-primary);
+  color: #ffffff;
+}
+
+.sidebar-footer {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-top: auto;
+  padding: 0 0.25rem;
+  font-size: 0.75rem;
+  text-align: center;
+}
+
+.theme-toggle {
+  color: var(--color-text);
+  padding: 0;
+  font-size: 1.25rem;
+}
+
+.main-content {
+  flex: 1;
+  min-width: 0;
+  padding: 1.5rem 2rem;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+/* "DPDS @ <GitHub icon>" at the bottom of every page, linking to the repository. */
+.app-footer {
+  margin-top: auto;
+  padding-top: 1.5rem;
+  text-align: center;
+}
+
+.app-footer a {
+  color: var(--color-text);
+  text-decoration: none;
+}
+
+.app-footer a:hover {
+  color: var(--color-primary);
+}
+
+@media (max-width: 768px) {
+  .sidebar-brand,
+  .sidebar-version {
+    display: none;
+  }
+  .main-content {
+    padding: 1rem;
+  }
+}
+
+.card {
+  background: var(--color-card-background);
+  border-color: var(--color-border);
+}
+
+.card-header {
+  background: var(--color-secondary);
+  color: #ffffff;
+}
+
+/* Primary buttons are green, danger buttons have the red background and keep Bootstrap's border, hover and disabled colours. */
+.btn-primary,
+.btn-primary:disabled {
+  --bs-btn-bg: var(--color-okay);
+  --bs-btn-border-color: var(--color-okay);
+  --bs-btn-hover-bg: var(--color-okay-hover);
+  --bs-btn-hover-border-color: var(--color-okay-hover);
+  --bs-btn-active-bg: var(--color-okay-hover);
+  --bs-btn-active-border-color: var(--color-okay-hover);
+  --bs-btn-disabled-bg: var(--color-okay);
+  --bs-btn-disabled-border-color: var(--color-okay);
+}
+
+.btn-danger {
+  --bs-btn-bg: var(--color-primary);
+}
+
+/* Outline-primary buttons (the Delay accuracy toggle) take the DPDS red instead of Bootstrap's blue, in every state. */
+.btn-outline-primary {
+  --bs-btn-color: var(--color-primary);
+  --bs-btn-border-color: var(--color-primary);
+  --bs-btn-hover-color: #fff;
+  --bs-btn-hover-bg: var(--color-primary);
+  --bs-btn-hover-border-color: var(--color-primary);
+  --bs-btn-focus-shadow-rgb: 231, 76, 60;
+  --bs-btn-active-color: #fff;
+  --bs-btn-active-bg: var(--color-primary);
+  --bs-btn-active-border-color: var(--color-primary);
+  --bs-btn-disabled-color: var(--color-primary);
+  --bs-btn-disabled-border-color: var(--color-primary);
+}
+
+.btn-success {
+  --bs-btn-bg: var(--color-okay);
+  --bs-btn-border-color: var(--color-okay);
+  --bs-btn-hover-bg: var(--color-okay-hover);
+  --bs-btn-hover-border-color: var(--color-okay-hover);
+  --bs-btn-disabled-bg: var(--color-okay);
+  --bs-btn-disabled-border-color: var(--color-okay);
+}
+
+.table thead.table-dark {
+  --bs-table-bg: var(--color-secondary);
+  --bs-table-border-color: var(--color-secondary);
+}
+
+/* The line and bar charts size themselves by the aspect ratio in their options (6 and 4), not by a height. */
+.chart-box {
+  position: relative;
+}
+
+/* What a histogram view holds while it waits for its first data: the room of the tables row and of the chart. */
+.chart-placeholder {
+  aspect-ratio: 4;
+}
+
+.hist-tables-placeholder {
+  min-height: 9rem;
+}
+
+.donut-box {
+  position: relative;
+  width: 220px;
+  height: 220px;
+}
+
+/* The line between the loss donut and the frame size donut; below md the columns stack and have none. */
+@media (min-width: 768px) {
+  .donut-divider {
+    border-right: 1px solid var(--color-border);
+  }
+}
+
+.legend-swatch {
+  display: inline-block;
+  width: 0.9rem;
+  height: 0.9rem;
+  border-radius: 3px;
+}
+
+.log-tail {
+  max-height: 16rem;
+  overflow: auto;
+  padding: 0.75rem;
+  background: #1e1e1e;
+  color: #e6e6e6;
+  font-size: 0.8rem;
+  border-radius: 0.375rem;
+}
+
+.hint-group {
+  margin-bottom: 1.5rem;
+}
+
+.hint-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.hint-item {
+  margin-bottom: 0.5rem;
+  padding: 0.6rem 0.9rem;
+  border: 1px solid var(--color-border);
+  border-left-width: 5px;
+  border-radius: 0.375rem;
+  background: var(--color-card-background);
+}
+
+[data-level="error"].hint-item {
+  border-left-color: var(--color-primary);
+}
+[data-level="warn"].hint-item {
+  border-left-color: var(--color-yellow);
+}
+[data-level="info"].hint-item {
+  border-left-color: #3498db;
+}
+[data-level="ok"].hint-item {
+  border-left-color: var(--color-okay);
+}
+
+[data-level="error"] > h2 {
+  color: var(--color-primary);
+}
+[data-level="warn"] > h2 {
+  color: var(--color-yellow);
+}
+[data-level="ok"] > h2 {
+  color: var(--color-okay);
+}
+
+.unit-select {
+  max-width: 7rem;
+}
+
+.required-marker {
+  color: var(--color-primary);
+  margin-left: 0.2rem;
+  font-weight: 700;
+}
+
+.info-tip {
+  margin-left: 0.35rem;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--color-text);
+  opacity: 0.6;
+  line-height: 1;
+}
+
+.info-tip:hover,
+.info-tip:focus-visible {
+  opacity: 1;
+}
+
+.info-tip-text {
+  --bs-tooltip-max-width: 22rem;
+}
+
+.commands-tip {
+  --bs-tooltip-max-width: 40rem;
+}
+
+.commands-tip pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.commands-fallback {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow: visible;
+}
+
+.histogram-optimization-hint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.35rem 0.75rem;
+  margin-bottom: 1rem;
+  font-size: 0.82rem;
+  line-height: 1.35;
+  opacity: 0.8;
+}
+
+.histogram-optimization-icon {
+  margin-right: 0.35rem;
+}
+
+.histogram-optimization-icon-aligned {
+  color: var(--color-okay);
+}
+
+.histogram-optimization-icon-suggestion {
+  color: #b7791f;
+}
+
+[data-theme="dark"] .histogram-optimization-icon-suggestion {
+  color: #e0aa45;
+}
+
+.histogram-optimization-action {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid currentColor;
+  color: var(--color-text);
+  font-size: 0.8rem;
+  font-weight: 600;
+  line-height: 1.25;
+  padding: 0.1rem 0;
+}
+
+.histogram-optimization-action:hover,
+.histogram-optimization-action:focus-visible {
+  color: var(--color-primary);
+}
+
+/* The Recheck icon of the Host hints page turns while a check runs; an inline <i> needs inline-block to rotate. */
+.icon-spin {
+  display: inline-block;
+  animation: icon-spin 1s linear infinite;
+}
+
+@keyframes icon-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .icon-spin {
+    animation: none;
+  }
+}
+
+/* Loader: the block replaces the content, the overlay covers it. */
+.loader-content {
+  position: relative;
+}
+
+.loader-block {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  flex-grow: 1;
+  font-size: 2em;
+  color: var(--color-primary);
+  text-align: center;
+  height: 100%;
+}
+
+.loader-overlay {
+  position: absolute;
+  top: 0;
+  justify-content: center;
+  align-items: center;
+  flex-grow: 1;
+  font-size: 2em;
+  color: var(--color-primary);
+  text-align: center;
+  height: 100%;
+  background: var(--color-background-transparent);
+  width: 100%;
+  z-index: 1;
+  overflow-x: hidden;
+}
+
+.loader-spinner-box {
+  margin-top: calc(50vh - 150px);
+}
+
+.loader-spinner {
+  height: 50px;
+  width: 50px;
+  margin-bottom: 10px;
+}
+
+.loader-text {
+  font-weight: bold;
+  color: var(--color-primary);
+}
+
+/* Settings page (P4TG style). */
+.link-table > tbody > tr > td {
+  vertical-align: middle;
+}
+
+.btn-config {
+  color: var(--color-text);
+}
+
+.btn-config:hover {
+  color: var(--color-primary);
+}
+
+.table-dark .info-tip {
+  color: #fff;
+}
+
+/* The accordion of the Link settings modal follows the --color-* variables in both themes. */
+.accordion {
+  --bs-accordion-bg: var(--color-background);
+  --bs-accordion-color: var(--color-text);
+  --bs-accordion-border-color: var(--color-border);
+  --bs-accordion-btn-focus-border-color: var(--color-primary);
+  --bs-accordion-btn-focus-box-shadow: 0 0 0 0.25rem rgba(231, 76, 60, 0.25);
+}
+
+.accordion-button,
+.accordion-button:not(.collapsed) {
+  background-color: var(--color-secondary);
+  color: #ffffff;
+  box-shadow: none;
+}
+
+.accordion-button::after,
+.accordion-button:not(.collapsed)::after {
+  filter: grayscale(1) invert(1);
+}
+
+.accordion-button:focus {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 0.25rem rgba(231, 76, 60, 0.25);
+}
+
+.form-check-input:checked {
+  background-color: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+.form-check-input:focus {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 0.25rem rgba(231, 76, 60, 0.25);
+}
+
+/* The toast: bottom centre, a coloured left border and a round tinted icon. */
+.toast-floating-container {
+  position: fixed;
+  right: auto;
+  bottom: clamp(2rem, 8vh, 5rem);
+  left: 50%;
+  padding: 0;
+  transform: translateX(-50%);
+  width: min(calc(100vw - 2rem), 32rem);
+  z-index: 9999;
+}
+
+.toast-floating {
+  --toast-accent: var(--color-okay);
+  --toast-tint: rgba(39, 174, 96, 0.16);
+  width: 100%;
+  max-width: none;
+  overflow: hidden;
+  background: var(--color-background);
+  color: var(--color-text);
+  border: 1px solid color-mix(in srgb, var(--color-text) 16%, transparent);
+  border-left: 5px solid var(--toast-accent);
+  border-radius: 0.75rem;
+  box-shadow: 0 1rem 2.75rem rgba(0, 0, 0, 0.3);
+}
+
+.toast-floating.toast-danger {
+  --toast-accent: var(--bs-danger);
+  --toast-tint: rgba(220, 53, 69, 0.16);
+}
+
+.toast-floating.toast-info {
+  --toast-accent: #0d6efd;
+  --toast-tint: rgba(13, 110, 253, 0.16);
+}
+
+.toast-floating.toast-warning {
+  --toast-accent: var(--color-yellow);
+  --toast-tint: rgba(255, 193, 7, 0.18);
+}
+
+.toast-floating-content {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.875rem;
+  min-height: 4.5rem;
+  padding: 0.9rem 1rem;
+}
+
+.toast-floating-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 50%;
+  background: var(--toast-tint);
+  color: var(--toast-accent);
+  font-size: 1.35rem;
+}
+
+.toast-floating-title {
+  margin-bottom: 0.15rem;
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.toast-floating-text {
+  line-height: 1.35;
+  opacity: 0.78;
+  overflow-wrap: anywhere;
+}
+
+.toast-floating-content .btn-close {
+  align-self: start;
+  margin: 0.1rem 0 0 0.25rem;
+}
+
+[data-theme="dark"] .toast-floating-content .btn-close {
+  filter: invert(1);
+}

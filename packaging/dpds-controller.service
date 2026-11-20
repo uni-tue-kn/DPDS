@@ -1,0 +1,28 @@
+[Unit]
+Description=DPDS controller (REST API that configures and supervises dpds)
+Documentation=https://github.com/uni-tue-kn/DPDS
+After=network.target
+
+[Service]
+Type=simple
+# Runs as root: the controller starts dpds (DPDK, NIC access) as its child process.
+User=root
+# Optional overrides (bind address, dpds binary); written by dpds.sh install.
+EnvironmentFile=-/etc/dpds/controller.env
+ExecStart=/usr/local/bin/dpds-controller serve
+
+# SIGTERM goes to the controller only; it stops dpds (SIGINT, then waits for the delay buffers
+# to drain) and exits. After TimeoutStopSec systemd SIGKILLs the whole control group, so the
+# timeout must exceed the longest configured delay (the controller warns above 590 s).
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=600
+
+# dpds calls mlockall; the child must always be able to lock its pools and buffers.
+LimitMEMLOCK=infinity
+
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

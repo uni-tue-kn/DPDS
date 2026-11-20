@@ -1,10 +1,4 @@
-# Build output
-build/
-
-# Stats exports
+target/
+**/*.rs.bk
 *.csv
-
-# Editor / OS cruft
-.vscode/
-*.swp
 .DS_Store
